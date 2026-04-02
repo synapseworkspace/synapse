@@ -1,6 +1,6 @@
 # Synapse Compatibility Matrix
 
-Last updated: 2026-04-02
+Last updated: 2026-04-03
 
 This matrix captures runtime support and current CI coverage for OSS packages.
 
@@ -31,12 +31,13 @@ This matrix captures runtime support and current CI coverage for OSS packages.
 | OpenClaw plugin package (`@synapseworkspace/openclaw-plugin`) | Supported | Runtime fixture tests + CI package test |
 | OpenClaw connector | Supported | `scripts/integration_openclaw_mcp_runtime.py`, `scripts/integration_openclaw_runtime_contract.py` |
 | MCP context injection helpers | Supported | SDK offline smoke + MCP integration script |
-| LangGraph / CrewAI wrappers | Supported (adapter level) | SDK compile + monitor smoke |
+| LangGraph / LangChain / CrewAI wrappers | Supported (adapter level) | SDK compile + monitor smoke + cookbook snapshot contracts |
 
 ## Notes
 
 - CI currently guarantees compatibility for the versions in the `CI-verified now` column.
 - Dedicated compatibility matrix workflow runs additional SDK matrix checks across Python (`3.10/3.11/3.12/3.13`) and Node (`18/20/22`): `.github/workflows/compat-matrix.yml`.
+- Framework adapter version targets are documented in `docs/framework-integrations.md` (`Version Compatibility` section).
 - Additional versions in policy are expected to work and should be validated by downstream users before production rollout.
 - Any support baseline change must update this document, package metadata, and `CHANGELOG.md` together.
 - OpenClaw integration now includes evidence-level signed provenance metadata (`synapse.openclaw.provenance.v1`) with contract coverage.

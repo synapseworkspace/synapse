@@ -1,0 +1,31 @@
+{
+  "batch_id": "<uuid>",
+  "batch_result_count": 2,
+  "call_result": "Escalation policy for customer_77: use Slack first, then email fallback.",
+  "debug_events_tail": [
+    "synthesizer_completed",
+    "extractor_listed",
+    "collect_insight_extracted",
+    "synthesizer_listed",
+    "collect_insight_synthesized",
+    "propose_fact_attempt",
+    "propose_fact_sent",
+    "collect_insight_proposed",
+    "capture_queued",
+    "collect_insight_completed",
+    "flush_start",
+    "flush_success"
+  ],
+  "invoke_result": "Customer customer_77 prefers slack for urgent updates.",
+  "queued_claims": [
+    "Escalation policy for customer_77: use Slack first, then email fallback."
+  ],
+  "resolved_integration": "langchain",
+  "stream_steps": 2,
+  "synthesized_text": "Escalation policy for customer_77: use Slack first, then email fallback.",
+  "transport": {
+    "backfill_batches": 1,
+    "claims": 1,
+    "events": 12
+  }
+}

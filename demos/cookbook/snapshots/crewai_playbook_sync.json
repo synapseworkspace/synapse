@@ -1,0 +1,29 @@
+{
+  "batch_id": "<uuid>",
+  "debug_events_tail": [
+    "synthesizer_completed",
+    "extractor_listed",
+    "collect_insight_extracted",
+    "synthesizer_listed",
+    "collect_insight_synthesized",
+    "propose_fact_attempt",
+    "propose_fact_sent",
+    "collect_insight_proposed",
+    "capture_queued",
+    "collect_insight_completed",
+    "flush_start",
+    "flush_success"
+  ],
+  "kickoff_summary": "Crew found repeated delay at warehouse_2; policy update required: add 20-minute buffer for evening shifts.",
+  "queued_claims": [
+    "Crew found repeated delay at warehouse_2; policy update required: add 20-minute buffer for evening shifts."
+  ],
+  "resolved_integration": "crewai",
+  "run_result": "Crew run completed: Update evening dispatch checklist",
+  "synthesized_text": "Crew found repeated delay at warehouse_2; policy update required: add 20-minute buffer for evening shifts.",
+  "transport": {
+    "backfill_batches": 1,
+    "claims": 1,
+    "events": 6
+  }
+}

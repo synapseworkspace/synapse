@@ -49,6 +49,8 @@ python3 -m py_compile scripts/check_openclaw_docs_canonical.py
 python3 -m py_compile scripts/check_cookbook_snapshots.py
 python3 -m py_compile scripts/check_framework_adapter_contracts.py
 python3 -m py_compile scripts/check_core_slo_guardrails.py
+python3 -m py_compile scripts/check_operational_slo_guardrails.py
+python3 -m py_compile scripts/capture_operational_slo_snapshots.py
 
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
@@ -1533,6 +1535,23 @@ assert payload["status"] == "ok", payload
 assert payload["benchmark"]["average_case_p95_ms"] is not None, payload
 assert payload["benchmark"]["average_top1_accuracy"] is not None, payload
 print("core slo guardrails smoke ok")
+PY
+python3 scripts/check_operational_slo_guardrails.py \
+  --snapshot-json eval/operational_slo_snapshot_sample.json \
+  --max-ingest-p95-ms 400 \
+  --max-ingest-p99-ms 600 \
+  --min-ingest-events 50 \
+  --max-moderation-p90-minutes 180 \
+  --max-moderation-open-backlog 20 \
+  --max-moderation-blocked-conflicts 6 >/tmp/synapse-operational-slo-smoke.json
+python3 - <<'PY'
+import json
+from pathlib import Path
+payload = json.loads(Path("/tmp/synapse-operational-slo-smoke.json").read_text())
+assert payload["status"] == "ok", payload
+assert payload["snapshot"]["ingest"]["p95_ms"] is not None, payload
+assert payload["snapshot"]["moderation"]["p90_minutes"] is not None, payload
+print("operational slo guardrails smoke ok")
 PY
 python3 scripts/run_performance_tuning_advisor.py --help >/dev/null
 python3 scripts/verify_openclaw_provenance.py --help >/dev/null

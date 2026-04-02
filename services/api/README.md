@@ -23,6 +23,7 @@ Environment:
 
 - `GET /health`
 - `POST /v1/events` (idempotent by `event.id`, plus request-level idempotency via `Idempotency-Key`)
+- `GET /v1/events/throughput?project_id=...&window_hours=24&event_type=tool_result` (ingest latency + throughput SLO metrics)
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
 - `POST /v1/backfill/memory` (bulk historical memory ingestion with `batch_id` and status transitions)
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`

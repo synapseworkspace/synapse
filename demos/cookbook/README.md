@@ -1,6 +1,6 @@
 # Synapse Cookbook (Python)
 
-Four runnable cookbook scenarios for common adoption paths.
+Six runnable cookbook scenarios for common adoption paths.
 
 Snapshot regression guard:
 
@@ -13,8 +13,10 @@ python3 /Users/maksimborisov/synapse/scripts/check_cookbook_snapshots.py
 
 1. **OpenClaw operators / runtime integration:** `openclaw_playbook_sync.py`
 2. **LangGraph teams / graph runtime integration:** `langgraph_playbook_sync.py`
-3. **Backend + SQL-heavy ops teams:** `sql_ops_guardrails.py`
-4. **Support/CRM workflow teams:** `support_ops_triage.py`
+3. **LangChain teams / runnable integration:** `langchain_playbook_sync.py`
+4. **CrewAI teams / crew runtime integration:** `crewai_playbook_sync.py`
+5. **Backend + SQL-heavy ops teams:** `sql_ops_guardrails.py`
+6. **Support/CRM workflow teams:** `support_ops_triage.py`
 
 Estimated time per example: 2-4 minutes.
 
@@ -60,7 +62,33 @@ Shows:
 - Execute phase preview: MCP context bundle generation from approved knowledge
 - Quick success signal: output includes `context_preview` and non-empty `debug_events_tail`.
 
-## 3) Synapse + SQL
+## 3) Synapse + LangChain
+
+```bash
+PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
+python3 /Users/maksimborisov/synapse/demos/cookbook/langchain_playbook_sync.py
+```
+
+Shows:
+- Auto-detected LangChain-like runnable attach (`invoke/call/stream/batch`)
+- Day-0 memory backfill before first runtime call
+- Insight proposal via `collect_insight(..., integration="langchain")`
+- Quick success signal: output includes `resolved_integration=langchain` and queued claim text.
+
+## 4) Synapse + CrewAI
+
+```bash
+PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
+python3 /Users/maksimborisov/synapse/demos/cookbook/crewai_playbook_sync.py
+```
+
+Shows:
+- Auto-detected CrewAI-style attach (`kickoff/run`)
+- Day-0 memory backfill from legacy runtime context
+- Insight proposal via `collect_insight(..., integration="crewai")`
+- Quick success signal: output includes `resolved_integration=crewai` and queued claim text.
+
+## 5) Synapse + SQL
 
 ```bash
 PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
@@ -73,7 +101,7 @@ Shows:
 - Claim proposal pipeline with typed evidence
 - Quick success signal: output includes extracted insight and proposal dispatch.
 
-## 4) Synapse + Support Ops
+## 6) Synapse + Support Ops
 
 ```bash
 PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \

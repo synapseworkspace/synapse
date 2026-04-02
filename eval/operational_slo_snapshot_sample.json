@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-04-03T04:30:00+00:00",
+  "api_base_url": "http://localhost:8080",
+  "project_id": "omega_demo",
+  "window_hours": 24,
+  "ingest": {
+    "project_id": "omega_demo",
+    "event_type_filter": null,
+    "window_hours": 24,
+    "since": "2026-04-02T04:30:00+00:00",
+    "generated_at": "2026-04-03T04:30:00+00:00",
+    "health": "healthy",
+    "alerts": [],
+    "metrics": {
+      "events_ingested": 482,
+      "sessions_active": 19,
+      "agents_active": 8,
+      "event_types_active": 5,
+      "ingest_rate_per_second": 0.005579,
+      "latency_ms": {
+        "avg": 41.2,
+        "p50": 37.4,
+        "p95": 92.7,
+        "p99": 141.9
+      }
+    },
+    "top_event_types": [
+      {
+        "event_type": "tool_result",
+        "events_total": 211
+      },
+      {
+        "event_type": "system_signal",
+        "events_total": 155
+      }
+    ]
+  },
+  "moderation": {
+    "project_id": "omega_demo",
+    "window_hours": 24,
+    "since": "2026-04-02T04:30:00+00:00",
+    "generated_at": "2026-04-03T04:30:00+00:00",
+    "health": "healthy",
+    "alerts": [],
+    "metrics": {
+      "actions_total": 36,
+      "approvals": 28,
+      "rejections": 8,
+      "approval_rate": 0.7778,
+      "reviewers_active": 4,
+      "processed_per_hour": 1.5,
+      "drafts_created": 30,
+      "net_backlog_delta": -6,
+      "conflict_unblocks": 3,
+      "latency_minutes": {
+        "avg": 42.5,
+        "p50": 27.0,
+        "p90": 96.0
+      }
+    },
+    "backlog": {
+      "open_total": 7,
+      "pending_review": 5,
+      "blocked_conflict": 2
+    },
+    "top_reviewers": [
+      {
+        "reviewed_by": "ops.alice",
+        "actions_total": 12,
+        "approvals": 10,
+        "rejections": 2
+      }
+    ]
+  }
+}

@@ -9564,6 +9564,129 @@ def ingest_events(
     return response
 
 
+@app.get("/v1/events/throughput")
+def get_event_ingest_throughput(
+    project_id: str,
+    window_hours: int = Query(default=24, ge=1, le=24 * 30),
+    event_type: str | None = Query(default=None),
+    top_event_types: int = Query(default=8, ge=1, le=30),
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=window_hours)
+    params: list[Any] = [project_id, cutoff]
+    filters = ["project_id = %s", "received_at >= %s"]
+    if event_type is not None and event_type.strip():
+        filters.append("event_type = %s")
+        params.append(event_type.strip())
+    where_clause = " AND ".join(filters)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  COUNT(*)::int AS events_ingested,
+                  COUNT(DISTINCT session_id)::int AS sessions_active,
+                  COUNT(DISTINCT agent_id)::int AS agents_active,
+                  COUNT(DISTINCT event_type)::int AS event_types_active
+                FROM events
+                WHERE {where_clause}
+                """,
+                tuple(params),
+            )
+            summary_row = cur.fetchone()
+
+            cur.execute(
+                f"""
+                SELECT
+                  AVG(EXTRACT(EPOCH FROM (received_at - observed_at)) * 1000.0) AS avg_ms,
+                  percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (received_at - observed_at)) * 1000.0
+                  ) AS p50_ms,
+                  percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (received_at - observed_at)) * 1000.0
+                  ) AS p95_ms,
+                  percentile_cont(0.99) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (received_at - observed_at)) * 1000.0
+                  ) AS p99_ms
+                FROM events
+                WHERE {where_clause}
+                  AND received_at >= observed_at
+                """,
+                tuple(params),
+            )
+            latency_row = cur.fetchone()
+
+            cur.execute(
+                f"""
+                SELECT event_type, COUNT(*)::int AS events_total
+                FROM events
+                WHERE {where_clause}
+                GROUP BY event_type
+                ORDER BY events_total DESC, event_type ASC
+                LIMIT %s
+                """,
+                tuple([*params, int(top_event_types)]),
+            )
+            type_rows = cur.fetchall()
+
+    events_ingested = int((summary_row[0] if summary_row else 0) or 0)
+    sessions_active = int((summary_row[1] if summary_row else 0) or 0)
+    agents_active = int((summary_row[2] if summary_row else 0) or 0)
+    event_types_active = int((summary_row[3] if summary_row else 0) or 0)
+
+    avg_ms = float(latency_row[0]) if latency_row and latency_row[0] is not None else None
+    p50_ms = float(latency_row[1]) if latency_row and latency_row[1] is not None else None
+    p95_ms = float(latency_row[2]) if latency_row and latency_row[2] is not None else None
+    p99_ms = float(latency_row[3]) if latency_row and latency_row[3] is not None else None
+
+    ingest_rate_per_second = round(events_ingested / max(float(window_hours) * 3600.0, 1.0), 6)
+    alerts: list[str] = []
+    health = "healthy"
+
+    if events_ingested == 0:
+        alerts.append("No events ingested in selected window.")
+    if p95_ms is not None and p95_ms >= 2000.0:
+        alerts.append("Ingest p95 latency is above 2000ms.")
+    if p99_ms is not None and p99_ms >= 5000.0:
+        alerts.append("Ingest p99 latency is above 5000ms.")
+
+    if events_ingested == 0 or (p99_ms is not None and p99_ms >= 5000.0):
+        health = "critical"
+    elif (p95_ms is not None and p95_ms >= 2000.0) or (p99_ms is not None and p99_ms >= 3000.0):
+        health = "watch"
+
+    return {
+        "project_id": project_id,
+        "event_type_filter": event_type.strip() if isinstance(event_type, str) and event_type.strip() else None,
+        "window_hours": int(window_hours),
+        "since": cutoff.isoformat(),
+        "generated_at": now.isoformat(),
+        "health": health,
+        "alerts": alerts,
+        "metrics": {
+            "events_ingested": events_ingested,
+            "sessions_active": sessions_active,
+            "agents_active": agents_active,
+            "event_types_active": event_types_active,
+            "ingest_rate_per_second": ingest_rate_per_second,
+            "latency_ms": {
+                "avg": round(avg_ms, 3) if avg_ms is not None else None,
+                "p50": round(p50_ms, 3) if p50_ms is not None else None,
+                "p95": round(p95_ms, 3) if p95_ms is not None else None,
+                "p99": round(p99_ms, 3) if p99_ms is not None else None,
+            },
+        },
+        "top_event_types": [
+            {
+                "event_type": str(row[0] or ""),
+                "events_total": int(row[1] or 0),
+            }
+            for row in type_rows
+        ],
+    }
+
+
 @app.post("/v1/facts/proposals", response_model=None)
 def propose_fact(
     payload: ClaimProposal,

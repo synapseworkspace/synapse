@@ -7,7 +7,10 @@ import random
 import time
 from typing import Any, Sequence
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:  # pragma: no cover - exercised in constrained local envs
+    requests = None  # type: ignore[assignment]
 
 from synapse_sdk.errors import SynapseTransportError
 from synapse_sdk.types import Claim, ObservationEvent, RetryConfig
@@ -22,12 +25,20 @@ class HttpTransport:
         api_key: str | None = None,
         *,
         retry: RetryConfig | None = None,
-        session: requests.Session | None = None,
+        session: Any | None = None,
     ) -> None:
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.retry = retry or RetryConfig()
-        self.session = session or requests.Session()
+        if session is not None:
+            self.session = session
+        elif requests is not None:
+            self.session = requests.Session()
+        else:
+            raise RuntimeError(
+                "HttpTransport requires the optional 'requests' dependency. "
+                "Install synapseworkspace-sdk with requests support to use network transport."
+            )
 
     def close(self) -> None:
         self.session.close()
@@ -94,7 +105,9 @@ class HttpTransport:
                     headers=self._headers(idempotency_key),
                     timeout=self.retry.timeout_seconds,
                 )
-            except requests.RequestException as exc:
+            except Exception as exc:
+                if requests is None or not isinstance(exc, requests.RequestException):
+                    raise
                 error = SynapseTransportError(
                     "Synapse API request failed due to network error",
                     retryable=True,
@@ -142,7 +155,7 @@ class HttpTransport:
             delay = max(delay, retry_after_seconds)
         time.sleep(delay)
 
-    def _parse_retry_after(self, response: requests.Response) -> float | None:
+    def _parse_retry_after(self, response: Any) -> float | None:
         raw_value = response.headers.get("Retry-After")
         if not raw_value:
             return None

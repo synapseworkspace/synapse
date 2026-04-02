@@ -13,6 +13,23 @@ This page tracks integration maturity for major agent frameworks.
 | CrewAI | Supported | Monitor/attach wrappers with lifecycle capture. |
 | LangChain | Supported (adapter layer) | Auto-detection + monitor wrappers for runnable-like interfaces (`invoke`/`call`/`stream`/`batch`). |
 
+Cookbook-backed examples:
+- OpenClaw: `demos/cookbook/openclaw_playbook_sync.py`
+- LangGraph: `demos/cookbook/langgraph_playbook_sync.py`
+- LangChain: `demos/cookbook/langchain_playbook_sync.py`
+- CrewAI: `demos/cookbook/crewai_playbook_sync.py`
+
+## Version Compatibility (Adapter Level)
+
+These ranges describe compatibility targets for Synapse adapter surfaces (hook/monitor APIs), not framework-internal feature parity.
+
+| Framework | Target version range | Verification mode |
+| --- | --- | --- |
+| LangGraph | `>=0.2,<1.0` | Adapter contract checks + cookbook snapshot regression |
+| LangChain | `>=0.1,<1.0` | Adapter contract checks + cookbook snapshot regression |
+| CrewAI | `>=0.70,<1.0` | Adapter contract checks + cookbook snapshot regression |
+| OpenClaw | `>=0.1,<1.0` | Runtime contract matrix + OpenClaw MCP integration checks |
+
 ## Integration Contract Guarantees
 
 1. One-line attach path is available through `Synapse.attach(...)`.

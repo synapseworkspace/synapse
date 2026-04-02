@@ -19,6 +19,8 @@ SNAPSHOT_DIR = COOKBOOK_DIR / "snapshots"
 SCENARIOS = {
     "openclaw_playbook_sync": "openclaw_playbook_sync",
     "langgraph_playbook_sync": "langgraph_playbook_sync",
+    "langchain_playbook_sync": "langchain_playbook_sync",
+    "crewai_playbook_sync": "crewai_playbook_sync",
     "sql_ops_guardrails": "sql_ops_guardrails",
     "support_ops_triage": "support_ops_triage",
 }

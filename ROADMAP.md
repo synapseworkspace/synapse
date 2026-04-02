@@ -284,7 +284,7 @@ Progress:
 
 ## M10: Agentic Wiki Productization (Weeks 19-22)
 
-Status: `in_progress`
+Status: `completed`
 
 Scope:
 - README and landing messaging aligned to "Agentic Wiki" and OpenClaw-first narrative.
@@ -348,8 +348,8 @@ Progress:
 - [x] Added offline Python framework contract checker (`scripts/check_framework_adapter_contracts.py`) and wired it into CI.
 - [x] Extended TypeScript CI smoke to assert auto-detection for LangGraph/LangChain/CrewAI.
 - [x] Added framework integration status doc (`docs/framework-integrations.md`) and linked it from README.
-- [ ] Add dedicated LangChain + CrewAI cookbook demos with golden output snapshots.
-- [ ] Add integration-version compatibility table by framework major versions.
+- [x] Added dedicated LangChain + CrewAI cookbook demos with golden output snapshots (`demos/cookbook/*`, `scripts/check_cookbook_snapshots.py`).
+- [x] Added integration-version compatibility table by framework major versions (`docs/framework-integrations.md`).
 
 ## M13: Reliability & SLO Control (Weeks 30-33)
 
@@ -370,14 +370,14 @@ Progress:
 - [x] Added baseline reliability/SLO runbook (`docs/reliability-slo.md`) with explicit budgets.
 - [x] Added `scripts/check_core_slo_guardrails.py` (benchmark-based latency/quality gate).
 - [x] Wired SLO guardrail smoke checks into `scripts/ci_checks.sh`.
-- [ ] Add ingest latency SLO and moderation latency SLO checks from API snapshots.
+- [x] Added ingest latency + moderation latency SLO checks from API snapshots (`/v1/events/throughput`, `scripts/check_operational_slo_guardrails.py`).
 - [ ] Add rolling error-budget policy and release-blocking gate.
 - [ ] Add degraded-dependency/load-profile reliability drills.
 
 ## Next Up (Execution Queue)
 
-1. Implement M12 adapter depth: add LangChain/CrewAI cookbook demos + golden snapshot CI contract.
-2. Implement M13 SLO depth: add ingest/moderation latency guardrails and release gate policy checks.
+1. Implement M12 compatibility depth: add framework major-version compatibility matrix and contract checks by version set.
+2. Implement M13 release policy depth: add rolling error-budget gate and release-blocking policy checks.
 3. Continue M11/E1 tenancy foundation (tenant entities, tenant-to-project mapping, guarded API query path).
 
 ## Risks to Watch
@@ -393,6 +393,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Completed framework + operational SLO depth pass: added dedicated LangChain/CrewAI cookbook demos with golden snapshots (`demos/cookbook/langchain_playbook_sync.py`, `demos/cookbook/crewai_playbook_sync.py`, `scripts/check_cookbook_snapshots.py`), published framework major-version compatibility matrix (`docs/framework-integrations.md`), added API ingest throughput endpoint (`GET /v1/events/throughput`), shipped operational SLO tooling (`scripts/capture_operational_slo_snapshots.py`, `scripts/check_operational_slo_guardrails.py`, `eval/operational_slo_snapshot_sample.json`), and wired all new checks into `scripts/ci_checks.sh`.
 - 2026-04-03: Started framework + reliability execution track: added LangChain integration auto-detection/wrappers (Python+TypeScript), added offline framework contract checker (`scripts/check_framework_adapter_contracts.py`) and CI enforcement, added baseline SLO guardrail checker (`scripts/check_core_slo_guardrails.py`) with CI smoke, and published docs (`docs/framework-integrations.md`, `docs/reliability-slo.md`).
 - 2026-04-03: Added explicit enterprise capability status page (`docs/enterprise-readiness.md`) with factual coverage matrix (tenancy/SSO/RBAC/audit/secrets) and phased E1-E4 implementation plan.
 - 2026-04-03: Resolved package registry ambiguity for OSS publishing by moving npm package scope to `@synapseworkspace/*` and Python package name to `synapseworkspace-sdk`, updated release/docs/hygiene validators, and validated full `./scripts/ci_checks.sh`.
