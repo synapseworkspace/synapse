@@ -2,6 +2,11 @@
 
 This document defines how Synapse layers on top of OpenClaw as a persistent, human-curated memory plane.
 
+Start here for first implementation:
+- `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+
+This page is the technical deep dive and contract reference.
+
 ## Why This Fit Works
 
 OpenClaw already has plugin and hook primitives (`registerTool`, lifecycle hooks, event-driven automation). Synapse can plug into those primitives as memory infrastructure.
@@ -61,6 +66,7 @@ Runtime contract matrix script:
   - signed provenance fields are emitted and consistent across evidence + claim metadata
 
 OpenClaw-first onboarding kit:
+- Canonical quickstart: `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
 - `/Users/maksimborisov/synapse/demos/openclaw_onboarding/README.md`
 - Includes runtime template, seed memory dataset, and 5-minute runnable flow for day-0 wiki bootstrap.
 - Guided tutorial: `/Users/maksimborisov/synapse/docs/tutorials/04-openclaw-onboarding-kit.md`

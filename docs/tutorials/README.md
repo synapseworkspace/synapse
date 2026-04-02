@@ -11,11 +11,14 @@ Before tutorials, complete quick bootstrap:
 1. [First Knowledge Loop](01-first-knowledge-loop.md)  
    Connect SDK, capture events, review drafts, approve, and retrieve via MCP.
 
-2. [OpenClaw Integration](02-openclaw-quickstart.md)  
-   Attach Synapse to OpenClaw runtime with wiki/task tools.
+2. [OpenClaw Quickstart (5 Minutes)](../openclaw-quickstart-5-min.md)  
+   Canonical OpenClaw onboarding path (attach, bootstrap memory, verify loop).
 
 3. [MCP Context Injection](03-mcp-context-injection.md)  
    Consume approved knowledge and task context in runtime prompts.
 
-4. [OpenClaw Onboarding Kit (5 Minutes)](04-openclaw-onboarding-kit.md)  
-   Run a ready-to-use runtime template + seed dataset and bootstrap wiki drafts on day 0.
+4. [OpenClaw Onboarding Kit (Companion Demo)](04-openclaw-onboarding-kit.md)  
+   Run ready-to-use runtime template + seed dataset for local day-0 simulation.
+
+5. [OpenClaw Quickstart (Alias)](02-openclaw-quickstart.md)  
+   Redirect page kept for older links.

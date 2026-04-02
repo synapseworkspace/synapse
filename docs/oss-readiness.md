@@ -61,7 +61,7 @@ Core runtime, SDKs, and CI/e2e flows are operational. Remaining work is focused 
 High priority:
 
 1. "First 15 minutes" tutorial for core loop. ✅ (`docs/getting-started.md`)
-2. OpenClaw quick integration tutorial. ✅ (`docs/tutorials/02-openclaw-quickstart.md`)
+2. OpenClaw quick integration tutorial. ✅ (`docs/openclaw-quickstart-5-min.md`)
 3. MCP retrieval integration tutorial. ✅ (`docs/tutorials/03-mcp-context-injection.md`)
 4. "Core vs Advanced" product guide. ✅ (`docs/core-product-scope.md`)
 5. Deployment guide for self-hosted API/worker/MCP. ✅ (`docs/self-hosted-deployment.md`)

@@ -1,5 +1,7 @@
 # Tutorial: OpenClaw Onboarding Kit (5 Minutes)
 
+This tutorial is a companion for local demo fixtures.
+
 Canonical quickstart for users:
 - `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
 

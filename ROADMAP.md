@@ -305,10 +305,10 @@ Progress:
 
 ## Next Up (Execution Queue)
 
-1. Collapse legacy duplicate onboarding docs into a single canonical OpenClaw path and add redirects/notices where needed.
-2. Tighten SDK "plug-and-play" defaults for zero-config attach (`synapse.attach(...)`) and capture onboarding friction metrics.
-3. Expand OpenClaw + LangGraph cookbook parity examples with the same Agentic Wiki narrative structure.
-4. Add lightweight wiki UI theming polish pass (Confluence-like information density, typography, and navigation affordances) without reintroducing advanced-mode clutter.
+1. Tighten SDK "plug-and-play" defaults for zero-config attach (`synapse.attach(...)`) and capture onboarding friction metrics.
+2. Expand OpenClaw + LangGraph cookbook parity examples with the same Agentic Wiki narrative structure.
+3. Add lightweight wiki UI theming polish pass (Confluence-like information density, typography, and navigation affordances) without reintroducing advanced-mode clutter.
+4. Add a docs lint gate for canonical OpenClaw path references to prevent onboarding drift.
 
 ## Risks to Watch
 
@@ -323,6 +323,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-02: Collapsed OpenClaw onboarding doc drift into a single canonical path (`docs/openclaw-quickstart-5-min.md`): converted tutorial `02-openclaw-quickstart` into alias/redirect, updated tutorials index, integration deep-dive, OSS readiness references, and cookbook onboarding pointers.
 - 2026-04-02: Shifted product messaging to Agentic Wiki + OpenClaw-first narrative in root README, added dedicated OpenClaw quickstart/value block, updated hero brand assets, and introduced web core-only profile lock (`VITE_SYNAPSE_UI_PROFILE`) to keep first-run UX focused on core moderation loop.
 - 2026-04-02: Completed M10 docs and UX validation pass: added `docs/agentic-wiki-overview.md`, `docs/openclaw-quickstart-5-min.md`, and `docs/core-vs-enterprise.md`; linked canonical docs from README/getting-started/demos/tutorials; and validated `core-only` UI profile behavior with Playwright under `VITE_SYNAPSE_UI_PROFILE=core-only`.
 - 2026-04-02: Completed repo-target alignment pass for public launch: switched OSS metadata and links from template org to `synapseworkspace/synapse` (PyPI/npm package URLs, web docs link base, observability runbook URLs, CODEOWNERS owner), added publish-hygiene override env vars (`SYNAPSE_EXPECTED_REPO`, `SYNAPSE_EXPECTED_ISSUES`), and documented exact GitHub repository creation fields + post-create settings in OSS publish checklist.

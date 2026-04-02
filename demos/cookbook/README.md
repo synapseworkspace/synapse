@@ -22,7 +22,8 @@ pip install requests
 Each example runs offline with in-memory transport (no API/DB required).
 
 Need a dedicated OpenClaw day-0 onboarding flow instead of cookbook scenarios?
-- Use `/Users/maksimborisov/synapse/demos/openclaw_onboarding/README.md`.
+- Start with `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`.
+- For local fixture details, see `/Users/maksimborisov/synapse/demos/openclaw_onboarding/README.md`.
 
 ## 1) Synapse + OpenClaw
 
