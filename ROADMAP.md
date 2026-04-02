@@ -275,7 +275,7 @@ Progress:
 - [x] Added dedicated compatibility matrix workflow (`.github/workflows/compat-matrix.yml`) across Python (`3.10-3.13`) and Node (`18/20/22`).
 - [x] Added OSS repo hardening baseline (`.github/CODEOWNERS`, `.github/dependabot.yml`, CodeQL + secret scan workflows).
 - [x] Added repository hygiene gate (`scripts/check_repo_hygiene.py`) in CI to prevent tracked local artifacts.
-- [x] Aligned OSS metadata to launch target repo (`maksbdev/synapse`) across SDK package manifests, web docs links, CODEOWNERS handle, and publish-hygiene validator defaults.
+- [x] Aligned OSS metadata to launch target repo (`synapseworkspace/synapse`) across SDK package manifests, web docs links, CODEOWNERS handle, and publish-hygiene validator defaults.
 
 ## Next Up (Execution Queue)
 
@@ -293,7 +293,7 @@ Progress:
 
 ## Recent Updates
 
-- 2026-04-02: Completed repo-target alignment pass for public launch: switched OSS metadata and links from template org to `maksbdev/synapse` (PyPI/npm package URLs, web docs link base, observability runbook URLs, CODEOWNERS owner), added publish-hygiene override env vars (`SYNAPSE_EXPECTED_REPO`, `SYNAPSE_EXPECTED_ISSUES`), and documented exact GitHub repository creation fields + post-create settings in OSS publish checklist.
+- 2026-04-02: Completed repo-target alignment pass for public launch: switched OSS metadata and links from template org to `synapseworkspace/synapse` (PyPI/npm package URLs, web docs link base, observability runbook URLs, CODEOWNERS owner), added publish-hygiene override env vars (`SYNAPSE_EXPECTED_REPO`, `SYNAPSE_EXPECTED_ISSUES`), and documented exact GitHub repository creation fields + post-create settings in OSS publish checklist.
 - 2026-04-02: Completed final pre-publish hardening pass: added GitHub ownership/dependency/security automation baseline (`CODEOWNERS`, `dependabot`, `codeql`, `secret-scan`) and introduced repository hygiene CI guard (`check_repo_hygiene.py`) to block tracked local artifacts (`.venv`, `node_modules`, `.env*`), with docs/release checklist updates.
 - 2026-04-02: Completed OSS publication hardening pass: added governance docs (`MAINTAINERS.md`, `SUPPORT.md`, `DEPRECATION_POLICY.md`), shipped generated SDK API reference baseline (`docs/reference/*`) with CI freshness check (`scripts/generate_sdk_api_reference.py --check`), and introduced dedicated runtime compatibility matrix workflow (`.github/workflows/compat-matrix.yml`) for Python SDK (`3.10-3.13`) and Node SDK/plugin (`18/20/22`) smoke coverage.
 - 2026-04-02: Extended post-M9 onboarding DX with `synapse-cli quickstart`: one-command orchestration for `init -> doctor -> connect` plus optional `verify core-loop`, JSON step-level result contract for automation, docs updates, and offline CI smoke coverage.

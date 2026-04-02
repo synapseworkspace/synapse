@@ -533,7 +533,7 @@ const REVIEW_QUEUE_PRESETS: ReviewQueuePreset[] = [
   },
 ];
 
-const DOCS_BASE_URL = "https://github.com/maksbdev/synapse/blob/main";
+const DOCS_BASE_URL = "https://github.com/synapseworkspace/synapse/blob/main";
 
 const CORE_WALKTHROUGH_DOC_LINKS = [
   {

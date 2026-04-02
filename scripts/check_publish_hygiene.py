@@ -18,7 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 EXPECTED_LICENSE = "Apache-2.0"
-EXPECTED_REPO = str(os.getenv("SYNAPSE_EXPECTED_REPO", "https://github.com/maksbdev/synapse")).rstrip("/")
+EXPECTED_REPO = str(os.getenv("SYNAPSE_EXPECTED_REPO", "https://github.com/synapseworkspace/synapse")).rstrip("/")
 EXPECTED_ISSUES = str(os.getenv("SYNAPSE_EXPECTED_ISSUES", f"{EXPECTED_REPO}/issues")).rstrip("/")
 
 NPM_PACKAGE_CONFIG = {

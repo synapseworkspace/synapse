@@ -35,7 +35,7 @@ groups:
         annotations:
           summary: "Synapse SDK transport failure ratio is elevated"
           description: "Failure ratio above 5% for 10m (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
-          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+          runbook_url: "https://github.com/synapseworkspace/synapse/blob/main/docs/sdk-trace-observability.md"
 
       - alert: SynapseSDKTransportFailureRatioCritical
         expr: synapse:sdk_event_rate_5m > 0.2 and synapse:sdk_failure_ratio_5m > 0.15
@@ -46,7 +46,7 @@ groups:
         annotations:
           summary: "Synapse SDK transport failure ratio is critical"
           description: "Failure ratio above 15% for 5m (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
-          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+          runbook_url: "https://github.com/synapseworkspace/synapse/blob/main/docs/sdk-trace-observability.md"
 
       - alert: SynapseSDKQueueGrowthDetected
         expr: synapse:sdk_queue_avg_10m > 20 and synapse:sdk_queue_avg_prev_10m > 0 and (synapse:sdk_queue_avg_10m / synapse:sdk_queue_avg_prev_10m) > 1.5
@@ -57,7 +57,7 @@ groups:
         annotations:
           summary: "Synapse SDK in-memory queue growth detected"
           description: "Average queue size grew by >50% versus prior window (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
-          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+          runbook_url: "https://github.com/synapseworkspace/synapse/blob/main/docs/sdk-trace-observability.md"
 
       - alert: SynapseSDKProposalDropDetected
         expr: synapse:sdk_event_rate_5m > 0.5 and synapse:sdk_proposals_30m < 1
@@ -68,4 +68,4 @@ groups:
         annotations:
           summary: "Synapse SDK proposal throughput dropped"
           description: "High SDK activity but no knowledge proposals in the last 30m (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
-          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+          runbook_url: "https://github.com/synapseworkspace/synapse/blob/main/docs/sdk-trace-observability.md"

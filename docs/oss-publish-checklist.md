@@ -50,7 +50,7 @@ After repo creation:
 1. Set `origin` and push:
 
 ```bash
-git remote add origin git@github.com:maksbdev/synapse.git
+git remote add origin git@github.com:synapseworkspace/synapse.git
 git push -u origin main
 ```
 

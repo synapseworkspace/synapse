@@ -10,11 +10,11 @@
   "keywords": ["ai", "agents", "schema", "contracts", "knowledge"],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maksbdev/synapse.git"
+    "url": "git+https://github.com/synapseworkspace/synapse.git"
   },
-  "homepage": "https://github.com/maksbdev/synapse#readme",
+  "homepage": "https://github.com/synapseworkspace/synapse#readme",
   "bugs": {
-    "url": "https://github.com/maksbdev/synapse/issues"
+    "url": "https://github.com/synapseworkspace/synapse/issues"
   },
   "publishConfig": {
     "access": "public",

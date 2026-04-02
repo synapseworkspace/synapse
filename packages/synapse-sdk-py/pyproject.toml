@@ -25,10 +25,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/maksbdev/synapse"
-Repository = "https://github.com/maksbdev/synapse"
-Documentation = "https://github.com/maksbdev/synapse/tree/main/docs"
-Issues = "https://github.com/maksbdev/synapse/issues"
+Homepage = "https://github.com/synapseworkspace/synapse"
+Repository = "https://github.com/synapseworkspace/synapse"
+Documentation = "https://github.com/synapseworkspace/synapse/tree/main/docs"
+Issues = "https://github.com/synapseworkspace/synapse/issues"
 
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.28.0"]
