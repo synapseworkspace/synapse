@@ -114,8 +114,10 @@ jobs:
           path: dist/npm
 
       - name: Configure npm token fallback
-        if: ${{ secrets.NPM_TOKEN != '' }}
-        run: npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
+        run: |
+          if [[ -n "${NPM_TOKEN:-}" ]]; then
+            npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
+          fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
