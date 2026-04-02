@@ -60,12 +60,12 @@ jobs:
           npm pack --pack-destination dist/npm ./packages/synapse-openclaw-plugin
 
       - name: Attest Python artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/python/*"
 
       - name: Attest npm artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/npm/*"
 
