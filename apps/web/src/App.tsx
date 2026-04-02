@@ -793,7 +793,7 @@ function buildStatementDiff(beforeRaw: string, afterRaw: string): { before: Diff
   const tokens = diffWords(before, after);
   const beforeLine: DiffToken[] = [];
   const afterLine: DiffToken[] = [];
-  tokens.forEach((token) => {
+  tokens.forEach((token: { value: string; added?: boolean; removed?: boolean }) => {
     if (token.removed) {
       beforeLine.push({ value: token.value, kind: "removed" });
       return;

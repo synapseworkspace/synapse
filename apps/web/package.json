@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm exec tsc -b && npm exec vite build",
+    "build": "tsc -b && vite build",
     "preview": "vite preview",
     "e2e": "playwright test --config=playwright.config.ts",
     "e2e:install": "playwright install chromium"
@@ -28,6 +28,8 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
+    "@types/diff": "^7.0.1",
+    "@types/node": "^22.15.3",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

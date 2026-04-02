@@ -12,7 +12,6 @@ import {
   Text,
   TextInput,
   Textarea,
-  Title,
 } from "@mantine/core";
 import { BarChart, LineChart } from "@mantine/charts";
 import { notifications } from "@mantine/notifications";
@@ -7926,19 +7925,27 @@ export default function GatekeeperSchedulePanel({ apiUrl, projectId, reviewer, o
                       <Text size="xs" c="dimmed" fw={700}>
                         Incident age distribution
                       </Text>
-                      <Progress
-                        size="md"
-                        radius="xl"
-                        sections={[
-                          { value: (queueEscalationAges.under_1h / queueEscalationAgeTotal) * 100, color: "teal" },
-                          { value: (queueEscalationAges.between_1h_4h / queueEscalationAgeTotal) * 100, color: "lime" },
-                          { value: (queueEscalationAges.between_4h_12h / queueEscalationAgeTotal) * 100, color: "yellow" },
-                          { value: (queueEscalationAges.between_12h_24h / queueEscalationAgeTotal) * 100, color: "orange" },
-                          { value: (queueEscalationAges.between_24h_72h / queueEscalationAgeTotal) * 100, color: "red" },
-                          { value: (queueEscalationAges.over_72h / queueEscalationAgeTotal) * 100, color: "grape" },
-                          { value: (queueEscalationAges.unknown / queueEscalationAgeTotal) * 100, color: "gray" },
-                        ]}
-                      />
+                      <Progress.Root size="md" radius="xl">
+                        <Progress.Section value={(queueEscalationAges.under_1h / queueEscalationAgeTotal) * 100} color="teal" />
+                        <Progress.Section
+                          value={(queueEscalationAges.between_1h_4h / queueEscalationAgeTotal) * 100}
+                          color="lime"
+                        />
+                        <Progress.Section
+                          value={(queueEscalationAges.between_4h_12h / queueEscalationAgeTotal) * 100}
+                          color="yellow"
+                        />
+                        <Progress.Section
+                          value={(queueEscalationAges.between_12h_24h / queueEscalationAgeTotal) * 100}
+                          color="orange"
+                        />
+                        <Progress.Section
+                          value={(queueEscalationAges.between_24h_72h / queueEscalationAgeTotal) * 100}
+                          color="red"
+                        />
+                        <Progress.Section value={(queueEscalationAges.over_72h / queueEscalationAgeTotal) * 100} color="grape" />
+                        <Progress.Section value={(queueEscalationAges.unknown / queueEscalationAgeTotal) * 100} color="gray" />
+                      </Progress.Root>
                       <Text size="xs" c="dimmed">
                         &lt;1h {queueEscalationAges.under_1h} • 1-4h {queueEscalationAges.between_1h_4h} • 4-12h{" "}
                         {queueEscalationAges.between_4h_12h} • 12-24h {queueEscalationAges.between_12h_24h} • 24-72h{" "}
@@ -8670,16 +8677,11 @@ export default function GatekeeperSchedulePanel({ apiUrl, projectId, reviewer, o
                 </Paper>
               </SimpleGrid>
 
-              <Progress
-                size="sm"
-                radius="xl"
-                sections={[
-                  { value: Math.max(0, Math.min(100, item.slo.success_rate * 100)), color: "teal" },
-                  { value: Math.max(0, Math.min(100, item.slo.alert_rate * 100)), color: "yellow" },
-                  { value: Math.max(0, Math.min(100, item.slo.failure_rate * 100)), color: "red" },
-                ]}
-                mb={6}
-              />
+              <Progress.Root size="sm" radius="xl" mb={6}>
+                <Progress.Section value={Math.max(0, Math.min(100, item.slo.success_rate * 100))} color="teal" />
+                <Progress.Section value={Math.max(0, Math.min(100, item.slo.alert_rate * 100))} color="yellow" />
+                <Progress.Section value={Math.max(0, Math.min(100, item.slo.failure_rate * 100))} color="red" />
+              </Progress.Root>
 
               <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="sm">
                 <Paper withBorder radius="md" p="xs">
@@ -8898,16 +8900,11 @@ export default function GatekeeperSchedulePanel({ apiUrl, projectId, reviewer, o
                       {item.slo.health}
                     </Badge>
                   </Group>
-                  <Progress
-                    size="sm"
-                    radius="xl"
-                    sections={[
-                      { value: Math.max(0, Math.min(100, item.slo.success_rate * 100)), color: "teal" },
-                      { value: Math.max(0, Math.min(100, item.slo.alert_rate * 100)), color: "yellow" },
-                      { value: Math.max(0, Math.min(100, item.slo.failure_rate * 100)), color: "red" },
-                    ]}
-                    mb={6}
-                  />
+                  <Progress.Root size="sm" radius="xl" mb={6}>
+                    <Progress.Section value={Math.max(0, Math.min(100, item.slo.success_rate * 100))} color="teal" />
+                    <Progress.Section value={Math.max(0, Math.min(100, item.slo.alert_rate * 100))} color="yellow" />
+                    <Progress.Section value={Math.max(0, Math.min(100, item.slo.failure_rate * 100))} color="red" />
+                  </Progress.Root>
                   <Text size="xs" c="dimmed">
                     success {asPercent(item.slo.success_rate)} • alert {asPercent(item.slo.alert_rate)} • failure{" "}
                     {asPercent(item.slo.failure_rate)} • executed {item.window.executed}
@@ -8948,7 +8945,7 @@ export default function GatekeeperSchedulePanel({ apiUrl, projectId, reviewer, o
           placeholder={String(activePreset.interval_hours)}
           min={1}
           max={4320}
-          value={form.interval_hours}
+          value={form.interval_hours ?? undefined}
           onChange={(value) =>
             setForm((prev) => ({
               ...prev,
