@@ -23,6 +23,7 @@ import type {
   SynapseTransport,
   DegradationMode,
   OpenClawBootstrapPreset,
+  OnboardingMetrics,
   TaskCommentInput,
   TaskInput,
   TaskLinkInput,
@@ -180,12 +181,107 @@ export class SynapseClient {
     this.debugRecords.splice(0, this.debugRecords.length);
   }
 
+  getOnboardingMetrics(limit = 500): OnboardingMetrics {
+    const safeLimit = Math.max(1, Math.trunc(limit));
+    const records = this.getDebugRecords(safeLimit);
+    const eventsByName: Record<string, number> = {};
+    const frictionNames = new Set([
+      "attach_bootstrap_failed",
+      "attach_bootstrap_provider_failed",
+      "attach_bootstrap_skipped",
+      "attach_openclaw_bootstrap_preset_failed",
+      "attach_openclaw_bootstrap_preset_skipped",
+      "attach_openclaw_search_disabled"
+    ]);
+    const frictionEvents: string[] = [];
+    let attachEventsTotal = 0;
+
+    for (const record of records) {
+      const eventName = String(record.event || "");
+      if (!eventName.startsWith("attach_")) {
+        continue;
+      }
+      attachEventsTotal += 1;
+      eventsByName[eventName] = (eventsByName[eventName] ?? 0) + 1;
+      if (frictionNames.has(eventName)) {
+        frictionEvents.push(eventName);
+      }
+    }
+
+    return {
+      projectId: this.config.projectId,
+      window: {
+        limit: safeLimit,
+        eventsObserved: records.length
+      },
+      attachEventsTotal,
+      attachStarted: eventsByName["attach_started"] ?? 0,
+      attachCompleted: eventsByName["attach_completed"] ?? 0,
+      bootstrapCompleted: eventsByName["attach_bootstrap_completed"] ?? 0,
+      frictionTotal: frictionEvents.length,
+      frictionEvents,
+      eventsByName
+    };
+  }
+
   setTelemetrySink(sink?: TelemetrySink): void {
     this.telemetrySink = sink;
   }
 
   getTelemetrySink(): TelemetrySink | undefined {
     return this.telemetrySink;
+  }
+
+  async searchKnowledge(
+    query: string,
+    options: {
+      limit?: number;
+      relatedEntityKey?: string;
+      contextPolicyMode?: "off" | "advisory" | "enforced";
+      minRetrievalConfidence?: number;
+      minTotalScore?: number;
+      minLexicalScore?: number;
+      minTokenOverlapRatio?: number;
+    } = {}
+  ): Promise<Record<string, unknown>[]> {
+    const normalizedQuery = String(query ?? "").trim();
+    if (!normalizedQuery) {
+      return [];
+    }
+    const params: Record<string, string | number | boolean | null | undefined> = {
+      project_id: this.config.projectId,
+      q: normalizedQuery,
+      limit: normalizeInt(options.limit ?? 5, 1, 100)
+    };
+    if (options.relatedEntityKey) {
+      params.related_entity_key = options.relatedEntityKey;
+    }
+    if (options.contextPolicyMode) {
+      params.context_policy_mode = options.contextPolicyMode;
+    }
+    if (typeof options.minRetrievalConfidence === "number") {
+      params.min_retrieval_confidence = options.minRetrievalConfidence;
+    }
+    if (typeof options.minTotalScore === "number") {
+      params.min_total_score = options.minTotalScore;
+    }
+    if (typeof options.minLexicalScore === "number") {
+      params.min_lexical_score = options.minLexicalScore;
+    }
+    if (typeof options.minTokenOverlapRatio === "number") {
+      params.min_token_overlap_ratio = options.minTokenOverlapRatio;
+    }
+
+    const payload = await this.requestJson("/v1/mcp/retrieval/explain", {
+      method: "GET",
+      params
+    });
+    const rows = Array.isArray(payload.results)
+      ? payload.results
+      : Array.isArray(payload.ranked)
+        ? payload.ranked
+        : [];
+    return rows.filter((item): item is Record<string, unknown> => isPlainObject(item));
   }
 
   capture(
@@ -1549,17 +1645,81 @@ export class SynapseClient {
 }
 
 export class Synapse extends SynapseClient {
+  static fromEnv(
+    overrides: Partial<SynapseConfig> = {},
+    transport?: SynapseTransport
+  ): Synapse {
+    const envApiUrl = readProcessEnv("SYNAPSE_API_URL");
+    const envProjectId = readProcessEnv("SYNAPSE_PROJECT_ID");
+    const envApiKey = readProcessEnv("SYNAPSE_API_KEY");
+    const envDegradationMode = readProcessEnv("SYNAPSE_DEGRADATION_MODE");
+    const apiUrl = asOptionalString(overrides.apiUrl) ?? envApiUrl ?? "http://localhost:8080";
+    const projectId = asOptionalString(overrides.projectId) ?? envProjectId ?? inferProjectIdFromCwd();
+    const apiKey = asOptionalString(overrides.apiKey) ?? envApiKey;
+    const degradationMode = asOptionalString(overrides.degradationMode) ?? envDegradationMode ?? "buffer";
+    return new Synapse(
+      {
+        ...overrides,
+        apiUrl,
+        projectId,
+        apiKey,
+        degradationMode: degradationMode as DegradationMode
+      },
+      transport
+    );
+  }
+
   attach<T extends object>(target: T, options: AttachOptions = {}): T {
     const integration = options.integration ?? detectIntegration(target);
-    const resolvedBootstrapMemory = this.resolveAttachBootstrapMemory(target, integration, options);
-    this.bootstrapMemoryOnAttach(target, integration, resolvedBootstrapMemory, {
-      agentId: options.agentId,
-      sessionId: options.sessionId
+    const optionsWithDefaults = this.applyAttachDefaults(target, integration, options);
+    this.emitDebug("attach_started", {
+      integration,
+      target_type: getAttachTargetType(target),
+      auto_bootstrap_enabled: optionsWithDefaults.openclawAutoBootstrapEnabled,
+      openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null
     });
-    return this.monitor(target, {
-      ...options,
+    const resolvedBootstrapMemory = this.resolveAttachBootstrapMemory(target, integration, optionsWithDefaults);
+    this.bootstrapMemoryOnAttach(target, integration, resolvedBootstrapMemory, {
+      agentId: optionsWithDefaults.agentId,
+      sessionId: optionsWithDefaults.sessionId
+    });
+    const monitored = this.monitor(target, {
+      ...optionsWithDefaults,
       integration
     });
+    this.emitDebug("attach_completed", {
+      integration,
+      mode: "monitor",
+      bootstrap_requested: Boolean(resolvedBootstrapMemory),
+      openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null
+    });
+    return monitored;
+  }
+
+  private applyAttachDefaults<T extends object>(target: T, integration: string, options: AttachOptions): AttachOptions & {
+    openclawAutoBootstrapEnabled: boolean;
+  } {
+    const explicitPreset = asOptionalString(options.openclawBootstrapPreset);
+    const autoBootstrapDisabled = normalizeBooleanEnv(readProcessEnv("SYNAPSE_OPENCLAW_AUTO_BOOTSTRAP")) === false;
+    const autoBootstrapEnabled = integration === "openclaw" && looksLikeOpenClawRuntime(target) && !autoBootstrapDisabled;
+    if (!explicitPreset && autoBootstrapEnabled && !options.bootstrapMemory) {
+      const envPreset = asOptionalString(readProcessEnv("SYNAPSE_OPENCLAW_BOOTSTRAP_PRESET"));
+      const resolvedPreset = envPreset ?? "hybrid";
+      this.emitDebug("attach_openclaw_bootstrap_auto_enabled", {
+        integration,
+        preset: resolvedPreset,
+        source: envPreset ? "env" : "default"
+      });
+      return {
+        ...options,
+        openclawBootstrapPreset: resolvedPreset,
+        openclawAutoBootstrapEnabled: true
+      };
+    }
+    return {
+      ...options,
+      openclawAutoBootstrapEnabled: autoBootstrapEnabled
+    };
   }
 
   private resolveAttachBootstrapMemory(
@@ -1867,6 +2027,53 @@ function looksLikeOpenClawRuntime(target: unknown): boolean {
     typeof maybeRuntime?.on === "function" || typeof maybeRuntime?.register_hook === "function";
   const hasToolApi = typeof maybeRuntime?.register_tool === "function";
   return Boolean(hasHookApi && hasToolApi);
+}
+
+function getAttachTargetType(target: unknown): string {
+  if (target == null) {
+    return "null";
+  }
+  if (typeof target === "object" && (target as { constructor?: { name?: string } }).constructor?.name) {
+    return String((target as { constructor: { name: string } }).constructor.name);
+  }
+  return typeof target;
+}
+
+function readProcessEnv(key: string): string | undefined {
+  const globalProcess = globalThis as { process?: { env?: Record<string, string | undefined>; cwd?: () => string } };
+  const value = globalProcess.process?.env?.[key];
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed ? trimmed : undefined;
+}
+
+function normalizeBooleanEnv(value: string | undefined): boolean | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return undefined;
+}
+
+function inferProjectIdFromCwd(): string {
+  const globalProcess = globalThis as { process?: { cwd?: () => string } };
+  const cwdFn = globalProcess.process?.cwd;
+  if (typeof cwdFn !== "function") {
+    return "synapse_project";
+  }
+  const cwd = String(cwdFn() || "");
+  const segments = cwd.split(/[\\/]/).filter(Boolean);
+  const base = segments.length ? segments[segments.length - 1] : "synapse_project";
+  const normalized = base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "synapse_project";
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {

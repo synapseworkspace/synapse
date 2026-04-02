@@ -48,6 +48,7 @@ In Python SDK:
   - Attach-time historical memory bootstrap:
     - `Synapse.attach(..., bootstrap_memory=BootstrapMemoryOptions(...))`
     - `Synapse.attach(..., openclaw_bootstrap_preset="runtime_memory|event_log|hybrid")`
+    - Default `Synapse.attach(..., integration="openclaw")` auto-applies `hybrid` preset unless disabled.
     - Provider or record-list ingestion into `/v1/backfill/memory` before live monitoring.
 - MCP context helper:
   - `MCPContextHelper` for `search_knowledge` / `get_entity_facts` / `get_recent_changes` aggregation.

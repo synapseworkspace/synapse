@@ -84,6 +84,9 @@ const runtime = {
   register_tool() {}
 };
 
+process.env.SYNAPSE_API_URL = "http://localhost:8080";
+process.env.SYNAPSE_PROJECT_ID = "omega_env";
+
 const presets = listOpenClawBootstrapPresets();
 assert.ok(presets.some((item) => item.preset === "hybrid"), presets);
 const directRecords = collectOpenClawBootstrapRecords(runtime, { preset: "hybrid", maxRecords: 10 });
@@ -115,6 +118,8 @@ const transport = {
 };
 
 const synapse = new Synapse({ apiUrl: "http://localhost:8080", projectId: "omega_demo" }, transport);
+const envSynapse = Synapse.fromEnv({}, transport);
+assert.equal(envSynapse.projectId, "omega_env");
 synapse.setDebugMode({ enabled: true, maxRecords: 200 });
 synapse.attach(runtime, {
   integration: "openclaw",
@@ -128,6 +133,8 @@ assert.ok(transport.backfills.length >= 1, transport.backfills);
 const debugNames = new Set(synapse.getDebugRecords().map((item) => item.event));
 assert.ok(debugNames.has("attach_openclaw_bootstrap_preset_enabled"), debugNames);
 assert.ok(debugNames.has("attach_bootstrap_completed"), debugNames);
+const onboardingMetrics = synapse.getOnboardingMetrics(200);
+assert.ok((onboardingMetrics.attachEventsTotal ?? 0) >= 1, onboardingMetrics);
 console.log("ts openclaw bootstrap preset smoke ok");
 JS
 npm --prefix packages/synapse-openclaw-plugin install --silent
@@ -171,6 +178,7 @@ python3 -m venv /tmp/synapse-ci-venv
 source /tmp/synapse-ci-venv/bin/activate
 pip install -q requests mcp
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python - <<'PY'
+import os
 from synapse_sdk import (
     BootstrapMemoryOptions,
     EvidenceRef,
@@ -266,6 +274,17 @@ class MemoryTransport:
             self.task_links.setdefault(task_id, []).append(link)
             self.task_events.setdefault(task_id, []).append({"event_type": "link_added", "payload": payload})
             return {"status": "ok", "link": link}
+        if path == "/v1/mcp/retrieval/explain" and method == "GET":
+            query = str(params.get("q") or "").strip()
+            return {
+                "results": [
+                    {
+                        "statement_text": f"retrieved:{query}",
+                        "page": {"slug": "bc-omega", "entity_key": params.get("related_entity_key") or "bc_omega"},
+                    }
+                ],
+                "revision": "r-ci",
+            }
         return {}
 
 class Runner:
@@ -318,6 +337,11 @@ transport = MemoryTransport()
 client = Synapse(SynapseConfig(api_url='http://localhost:8080', project_id='p'), transport=transport)
 client.set_debug_mode(True, max_records=500)
 
+os.environ["SYNAPSE_API_URL"] = "http://localhost:8080"
+os.environ["SYNAPSE_PROJECT_ID"] = "p_env"
+from_env_client = Synapse.from_env(transport=transport)
+assert from_env_client.project_id == "p_env"
+
 monitored = client.monitor(Runner(), integration='generic', include_methods=['run'])
 out = monitored.run(1)
 assert out['ok'] == 2
@@ -357,6 +381,18 @@ connector.attach(runtime, hook_events=['tool:result'])
 runtime.handlers['tool:result']({'sessionKey': 's-1', 'result': 'ok'})
 runtime.tools['synapse_search_wiki'][0]('foo', limit=1)
 runtime.tools['synapse_propose_to_wiki'][0](entity_key='u1', category='ops', claim_text='hello', source_id='src-1')
+
+auto_runtime = Runtime()
+client.attach(
+    auto_runtime,
+    integration="openclaw",
+    openclaw_register_tools=True,
+    openclaw_bootstrap_preset=None,
+)
+assert "synapse_search_wiki" in auto_runtime.tools, auto_runtime.tools.keys()
+auto_search_rows = auto_runtime.tools["synapse_search_wiki"][0]("omega auto", limit=2, filters={"entity_key": "bc_omega"})
+assert isinstance(auto_search_rows, list) and auto_search_rows, auto_search_rows
+assert str(auto_search_rows[0].get("statement_text", "")).startswith("retrieved:"), auto_search_rows
 
 mcp_calls = []
 def fake_call_tool(name, arguments):
@@ -489,6 +525,11 @@ assert "attach_bootstrap_completed" in debug_event_names, f"missing attach_boots
 assert "attach_openclaw_bootstrap_preset_enabled" in debug_event_names, (
     f"missing attach_openclaw_bootstrap_preset_enabled in debug log: {debug_event_names}"
 )
+assert "attach_openclaw_search_auto_enabled" in debug_event_names, (
+    f"missing attach_openclaw_search_auto_enabled in debug log: {debug_event_names}"
+)
+onboarding_metrics = client.get_onboarding_metrics(limit=200)
+assert onboarding_metrics.get("attach_events_total", 0) >= 1, onboarding_metrics
 
 class FailingTransport:
     def __init__(self):

@@ -4,7 +4,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 import hashlib
 import inspect
+import os
 from contextvars import ContextVar, Token
+from pathlib import Path
+import re
 from threading import Lock
 from typing import Any, Callable, Protocol, Sequence
 from uuid import UUID, uuid4
@@ -95,6 +98,40 @@ class SynapseClient:
     def clear_debug_records(self) -> None:
         with self._debug_lock:
             self._debug_records.clear()
+
+    def get_onboarding_metrics(self, *, limit: int = 500) -> dict[str, Any]:
+        records = self.get_debug_records(limit=max(1, int(limit)))
+        attach_events: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        friction_events: list[str] = []
+        friction_prefixes = (
+            "attach_bootstrap_failed",
+            "attach_bootstrap_provider_failed",
+            "attach_bootstrap_skipped",
+            "attach_openclaw_bootstrap_preset_failed",
+            "attach_openclaw_bootstrap_preset_skipped",
+            "attach_openclaw_search_disabled",
+        )
+        for item in records:
+            event_name = str(item.get("event") or "")
+            if not event_name.startswith("attach_"):
+                continue
+            attach_events.append(item)
+            counts[event_name] = counts.get(event_name, 0) + 1
+            if event_name in friction_prefixes:
+                friction_events.append(event_name)
+
+        return {
+            "project_id": self._config.project_id,
+            "window": {"limit": max(1, int(limit)), "events_observed": len(records)},
+            "attach_events_total": len(attach_events),
+            "attach_started": counts.get("attach_started", 0),
+            "attach_completed": counts.get("attach_completed", 0),
+            "bootstrap_completed": counts.get("attach_bootstrap_completed", 0),
+            "friction_total": len(friction_events),
+            "friction_events": friction_events,
+            "events_by_name": counts,
+        }
 
     def capture(
         self,
@@ -515,6 +552,52 @@ class SynapseClient:
             },
             idempotency_key=idempotency_key or str(uuid4()),
         )
+
+    def search_knowledge(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        related_entity_key: str | None = None,
+        context_policy_mode: str | None = None,
+        min_retrieval_confidence: float | None = None,
+        min_total_score: float | None = None,
+        min_lexical_score: float | None = None,
+        min_token_overlap_ratio: float | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            return []
+
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "q": normalized_query,
+            "limit": max(1, min(100, int(limit))),
+        }
+        if related_entity_key:
+            params["related_entity_key"] = related_entity_key
+        if context_policy_mode:
+            params["context_policy_mode"] = context_policy_mode
+        if min_retrieval_confidence is not None:
+            params["min_retrieval_confidence"] = min_retrieval_confidence
+        if min_total_score is not None:
+            params["min_total_score"] = min_total_score
+        if min_lexical_score is not None:
+            params["min_lexical_score"] = min_lexical_score
+        if min_token_overlap_ratio is not None:
+            params["min_token_overlap_ratio"] = min_token_overlap_ratio
+
+        response = self._request_json("/v1/mcp/retrieval/explain", method="GET", params=params)
+        rows = response.get("results")
+        if not isinstance(rows, list):
+            rows = response.get("ranked")
+        if not isinstance(rows, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, dict):
+                out.append(dict(row))
+        return out
 
     def monitor(
         self,
@@ -1387,6 +1470,42 @@ class SynapseClient:
 class Synapse(SynapseClient):
     """High-level developer-first facade over SynapseClient."""
 
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        api_url: str | None = None,
+        project_id: str | None = None,
+        api_key: str | None = None,
+        degradation_mode: str | None = None,
+        transport: Transport | None = None,
+    ) -> "Synapse":
+        resolved_api_url = _coerce_str_or_none(api_url) or _coerce_str_or_none(os.getenv("SYNAPSE_API_URL"))
+        if resolved_api_url is None:
+            resolved_api_url = "http://localhost:8080"
+
+        resolved_project_id = _coerce_str_or_none(project_id) or _coerce_str_or_none(os.getenv("SYNAPSE_PROJECT_ID"))
+        if resolved_project_id is None:
+            resolved_project_id = _infer_project_id_from_cwd()
+
+        resolved_api_key = _coerce_str_or_none(api_key)
+        if resolved_api_key is None:
+            resolved_api_key = _coerce_str_or_none(os.getenv("SYNAPSE_API_KEY"))
+
+        resolved_degradation_mode = _coerce_str_or_none(degradation_mode)
+        if resolved_degradation_mode is None:
+            resolved_degradation_mode = _coerce_str_or_none(os.getenv("SYNAPSE_DEGRADATION_MODE")) or "buffer"
+
+        return cls(
+            SynapseConfig(
+                api_url=resolved_api_url,
+                project_id=resolved_project_id,
+                api_key=resolved_api_key,
+                degradation_mode=resolved_degradation_mode,  # type: ignore[arg-type]
+            ),
+            transport=transport,
+        )
+
     def attach(
         self,
         target: Any,
@@ -1412,16 +1531,48 @@ class Synapse(SynapseClient):
         openclaw_bootstrap_created_by: str | None = "sdk_attach",
         openclaw_bootstrap_cursor: str | None = None,
         openclaw_bootstrap_chunk_size: int = 100,
+        openclaw_auto_bootstrap: bool = True,
     ) -> Any:
         resolved_integration = integration or self._detect_integration(target)
+        self._emit_debug(
+            "attach_started",
+            {
+                "integration": resolved_integration,
+                "target_type": type(target).__name__,
+                "auto_bootstrap_enabled": bool(openclaw_auto_bootstrap),
+            },
+        )
         resolved_bootstrap_memory = bootstrap_memory
-        if openclaw_bootstrap_preset is not None:
+        resolved_openclaw_bootstrap_preset = openclaw_bootstrap_preset
+        if (
+            resolved_openclaw_bootstrap_preset is None
+            and openclaw_auto_bootstrap
+            and bootstrap_memory is None
+            and resolved_integration == "openclaw"
+            and self._looks_like_openclaw_runtime(target)
+        ):
+            resolved_openclaw_bootstrap_preset = (
+                _coerce_str_or_none(os.getenv("SYNAPSE_OPENCLAW_BOOTSTRAP_PRESET")) or "hybrid"
+            )
+            self._emit_debug(
+                "attach_openclaw_bootstrap_auto_enabled",
+                {
+                    "integration": resolved_integration,
+                    "preset": resolved_openclaw_bootstrap_preset,
+                    "source": (
+                        "env"
+                        if _coerce_str_or_none(os.getenv("SYNAPSE_OPENCLAW_BOOTSTRAP_PRESET")) is not None
+                        else "default"
+                    ),
+                },
+            )
+        if resolved_openclaw_bootstrap_preset is not None:
             if bootstrap_memory is not None:
                 self._emit_debug(
                     "attach_openclaw_bootstrap_preset_ignored",
                     {
                         "integration": resolved_integration,
-                        "preset": openclaw_bootstrap_preset,
+                        "preset": resolved_openclaw_bootstrap_preset,
                         "reason": "bootstrap_memory_provided",
                     },
                 )
@@ -1429,7 +1580,7 @@ class Synapse(SynapseClient):
                 from synapse_sdk.integrations.openclaw import build_openclaw_bootstrap_options
 
                 resolved_bootstrap_memory = build_openclaw_bootstrap_options(
-                    preset=openclaw_bootstrap_preset,
+                    preset=resolved_openclaw_bootstrap_preset,
                     max_records=openclaw_bootstrap_max_records,
                     source_system=openclaw_bootstrap_source_system,
                     created_by=openclaw_bootstrap_created_by,
@@ -1440,7 +1591,7 @@ class Synapse(SynapseClient):
                     "attach_openclaw_bootstrap_preset_enabled",
                     {
                         "integration": resolved_integration,
-                        "preset": openclaw_bootstrap_preset,
+                        "preset": resolved_openclaw_bootstrap_preset,
                         "source_system": resolved_bootstrap_memory.source_system,
                         "max_records": resolved_bootstrap_memory.max_records,
                         "chunk_size": resolved_bootstrap_memory.chunk_size,
@@ -1451,7 +1602,7 @@ class Synapse(SynapseClient):
                     "attach_openclaw_bootstrap_preset_skipped",
                     {
                         "integration": resolved_integration,
-                        "preset": openclaw_bootstrap_preset,
+                        "preset": resolved_openclaw_bootstrap_preset,
                         "reason": "target_is_not_openclaw_runtime",
                     },
                 )
@@ -1477,8 +1628,22 @@ class Synapse(SynapseClient):
                 register_tools=openclaw_register_tools,
                 tool_prefix=openclaw_tool_prefix,
             )
+            self._emit_debug(
+                "attach_completed",
+                {
+                    "integration": resolved_integration,
+                    "mode": "openclaw_connector",
+                    "registered_tools": list(connector.last_registered_tools),
+                    "bootstrap_requested": resolved_bootstrap_memory is not None,
+                    "search_mode": (
+                        "callback"
+                        if openclaw_search_knowledge is not None
+                        else ("auto" if connector.auto_search_enabled else "disabled")
+                    ),
+                },
+            )
             return target
-        return self.monitor(
+        monitored = self.monitor(
             target,
             integration=resolved_integration,
             include_methods=include_methods,
@@ -1491,6 +1656,15 @@ class Synapse(SynapseClient):
             capture_stream_items=capture_stream_items,
             max_stream_items=max_stream_items,
         )
+        self._emit_debug(
+            "attach_completed",
+            {
+                "integration": resolved_integration,
+                "mode": "monitor",
+                "bootstrap_requested": resolved_bootstrap_memory is not None,
+            },
+        )
+        return monitored
 
     def _detect_integration(self, target: Any) -> str:
         if self._looks_like_openclaw_runtime(target):
@@ -1706,3 +1880,9 @@ def _coerce_str_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def _infer_project_id_from_cwd() -> str:
+    raw = Path.cwd().name
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", raw).strip("_").lower()
+    return normalized or "synapse_project"

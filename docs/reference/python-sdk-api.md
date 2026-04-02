@@ -43,6 +43,7 @@ Canonical entrypoint: `from synapse_sdk import ...`
 | `OPENCLAW_BOOTSTRAP_PRESETS` | `synapse_sdk.integrations` |
 | `build_openclaw_bootstrap_options` | `synapse_sdk.integrations` |
 | `list_openclaw_bootstrap_presets` | `synapse_sdk.integrations` |
+| `from_env` | `synapse_sdk` |
 
 ## Notes
 

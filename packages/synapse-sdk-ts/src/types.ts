@@ -85,6 +85,21 @@ export interface MonitorOptions {
 
 export type AttachOptions = MonitorOptions;
 
+export interface OnboardingMetrics {
+  projectId: string;
+  window: {
+    limit: number;
+    eventsObserved: number;
+  };
+  attachEventsTotal: number;
+  attachStarted: number;
+  attachCompleted: number;
+  bootstrapCompleted: number;
+  frictionTotal: number;
+  frictionEvents: string[];
+  eventsByName: Record<string, number>;
+}
+
 export interface InsightContext {
   functionName: string;
   integration: string;

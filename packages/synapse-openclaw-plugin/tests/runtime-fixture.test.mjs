@@ -65,6 +65,16 @@ class ClientFixture {
     this.claims.push(claim);
   }
 
+  async searchKnowledge(query, options = {}) {
+    return [
+      {
+        statement_text: `auto:${query}`,
+        page: { slug: "bc-omega" },
+        related_entity_key: options.relatedEntityKey ?? null
+      }
+    ];
+  }
+
   async listTasks(options = {}) {
     return [
       {
@@ -172,4 +182,23 @@ test("plugin skips task tools without task API support", () => {
   assert.equal(runtime.tools.has("synapse_propose_to_wiki"), true);
   assert.equal(runtime.tools.has("synapse_get_open_tasks"), false);
   assert.equal(runtime.tools.has("synapse_update_task_status"), false);
+});
+
+test("plugin uses client.searchKnowledge fallback when callback is not provided", async () => {
+  const runtime = new RuntimeFixture();
+  const client = new ClientFixture();
+  const plugin = createSynapseOpenClawPlugin(client, {
+    defaultAgentId: "fallback_agent"
+  });
+
+  plugin.attach(runtime);
+  assert.equal(runtime.tools.has("synapse_search_wiki"), true);
+
+  const searchResult = await runtime.callTool("synapse_search_wiki", {
+    query: "omega gate",
+    limit: 2,
+    filters: { entity_key: "bc_omega" }
+  });
+  assert.equal(Array.isArray(searchResult), true);
+  assert.equal(searchResult[0].statement_text, "auto:omega gate");
 });

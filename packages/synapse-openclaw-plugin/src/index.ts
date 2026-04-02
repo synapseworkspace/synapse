@@ -52,6 +52,18 @@ export interface SynapseLikeClient {
   projectId: string;
   capture(event: SynapseCaptureInput): void;
   proposeFact(claim: SynapseDraftClaim): Promise<void> | void;
+  searchKnowledge?: (
+    query: string,
+    options?: {
+      limit?: number;
+      relatedEntityKey?: string;
+      contextPolicyMode?: "off" | "advisory" | "enforced";
+      minRetrievalConfidence?: number;
+      minTotalScore?: number;
+      minLexicalScore?: number;
+      minTokenOverlapRatio?: number;
+    }
+  ) => Promise<Array<Record<string, unknown>>> | Array<Record<string, unknown>>;
   listTasks?: (options?: {
     limit?: number;
     assignee?: string;
@@ -161,7 +173,7 @@ export class SynapseOpenClawPlugin {
     const registerTool = this.resolveToolRegistrar(runtime);
     const toolPrefix = options.toolPrefix ?? "synapse";
 
-    if (this.options.searchKnowledge) {
+    if (this.options.searchKnowledge || typeof this.client.searchKnowledge === "function") {
       registerTool(
         `${toolPrefix}_search_wiki`,
         (...args: unknown[]) => this.searchWiki(this.normalizeSearchArgs(args)),
@@ -193,10 +205,23 @@ export class SynapseOpenClawPlugin {
   }
 
   async searchWiki(input: SearchToolArgs): Promise<unknown> {
-    if (!this.options.searchKnowledge) {
+    if (!this.options.searchKnowledge && typeof this.client.searchKnowledge !== "function") {
       throw new Error("SynapseOpenClawPlugin.searchKnowledge callback is not configured.");
     }
-    const result = await Promise.resolve(this.options.searchKnowledge(input.query, input.limit, input.filters));
+    let result: unknown;
+    if (this.options.searchKnowledge) {
+      result = await Promise.resolve(this.options.searchKnowledge(input.query, input.limit, input.filters));
+    } else {
+      result = await Promise.resolve(
+        this.client.searchKnowledge!(
+          input.query,
+          {
+            limit: input.limit,
+            relatedEntityKey: asOptionalString(input.filters.entity_key)
+          }
+        )
+      );
+    }
     this.client.capture({
       event_type: "tool_result",
       payload: {

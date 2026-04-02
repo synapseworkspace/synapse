@@ -85,6 +85,7 @@ __all__ = [
     "OPENCLAW_BOOTSTRAP_PRESETS",
     "build_openclaw_bootstrap_options",
     "list_openclaw_bootstrap_presets",
+    "from_env",
 ]
 
 
@@ -95,3 +96,7 @@ def init(config: SynapseConfig) -> Synapse:
         stacklevel=2,
     )
     return Synapse(config)
+
+
+def from_env(**kwargs: object) -> Synapse:
+    return Synapse.from_env(**kwargs)

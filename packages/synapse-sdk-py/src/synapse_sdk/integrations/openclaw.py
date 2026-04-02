@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import hmac
@@ -46,6 +46,9 @@ class OpenClawConnector:
     default_session_id: str | None = None
     provenance_secret: str | None = None
     provenance_key_id: str | None = None
+    enable_default_search: bool = True
+    last_registered_tools: tuple[str, ...] = field(default_factory=tuple, init=False)
+    auto_search_enabled: bool = field(default=False, init=False)
 
     def attach(
         self,
@@ -56,40 +59,59 @@ class OpenClawConnector:
         tool_prefix: str = "synapse",
     ) -> None:
         self._attach_hooks(runtime, hook_events=hook_events)
+        self.last_registered_tools = tuple()
+        self.auto_search_enabled = False
         if register_tools:
-            self.register_tools(runtime, tool_prefix=tool_prefix)
+            tools = self.register_tools(runtime, tool_prefix=tool_prefix)
+            self.last_registered_tools = tuple(tools)
 
-    def register_tools(self, runtime: Any, *, tool_prefix: str = "synapse") -> None:
+    def register_tools(self, runtime: Any, *, tool_prefix: str = "synapse") -> list[str]:
         register_tool = self._resolve_tool_registrar(runtime)
-        if self.search_knowledge is not None:
+        registered: list[str] = []
+        resolver = self._resolve_search_knowledge()
+        if resolver is not None:
             register_tool(
                 f"{tool_prefix}_search_wiki",
                 self.search_wiki,
                 "Search approved Synapse knowledge for the current task.",
+            )
+            registered.append(f"{tool_prefix}_search_wiki")
+        else:
+            self._emit_debug(
+                "attach_openclaw_search_disabled",
+                {
+                    "reason": "missing_callback_and_auto_search",
+                    "tool": f"{tool_prefix}_search_wiki",
+                },
             )
         register_tool(
             f"{tool_prefix}_propose_to_wiki",
             self.propose_to_wiki,
             "Propose a new fact to Synapse for human review.",
         )
+        registered.append(f"{tool_prefix}_propose_to_wiki")
         if self._can_list_tasks():
             register_tool(
                 f"{tool_prefix}_get_open_tasks",
                 self.get_open_tasks,
                 "List active Synapse tasks relevant for the current operation.",
             )
+            registered.append(f"{tool_prefix}_get_open_tasks")
         if self._can_update_task_status():
             register_tool(
                 f"{tool_prefix}_update_task_status",
                 self.set_task_status,
                 "Update Synapse task status after execution progress.",
             )
+            registered.append(f"{tool_prefix}_update_task_status")
+        return registered
 
     def search_wiki(self, query: str, *, limit: int = 5, filters: dict[str, Any] | None = None) -> Any:
-        if self.search_knowledge is None:
+        resolver = self._resolve_search_knowledge()
+        if resolver is None:
             raise RuntimeError("OpenClawConnector.search_knowledge callback is not configured.")
 
-        result = self.search_knowledge(query=query, limit=limit, filters=filters or {})
+        result = resolver(query=query, limit=limit, filters=filters or {})
         self.client.capture(
             event_type="tool_result",
             payload={
@@ -105,6 +127,33 @@ class OpenClawConnector:
             tags=["integration:openclaw", "tool:search_wiki"],
         )
         return result
+
+    def _resolve_search_knowledge(self) -> Callable[..., Any] | None:
+        if self.search_knowledge is not None:
+            self.auto_search_enabled = False
+            return self.search_knowledge
+        if not self.enable_default_search:
+            self.auto_search_enabled = False
+            return None
+        client_search = getattr(self.client, "search_knowledge", None)
+        if not callable(client_search):
+            self.auto_search_enabled = False
+            return None
+
+        if not self.auto_search_enabled:
+            self._emit_debug(
+                "attach_openclaw_search_auto_enabled",
+                {
+                    "mode": "sdk_search_knowledge_api",
+                },
+            )
+        self.auto_search_enabled = True
+
+        def _resolver(*, query: str, limit: int, filters: dict[str, Any]) -> Any:
+            related_entity_key = _coerce_optional_str(filters.get("entity_key")) if isinstance(filters, dict) else None
+            return client_search(query, limit=limit, related_entity_key=related_entity_key)
+
+        return _resolver
 
     def propose_to_wiki(
         self,
@@ -241,6 +290,15 @@ class OpenClawConnector:
 
     def _can_update_task_status(self) -> bool:
         return self.update_task_status is not None or self._transport_supports_task_api()
+
+    def _emit_debug(self, event: str, details: dict[str, Any]) -> None:
+        emitter = getattr(self.client, "_emit_debug", None)
+        if not callable(emitter):
+            return
+        try:
+            emitter(event, details)
+        except Exception:
+            return
 
     def _attach_hooks(self, runtime: Any, *, hook_events: Sequence[str]) -> None:
         register_hook = self._resolve_hook_registrar(runtime)

@@ -33,6 +33,7 @@ Exports:
 - `OTelSpanLike`
 - `OTelTracerLike`
 - `ObservationEvent`
+- `OnboardingMetrics`
 - `OpenClawBootstrapPreset`
 - `RequestOptions`
 - `RetryPolicyConfig`

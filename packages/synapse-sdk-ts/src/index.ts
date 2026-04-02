@@ -12,3 +12,7 @@ export * from "./transports/http.js";
 export function init(config: SynapseConfig): Synapse {
   return new Synapse(config);
 }
+
+export function fromEnv(overrides: Partial<SynapseConfig> = {}): Synapse {
+  return Synapse.fromEnv(overrides);
+}

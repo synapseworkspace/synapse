@@ -60,21 +60,12 @@ pip install synapse-sdk
 Connect Synapse to OpenClaw:
 
 ```python
-from synapse_sdk import Synapse, SynapseConfig
-from synapse_sdk.integrations.openclaw import OpenClawConnector
+from synapse_sdk import Synapse
 
-synapse = Synapse(
-    SynapseConfig(
-        api_url="http://localhost:8080",
-        project_id="water_delivery_logistics",
-    )
-)
-
-connector = OpenClawConnector(
-    synapse,
-    search_knowledge=lambda query, limit, filters: my_knowledge_search(query, limit, filters),
-)
-connector.attach(openclaw_runtime)
+# Reads SYNAPSE_API_URL / SYNAPSE_PROJECT_ID / SYNAPSE_API_KEY.
+# Falls back to http://localhost:8080 and current directory-derived project id.
+synapse = Synapse.from_env()
+synapse.attach(openclaw_runtime, integration="openclaw")
 ```
 
 Your runtime gets OpenClaw tools:
@@ -82,6 +73,16 @@ Your runtime gets OpenClaw tools:
 - `synapse_propose_to_wiki`
 - `synapse_get_open_tasks`
 - `synapse_update_task_status`
+
+Optional: pass a custom search callback if you want to override SDK default retrieval:
+
+```python
+synapse.attach(
+    openclaw_runtime,
+    integration="openclaw",
+    openclaw_search_knowledge=lambda query, limit, filters: my_knowledge_search(query, limit, filters),
+)
+```
 
 Canonical 5-minute path:
 - [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)

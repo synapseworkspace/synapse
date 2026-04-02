@@ -25,22 +25,11 @@ pip install -e packages/synapse-sdk-py
 ## 2. Attach Synapse To OpenClaw
 
 ```python
-from synapse_sdk import Synapse, SynapseConfig
-from synapse_sdk.integrations.openclaw import OpenClawConnector
+from synapse_sdk import Synapse
 
-synapse = Synapse(
-    SynapseConfig(
-        api_url="http://localhost:8080",
-        project_id="omega_demo",
-    )
-)
-
-connector = OpenClawConnector(
-    synapse,
-    search_knowledge=lambda query, limit, filters: [],
-)
-
-connector.attach(openclaw_runtime)
+# Reads SYNAPSE_API_URL / SYNAPSE_PROJECT_ID / SYNAPSE_API_KEY.
+synapse = Synapse.from_env()
+synapse.attach(openclaw_runtime, integration="openclaw")
 ```
 
 Registered runtime tools:
@@ -49,15 +38,27 @@ Registered runtime tools:
 - `synapse_get_open_tasks`
 - `synapse_update_task_status`
 
-## 3. Day-0 Bootstrap Existing Runtime Memory
-
-Use attach preset:
+Optional search override:
 
 ```python
 synapse.attach(
     openclaw_runtime,
     integration="openclaw",
-    openclaw_bootstrap_preset="hybrid",
+    openclaw_search_knowledge=lambda query, limit, filters: my_custom_search(query, limit, filters),
+)
+```
+
+## 3. Day-0 Bootstrap Existing Runtime Memory
+
+Default behavior: OpenClaw attach auto-enables `hybrid` bootstrap preset.
+
+To override:
+
+```python
+synapse.attach(
+    openclaw_runtime,
+    integration="openclaw",
+    openclaw_bootstrap_preset="runtime_memory",  # runtime_memory | event_log | hybrid
     openclaw_bootstrap_max_records=2000,
 )
 ```
