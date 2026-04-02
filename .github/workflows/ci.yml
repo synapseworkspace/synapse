@@ -77,7 +77,7 @@ jobs:
         run: ./scripts/run_selfhost_dr_ci_acceptance.sh --report-file artifacts/selfhost-dr/report.json
 
       - name: Upload DR drill report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: selfhost-dr-report
           path: artifacts/selfhost-dr/report.json
