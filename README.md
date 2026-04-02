@@ -83,6 +83,9 @@ Your runtime gets OpenClaw tools:
 - `synapse_get_open_tasks`
 - `synapse_update_task_status`
 
+Canonical 5-minute path:
+- [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
+
 TypeScript OpenClaw plugin package: `@synapse/openclaw-plugin`  
 Source path: [packages/synapse-openclaw-plugin](packages/synapse-openclaw-plugin)
 
@@ -147,10 +150,13 @@ export VITE_SYNAPSE_UI_PROFILE=core-only
 
 ## Docs
 
+- Agentic Wiki overview: [docs/agentic-wiki-overview.md](docs/agentic-wiki-overview.md)
 - Getting started: [docs/getting-started.md](docs/getting-started.md)
+- OpenClaw 5-minute quickstart: [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
 - OpenClaw integration: [docs/openclaw-integration.md](docs/openclaw-integration.md)
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
 - MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
+- Core vs enterprise scope: [docs/core-vs-enterprise.md](docs/core-vs-enterprise.md)
 - Legacy import and sync: [docs/legacy-import.md](docs/legacy-import.md), [docs/legacy-sync-orchestration.md](docs/legacy-sync-orchestration.md)
 - Tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - SDK API reference: [docs/reference/README.md](docs/reference/README.md)

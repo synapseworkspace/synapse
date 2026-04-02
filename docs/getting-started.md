@@ -39,7 +39,7 @@ synapse-cli verify core-loop --project-id omega_demo --json
 1. **I want proof the core loop works (recommended):** run clean self-hosted acceptance.
 2. **I want a local UI to review drafts:** run self-hosted stack + web app.
 3. **I only want SDK examples without infra:** run cookbook demos (offline transport).
-4. **I want OpenClaw day-0 onboarding:** run onboarding kit (runtime template + seed memory).
+4. **I want OpenClaw day-0 onboarding:** follow canonical 5-minute OpenClaw path.
 
 ## Path 1: Core Loop Proof (Recommended)
 
@@ -100,7 +100,12 @@ python3 /Users/maksimborisov/synapse/demos/cookbook/openclaw_playbook_sync.py
 More options:
 - `/Users/maksimborisov/synapse/demos/cookbook/README.md`
 
-## Path 4: OpenClaw Day-0 Onboarding
+## Path 4: OpenClaw Day-0 Onboarding (Canonical)
+
+Start here:
+- `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+
+If you want repo-local demo fixtures (runtime template + seed dataset), run:
 
 ```bash
 python3 -m venv /tmp/synapse-onboarding-venv
@@ -111,6 +116,7 @@ python3 /Users/maksimborisov/synapse/demos/openclaw_onboarding/run_onboarding_de
 ```
 
 Guide:
+- `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
 - `/Users/maksimborisov/synapse/demos/openclaw_onboarding/README.md`
 - `/Users/maksimborisov/synapse/docs/tutorials/04-openclaw-onboarding-kit.md`
 

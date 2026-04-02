@@ -1,5 +1,7 @@
 # OpenClaw Onboarding Kit (5 Minutes)
 
+Canonical onboarding path: `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+
 Production-like local starter for Synapse x OpenClaw integration:
 - runtime connector template (`runtime_template.py`);
 - seed dataset for day-0 memory bootstrap (`dataset/openclaw_seed_memory.jsonl`);

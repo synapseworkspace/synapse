@@ -1,5 +1,8 @@
 # Tutorial: OpenClaw Onboarding Kit (5 Minutes)
 
+Canonical quickstart for users:
+- `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+
 Goal: connect existing OpenClaw runtime to Synapse with minimal code and seed day-0 wiki drafts from historical memory.
 
 ## 1. Run the local onboarding scenario

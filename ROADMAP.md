@@ -298,16 +298,17 @@ Progress:
 - [x] Reworked root README around Agentic Wiki narrative + dedicated OpenClaw section and quickstart.
 - [x] Added branded visual assets (`assets/synapse-logo.svg`, `assets/synapse-hero.svg`) and refined hero copy.
 - [x] Introduced web `core-only` profile lock via `VITE_SYNAPSE_UI_PROFILE` (`core`, `core-only`, `wiki-core` aliases) to hide advanced mode/expert toggles for first-value deployments.
-- [ ] Add explicit product/value one-pager in `docs/` for investors + technical buyers (problem, solution, moat, adoption path).
-- [ ] Add focused OpenClaw “5-minute” copy path parity across root README, docs, and demos (single narrative, no drift).
-- [ ] Add OSS "Core vs Enterprise" table in README/docs to reduce scope ambiguity.
+- [x] Added explicit product/value one-pager in `docs/` for investors + technical buyers (`docs/agentic-wiki-overview.md`).
+- [x] Added focused OpenClaw “5-minute” copy path parity across root README, docs, and demos with canonical entrypoint (`docs/openclaw-quickstart-5-min.md`).
+- [x] Added OSS "Core vs Enterprise" scope matrix in docs (`docs/core-vs-enterprise.md`) and linked it from root README.
+- [x] Verified core-only UX behavior with focused e2e run under profile lock (`CI=1 VITE_SYNAPSE_UI_PROFILE=core-only npx playwright test --grep "task tracker lifecycle flow"`).
 
 ## Next Up (Execution Queue)
 
-1. Finalize `docs/agentic-wiki-overview.md` (problem -> solution -> how it works -> why now) and link from README.
-2. Add OpenClaw-focused 5-minute quickstart section with single canonical path and copy-paste commands.
-3. Add "Core vs Enterprise" capability matrix to root docs to set expectations for OSS adopters.
-4. Keep UI core-first by default: verify advanced controls are hidden when `VITE_SYNAPSE_UI_PROFILE=core-only` across local + e2e harness.
+1. Collapse legacy duplicate onboarding docs into a single canonical OpenClaw path and add redirects/notices where needed.
+2. Tighten SDK "plug-and-play" defaults for zero-config attach (`synapse.attach(...)`) and capture onboarding friction metrics.
+3. Expand OpenClaw + LangGraph cookbook parity examples with the same Agentic Wiki narrative structure.
+4. Add lightweight wiki UI theming polish pass (Confluence-like information density, typography, and navigation affordances) without reintroducing advanced-mode clutter.
 
 ## Risks to Watch
 
@@ -323,6 +324,7 @@ Progress:
 ## Recent Updates
 
 - 2026-04-02: Shifted product messaging to Agentic Wiki + OpenClaw-first narrative in root README, added dedicated OpenClaw quickstart/value block, updated hero brand assets, and introduced web core-only profile lock (`VITE_SYNAPSE_UI_PROFILE`) to keep first-run UX focused on core moderation loop.
+- 2026-04-02: Completed M10 docs and UX validation pass: added `docs/agentic-wiki-overview.md`, `docs/openclaw-quickstart-5-min.md`, and `docs/core-vs-enterprise.md`; linked canonical docs from README/getting-started/demos/tutorials; and validated `core-only` UI profile behavior with Playwright under `VITE_SYNAPSE_UI_PROFILE=core-only`.
 - 2026-04-02: Completed repo-target alignment pass for public launch: switched OSS metadata and links from template org to `synapseworkspace/synapse` (PyPI/npm package URLs, web docs link base, observability runbook URLs, CODEOWNERS owner), added publish-hygiene override env vars (`SYNAPSE_EXPECTED_REPO`, `SYNAPSE_EXPECTED_ISSUES`), and documented exact GitHub repository creation fields + post-create settings in OSS publish checklist.
 - 2026-04-02: Completed final pre-publish hardening pass: added GitHub ownership/dependency/security automation baseline (`CODEOWNERS`, `dependabot`, `codeql`, `secret-scan`) and introduced repository hygiene CI guard (`check_repo_hygiene.py`) to block tracked local artifacts (`.venv`, `node_modules`, `.env*`), with docs/release checklist updates.
 - 2026-04-02: Completed OSS publication hardening pass: added governance docs (`MAINTAINERS.md`, `SUPPORT.md`, `DEPRECATION_POLICY.md`), shipped generated SDK API reference baseline (`docs/reference/*`) with CI freshness check (`scripts/generate_sdk_api_reference.py --check`), and introduced dedicated runtime compatibility matrix workflow (`.github/workflows/compat-matrix.yml`) for Python SDK (`3.10-3.13`) and Node SDK/plugin (`18/20/22`) smoke coverage.
