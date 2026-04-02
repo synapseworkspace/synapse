@@ -558,6 +558,13 @@ const CORE_WALKTHROUGH_DOC_LINKS = [
 
 type UiMode = "core" | "advanced";
 
+const UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
+  .trim()
+  .toLowerCase();
+const CORE_ONLY_UI_PROFILES = new Set(["core", "core-only", "core_only", "wiki-core", "wiki_core"]);
+const IS_CORE_ONLY_PROFILE = CORE_ONLY_UI_PROFILES.has(UI_PROFILE);
+const CAN_ACCESS_ADVANCED_MODE = !IS_CORE_ONLY_PROFILE;
+
 function fmtDate(value: string | null | undefined): string {
   if (!value) {
     return "—";
@@ -928,7 +935,8 @@ export default function App() {
   const [detailTab, setDetailTab] = useState<DetailTab>("semantic");
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
   const [selectedTocSectionKey, setSelectedTocSectionKey] = useState<string | null>(null);
-  const showExpertModerationControls = uiMode === "advanced" || coreExpertControls;
+  const effectiveUiMode: UiMode = CAN_ACCESS_ADVANCED_MODE ? uiMode : "core";
+  const showExpertModerationControls = effectiveUiMode === "advanced" || (CAN_ACCESS_ADVANCED_MODE && coreExpertControls);
 
   const pageNodes = useMemo<WikiPageNode[]>(() => {
     const map = new Map<string, WikiPageNode>();
@@ -1058,7 +1066,7 @@ export default function App() {
 
   const visibleDrafts = useMemo(() => {
     const activeQueuePreset: ReviewQueuePresetKey =
-      uiMode === "advanced" || coreExpertControls ? reviewQueuePreset : "open_queue";
+      effectiveUiMode === "advanced" || (CAN_ACCESS_ADVANCED_MODE && coreExpertControls) ? reviewQueuePreset : "open_queue";
     const nowMs = Date.now();
     let next = [...scopedDrafts];
     switch (activeQueuePreset) {
@@ -1095,7 +1103,7 @@ export default function App() {
         break;
     }
     return next;
-  }, [coreExpertControls, reviewQueuePreset, reviewSlaHours, scopedDrafts, uiMode]);
+  }, [coreExpertControls, effectiveUiMode, reviewQueuePreset, reviewSlaHours, scopedDrafts]);
 
   const selectedIndex = useMemo(
     () => (selectedDraftId ? visibleDrafts.findIndex((item) => item.id === selectedDraftId) : -1),
@@ -1141,10 +1149,10 @@ export default function App() {
       if (parsed.apiUrl) setApiUrl(parsed.apiUrl);
       if (parsed.projectId) setProjectId(parsed.projectId);
       if (parsed.reviewer) setReviewer(parsed.reviewer);
-      if (parsed.uiMode === "core" || parsed.uiMode === "advanced") {
+      if (CAN_ACCESS_ADVANCED_MODE && (parsed.uiMode === "core" || parsed.uiMode === "advanced")) {
         setUiMode(parsed.uiMode);
       }
-      if (typeof parsed.coreExpertControls === "boolean") {
+      if (CAN_ACCESS_ADVANCED_MODE && typeof parsed.coreExpertControls === "boolean") {
         setCoreExpertControls(parsed.coreExpertControls);
       }
       if (typeof parsed.status === "string" || parsed.status === null) setStatus(parsed.status);
@@ -1185,14 +1193,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!CAN_ACCESS_ADVANCED_MODE) {
+      if (uiMode !== "core") {
+        setUiMode("core");
+      }
+      if (coreExpertControls) {
+        setCoreExpertControls(false);
+      }
+    }
+  }, [coreExpertControls, uiMode]);
+
+  useEffect(() => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         apiUrl,
         projectId,
         reviewer,
-        uiMode,
-        coreExpertControls,
+        uiMode: effectiveUiMode,
+        coreExpertControls: CAN_ACCESS_ADVANCED_MODE ? coreExpertControls : false,
         status,
         selectedSpaceKey,
         openPagesOnly,
@@ -1218,7 +1237,7 @@ export default function App() {
     selectedSpaceKey,
     selectedViewId,
     status,
-    uiMode,
+    effectiveUiMode,
   ]);
 
   const loadModerationThroughput = useCallback(async () => {
@@ -2511,7 +2530,7 @@ export default function App() {
   const selectedSpaceTitle = selectedSpaceNode?.title || "All spaces";
   const selectedPageTitle = selectedPageNode?.title || selectedPageSlug || "All pages";
   const effectiveQueuePreset: ReviewQueuePresetKey = showExpertModerationControls ? reviewQueuePreset : "open_queue";
-  const isCoreSimplified = uiMode === "core" && !coreExpertControls;
+  const isCoreSimplified = effectiveUiMode === "core" && (!CAN_ACCESS_ADVANCED_MODE || !coreExpertControls);
   const selectedQueuePreset = useMemo(
     () => REVIEW_QUEUE_PRESETS.find((item) => item.key === effectiveQueuePreset) || REVIEW_QUEUE_PRESETS[0],
     [effectiveQueuePreset],
@@ -2676,7 +2695,7 @@ export default function App() {
         </Paper>
 
         <Paper radius="xl" p="lg">
-          <SimpleGrid cols={{ base: 1, md: 2, lg: uiMode === "advanced" ? 5 : 4 }} spacing="md">
+          <SimpleGrid cols={{ base: 1, md: 2, lg: effectiveUiMode === "advanced" ? 5 : 4 }} spacing="md">
             <TextInput
               label="API URL"
               value={apiUrl}
@@ -2698,7 +2717,7 @@ export default function App() {
               leftSection={<IconEditCircle size={16} />}
               placeholder="ops_manager"
             />
-            {uiMode === "advanced" && (
+            {effectiveUiMode === "advanced" && (
               <Select
                 label="Status Filter"
                 value={status}
@@ -2735,37 +2754,43 @@ export default function App() {
               <Group>
                 <Button
                   size="xs"
-                  variant={uiMode === "core" ? "filled" : "light"}
+                  variant={effectiveUiMode === "core" ? "filled" : "light"}
                   color="teal"
                   onClick={() => setUiMode("core")}
                 >
                   Core Mode
                 </Button>
-                <Button
-                  size="xs"
-                  variant={uiMode === "advanced" ? "filled" : "light"}
-                  color="orange"
-                  onClick={() => setUiMode("advanced")}
-                >
-                  Advanced Mode
-                </Button>
+                {CAN_ACCESS_ADVANCED_MODE && (
+                  <Button
+                    size="xs"
+                    variant={effectiveUiMode === "advanced" ? "filled" : "light"}
+                    color="orange"
+                    onClick={() => setUiMode("advanced")}
+                  >
+                    Advanced Mode
+                  </Button>
+                )}
               </Group>
             </Group>
-            {uiMode === "core" && (
+            {effectiveUiMode === "core" && (
               <Group mt="sm" justify="space-between" align="center" wrap="wrap">
                 <Text size="xs" c="dimmed">
-                  {coreExpertControls
-                    ? "Expert controls are visible in core mode."
-                    : "Simplified core mode hides advanced controls for faster moderation."}
+                  {CAN_ACCESS_ADVANCED_MODE
+                    ? coreExpertControls
+                      ? "Expert controls are visible in core mode."
+                      : "Simplified core mode hides advanced controls for faster moderation."
+                    : "Core-only profile is active: workspace is locked to the essential Agentic Wiki workflow."}
                 </Text>
-                <Button
-                  size="xs"
-                  variant={coreExpertControls ? "light" : "filled"}
-                  color={coreExpertControls ? "gray" : "teal"}
-                  onClick={() => setCoreExpertControls((prev) => !prev)}
-                >
-                  {coreExpertControls ? "Back to Simplified Core" : "Enable Expert Controls"}
-                </Button>
+                {CAN_ACCESS_ADVANCED_MODE && (
+                  <Button
+                    size="xs"
+                    variant={coreExpertControls ? "light" : "filled"}
+                    color={coreExpertControls ? "gray" : "teal"}
+                    onClick={() => setCoreExpertControls((prev) => !prev)}
+                  >
+                    {coreExpertControls ? "Back to Simplified Core" : "Enable Expert Controls"}
+                  </Button>
+                )}
               </Group>
             )}
           </Paper>
@@ -2854,7 +2879,7 @@ export default function App() {
           </Paper>
         </Paper>
 
-        {uiMode === "advanced" ? (
+        {effectiveUiMode === "advanced" ? (
           <Suspense
             fallback={
               <Paper radius="xl" p="lg" className="intelligence-panel">
@@ -3449,7 +3474,7 @@ export default function App() {
                       </Group>
                     </Paper>
                   )}
-                  {uiMode === "advanced" && (
+                  {effectiveUiMode === "advanced" && (
                     <Paper withBorder p="xs" radius="md" className="retrieval-diagnostics-card">
                       <Stack gap={6}>
                         <Group justify="space-between" align="center">

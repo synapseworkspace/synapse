@@ -115,6 +115,12 @@ npm run dev
 
 `http://localhost:5173`
 
+Optional: lock UI to core-only workflow (hide advanced mode and expert controls):
+
+```bash
+export VITE_SYNAPSE_UI_PROFILE=core-only
+```
+
 By default API allows CORS from any local UI origin. To restrict allowed origins:
 
 ```bash
