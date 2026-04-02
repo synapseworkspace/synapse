@@ -1,0 +1,99 @@
+<svg width="1400" height="760" viewBox="0 0 1400 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="heroBg" x1="0" y1="0" x2="1400" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ECFEFF"/>
+      <stop offset="0.55" stop-color="#EFF6FF"/>
+      <stop offset="1" stop-color="#F8FAFC"/>
+    </linearGradient>
+    <linearGradient id="observeCard" x1="120" y1="170" x2="420" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CCFBF1"/>
+      <stop offset="1" stop-color="#99F6E4"/>
+    </linearGradient>
+    <linearGradient id="synthesizeCard" x1="460" y1="170" x2="760" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DBEAFE"/>
+      <stop offset="1" stop-color="#BFDBFE"/>
+    </linearGradient>
+    <linearGradient id="curateCard" x1="800" y1="170" x2="1100" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E0F2FE"/>
+      <stop offset="1" stop-color="#BAE6FD"/>
+    </linearGradient>
+    <linearGradient id="executeCard" x1="1140" y1="170" x2="1340" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D1FAE5"/>
+      <stop offset="1" stop-color="#A7F3D0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1400" height="760" rx="32" fill="url(#heroBg)"/>
+  <rect x="62" y="62" width="1276" height="636" rx="28" fill="white" stroke="#DDE7F3" stroke-width="2"/>
+
+  <text x="110" y="132" fill="#0F172A" font-size="42" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+    Synapse Core Loop
+  </text>
+  <text x="110" y="170" fill="#334155" font-size="24" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="500">
+    Observe runtime facts, synthesize drafts, curate with humans, execute via MCP.
+  </text>
+
+  <rect x="110" y="220" width="280" height="210" rx="22" fill="url(#observeCard)" stroke="#5EEAD4" stroke-width="2"/>
+  <rect x="430" y="220" width="280" height="210" rx="22" fill="url(#synthesizeCard)" stroke="#93C5FD" stroke-width="2"/>
+  <rect x="750" y="220" width="280" height="210" rx="22" fill="url(#curateCard)" stroke="#7DD3FC" stroke-width="2"/>
+  <rect x="1070" y="220" width="220" height="210" rx="22" fill="url(#executeCard)" stroke="#86EFAC" stroke-width="2"/>
+
+  <text x="138" y="266" fill="#0F172A" font-size="30" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+    1. Observe
+  </text>
+  <text x="138" y="302" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    SDK monitors tool output,
+  </text>
+  <text x="138" y="330" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    agent messages, traces.
+  </text>
+
+  <text x="458" y="266" fill="#0F172A" font-size="30" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+    2. Synthesize
+  </text>
+  <text x="458" y="302" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    Worker groups evidence
+  </text>
+  <text x="458" y="330" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    into wiki draft updates.
+  </text>
+
+  <text x="778" y="266" fill="#0F172A" font-size="30" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+    3. Curate
+  </text>
+  <text x="778" y="302" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    Review, edit, approve
+  </text>
+  <text x="778" y="330" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    in the workspace UI.
+  </text>
+
+  <text x="1098" y="266" fill="#0F172A" font-size="30" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+    4. Execute
+  </text>
+  <text x="1098" y="302" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    MCP serves approved
+  </text>
+  <text x="1098" y="330" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    knowledge to agents.
+  </text>
+
+  <path d="M398 325H420" stroke="#0EA5A5" stroke-width="6" stroke-linecap="round"/>
+  <path d="M718 325H740" stroke="#2563EB" stroke-width="6" stroke-linecap="round"/>
+  <path d="M1038 325H1060" stroke="#0284C7" stroke-width="6" stroke-linecap="round"/>
+
+  <path d="M414 314L430 325L414 336" stroke="#0EA5A5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M734 314L750 325L734 336" stroke="#2563EB" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M1054 314L1070 325L1054 336" stroke="#0284C7" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="110" y="472" width="1180" height="170" rx="20" fill="#F8FAFC" stroke="#DDE7F3" stroke-width="2"/>
+  <text x="144" y="520" fill="#0F172A" font-size="28" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+    Single Source Of Truth For Agent Operations
+  </text>
+  <text x="144" y="558" fill="#334155" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    One agent learns -> humans approve -> every agent gets updated context instantly.
+  </text>
+  <text x="144" y="590" fill="#334155" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    No prompt redeploy needed for every operational rule change.
+  </text>
+</svg>

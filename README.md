@@ -1,235 +1,161 @@
-# Synapse
+<p align="center">
+  <img src="assets/synapse-logo.svg" alt="Synapse logo" width="680" />
+</p>
 
-Synapse is the cognitive state layer for AI agents: observe, synthesize, curate, and execute knowledge via MCP.
+<p align="center">
+  <strong>Synapse is the workspace and cognitive state layer for AI agents.</strong><br/>
+  Turn agent runtime signals into a human-curated wiki and feed it back via MCP.
+</p>
 
-## Start Here
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-1f6feb"></a>
+  <a href="docs/compatibility-matrix.md"><img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776AB"></a>
+  <a href="docs/compatibility-matrix.md"><img alt="Node" src="https://img.shields.io/badge/node-18%2B-339933"></a>
+  <a href="services/mcp/README.md"><img alt="MCP Native" src="https://img.shields.io/badge/MCP-native-0f766e"></a>
+</p>
 
-For fastest onboarding, use the guided path:
-- [docs/getting-started.md](docs/getting-started.md)
+<p align="center">
+  <img src="assets/synapse-hero.svg" alt="Synapse core loop: Observe, Synthesize, Curate, Execute" width="980" />
+</p>
 
-One-command CLI onboarding:
+## What Is Synapse?
 
-```bash
-synapse-cli quickstart --dir . --project-id omega_demo --api-url http://localhost:8080 --doctor-strict
-```
+Most agent stacks lose operational learning between sessions. Synapse solves that by creating a continuous knowledge loop:
 
-Recommended first command (full core loop proof in one run):
+1. Observe runtime signals from agents and tools.
+2. Synthesize raw evidence into draft knowledge.
+3. Curate drafts in a wiki-like human review UI.
+4. Execute with MCP so every agent uses approved, current knowledge.
+
+In short: Synapse turns token spend into reusable company knowledge.
+
+## Why Teams Use It
+
+- Persistent memory across sessions and across agents.
+- Human-in-the-loop governance instead of hidden prompt drift.
+- Conflict-aware wiki updates instead of static RAG documents.
+- MCP-native retrieval for runtime context injection.
+- Day-0 onboarding from existing memory and legacy docs (cold start).
+
+## Quickstart
+
+### Fastest proof (recommended)
+
+Run one command to validate the full core loop (`ingest -> draft -> approve -> MCP retrieval`):
 
 ```bash
 ./scripts/run_selfhost_core_acceptance.sh
 ```
 
-New contributor validation (single command):
+### CLI onboarding (from this repo)
 
 ```bash
-./scripts/run_contributor_guardrails.sh --profile quick
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e packages/synapse-sdk-py
+synapse-cli quickstart --dir . --project-id omega_demo --api-url http://localhost:8080 --doctor-strict --verify-core-loop
 ```
 
-Contributor shortcut:
-- [docs/contributor-quickstart.md](docs/contributor-quickstart.md)
-
-If you are preparing a public release:
-- [docs/oss-publish-checklist.md](docs/oss-publish-checklist.md)
-- [docs/release-workflow.md](docs/release-workflow.md)
-
-## Monorepo Layout
-
-- `packages/synapse-schema` - canonical JSON Schemas for Synapse events and claims.
-- `packages/synapse-sdk-ts` - TypeScript SDK.
-- `packages/synapse-sdk-py` - Python SDK.
-- `packages/synapse-openclaw-plugin` - OpenClaw runtime plugin package (`@synapse/openclaw-plugin`).
-- `services/api` - ingestion/query API.
-- `services/worker` - synthesis pipeline.
-- `services/mcp` - MCP runtime server.
-- `apps/web` - human-in-the-loop review UI.
-- `infra/postgres` - local DB and migrations.
-
-## Quick Local Bootstrap
-
-```bash
-cp .env.example .env
-cd infra && docker compose up -d
-cd ..
-./scripts/apply_migrations.sh
-cd services/api
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-uvicorn app.main:app --reload --port 8080
-```
-
-In another terminal:
-
-```bash
-./scripts/m1_smoke_e2e.sh
-```
-
-Run core loop acceptance (`ingest -> draft -> approve -> MCP retrieval`) against local stack:
-
-```bash
-./scripts/integration_core_loop.py
-```
-
-Run synthesis worker:
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_wiki_synthesis.py --limit 100 --cycles 1
-```
-
-Run daily intelligence digest:
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_intelligence_digest.py --all-projects
-```
-
-Run weekly intelligence digest:
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_intelligence_digest.py --all-projects --kind weekly
-```
-
-Deliver ready digests:
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_intelligence_delivery.py --kind daily --limit 100
-```
-
-Run Agent Simulator sandbox (policy replay on historical sessions):
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_agent_simulator.py \
-  --project-id omega_demo \
-  --policy-file ./policies.json
-```
-
-Process queued simulator runs created via API:
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_agent_simulator_queue.py --limit 10
-```
-
-Run legacy sync scheduler (periodic source refresh):
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_legacy_sync_scheduler.py \
-  --all-projects \
-  --api-url http://localhost:8080
-```
-
-Run MCP runtime server (knowledge tools for agents):
-
-```bash
-PYTHONPATH=services/mcp python services/mcp/scripts/run_mcp_server.py --transport stdio
-```
-
-Run self-hosted core stack (API + worker + MCP + Postgres) in Docker:
+### Local web workspace
 
 ```bash
 cp .env.selfhost.example .env.selfhost
 docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml up -d --build
+cd apps/web && npm install && npm run dev
 ```
 
-Run clean self-hosted compose acceptance (bring up stack, validate core loop, teardown):
+Open `http://localhost:5173`.
 
-```bash
-./scripts/run_selfhost_core_acceptance.sh
+## SDK Integration (2 Minutes)
+
+### Python
+
+```python
+from synapse_sdk import Synapse, SynapseConfig
+
+synapse = Synapse(
+    SynapseConfig(
+        api_url="http://localhost:8080",
+        project_id="water_delivery_logistics",
+    )
+)
+
+agent = synapse.attach(
+    my_openclaw_runtime,
+    integration="openclaw",
+    openclaw_bootstrap_preset="hybrid",
+    openclaw_bootstrap_max_records=2000,
+)
 ```
 
-Run self-hosted disaster-recovery acceptance (clean compose stack + seed + backup/restore drill):
+### TypeScript
 
-```bash
-./scripts/run_selfhost_dr_ci_acceptance.sh --report-file artifacts/selfhost-dr/report.json
+```ts
+import { Synapse } from "@synapse/sdk";
+
+const synapse = new Synapse({
+  apiUrl: "http://localhost:8080",
+  projectId: "water_delivery_logistics"
+});
+
+const runtime = synapse.attach(openclawRuntime, {
+  integration: "openclaw",
+  openclawBootstrapPreset: "hybrid",
+  openclawBootstrapMaxRecords: 2000
+});
 ```
 
-Run OSS release candidate dress rehearsal (clean-room build/install/import checks):
+## Core Product Surface
 
-```bash
-./scripts/run_oss_rc_dress_rehearsal.sh --report-file artifacts/release/rc-dress-rehearsal.json
-```
+Synapse core is focused on the essential workflow:
 
-Run performance tuning advisor (worker sizing + queue profile + MCP graph knobs):
+- **SDK + Observer**: capture runtime events, claims, and provenance.
+- **Weaver (Synthesizer)**: convert noisy logs into structured draft knowledge.
+- **Wiki UI**: review, approve, edit, and trace knowledge lineage.
+- **Knowledge API (MCP)**: serve approved facts to all connected agents.
+- **Agentic Task Tracker**: task timeline linked to drafts, conflicts, and evidence.
+- **Legacy Import**: bootstrap from local docs and Notion sources.
 
-```bash
-python3 scripts/run_performance_tuning_advisor.py --project-id omega_demo --write-report artifacts/perf/omega_demo.md
-```
+## OpenClaw-First Experience
 
-Run local Draft Inbox web UI:
+- Install plugin package: `npm install @synapse/openclaw-plugin`
+- OpenClaw integration overview: [docs/openclaw-integration.md](docs/openclaw-integration.md)
+- OpenClaw plugin package: [packages/synapse-openclaw-plugin/README.md](packages/synapse-openclaw-plugin/README.md)
+- Provenance verification: [docs/openclaw-provenance-verification.md](docs/openclaw-provenance-verification.md)
+- Onboarding demo kit: [demos/openclaw_onboarding/README.md](demos/openclaw_onboarding/README.md)
 
-```bash
-cd apps/web
-npm install
-npm run dev
-```
+## Architecture and Components
 
-UI modes:
-- `Core Mode` (default): Draft Inbox + moderation + Task Tracker.
-- `Advanced Mode`: calibration, queue, incident, and deep governance controls.
+- API service: [services/api/README.md](services/api/README.md)
+- Worker service: [services/worker/README.md](services/worker/README.md)
+- MCP runtime: [services/mcp/README.md](services/mcp/README.md)
+- Web app: [apps/web/README.md](apps/web/README.md)
+- Schema package: [packages/synapse-schema/README.md](packages/synapse-schema/README.md)
+- Python SDK: [packages/synapse-sdk-py/README.md](packages/synapse-sdk-py/README.md)
+- TypeScript SDK: [packages/synapse-sdk-ts/README.md](packages/synapse-sdk-ts/README.md)
 
-Legacy cold-start import from existing docs:
+## Documentation
 
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_legacy_import.py \
-  --input-dir /path/to/legacy_docs \
-  --project-id omega_demo \
-  --api-url http://localhost:8080
-```
-
-Legacy cold-start import from Notion:
-
-```bash
-PYTHONPATH=services/worker python services/worker/scripts/run_legacy_import.py \
-  --notion-root-page-id <notion_page_id> \
-  --notion-token "$NOTION_TOKEN" \
-  --project-id omega_demo \
-  --api-url http://localhost:8080
-```
-
-## SDK Adapters and OpenClaw
-
-- Python SDK supports monitoring wrappers for LangGraph/CrewAI/custom runners and OpenClaw runtimes.
-- SDK supports onboarding backfill of existing agent memory (`/v1/backfill/memory`) to seed wiki drafts on day 0.
-- Core Agentic Todo API is available (`/v1/tasks*`) with task timeline + links to wiki artifacts.
-- Synthesis engine supports temporal validity windows (`valid_from` / `valid_to`) with overlap-aware contradiction handling and retrieval.
-- OpenClaw integration plan and implemented connector contract: [docs/openclaw-integration.md](docs/openclaw-integration.md)
-- OpenClaw plugin package (`@synapse/openclaw-plugin`): [packages/synapse-openclaw-plugin/README.md](packages/synapse-openclaw-plugin/README.md)
-- OpenClaw connectors now emit signed provenance metadata into claim evidence chain (`evidence[].provenance`, `metadata.synapse_provenance`) when provenance secret is configured.
-- OpenClaw provenance verification endpoint/script: [docs/openclaw-provenance-verification.md](docs/openclaw-provenance-verification.md)
-- OpenClaw x MCP end-to-end integration check script: [scripts/integration_openclaw_mcp_runtime.py](scripts/integration_openclaw_mcp_runtime.py)
-- OpenClaw runtime contract matrix check script: [scripts/integration_openclaw_runtime_contract.py](scripts/integration_openclaw_runtime_contract.py)
-- MCP/API retrieval parity smoke script: [scripts/check_mcp_api_retrieval_parity.py](scripts/check_mcp_api_retrieval_parity.py)
-- Wiki engine and curation business logic design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
-- Core product scope and UI boundaries: [docs/core-product-scope.md](docs/core-product-scope.md)
-- Legacy import cold-start pipeline: [docs/legacy-import.md](docs/legacy-import.md)
-- Legacy sync orchestration (scheduled refresh): [docs/legacy-sync-orchestration.md](docs/legacy-sync-orchestration.md)
-- MCP runtime tools and cache invalidation model: [docs/mcp-runtime.md](docs/mcp-runtime.md)
+- First 15 minutes: [docs/getting-started.md](docs/getting-started.md)
+- Core product scope: [docs/core-product-scope.md](docs/core-product-scope.md)
+- Wiki engine logic: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
+- MCP runtime and retrieval model: [docs/mcp-runtime.md](docs/mcp-runtime.md)
+- Legacy import and sync: [docs/legacy-import.md](docs/legacy-import.md), [docs/legacy-sync-orchestration.md](docs/legacy-sync-orchestration.md)
 - Agent simulator sandbox: [docs/agent-simulator.md](docs/agent-simulator.md)
-- SDK trace observability guide (OTel -> Grafana/Datadog): [docs/sdk-trace-observability.md](docs/sdk-trace-observability.md)
-- Troubleshooting guide (API/worker/MCP/web/DB): [docs/troubleshooting.md](docs/troubleshooting.md)
-- Production hardening checklist: [docs/production-hardening.md](docs/production-hardening.md)
-- Performance tuning runbook: [docs/performance-tuning.md](docs/performance-tuning.md)
-- Observability incident playbooks: [docs/observability-incident-playbooks.md](docs/observability-incident-playbooks.md)
-- Local observability starter stack: [infra/observability/README.md](infra/observability/README.md)
-- Local moderation web console: [apps/web/README.md](apps/web/README.md)
-- End-to-end vertical scenario demo (Omega access-card policy): [demos/omega_gate/README.md](demos/omega_gate/README.md)
-- OpenClaw onboarding starter kit (runtime template + seed memory + 5-minute flow): [demos/openclaw_onboarding/README.md](demos/openclaw_onboarding/README.md)
-- Cookbook examples (OpenClaw, SQL, Support Ops): [demos/cookbook/README.md](demos/cookbook/README.md)
-- Getting started guide (first 15 minutes): [docs/getting-started.md](docs/getting-started.md)
-- Contributor one-command guardrails quickstart: [docs/contributor-quickstart.md](docs/contributor-quickstart.md)
-- Python `synapse-cli` for local extraction simulation and trace replay: [docs/synapse-cli.md](docs/synapse-cli.md)
 - Tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - SDK API reference: [docs/reference/README.md](docs/reference/README.md)
-- OSS readiness checklist: [docs/oss-readiness.md](docs/oss-readiness.md)
-- Compatibility matrix: [docs/compatibility-matrix.md](docs/compatibility-matrix.md)
-- OSS release workflow: [docs/release-workflow.md](docs/release-workflow.md)
-- OSS publish checklist walkthrough: [docs/oss-publish-checklist.md](docs/oss-publish-checklist.md)
-- Self-hosted deployment guide: [docs/self-hosted-deployment.md](docs/self-hosted-deployment.md)
-- Backup/restore drill runbook: [docs/backup-restore-drill.md](docs/backup-restore-drill.md)
-- GitHub ownership map: [.github/CODEOWNERS](.github/CODEOWNERS)
-- Dependabot config: [.github/dependabot.yml](.github/dependabot.yml)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
+
+## Demos
+
+- Omega end-to-end scenario: [demos/omega_gate/README.md](demos/omega_gate/README.md)
+- Cookbook examples: [demos/cookbook/README.md](demos/cookbook/README.md)
+- OpenClaw onboarding kit: [demos/openclaw_onboarding/README.md](demos/openclaw_onboarding/README.md)
+
+## OSS and Release
+
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Maintainers: [MAINTAINERS.md](MAINTAINERS.md)
-- Support policy: [SUPPORT.md](SUPPORT.md)
-- Deprecation policy: [DEPRECATION_POLICY.md](DEPRECATION_POLICY.md)
+- Release workflow: [docs/release-workflow.md](docs/release-workflow.md)
+- OSS publish checklist: [docs/oss-publish-checklist.md](docs/oss-publish-checklist.md)
+- OSS readiness checklist: [docs/oss-readiness.md](docs/oss-readiness.md)
 - Security policy: [SECURITY.md](SECURITY.md)
-- Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- License: [LICENSE](LICENSE) (Apache-2.0)
+- License: [LICENSE](LICENSE)
