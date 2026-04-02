@@ -1,0 +1,14 @@
+{
+  "batch_id": "<uuid>",
+  "proposal_status": "queued",
+  "search_result_count": 1,
+  "tool_names": [
+    "synapse_propose_to_wiki",
+    "synapse_search_wiki"
+  ],
+  "transport": {
+    "backfill_batches": 2,
+    "claims": 1,
+    "events": 4
+  }
+}

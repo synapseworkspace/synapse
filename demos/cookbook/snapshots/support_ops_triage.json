@@ -1,0 +1,11 @@
+{
+  "claim_ids": [
+    "<uuid>"
+  ],
+  "result": "Priority refund workflow for customer_77: escalate to support lead.",
+  "transport": {
+    "backfill_batches": 0,
+    "claims": 1,
+    "events": 2
+  }
+}

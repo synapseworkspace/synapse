@@ -36,7 +36,7 @@
   <rect x="110" y="220" width="280" height="210" rx="22" fill="url(#observeCard)" stroke="#5EEAD4" stroke-width="2"/>
   <rect x="430" y="220" width="280" height="210" rx="22" fill="url(#synthesizeCard)" stroke="#93C5FD" stroke-width="2"/>
   <rect x="750" y="220" width="280" height="210" rx="22" fill="url(#curateCard)" stroke="#7DD3FC" stroke-width="2"/>
-  <rect x="1070" y="220" width="220" height="210" rx="22" fill="url(#executeCard)" stroke="#86EFAC" stroke-width="2"/>
+  <rect x="1062" y="220" width="228" height="210" rx="22" fill="url(#executeCard)" stroke="#86EFAC" stroke-width="2"/>
 
   <text x="138" y="266" fill="#0F172A" font-size="30" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
     1. Observe
@@ -68,14 +68,14 @@
     in the workspace UI.
   </text>
 
-  <text x="1098" y="266" fill="#0F172A" font-size="28" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+  <text x="1082" y="266" fill="#0F172A" font-size="27" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
     4. Execute
   </text>
-  <text x="1098" y="302" fill="#0F172A" font-size="20" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
-    MCP serves curated
+  <text x="1082" y="302" fill="#0F172A" font-size="20" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    MCP injects
   </text>
-  <text x="1098" y="328" fill="#0F172A" font-size="20" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
-    context to agents.
+  <text x="1082" y="328" fill="#0F172A" font-size="20" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    curated context.
   </text>
 
   <path d="M398 325H420" stroke="#0EA5A5" stroke-width="6" stroke-linecap="round"/>

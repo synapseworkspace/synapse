@@ -6,6 +6,7 @@ import type {
   AttachOptions,
   BootstrapMemoryInput,
   Claim,
+  EvidenceRef,
   CollectInsightOptions,
   DebugOptions,
   DebugRecord,
@@ -23,6 +24,9 @@ import type {
   SynapseTransport,
   DegradationMode,
   OpenClawBootstrapPreset,
+  OpenClawListTasksResolver,
+  OpenClawSearchKnowledgeResolver,
+  OpenClawUpdateTaskStatusResolver,
   OnboardingMetrics,
   TaskCommentInput,
   TaskInput,
@@ -37,6 +41,8 @@ const DEFAULT_METHODS: Record<string, string[]> = {
   crewai: ["kickoff", "kickoff_async", "run", "execute", "execute_async"],
   openclaw: ["run", "runTask", "executeAction", "invokeTool", "dispatch"]
 };
+
+const DEFAULT_OPENCLAW_EVENTS = ["tool:result", "message:received", "agent:completed", "session:reset"] as const;
 
 type TraceContext = {
   traceId: string;
@@ -1683,6 +1689,10 @@ export class Synapse extends SynapseClient {
       agentId: optionsWithDefaults.agentId,
       sessionId: optionsWithDefaults.sessionId
     });
+    if (integration === "openclaw" && looksLikeOpenClawRuntime(target)) {
+      this.attachOpenClawRuntime(target, optionsWithDefaults, resolvedBootstrapMemory);
+      return target;
+    }
     const monitored = this.monitor(target, {
       ...optionsWithDefaults,
       integration
@@ -1694,6 +1704,47 @@ export class Synapse extends SynapseClient {
       openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null
     });
     return monitored;
+  }
+
+  private attachOpenClawRuntime(
+    target: unknown,
+    options: AttachOptions,
+    bootstrapMemory: AttachBootstrapMemoryOptions | undefined
+  ): void {
+    if (!looksLikeOpenClawRuntime(target)) {
+      return;
+    }
+    const runtime = target as OpenClawRuntime;
+    const hookEvents = Array.isArray(options.openclawHookEvents) && options.openclawHookEvents.length > 0
+      ? options.openclawHookEvents
+      : Array.from(DEFAULT_OPENCLAW_EVENTS);
+    const registerTools = options.openclawRegisterTools ?? true;
+    const toolPrefix = asOptionalString(options.openclawToolPrefix) ?? "synapse";
+    this.attachOpenClawHooks(runtime, hookEvents, {
+      agentId: options.agentId,
+      sessionId: options.sessionId
+    });
+    const connector = this.registerOpenClawTools(runtime, {
+      registerTools,
+      toolPrefix,
+      searchKnowledge: options.openclawSearchKnowledge,
+      listTasks: options.openclawListTasks,
+      updateTaskStatus: options.openclawUpdateTaskStatus,
+      defaultAgentId: options.agentId,
+      defaultSessionId: options.sessionId
+    });
+    const searchMode = options.openclawSearchKnowledge
+      ? "callback"
+      : connector.autoSearchEnabled
+        ? "auto"
+        : "disabled";
+    this.emitDebug("attach_completed", {
+      integration: "openclaw",
+      mode: "openclaw_connector",
+      registered_tools: connector.registeredTools,
+      bootstrap_requested: Boolean(bootstrapMemory),
+      search_mode: searchMode
+    });
   }
 
   private applyAttachDefaults<T extends object>(target: T, integration: string, options: AttachOptions): AttachOptions & {
@@ -1920,6 +1971,614 @@ export class Synapse extends SynapseClient {
       tags
     };
   }
+
+  private attachOpenClawHooks(
+    runtime: OpenClawRuntime,
+    hookEvents: readonly string[],
+    defaults: { agentId?: string; sessionId?: string }
+  ): void {
+    const register = this.resolveOpenClawHookRegistrar(runtime);
+    for (const eventName of hookEvents) {
+      register(eventName, (event) => {
+        const payload = isPlainObject(event) ? event : {};
+        this.capture({
+          event_type: "system_signal",
+          payload: {
+            integration: "openclaw",
+            phase: "hook_event",
+            event_name: eventName,
+            event: preview(payload)
+          },
+          agent_id: defaults.agentId,
+          session_id: defaults.sessionId ?? eventSessionId(payload),
+          tags: ["integration:openclaw", `event:${eventName}`]
+        });
+      });
+    }
+  }
+
+  private registerOpenClawTools(
+    runtime: OpenClawRuntime,
+    options: {
+      registerTools: boolean;
+      toolPrefix: string;
+      searchKnowledge?: OpenClawSearchKnowledgeResolver;
+      listTasks?: OpenClawListTasksResolver;
+      updateTaskStatus?: OpenClawUpdateTaskStatusResolver;
+      defaultAgentId?: string;
+      defaultSessionId?: string;
+    }
+  ): { registeredTools: string[]; autoSearchEnabled: boolean } {
+    if (!options.registerTools) {
+      return { registeredTools: [], autoSearchEnabled: false };
+    }
+    const registerTool = this.resolveOpenClawToolRegistrar(runtime);
+    const registeredTools: string[] = [];
+    let autoSearchEnabled = false;
+
+    const resolveSearch = (): OpenClawSearchKnowledgeResolver | undefined => {
+      if (typeof options.searchKnowledge === "function") {
+        return options.searchKnowledge;
+      }
+      autoSearchEnabled = true;
+      this.emitDebug("attach_openclaw_search_auto_enabled", {
+        mode: "sdk_search_knowledge_api"
+      });
+      return (query, limit, filters) =>
+        this.searchKnowledge(query, {
+          limit,
+          relatedEntityKey: asOptionalString(filters?.entity_key)
+        });
+    };
+    const searchResolver = resolveSearch();
+    if (searchResolver) {
+      const searchToolName = `${options.toolPrefix}_search_wiki`;
+      registerTool(
+        searchToolName,
+        async (...args: unknown[]) => {
+          const normalized = this.normalizeOpenClawSearchArgs(args);
+          const rows = await Promise.resolve(
+            searchResolver(normalized.query, normalized.limit, normalized.filters)
+          );
+          this.capture({
+            event_type: "tool_result",
+            payload: {
+              integration: "openclaw",
+              phase: "search_wiki",
+              query: normalized.query,
+              limit: normalized.limit,
+              filters: normalized.filters,
+              result_preview: preview(rows)
+            },
+            agent_id: options.defaultAgentId,
+            session_id: options.defaultSessionId,
+            tags: ["integration:openclaw", "tool:search_wiki"]
+          });
+          return rows;
+        },
+        "Search approved Synapse knowledge for the current task."
+      );
+      registeredTools.push(searchToolName);
+    } else {
+      this.emitDebug("attach_openclaw_search_disabled", {
+        reason: "missing_callback_and_auto_search",
+        tool: `${options.toolPrefix}_search_wiki`
+      });
+    }
+
+    const proposeToolName = `${options.toolPrefix}_propose_to_wiki`;
+    registerTool(
+      proposeToolName,
+      async (...args: unknown[]) => {
+        const normalized = this.normalizeOpenClawProposeArgs(args);
+        if (!normalized.claim_text.trim()) {
+          throw new Error("synapse_propose_to_wiki requires non-empty claim_text");
+        }
+        const claimId = makeId();
+        const observedAt = new Date().toISOString();
+        const provenance = await buildOpenClawProvenance({
+          phase: "propose_to_wiki",
+          observedAt,
+          payload: {
+            project_id: this.projectId,
+            entity_key: normalized.entity_key,
+            category: normalized.category,
+            claim_text: normalized.claim_text,
+            source_id: normalized.source_id,
+            source_type: normalized.source_type,
+            agent_id: options.defaultAgentId ?? null,
+            session_id: options.defaultSessionId ?? null
+          },
+          defaultAgentId: options.defaultAgentId,
+          defaultSessionId: options.defaultSessionId
+        });
+        const claim: Claim = {
+          id: claimId,
+          schema_version: "v1",
+          project_id: this.projectId,
+          entity_key: normalized.entity_key,
+          category: normalized.category,
+          claim_text: normalized.claim_text,
+          status: "draft",
+          confidence: normalized.confidence,
+          metadata: {
+            ...normalized.metadata,
+            synapse_provenance: provenance
+          },
+          evidence: [
+            {
+              source_type: normalized.source_type,
+              source_id: normalized.source_id,
+              observed_at: observedAt,
+              provenance
+            }
+          ]
+        };
+        await this.proposeFact(claim);
+        this.capture({
+          event_type: "fact_proposed",
+          payload: {
+            integration: "openclaw",
+            phase: "propose_to_wiki",
+            claim_id: claimId,
+            entity_key: normalized.entity_key,
+            category: normalized.category,
+            provenance: {
+              signature_alg: provenance.signature_alg,
+              signature: provenance.signature,
+              key_id: provenance.key_id ?? null,
+              mode: provenance.mode,
+              payload_sha256: provenance.payload_sha256
+            }
+          },
+          agent_id: options.defaultAgentId,
+          session_id: options.defaultSessionId,
+          tags: ["integration:openclaw", "tool:propose_to_wiki"]
+        });
+        return { status: "queued", claim_id: claimId };
+      },
+      "Propose a new fact to Synapse for human review."
+    );
+    registeredTools.push(proposeToolName);
+
+    const canListTasks = typeof options.listTasks === "function" || this.transportSupportsTaskApi();
+    if (canListTasks) {
+      const getTasksToolName = `${options.toolPrefix}_get_open_tasks`;
+      registerTool(
+        getTasksToolName,
+        async (...args: unknown[]) => {
+          const normalized = this.normalizeOpenClawGetTasksArgs(args);
+          const resolver = options.listTasks;
+          const tasks = resolver
+            ? await Promise.resolve(
+              resolver({
+                limit: normalized.limit,
+                assignee: normalized.assignee,
+                entity_key: normalized.entity_key,
+                include_closed: false
+              })
+            )
+            : await this.listTasks({
+              limit: normalized.limit,
+              assignee: normalized.assignee,
+              entityKey: normalized.entity_key,
+              includeClosed: false
+            });
+          const rows = Array.isArray(tasks) ? tasks : [];
+          this.capture({
+            event_type: "tool_result",
+            payload: {
+              integration: "openclaw",
+              phase: "get_open_tasks",
+              limit: normalized.limit,
+              assignee: normalized.assignee ?? null,
+              entity_key: normalized.entity_key ?? null,
+              result_count: rows.length
+            },
+            agent_id: options.defaultAgentId,
+            session_id: options.defaultSessionId,
+            tags: ["integration:openclaw", "tool:get_open_tasks"]
+          });
+          return { tasks: rows };
+        },
+        "List active Synapse tasks relevant for the current operation."
+      );
+      registeredTools.push(getTasksToolName);
+    }
+
+    const canUpdateTaskStatus = typeof options.updateTaskStatus === "function" || this.transportSupportsTaskApi();
+    if (canUpdateTaskStatus) {
+      const updateStatusToolName = `${options.toolPrefix}_update_task_status`;
+      registerTool(
+        updateStatusToolName,
+        async (...args: unknown[]) => {
+          const normalized = this.normalizeOpenClawUpdateTaskArgs(args);
+          const actor = normalized.updated_by ?? options.defaultAgentId ?? "openclaw_agent";
+          const result = options.updateTaskStatus
+            ? await Promise.resolve(
+              options.updateTaskStatus(normalized.task_id, {
+                status: normalized.status,
+                updated_by: actor,
+                note: normalized.note
+              })
+            )
+            : await this.updateTaskStatus(normalized.task_id, {
+              status: normalizeTaskStatus(normalized.status),
+              updatedBy: actor,
+              note: normalized.note
+            });
+          this.capture({
+            event_type: "tool_result",
+            payload: {
+              integration: "openclaw",
+              phase: "update_task_status",
+              task_id: normalized.task_id,
+              status: normalized.status,
+              updated_by: actor
+            },
+            agent_id: options.defaultAgentId,
+            session_id: options.defaultSessionId,
+            tags: ["integration:openclaw", "tool:update_task_status"]
+          });
+          return isPlainObject(result) ? result : { status: "ok" };
+        },
+        "Update Synapse task status after execution progress."
+      );
+      registeredTools.push(updateStatusToolName);
+    }
+
+    return { registeredTools, autoSearchEnabled };
+  }
+
+  private resolveOpenClawHookRegistrar(runtime: OpenClawRuntime): (eventName: string, handler: (event: Record<string, unknown>) => unknown) => unknown {
+    if (typeof runtime.on === "function") {
+      return runtime.on.bind(runtime);
+    }
+    if (typeof runtime.register_hook === "function") {
+      return runtime.register_hook.bind(runtime);
+    }
+    throw new TypeError("OpenClaw runtime must provide `on(event, handler)` or `register_hook(event, handler)`.");
+  }
+
+  private resolveOpenClawToolRegistrar(
+    runtime: OpenClawRuntime
+  ): (name: string, handler: (...args: unknown[]) => unknown, description?: string) => unknown {
+    if (typeof runtime.register_tool !== "function") {
+      throw new TypeError("OpenClaw runtime must provide `register_tool(name, handler, description?)`.");
+    }
+    const registerTool = runtime.register_tool as (...args: unknown[]) => unknown;
+    return (name, handler, description) => {
+      try {
+        return registerTool.call(runtime, name, handler, description);
+      } catch (error) {
+        if (!(error instanceof TypeError)) {
+          throw error;
+        }
+        return registerTool.call(runtime, { name, handler, description });
+      }
+    };
+  }
+
+  private transportSupportsTaskApi(): boolean {
+    const internal = this as unknown as { transport?: { requestJson?: unknown } };
+    return typeof internal.transport?.requestJson === "function";
+  }
+
+  private normalizeOpenClawSearchArgs(args: unknown[]): { query: string; limit: number; filters: Record<string, unknown> } {
+    if (args.length === 0) {
+      throw new TypeError("search_wiki requires query.");
+    }
+    if (typeof args[0] === "string") {
+      const options = isPlainObject(args[1]) ? args[1] : {};
+      const query = args[0].trim();
+      if (!query) {
+        throw new TypeError("search_wiki requires non-empty query.");
+      }
+      return {
+        query,
+        limit: normalizeInt(Number(options.limit ?? args[1] ?? 5), 1, 100),
+        filters: isPlainObject(options.filters) ? options.filters : {}
+      };
+    }
+    if (args.length === 1 && isPlainObject(args[0])) {
+      const payload = args[0];
+      const query = asOptionalString(payload.query);
+      if (!query) {
+        throw new TypeError("search_wiki requires non-empty query.");
+      }
+      return {
+        query,
+        limit: normalizeInt(Number(payload.limit ?? 5), 1, 100),
+        filters: isPlainObject(payload.filters) ? payload.filters : {}
+      };
+    }
+    throw new TypeError("search_wiki requires string query or payload with query.");
+  }
+
+  private normalizeOpenClawProposeArgs(args: unknown[]): {
+    entity_key: string;
+    category: string;
+    claim_text: string;
+    source_id: string;
+    source_type: EvidenceRef["source_type"];
+    confidence?: number;
+    metadata: Record<string, unknown>;
+  } {
+    if (args.length === 1 && isPlainObject(args[0])) {
+      const payload = args[0];
+      const sourceType = normalizeEvidenceSourceType(asOptionalString(payload.source_type) ?? "external_event");
+      return {
+        entity_key: requireString(payload.entity_key, "entity_key"),
+        category: requireString(payload.category, "category"),
+        claim_text: requireString(payload.claim_text, "claim_text"),
+        source_id: requireString(payload.source_id, "source_id"),
+        source_type: sourceType,
+        confidence: normalizeConfidence(payload.confidence),
+        metadata: isPlainObject(payload.metadata) ? payload.metadata : {}
+      };
+    }
+    if (args.length >= 4) {
+      const options = isPlainObject(args[4]) ? args[4] : {};
+      return {
+        entity_key: requireString(args[0], "entity_key"),
+        category: requireString(args[1], "category"),
+        claim_text: requireString(args[2], "claim_text"),
+        source_id: requireString(args[3], "source_id"),
+        source_type: normalizeEvidenceSourceType(options.source_type ?? "external_event"),
+        confidence: normalizeConfidence(options.confidence),
+        metadata: isPlainObject(options.metadata) ? options.metadata : {}
+      };
+    }
+    throw new TypeError("propose_to_wiki requires {entity_key, category, claim_text, source_id} or positional arguments.");
+  }
+
+  private normalizeOpenClawGetTasksArgs(args: unknown[]): { limit: number; assignee?: string; entity_key?: string } {
+    if (args.length === 0) {
+      return { limit: 20 };
+    }
+    if (!(args.length === 1 && isPlainObject(args[0]))) {
+      return {
+        limit: normalizeInt(Number(args[0] ?? 20), 1, 200)
+      };
+    }
+    const payload = args[0];
+    return {
+      limit: normalizeInt(Number(payload.limit ?? 20), 1, 200),
+      assignee: asOptionalString(payload.assignee),
+      entity_key: asOptionalString(payload.entity_key)
+    };
+  }
+
+  private normalizeOpenClawUpdateTaskArgs(args: unknown[]): {
+    task_id: string;
+    status: string;
+    updated_by?: string;
+    note?: string;
+  } {
+    if (args.length === 1 && isPlainObject(args[0])) {
+      const payload = args[0];
+      return {
+        task_id: requireString(payload.task_id, "task_id"),
+        status: requireString(payload.status, "status"),
+        updated_by: asOptionalString(payload.updated_by),
+        note: asOptionalString(payload.note)
+      };
+    }
+    if (args.length >= 2) {
+      const taskId = requireString(args[0], "task_id");
+      if (isPlainObject(args[1])) {
+        return {
+          task_id: taskId,
+          status: requireString(args[1].status, "status"),
+          updated_by: asOptionalString(args[1].updated_by),
+          note: asOptionalString(args[1].note)
+        };
+      }
+      return {
+        task_id: taskId,
+        status: requireString(args[1], "status"),
+        updated_by: asOptionalString(args[2]),
+        note: asOptionalString(args[3])
+      };
+    }
+    throw new TypeError("update_task_status requires task_id and status.");
+  }
+}
+
+type OpenClawRuntime = {
+  on?: (eventName: string, handler: (event: Record<string, unknown>) => unknown) => unknown;
+  register_hook?: (eventName: string, handler: (event: Record<string, unknown>) => unknown) => unknown;
+  register_tool?: ((name: string, handler: (...args: unknown[]) => unknown, description?: string) => unknown)
+    | ((payload: Record<string, unknown>) => unknown);
+};
+
+type OpenClawProvenanceRecord = {
+  schema: "synapse.openclaw.provenance.v1";
+  phase: string;
+  integration: "openclaw";
+  connector: string;
+  agent_id?: string;
+  session_id?: string;
+  captured_at: string;
+  signature_alg: "hmac-sha256" | "sha256";
+  signature: string;
+  payload_sha256: string;
+  key_id?: string;
+  mode: "signed" | "digest_only";
+};
+
+async function buildOpenClawProvenance(input: {
+  phase: string;
+  observedAt: string;
+  payload: Record<string, unknown>;
+  defaultAgentId?: string;
+  defaultSessionId?: string;
+}): Promise<OpenClawProvenanceRecord> {
+  const canonicalPayload = canonicalJson(input.payload);
+  const payloadSha256 = await sha256Hex(canonicalPayload);
+  const secret = resolveOpenClawProvenanceSecret();
+  const keyId = secret ? resolveOpenClawProvenanceKeyId() : undefined;
+  if (secret) {
+    return {
+      schema: "synapse.openclaw.provenance.v1",
+      phase: input.phase,
+      integration: "openclaw",
+      connector: "synapse-sdk-ts",
+      agent_id: input.defaultAgentId,
+      session_id: input.defaultSessionId,
+      captured_at: input.observedAt,
+      signature_alg: "hmac-sha256",
+      signature: await hmacSha256Hex(secret, canonicalPayload),
+      payload_sha256: payloadSha256,
+      key_id: keyId,
+      mode: "signed"
+    };
+  }
+  return {
+    schema: "synapse.openclaw.provenance.v1",
+    phase: input.phase,
+    integration: "openclaw",
+    connector: "synapse-sdk-ts",
+    agent_id: input.defaultAgentId,
+    session_id: input.defaultSessionId,
+    captured_at: input.observedAt,
+    signature_alg: "sha256",
+    signature: payloadSha256,
+    payload_sha256: payloadSha256,
+    mode: "digest_only"
+  };
+}
+
+function resolveOpenClawProvenanceSecret(): string | undefined {
+  return (
+    readProcessEnv("SYNAPSE_OPENCLAW_PROVENANCE_SECRET")
+    ?? readProcessEnv("SYNAPSE_PROVENANCE_SECRET")
+  );
+}
+
+function resolveOpenClawProvenanceKeyId(): string {
+  return (
+    readProcessEnv("SYNAPSE_OPENCLAW_PROVENANCE_KEY_ID")
+    ?? readProcessEnv("SYNAPSE_PROVENANCE_KEY_ID")
+    ?? "openclaw-default"
+  );
+}
+
+function canonicalJson(payload: Record<string, unknown>): string {
+  return JSON.stringify(sortObject(payload));
+}
+
+function sortObject(value: unknown): unknown {
+  if (value == null || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sortObject(item));
+  }
+  const out: Record<string, unknown> = {};
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  for (const key of keys) {
+    out[key] = sortObject((value as Record<string, unknown>)[key]);
+  }
+  return out;
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  return digestHex("SHA-256", input);
+}
+
+async function hmacSha256Hex(secret: string, input: string): Promise<string> {
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.subtle) {
+    return `${hashString(`${secret}::${input}`)}${hashString(input)}`.slice(0, 64).padEnd(64, "0");
+  }
+  const encoder = new TextEncoder();
+  const key = await cryptoApi.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await cryptoApi.subtle.sign("HMAC", key, encoder.encode(input));
+  return toHex(signature);
+}
+
+async function digestHex(algorithm: string, input: string): Promise<string> {
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.subtle) {
+    return hashString(input).padEnd(64, "0").slice(0, 64);
+  }
+  const encoder = new TextEncoder();
+  const digest = await cryptoApi.subtle.digest(algorithm, encoder.encode(input));
+  return toHex(digest);
+}
+
+function toHex(bytesLike: ArrayBuffer): string {
+  const bytes = new Uint8Array(bytesLike);
+  let out = "";
+  for (const byte of bytes) {
+    out += byte.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+function preview(value: unknown, maxLength = 2000): string {
+  const text = typeof value === "string" ? value : JSON.stringify(safeSerialize(value));
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)}...(truncated)`;
+}
+
+function eventSessionId(event: Record<string, unknown>): string {
+  return (
+    asOptionalString(event.sessionKey)
+    ?? asOptionalString(event.session_id)
+    ?? asOptionalString(event.sessionId)
+    ?? `openclaw_${makeUuid()}`
+  );
+}
+
+function normalizeEvidenceSourceType(value: unknown): EvidenceRef["source_type"] {
+  const candidate = asOptionalString(value);
+  if (
+    candidate === "dialog"
+    || candidate === "tool_output"
+    || candidate === "file"
+    || candidate === "human_note"
+    || candidate === "external_event"
+  ) {
+    return candidate;
+  }
+  return "external_event";
+}
+
+function normalizeConfidence(value: unknown): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return undefined;
+  }
+  return clamp(numeric, 0, 1);
+}
+
+function requireString(value: unknown, field: string): string {
+  const normalized = asOptionalString(value);
+  if (!normalized) {
+    throw new TypeError(`${field} is required.`);
+  }
+  return normalized;
+}
+
+function normalizeTaskStatus(value: string): TaskStatus {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "todo" || normalized === "in_progress" || normalized === "blocked" || normalized === "done" || normalized === "canceled") {
+    return normalized;
+  }
+  return "todo";
 }
 
 function makeClaimIdempotencyKey(claimId: string): string {

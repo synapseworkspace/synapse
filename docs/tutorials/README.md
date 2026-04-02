@@ -19,6 +19,3 @@ Before tutorials, complete quick bootstrap:
 
 4. [OpenClaw Onboarding Kit (Companion Demo)](04-openclaw-onboarding-kit.md)  
    Run ready-to-use runtime template + seed dataset for local day-0 simulation.
-
-5. [OpenClaw Quickstart (Alias)](02-openclaw-quickstart.md)  
-   Redirect page kept for older links.

@@ -81,9 +81,37 @@ export interface MonitorOptions {
   openclawBootstrapCreatedBy?: string;
   openclawBootstrapCursor?: string;
   openclawBootstrapChunkSize?: number;
+  openclawHookEvents?: string[];
+  openclawRegisterTools?: boolean;
+  openclawToolPrefix?: string;
+  openclawSearchKnowledge?: OpenClawSearchKnowledgeResolver;
+  openclawListTasks?: OpenClawListTasksResolver;
+  openclawUpdateTaskStatus?: OpenClawUpdateTaskStatusResolver;
 }
 
 export type AttachOptions = MonitorOptions;
+
+export type OpenClawSearchKnowledgeResolver = (
+  query: string,
+  limit: number,
+  filters: Record<string, unknown>
+) => Promise<unknown> | unknown;
+
+export type OpenClawListTasksResolver = (options: {
+  limit: number;
+  assignee?: string;
+  entity_key?: string;
+  include_closed: boolean;
+}) => Promise<Array<Record<string, unknown>>> | Array<Record<string, unknown>>;
+
+export type OpenClawUpdateTaskStatusResolver = (
+  taskId: string,
+  options: {
+    status: string;
+    updated_by: string;
+    note?: string;
+  }
+) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
 export interface OnboardingMetrics {
   projectId: string;

@@ -1,0 +1,35 @@
+{
+  "batch_id": "<uuid>",
+  "context_preview": {
+    "entity_facts": 1,
+    "recent_changes": 1,
+    "search_results": 1
+  },
+  "debug_events_tail": [
+    "synthesizer_completed",
+    "extractor_listed",
+    "collect_insight_extracted",
+    "synthesizer_listed",
+    "collect_insight_synthesized",
+    "propose_fact_attempt",
+    "propose_fact_sent",
+    "collect_insight_proposed",
+    "capture_queued",
+    "collect_insight_completed",
+    "flush_start",
+    "flush_success"
+  ],
+  "invoke_result": {
+    "category": "access_policy",
+    "confidence": 0.9,
+    "entity_key": "bc_omega",
+    "result": "Dispatch note for cust_42: route to bc_omega requires gate card after 10:00; notify driver before arrival."
+  },
+  "stream_steps": 3,
+  "synthesized_text": "Dispatch note for cust_42: route to bc_omega requires gate card after 10:00; notify driver before arrival.",
+  "transport": {
+    "backfill_batches": 2,
+    "claims": 1,
+    "events": 9
+  }
+}

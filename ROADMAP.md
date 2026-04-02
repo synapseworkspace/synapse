@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-02
+Last updated: 2026-04-03
 Owner: Core team
 
 ## Правило актуальности
@@ -305,10 +305,8 @@ Progress:
 
 ## Next Up (Execution Queue)
 
-1. Add lightweight wiki UI theming polish pass (Confluence-like information density, typography, and navigation affordances) without reintroducing advanced-mode clutter.
-2. Add a docs lint gate for canonical OpenClaw path references to prevent onboarding drift.
-3. Add zero-config TS OpenClaw parity path (`Synapse.attach` + runtime tool wiring) matching Python ergonomics.
-4. Add cookbook scenario snapshots (golden outputs) for regression-friendly docs/examples stability.
+1. Queue is clear for current track: M1-M10 + previous Next Up items are completed.
+2. Next planning cycle should be created from new product priorities (no carry-over blockers in this queue).
 
 ## Risks to Watch
 
@@ -323,6 +321,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Closed remaining roadmap queue: shipped TypeScript OpenClaw `Synapse.attach(..., integration="openclaw")` runtime parity (auto hook wiring, runtime tools, SDK auto-search fallback, provenance on `propose_to_wiki`), added canonical OpenClaw docs lint gate (`scripts/check_openclaw_docs_canonical.py`) wired into CI, introduced cookbook golden snapshot regression guard (`scripts/check_cookbook_snapshots.py` + `demos/cookbook/snapshots/*`) with CI coverage, and delivered core wiki UI theming polish pass (Confluence-like panel density/navigation cues) plus hero Execute card overflow fix in `assets/synapse-hero.svg`.
 - 2026-04-03: Completed cookbook parity pass for Agentic Wiki narrative: added runnable LangGraph scenario (`demos/cookbook/langgraph_playbook_sync.py`) with observe/synthesize/execute loop, updated cookbook guide and Getting Started scenario list, and validated the new script in a clean venv (`python3 -m venv /tmp/synapse-cookbook-check && ... && python demos/cookbook/langgraph_playbook_sync.py`).
 - 2026-04-02: Completed zero-config SDK attach pass: added `Synapse.from_env()` (Python) and `Synapse.fromEnv()`/`fromEnv()` (TypeScript), enabled OpenClaw auto-bootstrap default (`hybrid`) on attach, added SDK-level default retrieval-backed OpenClaw search fallback (Python connector + TS plugin fallback), introduced onboarding friction metrics APIs (`get_onboarding_metrics` / `getOnboardingMetrics`), refreshed README/OpenClaw quickstart docs, and validated end-to-end via `SYNAPSE_SKIP_WEB_E2E=1 ./scripts/ci_checks.sh`.
 - 2026-04-02: Collapsed OpenClaw onboarding doc drift into a single canonical path (`docs/openclaw-quickstart-5-min.md`): converted tutorial `02-openclaw-quickstart` into alias/redirect, updated tutorials index, integration deep-dive, OSS readiness references, and cookbook onboarding pointers.

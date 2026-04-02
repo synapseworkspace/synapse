@@ -2,6 +2,13 @@
 
 Four runnable cookbook scenarios for common adoption paths.
 
+Snapshot regression guard:
+
+```bash
+PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
+python3 /Users/maksimborisov/synapse/scripts/check_cookbook_snapshots.py
+```
+
 ## Which Example Should I Run?
 
 1. **OpenClaw operators / runtime integration:** `openclaw_playbook_sync.py`

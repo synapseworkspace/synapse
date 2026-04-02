@@ -45,6 +45,8 @@ python3 -m py_compile scripts/verify_openclaw_provenance.py
 python3 -m py_compile scripts/smoke_openclaw_provenance_verification.py
 python3 -m py_compile scripts/check_mcp_api_retrieval_parity.py
 python3 -m py_compile scripts/eval_legacy_seed_regression.py
+python3 -m py_compile scripts/check_openclaw_docs_canonical.py
+python3 -m py_compile scripts/check_cookbook_snapshots.py
 
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
@@ -61,6 +63,8 @@ import {
 } from "./packages/synapse-sdk-ts/dist/index.js";
 
 const runtime = {
+  handlers: {},
+  tools: {},
   memory: {
     exportAll() {
       return [
@@ -80,8 +84,12 @@ const runtime = {
       }
     }
   ],
-  on() {},
-  register_tool() {}
+  on(eventName, handler) {
+    this.handlers[eventName] = handler;
+  },
+  register_tool(name, handler, description) {
+    this.tools[name] = { handler, description };
+  }
 };
 
 process.env.SYNAPSE_API_URL = "http://localhost:8080";
@@ -114,6 +122,24 @@ const transport = {
   },
   async ingestMemoryBackfill(payload) {
     this.backfills.push(payload);
+  },
+  async requestJson(path, options = {}) {
+    if (path === "/v1/mcp/retrieval/explain" && options.method === "GET") {
+      const params = options.params || {};
+      return {
+        results: [
+          {
+            statement_text: `retrieved:${String(params.q || "")}`,
+            page: { slug: "bc-omega", entity_key: params.related_entity_key || "bc_omega" }
+          }
+        ],
+        revision: "r-ts-smoke"
+      };
+    }
+    if (path === "/v1/tasks" && options.method === "GET") {
+      return { tasks: [] };
+    }
+    return {};
   }
 };
 
@@ -130,9 +156,24 @@ synapse.attach(runtime, {
 await new Promise((resolve) => setTimeout(resolve, 20));
 
 assert.ok(transport.backfills.length >= 1, transport.backfills);
+assert.ok(typeof runtime.handlers["tool:result"] === "function", runtime.handlers);
+assert.ok(typeof runtime.tools["synapse_search_wiki"]?.handler === "function", runtime.tools);
+assert.ok(typeof runtime.tools["synapse_propose_to_wiki"]?.handler === "function", runtime.tools);
+const toolSearchResult = await runtime.tools["synapse_search_wiki"].handler("omega gate", { limit: 2, filters: { entity_key: "bc_omega" } });
+assert.ok(Array.isArray(toolSearchResult) && toolSearchResult.length >= 1, toolSearchResult);
+const toolProposal = await runtime.tools["synapse_propose_to_wiki"].handler({
+  entity_key: "bc_omega",
+  category: "access",
+  claim_text: "BC Omega requires cards after 10:00",
+  source_id: "ts-smoke-source"
+});
+assert.equal(toolProposal.status, "queued", toolProposal);
+runtime.handlers["tool:result"]({ sessionKey: "s-1", result: "driver confirmed policy" });
 const debugNames = new Set(synapse.getDebugRecords().map((item) => item.event));
 assert.ok(debugNames.has("attach_openclaw_bootstrap_preset_enabled"), debugNames);
 assert.ok(debugNames.has("attach_bootstrap_completed"), debugNames);
+assert.ok(debugNames.has("attach_completed"), debugNames);
+assert.ok(debugNames.has("attach_openclaw_search_auto_enabled"), debugNames);
 const onboardingMetrics = synapse.getOnboardingMetrics(200);
 assert.ok((onboardingMetrics.attachEventsTotal ?? 0) >= 1, onboardingMetrics);
 console.log("ts openclaw bootstrap preset smoke ok");
@@ -172,6 +213,9 @@ python3 scripts/generate_sdk_api_reference.py --check >/dev/null
 
 echo "[4.4/6] Repository hygiene"
 python3 scripts/check_repo_hygiene.py >/dev/null
+
+echo "[4.5/6] OpenClaw docs canonical references"
+python3 scripts/check_openclaw_docs_canonical.py >/dev/null
 
 echo "[5/6] Python monitor/openclaw smoke (offline)"
 python3 -m venv /tmp/synapse-ci-venv
@@ -1041,6 +1085,9 @@ finally:
     server.shutdown()
     server.server_close()
 PY
+
+echo "[5.45/6] Cookbook snapshot stability"
+PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python scripts/check_cookbook_snapshots.py >/dev/null
 
 deactivate
 

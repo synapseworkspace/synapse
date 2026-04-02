@@ -35,6 +35,9 @@ Exports:
 - `ObservationEvent`
 - `OnboardingMetrics`
 - `OpenClawBootstrapPreset`
+- `OpenClawListTasksResolver`
+- `OpenClawSearchKnowledgeResolver`
+- `OpenClawUpdateTaskStatusResolver`
 - `RequestOptions`
 - `RetryPolicyConfig`
 - `SchemaVersion`

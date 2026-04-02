@@ -88,6 +88,27 @@ const attachedOpenClaw = synapse.attach(openclawRuntime, {
 });
 ```
 
+When `integration: "openclaw"` is used with an OpenClaw-compatible runtime, `attach(...)` automatically:
+- registers lifecycle hooks (`tool:result`, `message:received`, `agent:completed`, `session:reset`);
+- wires runtime tools:
+  - `synapse_search_wiki`
+  - `synapse_propose_to_wiki`
+  - `synapse_get_open_tasks`
+  - `synapse_update_task_status`
+- enables default `search_wiki` retrieval via `synapse.searchKnowledge(...)` unless overridden.
+
+Override runtime wiring behavior if needed:
+
+```ts
+synapse.attach(openclawRuntime, {
+  integration: "openclaw",
+  openclawToolPrefix: "ops",
+  openclawRegisterTools: true,
+  openclawHookEvents: ["tool:result", "agent:completed"],
+  openclawSearchKnowledge: (query, limit, filters) => customSearch(query, limit, filters)
+});
+```
+
 Preset metadata/helpers:
 
 ```ts

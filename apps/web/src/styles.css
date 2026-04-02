@@ -1,3 +1,12 @@
+:root {
+  --synapse-ink: #132238;
+  --synapse-muted: #506176;
+  --synapse-border: rgba(25, 52, 80, 0.14);
+  --synapse-surface: #ffffff;
+  --synapse-surface-soft: #f8fbff;
+  --synapse-accent: #0f766e;
+}
+
 html,
 body,
 #root {
@@ -6,8 +15,12 @@ body,
 
 body {
   margin: 0;
-  background: radial-gradient(1000px 500px at 8% -10%, rgba(27, 168, 159, 0.14), transparent 48%),
-    radial-gradient(900px 480px at 96% -8%, rgba(255, 161, 64, 0.14), transparent 50%), #f4eee2;
+  color: var(--synapse-ink);
+  font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+  background:
+    linear-gradient(180deg, rgba(250, 253, 255, 0.96), rgba(246, 250, 255, 0.96)),
+    radial-gradient(920px 380px at 8% -8%, rgba(15, 118, 110, 0.08), transparent 58%),
+    radial-gradient(900px 420px at 98% -4%, rgba(14, 116, 144, 0.08), transparent 62%);
 }
 
 .mantine-focus-auto:focus-visible {
@@ -17,8 +30,8 @@ body {
 }
 
 .synapse-shell {
-  width: min(1600px, 96vw);
-  margin: 28px auto 40px;
+  width: min(1680px, 96vw);
+  margin: 22px auto 36px;
   position: relative;
   padding-bottom: 12px;
   animation: fade-in 280ms ease-out;
@@ -26,7 +39,8 @@ body {
 
 .hero-card {
   backdrop-filter: blur(8px);
-  background: linear-gradient(120deg, rgba(255, 253, 246, 0.92), rgba(246, 255, 254, 0.9));
+  background: linear-gradient(126deg, rgba(255, 255, 255, 0.94), rgba(244, 252, 255, 0.92));
+  border: 1px solid var(--synapse-border);
 }
 
 .eyebrow {
@@ -42,6 +56,7 @@ body {
   transition: border-color 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease;
   cursor: pointer;
   border-left: 4px solid transparent;
+  background: var(--synapse-surface);
 }
 
 .draft-card:hover {
@@ -186,6 +201,60 @@ body {
 
 .wiki-canvas-card {
   background: linear-gradient(180deg, rgba(254, 252, 247, 0.92), rgba(255, 255, 255, 0.98));
+}
+
+.wiki-core-grid > .mantine-Paper-root {
+  border: 1px solid var(--synapse-border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.96));
+  box-shadow: 0 6px 20px rgba(18, 45, 80, 0.05);
+}
+
+.wiki-tree-panel,
+.draft-inbox-panel,
+.draft-detail-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.wiki-tree-panel::before,
+.draft-inbox-panel::before,
+.draft-detail-panel::before {
+  content: "";
+  display: block;
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  opacity: 0.85;
+}
+
+.wiki-tree-panel::before {
+  background: linear-gradient(90deg, rgba(14, 116, 144, 0.6), rgba(56, 189, 248, 0.2));
+}
+
+.draft-inbox-panel::before {
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.62), rgba(45, 212, 191, 0.2));
+}
+
+.draft-detail-panel::before {
+  background: linear-gradient(90deg, rgba(30, 64, 175, 0.58), rgba(96, 165, 250, 0.2));
+}
+
+.wiki-tree-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root),
+.draft-inbox-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root),
+.draft-detail-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root) {
+  letter-spacing: 0.005em;
+}
+
+.wiki-tree-panel .mantine-Card-root.draft-card,
+.draft-inbox-panel .mantine-Card-root.draft-card {
+  border-radius: 10px;
+}
+
+.wiki-tree-panel .mantine-ScrollArea-root,
+.draft-inbox-panel .mantine-ScrollArea-root,
+.draft-detail-panel .mantine-ScrollArea-root {
+  border-top: 1px solid rgba(25, 52, 80, 0.08);
+  padding-top: 8px;
 }
 
 .wiki-canvas-content .tiptap {

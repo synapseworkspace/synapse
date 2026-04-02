@@ -1,0 +1,11 @@
+{
+  "queued_claims": [
+    "warehouse_1 requires manual dispatch override; policy update is required due to sanitation closure pattern."
+  ],
+  "summary_text": "warehouse_1 requires manual dispatch override; policy update is required due to sanitation closure pattern.",
+  "transport": {
+    "backfill_batches": 0,
+    "claims": 1,
+    "events": 2
+  }
+}

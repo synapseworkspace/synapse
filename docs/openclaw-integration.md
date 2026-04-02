@@ -73,7 +73,21 @@ OpenClaw-first onboarding kit:
 - Guided tutorial: `/Users/maksimborisov/synapse/docs/tutorials/04-openclaw-onboarding-kit.md`
 
 In TypeScript OSS packages:
-- Official plugin package:
+- SDK first-class attach path (parity with Python):
+  - `Synapse.attach(openclawRuntime, { integration: "openclaw" })`
+  - auto hook registration (`tool:result`, `message:received`, `agent:completed`, `session:reset`)
+  - runtime tools wired by default:
+    - `synapse_search_wiki`
+    - `synapse_propose_to_wiki`
+    - `synapse_get_open_tasks`
+    - `synapse_update_task_status`
+  - optional overrides:
+    - `openclawSearchKnowledge`
+    - `openclawHookEvents`
+    - `openclawRegisterTools`
+    - `openclawToolPrefix`
+  - signed provenance injection on `propose_to_wiki` (HMAC-SHA256 when secret configured, digest-only fallback).
+- Official plugin package (optional advanced embedding):
   - `@synapse/openclaw-plugin`
   - `createSynapseOpenClawPlugin(...)`
   - `SynapseOpenClawPlugin.attach(...)`

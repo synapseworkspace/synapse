@@ -3161,8 +3161,8 @@ export default function App() {
           <LazyTaskTrackerPanel apiUrl={apiUrl} projectId={projectId} reviewer={reviewer} />
         </Suspense>
 
-        <SimpleGrid cols={{ base: 1, xl: 3 }} spacing="lg">
-          <Paper radius="xl" p="lg">
+        <SimpleGrid cols={{ base: 1, xl: 3 }} spacing="lg" className="wiki-core-grid">
+          <Paper radius="xl" p="lg" className="wiki-tree-panel">
             <Group justify="space-between" mb="sm">
               <Title order={3}>Wiki Tree</Title>
               <Badge size="lg" color="indigo" variant="light">
@@ -3793,7 +3793,7 @@ export default function App() {
             </ScrollArea>
           </Paper>
 
-          <Paper radius="xl" p="lg">
+          <Paper radius="xl" p="lg" className="draft-inbox-panel">
             <Group justify="space-between" mb="sm">
               <Title order={3}>Draft Inbox</Title>
               <Badge size="lg" color="teal" variant="light">
@@ -4348,7 +4348,7 @@ export default function App() {
             </ScrollArea>
           </Paper>
 
-          <Paper radius="xl" p="lg">
+          <Paper radius="xl" p="lg" className="draft-detail-panel">
             <Group justify="space-between" mb="sm">
               <Group gap="xs">
                 <Title order={3}>Draft Detail</Title>

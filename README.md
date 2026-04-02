@@ -87,7 +87,16 @@ synapse.attach(
 Canonical 5-minute path:
 - [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
 
-TypeScript OpenClaw plugin package: `@synapse/openclaw-plugin`  
+TypeScript can use the same one-line attach flow:
+
+```ts
+import { Synapse } from "@synapse/sdk";
+
+const synapse = Synapse.fromEnv();
+synapse.attach(openclawRuntime, { integration: "openclaw" });
+```
+
+Optional advanced runtime-embedding package: `@synapse/openclaw-plugin`  
 Source path: [packages/synapse-openclaw-plugin](packages/synapse-openclaw-plugin)
 
 ## Product Capabilities
