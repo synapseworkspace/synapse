@@ -74,6 +74,7 @@ jobs:
 
   publish-pypi:
     needs: build
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -94,6 +95,7 @@ jobs:
 
   publish-npm:
     needs: build
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -127,3 +129,13 @@ jobs:
           for pkg in dist/npm/*.tgz; do
             npm publish "$pkg" --access public --provenance
           done
+
+  publish-disabled-note:
+    needs: build
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish disabled
+        run: |
+          echo "RELEASE_PUBLISH_ENABLED is not true."
+          echo "Build artifacts were produced, but PyPI/npm publish steps were intentionally skipped."

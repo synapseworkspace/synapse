@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -19,6 +19,8 @@ import requests
 from synapse_sdk.extractors import ExtractedInsight, InsightContext, default_extractors
 from synapse_sdk.synthesizers import SynthesisContext, default_synthesizers
 from synapse_sdk.types import Claim, EvidenceRef
+
+UTC = timezone.utc
 
 
 def main(argv: Sequence[str] | None = None) -> int:

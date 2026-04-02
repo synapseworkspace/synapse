@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -10,6 +10,8 @@ from typing import Any, Callable, Protocol, Sequence
 from uuid import uuid4
 
 from synapse_sdk.types import BootstrapMemoryInput, BootstrapMemoryOptions, Claim, EvidenceRef
+
+UTC = timezone.utc
 
 if False:  # pragma: no cover
     from synapse_sdk.client import SynapseClient

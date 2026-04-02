@@ -70,6 +70,7 @@ git push -u origin main
 - [ ] GitHub Environment `pypi` is configured.
 - [ ] GitHub Environment `npm` is configured.
 - [ ] Trusted Publishing is configured in PyPI and npm for this repository.
+- [ ] Repository variable `RELEASE_PUBLISH_ENABLED` is set to `true` (only after Trusted Publishing is verified).
 - [ ] Tag protection / maintainer access rules are in place.
 
 Reference:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import random
 import time
@@ -11,6 +11,8 @@ import requests
 
 from synapse_sdk.errors import SynapseTransportError
 from synapse_sdk.types import Claim, ObservationEvent, RetryConfig
+
+UTC = timezone.utc
 
 
 class HttpTransport:

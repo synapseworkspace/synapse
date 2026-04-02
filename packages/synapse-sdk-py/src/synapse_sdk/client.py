@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import inspect
 import os
@@ -31,6 +31,7 @@ from synapse_sdk.types import (
 
 _TRACE_ID: ContextVar[str | None] = ContextVar("synapse_trace_id", default=None)
 _SPAN_ID: ContextVar[str | None] = ContextVar("synapse_span_id", default=None)
+UTC = timezone.utc
 
 
 class Transport(Protocol):

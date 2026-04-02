@@ -36,6 +36,10 @@ Pipeline stages:
    - PyPI via trusted publishing (`pypa/gh-action-pypi-publish`)
    - npm with provenance (`npm publish --provenance`)
 
+Publishing guard:
+- release workflow publishes only when repository variable `RELEASE_PUBLISH_ENABLED=true`.
+- when disabled (default), workflow still builds and uploads release artifacts, but skips publish jobs.
+
 ## Repository Setup Checklist
 
 1. Configure GitHub Environments:
@@ -52,6 +56,7 @@ Pipeline stages:
    - require status checks (`ci`, `compat-matrix`, `codeql`, `secret-scan`);
    - enforce up-to-date branches before merge.
 6. Ensure CODEOWNERS mapping is valid for your org/team handles (`.github/CODEOWNERS`).
+7. Enable repository variable `RELEASE_PUBLISH_ENABLED=true` only after Trusted Publishing is confirmed for both PyPI and npm.
 
 ## Release Procedure
 
