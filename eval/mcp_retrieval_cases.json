@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "name": "synapse_mcp_retrieval_regression",
+    "version": "v1",
+    "minimum_metrics": {
+      "top1_accuracy": 1.0
+    }
+  },
+  "cases": [
+    {
+      "id": "lexical_top_entity_default_order",
+      "query": "card required",
+      "limit": 3,
+      "expected_top_entity": "bc_omega"
+    },
+    {
+      "id": "graph_boost_related_entity_wins_tie",
+      "query": "card required",
+      "related_entity_key": "bc_omega",
+      "limit": 3,
+      "expected_top_entity": "dispatch_center"
+    },
+    {
+      "id": "category_filter_access_only",
+      "query": "card required",
+      "category": "access",
+      "limit": 3,
+      "expected_top_entity": "bc_omega"
+    },
+    {
+      "id": "page_type_filter_policy_only",
+      "query": "card required",
+      "page_type": "policy",
+      "limit": 3,
+      "expected_top_entity": "dispatch_center"
+    },
+    {
+      "id": "graph_multihop_second_hop_boost",
+      "query": "card required handoff",
+      "related_entity_key": "bc_omega",
+      "page_type": "policy",
+      "limit": 5,
+      "expected_top_entity": "route_hub"
+    }
+  ]
+}

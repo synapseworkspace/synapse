@@ -1,0 +1,89 @@
+name: compat-matrix
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python-sdk-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python SDK
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e packages/synapse-sdk-py
+
+      - name: Python SDK import smoke
+        run: |
+          python - <<'PY'
+          from synapse_sdk import Synapse, SynapseConfig, list_context_policy_profiles
+
+          config = SynapseConfig(api_url="http://localhost:8080", project_id="compat_matrix")
+          client = Synapse(config)
+          assert client is not None
+          profiles = list_context_policy_profiles()
+          assert isinstance(profiles, list) and profiles
+          print("python sdk compat smoke ok")
+          PY
+
+      - name: Python CLI surface smoke
+        run: |
+          python -m synapse_sdk.cli --help > /dev/null
+          python -m synapse_sdk.cli quickstart --help > /dev/null
+
+  node-sdk-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["18", "20", "22"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: TypeScript SDK checks
+        run: |
+          npm --prefix packages/synapse-sdk-ts ci
+          npm --prefix packages/synapse-sdk-ts run typecheck
+          npm --prefix packages/synapse-sdk-ts run build
+
+      - name: OpenClaw plugin checks
+        run: |
+          npm --prefix packages/synapse-openclaw-plugin ci
+          npm --prefix packages/synapse-openclaw-plugin run typecheck
+          npm --prefix packages/synapse-openclaw-plugin run build
+
+      - name: Node SDK import smoke
+        run: |
+          node --input-type=module - <<'JS'
+          import { Synapse, listContextPolicyProfiles } from "./packages/synapse-sdk-ts/dist/index.js";
+          const client = new Synapse({ apiUrl: "http://localhost:8080", projectId: "compat_matrix" });
+          if (!client) {
+            throw new Error("Synapse client is not initialized");
+          }
+          const profiles = listContextPolicyProfiles();
+          if (!Array.isArray(profiles) || profiles.length === 0) {
+            throw new Error("Missing context policy profiles");
+          }
+          console.log("node sdk compat smoke ok");
+          JS

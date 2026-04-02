@@ -1,0 +1,138 @@
+name: release-packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Validate package versions
+        run: python3 scripts/check_release_versions.py
+
+      - name: Validate publish hygiene
+        run: python3 scripts/check_publish_hygiene.py
+
+      - name: Validate tag-version alignment
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+          python3 scripts/check_release_versions.py --expected-version "$EXPECTED_VERSION"
+
+      - name: Build Python package
+        run: |
+          python3 -m pip install --upgrade pip build
+          python3 -m build packages/synapse-sdk-py --outdir dist/python
+
+      - name: Build and pack npm packages
+        run: |
+          npm --prefix packages/synapse-sdk-ts install --silent
+          npm --prefix packages/synapse-sdk-ts run build
+          npm --prefix packages/synapse-openclaw-plugin install --silent
+          npm --prefix packages/synapse-openclaw-plugin run build
+          mkdir -p dist/npm
+          npm pack --pack-destination dist/npm ./packages/synapse-sdk-ts
+          npm pack --pack-destination dist/npm ./packages/synapse-schema
+          npm pack --pack-destination dist/npm ./packages/synapse-openclaw-plugin
+
+      - name: Attest Python artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/python/*"
+
+      - name: Attest npm artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/npm/*"
+
+      - name: Upload Python artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/python/*
+          if-no-files-found: error
+
+      - name: Upload npm artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-dist
+          path: dist/npm/*
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+    steps:
+      - name: Download Python artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/python
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/python
+          attestations: true
+
+  publish-npm:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: npm
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-dist
+          path: dist/npm
+
+      - name: Configure npm token fallback
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        run: npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish npm packages with provenance
+        run: |
+          set -euo pipefail
+          for pkg in dist/npm/*.tgz; do
+            npm publish "$pkg" --access public --provenance
+          done

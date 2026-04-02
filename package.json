@@ -1,0 +1,14 @@
+{
+  "name": "synapse-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "echo \"Build packages individually\"",
+    "test": "echo \"Add tests\""
+  }
+}

@@ -1,0 +1,313 @@
+{
+  "meta": {
+    "name": "synapse_gatekeeper_regression",
+    "version": "v1",
+    "minimum_metrics": {
+      "accuracy": 0.95,
+      "macro_precision": 0.95,
+      "macro_recall": 0.95
+    }
+  },
+  "cases": [
+    {
+      "id": "operational_short_event",
+      "claim": {
+        "id": "a1111111-1111-1111-1111-111111111111",
+        "project_id": "eval_project",
+        "entity_key": "driver_17",
+        "category": "operations",
+        "claim_text": "Sent email ok",
+        "evidence": [{"source_id": "evt-1"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "operational_memory"
+      }
+    },
+    {
+      "id": "insight_candidate_single_signal",
+      "claim": {
+        "id": "a2222222-2222-2222-2222-222222222222",
+        "project_id": "eval_project",
+        "entity_key": "warehouse_2",
+        "category": "operations",
+        "claim_text": "Warehouse 2 loading slot usually delayed after 18:00 due to queue",
+        "evidence": [{"source_id": "evt-2"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "insight_candidate"
+      }
+    },
+    {
+      "id": "golden_policy_with_multi_evidence",
+      "claim": {
+        "id": "a3333333-3333-3333-3333-333333333333",
+        "project_id": "eval_project",
+        "entity_key": "bc_omega",
+        "category": "access",
+        "claim_text": "Entry must be by key-card only after 10:00",
+        "evidence": [{"source_id": "evt-3a"}, {"source_id": "evt-3b"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "golden_candidate"
+      }
+    },
+    {
+      "id": "golden_by_repetition_threshold",
+      "claim": {
+        "id": "a4444444-4444-4444-4444-444444444444",
+        "project_id": "eval_project",
+        "entity_key": "warehouse_4",
+        "category": "operations",
+        "claim_text": "Warehouse 4 accepts unloading only with prior booking",
+        "evidence": [{"source_id": "evt-4"}]
+      },
+      "inputs": {
+        "repeated_count": 2,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "golden_candidate"
+      }
+    },
+    {
+      "id": "conflict_downgrades_golden",
+      "claim": {
+        "id": "a5555555-5555-5555-5555-555555555555",
+        "project_id": "eval_project",
+        "entity_key": "warehouse_1",
+        "category": "operations",
+        "claim_text": "Warehouse 1 is closed until 2026-04-05 by policy",
+        "evidence": [{"source_id": "evt-5a"}, {"source_id": "evt-5b"}]
+      },
+      "inputs": {
+        "repeated_count": 1,
+        "historical_source_count": 2,
+        "has_recent_open_conflict": true
+      },
+      "expected": {
+        "tier": "insight_candidate"
+      }
+    },
+    {
+      "id": "auto_promotion_by_source_diversity",
+      "claim": {
+        "id": "a6666666-6666-6666-6666-666666666666",
+        "project_id": "eval_project",
+        "entity_key": "terminal_north",
+        "category": "operations",
+        "claim_text": "North terminal queue length spikes after 17:00 due to manual checks",
+        "evidence": [{"source_id": "evt-6a"}, {"source_id": "evt-6b"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 3,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "golden_candidate"
+      }
+    },
+    {
+      "id": "high_sources_but_conflicted_stays_insight",
+      "claim": {
+        "id": "a7777777-7777-7777-7777-777777777777",
+        "project_id": "eval_project",
+        "entity_key": "terminal_north",
+        "category": "operations",
+        "claim_text": "North terminal queue length spikes after 17:00 due to manual checks",
+        "evidence": [{"source_id": "evt-7a"}, {"source_id": "evt-7b"}, {"source_id": "evt-7c"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 4,
+        "has_recent_open_conflict": true
+      },
+      "expected": {
+        "tier": "insight_candidate"
+      }
+    },
+    {
+      "id": "short_operational_but_repeated_moves_out_of_l1",
+      "claim": {
+        "id": "a8888888-8888-8888-8888-888888888888",
+        "project_id": "eval_project",
+        "entity_key": "driver_22",
+        "category": "operations",
+        "claim_text": "Sent docs",
+        "evidence": [{"source_id": "evt-8"}]
+      },
+      "inputs": {
+        "repeated_count": 1,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "insight_candidate"
+      }
+    },
+    {
+      "id": "policy_with_repeat_and_single_evidence",
+      "claim": {
+        "id": "a9999999-9999-9999-9999-999999999999",
+        "project_id": "eval_project",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "Gate access policy: only security cards are allowed",
+        "evidence": [{"source_id": "evt-9"}]
+      },
+      "inputs": {
+        "repeated_count": 1,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "golden_candidate"
+      }
+    },
+    {
+      "id": "short_non_operational_text_is_not_l1",
+      "claim": {
+        "id": "b0000000-0000-0000-0000-000000000000",
+        "project_id": "eval_project",
+        "entity_key": "driver_5",
+        "category": "operations",
+        "claim_text": "Gate issue",
+        "evidence": [{"source_id": "evt-10"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 1,
+        "has_recent_open_conflict": false
+      },
+      "expected": {
+        "tier": "insight_candidate"
+      }
+    },
+    {
+      "id": "llm_confident_promotion_to_golden",
+      "claim": {
+        "id": "b0101010-1010-1010-1010-101010101010",
+        "project_id": "eval_project",
+        "entity_key": "warehouse_8",
+        "category": "operations",
+        "claim_text": "Warehouse 8 queue consistently rises after 17:00 when manual checkpoint starts",
+        "evidence": [{"source_id": "evt-llm-1a"}, {"source_id": "evt-llm-1b"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 2,
+        "has_recent_open_conflict": false,
+        "config": {
+          "min_sources_for_golden": 3,
+          "conflict_free_days": 7,
+          "min_score_for_golden": 0.72,
+          "operational_short_text_len": 32,
+          "operational_short_token_len": 5,
+          "llm_assist_enabled": true,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.5,
+          "llm_min_confidence": 0.7,
+          "llm_timeout_ms": 3500
+        },
+        "llm_assessment": {
+          "status": "ok",
+          "provider": "openai",
+          "model": "gpt-4.1-mini",
+          "suggested_tier": "golden_candidate",
+          "score": 0.9,
+          "confidence": 0.94,
+          "rationale": "Multi-signal operational pattern likely to be reusable policy knowledge."
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "llm_applied": true
+      }
+    },
+    {
+      "id": "llm_low_confidence_is_ignored",
+      "claim": {
+        "id": "b0202020-2020-2020-2020-202020202020",
+        "project_id": "eval_project",
+        "entity_key": "warehouse_8",
+        "category": "operations",
+        "claim_text": "Warehouse 8 queue consistently rises after 17:00 when manual checkpoint starts",
+        "evidence": [{"source_id": "evt-llm-2a"}, {"source_id": "evt-llm-2b"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 2,
+        "has_recent_open_conflict": false,
+        "config": {
+          "min_sources_for_golden": 3,
+          "conflict_free_days": 7,
+          "min_score_for_golden": 0.72,
+          "operational_short_text_len": 32,
+          "operational_short_token_len": 5,
+          "llm_assist_enabled": true,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.5,
+          "llm_min_confidence": 0.7,
+          "llm_timeout_ms": 3500
+        },
+        "llm_assessment": {
+          "status": "ok",
+          "provider": "openai",
+          "model": "gpt-4.1-mini",
+          "suggested_tier": "golden_candidate",
+          "score": 0.95,
+          "confidence": 0.42,
+          "rationale": "Low certainty sample."
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "llm_applied": false
+      }
+    },
+    {
+      "id": "custom_config_blocks_auto_promotion",
+      "claim": {
+        "id": "b1111111-1111-1111-1111-111111111111",
+        "project_id": "eval_project",
+        "entity_key": "warehouse_7",
+        "category": "operations",
+        "claim_text": "Warehouse 7 has recurring queue at 16:30 after route merge",
+        "evidence": [{"source_id": "evt-11a"}, {"source_id": "evt-11b"}]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 3,
+        "has_recent_open_conflict": false,
+        "config": {
+          "min_sources_for_golden": 5,
+          "conflict_free_days": 7,
+          "min_score_for_golden": 0.72,
+          "operational_short_text_len": 32,
+          "operational_short_token_len": 5
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate"
+      }
+    }
+  ]
+}

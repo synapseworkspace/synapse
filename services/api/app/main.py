@@ -1,0 +1,18225 @@
+from __future__ import annotations
+
+import csv
+import base64
+from datetime import UTC, date, datetime, timedelta
+from io import StringIO
+import math
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import time
+import unicodedata
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
+
+from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+from psycopg.types.json import Jsonb
+
+from app.db import get_conn
+from app.idempotency import (
+    acquire_request_slot,
+    mark_request_completed,
+    mark_request_failed,
+    maybe_cleanup_expired_requests,
+)
+
+try:
+    from shared.retrieval import (
+        build_context_policy_headers,
+        build_graph_config_headers,
+        build_retrieval_explain_fields,
+        build_retrieval_search_plan,
+        clean_optional_filter,
+        load_context_policy_config_from_env,
+        load_graph_config_from_env,
+        normalize_context_policy_mode,
+        normalize_limit_value,
+        query_tokens,
+        resolve_context_policy_config,
+        serialize_context_policy_config,
+        serialize_graph_config,
+    )
+except ModuleNotFoundError:
+    services_root = Path(__file__).resolve().parents[2]
+    if str(services_root) not in sys.path:
+        sys.path.append(str(services_root))
+    from shared.retrieval import (
+        build_context_policy_headers,
+        build_graph_config_headers,
+        build_retrieval_explain_fields,
+        build_retrieval_search_plan,
+        clean_optional_filter,
+        load_context_policy_config_from_env,
+        load_graph_config_from_env,
+        normalize_context_policy_mode,
+        normalize_limit_value,
+        query_tokens,
+        resolve_context_policy_config,
+        serialize_context_policy_config,
+        serialize_graph_config,
+    )
+
+
+class EventIn(BaseModel):
+    id: str
+    schema_version: str = Field(pattern="^v1$")
+    project_id: str
+    event_type: str
+    payload: dict[str, Any]
+    observed_at: datetime
+    agent_id: str | None = None
+    session_id: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
+    tags: list[str] | None = None
+
+
+class EventBatch(BaseModel):
+    events: list[EventIn]
+
+
+class ClaimIn(BaseModel):
+    id: str
+    schema_version: str = Field(pattern="^v1$")
+    project_id: str
+    entity_key: str
+    category: str
+    claim_text: str
+    status: str
+    evidence: list[dict[str, Any]]
+    observed_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+
+
+class ClaimProposal(BaseModel):
+    claim: ClaimIn
+
+
+class MemoryBackfillRecordIn(BaseModel):
+    source_id: str = Field(min_length=1, max_length=512)
+    content: str = Field(min_length=1, max_length=20000)
+    observed_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    entity_key: str | None = Field(default=None, min_length=1, max_length=512)
+    category: str | None = Field(default=None, min_length=1, max_length=256)
+    metadata: dict[str, Any] | None = None
+    tags: list[str] | None = None
+
+
+class MemoryBackfillBatchIn(BaseModel):
+    batch_id: UUID | None = None
+    project_id: str
+    source_system: str = Field(default="sdk_bootstrap", min_length=1, max_length=128)
+    agent_id: str | None = None
+    session_id: str | None = None
+    cursor: str | None = None
+    finalize: bool = False
+    created_by: str | None = None
+    records: list[MemoryBackfillRecordIn] = Field(min_length=1, max_length=500)
+
+
+class MemoryBackfillRequest(BaseModel):
+    batch: MemoryBackfillBatchIn
+
+
+class DraftSectionEdit(BaseModel):
+    section_key: str = Field(min_length=1, max_length=128)
+    heading: str | None = Field(default=None, min_length=1, max_length=256)
+    mode: str = Field(default="append", pattern="^(append|replace)$")
+    statements: list[str] = Field(min_length=1, max_length=100)
+
+
+class DraftApproveRequest(BaseModel):
+    project_id: str
+    reviewed_by: str = Field(min_length=1, max_length=256)
+    edited_statement_text: str | None = Field(default=None, min_length=1, max_length=10000)
+    section_edits: list[DraftSectionEdit] | None = Field(default=None, max_length=25)
+    note: str | None = Field(default=None, max_length=4000)
+    force: bool = False
+
+
+class DraftRejectRequest(BaseModel):
+    project_id: str
+    reviewed_by: str = Field(min_length=1, max_length=256)
+    reason: str | None = Field(default=None, max_length=4000)
+    dismiss_conflicts: bool = True
+
+
+class GatekeeperConfigUpsertRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    min_sources_for_golden: int = Field(default=3, ge=2, le=50)
+    conflict_free_days: int = Field(default=7, ge=1, le=365)
+    min_score_for_golden: float = Field(default=0.72, ge=0.0, le=1.0)
+    operational_short_text_len: int = Field(default=32, ge=8, le=512)
+    operational_short_token_len: int = Field(default=5, ge=1, le=128)
+    llm_assist_enabled: bool = False
+    llm_provider: str = Field(default="openai", pattern="^(openai)$")
+    llm_model: str = Field(default="gpt-4.1-mini", min_length=1, max_length=128)
+    llm_score_weight: float = Field(default=0.35, ge=0.0, le=1.0)
+    llm_min_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    llm_timeout_ms: int = Field(default=3500, ge=200, le=20000)
+
+
+class GatekeeperConfigSnapshotCreateRequest(BaseModel):
+    project_id: str
+    approved_by: str = Field(min_length=1, max_length=256)
+    source: str = Field(default="calibration_cycle", pattern="^(calibration_cycle|manual|rollback)$")
+    note: str | None = Field(default=None, max_length=4000)
+    config: dict[str, Any] = Field(default_factory=dict)
+    guardrails_met: bool | None = None
+    holdout_meta: dict[str, Any] | None = None
+    calibration_report: dict[str, Any] | None = None
+    artifact_refs: dict[str, Any] | None = None
+
+
+class GatekeeperConfigRollbackRequest(BaseModel):
+    project_id: str
+    snapshot_id: UUID
+    updated_by: str = Field(min_length=1, max_length=256)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class GatekeeperRollbackPreviewRequest(BaseModel):
+    project_id: str
+    snapshot_id: UUID
+    lookback_days: int = Field(default=30, ge=1, le=365)
+    limit: int = Field(default=5000, ge=100, le=50000)
+    sample_size: int = Field(default=25, ge=1, le=200)
+
+
+class GatekeeperRollbackRequestCreate(BaseModel):
+    project_id: str
+    snapshot_id: UUID
+    requested_by: str = Field(min_length=1, max_length=256)
+    note: str | None = Field(default=None, max_length=4000)
+    required_approvals: int = Field(default=2, ge=1, le=5)
+    lookback_days: int = Field(default=30, ge=1, le=365)
+    limit: int = Field(default=5000, ge=100, le=50000)
+    sample_size: int = Field(default=25, ge=1, le=200)
+
+
+class GatekeeperRollbackApproveRequest(BaseModel):
+    project_id: str
+    approved_by: str = Field(min_length=1, max_length=256)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class GatekeeperRollbackRejectRequest(BaseModel):
+    project_id: str
+    rejected_by: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class GatekeeperCalibrationScheduleUpsertRequest(BaseModel):
+    project_id: str
+    name: str = Field(min_length=1, max_length=256)
+    enabled: bool = True
+    preset: str = Field(default="nightly", pattern="^(nightly|weekly)$")
+    interval_hours: int | None = Field(default=None, ge=1, le=4320)
+    lookback_days: int = Field(default=60, ge=1, le=365)
+    limit_rows: int = Field(default=20000, ge=100, le=200000)
+    holdout_ratio: float = Field(default=0.3, gt=0.0, lt=1.0)
+    split_seed: str = Field(default="synapse-gatekeeper-prod-holdout-v1", min_length=1, max_length=256)
+    weights: list[float] | None = None
+    confidences: list[float] | None = None
+    score_thresholds: list[float] | None = None
+    top_k: int = Field(default=5, ge=1, le=20)
+    allow_guardrail_fail: bool = False
+    snapshot_note: str | None = Field(default=None, max_length=4000)
+    updated_by: str = Field(min_length=1, max_length=256)
+
+
+class GatekeeperAlertTargetUpsertRequest(BaseModel):
+    project_id: str
+    channel: str = Field(pattern="^(slack_webhook|email_smtp)$")
+    target: str = Field(min_length=1, max_length=4000)
+    enabled: bool = True
+    config: dict[str, Any] | None = None
+    updated_by: str = Field(min_length=1, max_length=256)
+
+
+class GatekeeperAlertAttemptCreateRequest(BaseModel):
+    run_id: str = Field(min_length=1, max_length=256)
+    project_id: str
+    channel: str = Field(pattern="^(slack_webhook|email_smtp)$")
+    target: str = Field(min_length=1, max_length=4000)
+    status: str = Field(pattern="^(sent|failed|skipped)$")
+    alert_codes: list[str] | None = None
+    error_message: str | None = Field(default=None, max_length=4000)
+    response_payload: dict[str, Any] | None = None
+
+
+class GatekeeperCalibrationRunProjectIn(BaseModel):
+    project_id: str
+    schedule_id: UUID | None = None
+    schedule_name: str | None = None
+    status: str
+    project_cycle_status: str | None = None
+    returncode: int | None = None
+    alerts: list[dict[str, Any]] | None = None
+    result: dict[str, Any] | None = None
+
+
+class GatekeeperCalibrationRunIn(BaseModel):
+    run_id: str = Field(min_length=1, max_length=256)
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    total_schedules: int = Field(default=0, ge=0, le=50000)
+    executed_count: int = Field(default=0, ge=0, le=50000)
+    alerts_count: int = Field(default=0, ge=0, le=50000)
+    summary: dict[str, Any] | None = None
+    projects: list[GatekeeperCalibrationRunProjectIn] = Field(default_factory=list, max_length=5000)
+
+
+class GatekeeperCalibrationOperationRequest(BaseModel):
+    project_id: str
+    requested_by: str | None = Field(default=None, min_length=1, max_length=256)
+    operation_token: str | None = Field(default=None, min_length=8, max_length=256)
+    confirm: bool = False
+    confirmation_phrase: str | None = Field(default=None, min_length=1, max_length=512)
+    api_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    database_url: str | None = Field(default=None, min_length=1, max_length=4096)
+    dry_run: bool = False
+    force_run: bool = True
+    skip_due_check: bool = False
+    fail_on_alert: bool = False
+    timeout_sec: int = Field(default=1200, ge=30, le=7200)
+
+
+class GatekeeperCalibrationOperationQueueRequest(GatekeeperCalibrationOperationRequest):
+    max_attempts: int = Field(default=3, ge=1, le=20)
+
+
+class GatekeeperCalibrationOperationCancelRequest(BaseModel):
+    project_id: str
+    requested_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class GatekeeperCalibrationOperationRetryRequest(BaseModel):
+    project_id: str
+    requested_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    operation_token: str | None = Field(default=None, min_length=8, max_length=256)
+    confirm: bool = False
+    confirmation_phrase: str | None = Field(default=None, min_length=1, max_length=512)
+    force_run: bool | None = None
+    skip_due_check: bool | None = None
+    fail_on_alert: bool | None = None
+    timeout_sec: int | None = Field(default=None, ge=30, le=7200)
+
+
+class GatekeeperCalibrationQueueControlUpsertRequest(BaseModel):
+    project_id: str
+    worker_lag_sla_minutes: int = Field(default=20, ge=1, le=1440)
+    queue_depth_warn: int = Field(default=12, ge=1, le=50000)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueuePauseRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    pause_hours: int | None = Field(default=1, ge=1, le=168)
+    paused_until: datetime | None = None
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class GatekeeperCalibrationQueueResumeRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class GatekeeperCalibrationQueueBulkPauseRequest(BaseModel):
+    project_ids: list[str] = Field(min_length=1, max_length=100)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    pause_hours: int | None = Field(default=1, ge=1, le=168)
+    paused_until: datetime | None = None
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class GatekeeperCalibrationQueueBulkResumeRequest(BaseModel):
+    project_ids: list[str] = Field(min_length=1, max_length=100)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class GatekeeperCalibrationQueueWebhookExportRequest(BaseModel):
+    webhook_url: str = Field(min_length=1, max_length=2048)
+    requested_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    project_ids: list[str] | None = Field(default=None, max_length=100)
+    window_hours: int = Field(default=24, ge=1, le=168)
+    limit: int = Field(default=30, ge=1, le=200)
+    include_csv: bool = False
+    timeout_sec: int = Field(default=10, ge=1, le=60)
+
+
+class GatekeeperCalibrationQueueRecommendationApplyRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    window_hours: int = Field(default=24, ge=1, le=168)
+    history_hours: int = Field(default=72, ge=24, le=720)
+    apply_worker_lag_sla: bool = True
+    apply_queue_depth_warn: bool = True
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class GatekeeperCalibrationQueueOwnershipUpsertRequest(BaseModel):
+    project_id: str
+    owner_name: str | None = Field(default=None, max_length=256)
+    owner_contact: str | None = Field(default=None, max_length=512)
+    oncall_channel: str | None = Field(default=None, max_length=512)
+    escalation_channel: str | None = Field(default=None, max_length=512)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueAuditAnnotationRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    note: str | None = Field(default=None, max_length=4000)
+    follow_up_owner: str | None = Field(default=None, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentHookUpsertRequest(BaseModel):
+    project_id: str
+    enabled: bool = False
+    provider: str = Field(default="webhook", pattern="^(webhook|pagerduty|jira)$")
+    open_webhook_url: str | None = Field(default=None, max_length=2048)
+    resolve_webhook_url: str | None = Field(default=None, max_length=2048)
+    provider_config: dict[str, Any] | None = None
+    open_on_health: list[str] = Field(default_factory=lambda: ["critical"], max_length=8)
+    auto_resolve: bool = True
+    cooldown_minutes: int = Field(default=30, ge=1, le=1440)
+    timeout_sec: int = Field(default=10, ge=1, le=60)
+    secret_edit_roles: list[str] | None = Field(default=None, max_length=16)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentPolicyUpsertRequest(BaseModel):
+    project_id: str
+    alert_code: str = Field(min_length=1, max_length=128)
+    enabled: bool = True
+    priority: int = Field(default=100, ge=1, le=1000)
+    provider_override: str | None = Field(default=None, pattern="^(webhook|pagerduty|jira)$")
+    open_webhook_url: str | None = Field(default=None, max_length=2048)
+    resolve_webhook_url: str | None = Field(default=None, max_length=2048)
+    provider_config_override: dict[str, Any] | None = None
+    severity_by_health: dict[str, Any] | None = None
+    open_on_health: list[str] | None = Field(default=None, max_length=8)
+    secret_edit_roles: list[str] | None = Field(default=None, max_length=16)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentSyncRequest(BaseModel):
+    project_id: str | None = None
+    project_ids: list[str] | None = Field(default=None, max_length=100)
+    actor: str = Field(default="web_ui", min_length=1, max_length=256)
+    window_hours: int = Field(default=24, ge=1, le=168)
+    dry_run: bool = False
+    force_resolve: bool = False
+    preflight_enforcement_mode: str = Field(default="inherit", pattern="^(inherit|off|block|pause)$")
+    preflight_pause_hours: int | None = Field(default=None, ge=1, le=168)
+    preflight_critical_fail_threshold: int | None = Field(default=None, ge=1, le=100)
+    preflight_include_run_before_live_sync_only: bool = True
+    preflight_record_audit: bool = True
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class GatekeeperCalibrationQueueIncidentSyncEnforcementUpsertRequest(BaseModel):
+    project_id: str
+    incident_preflight_enforcement_mode: str = Field(default="off", pattern="^(off|block|pause)$")
+    incident_preflight_pause_hours: int = Field(default=4, ge=1, le=168)
+    incident_preflight_critical_fail_threshold: int = Field(default=1, ge=1, le=100)
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentSyncScheduleUpsertRequest(BaseModel):
+    project_id: str
+    name: str = Field(min_length=1, max_length=256)
+    enabled: bool = True
+    preset: str = Field(default="hourly", pattern="^(hourly|every_4h|daily|weekly|custom)$")
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    window_hours: int = Field(default=24, ge=1, le=168)
+    batch_size: int = Field(default=50, ge=1, le=200)
+    sync_limit: int = Field(default=200, ge=1, le=200)
+    dry_run: bool = False
+    force_resolve: bool = False
+    preflight_enforcement_mode: str = Field(default="inherit", pattern="^(inherit|off|block|pause)$")
+    preflight_pause_hours: int | None = Field(default=None, ge=1, le=168)
+    preflight_critical_fail_threshold: int | None = Field(default=None, ge=1, le=100)
+    preflight_include_run_before_live_sync_only: bool = True
+    preflight_record_audit: bool = True
+    requested_by: str = Field(default="incident_sync_scheduler", min_length=1, max_length=256)
+    next_run_at: datetime | None = None
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentSyncScheduleRunRequest(BaseModel):
+    project_id: str | None = None
+    project_ids: list[str] | None = Field(default=None, max_length=100)
+    schedule_ids: list[str] | None = Field(default=None, max_length=200)
+    actor: str = Field(default="incident_sync_scheduler", min_length=1, max_length=256)
+    force_run: bool = False
+    skip_due_check: bool = False
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class GatekeeperCalibrationQueueIncidentPolicySimulationRequest(BaseModel):
+    project_id: str
+    alert_code: str = Field(min_length=1, max_length=128)
+    health: str = Field(default="critical", pattern="^(healthy|watch|critical)$")
+    additional_alert_codes: list[str] | None = Field(default=None, max_length=32)
+    include_secrets: bool = False
+    actor: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentPreflightPresetUpsertRequest(BaseModel):
+    project_id: str
+    preset_key: str | None = Field(default=None, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+    enabled: bool = True
+    alert_code: str = Field(min_length=1, max_length=128)
+    health: str = Field(default="critical", pattern="^(healthy|watch|critical)$")
+    additional_alert_codes: list[str] | None = Field(default=None, max_length=32)
+    expected_decision: str = Field(default="open", pattern="^(open|skip|invalid_ok)$")
+    required_provider: str | None = Field(default=None, pattern="^(webhook|pagerduty|jira)$")
+    run_before_live_sync: bool = True
+    severity: str = Field(default="warning", pattern="^(info|warning|critical)$")
+    strict_mode: bool = True
+    metadata: dict[str, Any] | None = None
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+
+
+class GatekeeperCalibrationQueueIncidentPreflightRunRequest(BaseModel):
+    project_id: str | None = None
+    project_ids: list[str] | None = Field(default=None, max_length=100)
+    preset_ids: list[str] | None = Field(default=None, max_length=200)
+    include_disabled: bool = False
+    include_run_before_live_sync_only: bool = True
+    actor: str = Field(default="web_ui", min_length=1, max_length=256)
+    record_audit: bool = True
+    limit: int = Field(default=100, ge=1, le=200)
+
+
+class IntelligenceDeliveryTargetUpsertRequest(BaseModel):
+    project_id: str
+    channel: str = Field(pattern="^(slack_webhook|email_smtp)$")
+    target: str = Field(min_length=1, max_length=4000)
+    enabled: bool = True
+    config: dict[str, Any] | None = None
+    updated_by: str = Field(min_length=1, max_length=256)
+
+
+class SimulatorRunPolicyChangeIn(BaseModel):
+    policy_id: str | None = Field(default=None, min_length=1, max_length=256)
+    new_statement: str = Field(min_length=1, max_length=10000)
+    old_statement: str | None = Field(default=None, max_length=10000)
+    entity_key: str | None = Field(default=None, min_length=1, max_length=512)
+    category: str | None = Field(default=None, min_length=1, max_length=256)
+    metadata: dict[str, Any] | None = None
+
+
+class SimulatorRunCreateRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(default="api", min_length=1, max_length=256)
+    mode: str = Field(default="policy_replay", pattern="^(policy_replay)$")
+    lookback_days: int = Field(default=14, ge=1, le=365)
+    max_sessions: int = Field(default=200, ge=1, le=5000)
+    events_per_session: int = Field(default=80, ge=5, le=500)
+    relevance_floor: float = Field(default=0.22, ge=0.0, le=1.0)
+    max_findings: int = Field(default=1200, ge=1, le=10000)
+    policy_changes: list[SimulatorRunPolicyChangeIn] = Field(min_length=1, max_length=200)
+    metadata: dict[str, Any] | None = None
+
+
+class LegacyImportSourceUpsertRequest(BaseModel):
+    project_id: str
+    source_type: str = Field(pattern="^(local_dir|notion_root_page|notion_database)$")
+    source_ref: str = Field(min_length=1, max_length=2000)
+    enabled: bool = True
+    sync_interval_minutes: int = Field(default=1440, ge=15, le=10080)
+    next_run_at: datetime | None = None
+    config: dict[str, Any] | None = None
+    updated_by: str = Field(min_length=1, max_length=256)
+
+
+class LegacyImportSourceManualSyncRequest(BaseModel):
+    project_id: str
+    requested_by: str = Field(default="api", min_length=1, max_length=256)
+
+
+class TaskUpsertRequest(BaseModel):
+    project_id: str
+    task_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=20000)
+    status: str = Field(default="todo", pattern="^(todo|in_progress|blocked|done|canceled)$")
+    priority: str = Field(default="normal", pattern="^(low|normal|high|critical)$")
+    source: str = Field(default="human", pattern="^(agent|human|system)$")
+    assignee: str | None = Field(default=None, max_length=256)
+    entity_key: str | None = Field(default=None, min_length=1, max_length=512)
+    category: str | None = Field(default=None, min_length=1, max_length=256)
+    due_at: datetime | None = None
+    metadata: dict[str, Any] | None = None
+    created_by: str = Field(min_length=1, max_length=256)
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class TaskStatusUpdateRequest(BaseModel):
+    project_id: str
+    status: str = Field(pattern="^(todo|in_progress|blocked|done|canceled)$")
+    updated_by: str = Field(min_length=1, max_length=256)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class TaskCommentCreateRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(min_length=1, max_length=256)
+    comment: str = Field(min_length=1, max_length=10000)
+    metadata: dict[str, Any] | None = None
+
+
+class TaskLinkCreateRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(min_length=1, max_length=256)
+    link_type: str = Field(pattern="^(claim|draft|page|event|external)$")
+    link_ref: str = Field(min_length=1, max_length=1000)
+    note: str | None = Field(default=None, max_length=4000)
+    metadata: dict[str, Any] | None = None
+
+
+class WikiPageCreateRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(min_length=1, max_length=256)
+    title: str = Field(min_length=1, max_length=500)
+    slug: str | None = Field(default=None, min_length=1, max_length=512)
+    entity_key: str | None = Field(default=None, min_length=1, max_length=512)
+    page_type: str = Field(default="operations", min_length=1, max_length=128)
+    status: str = Field(default="published", pattern="^(draft|published)$")
+    initial_markdown: str | None = Field(default=None, min_length=1, max_length=100000)
+    change_summary: str | None = Field(default=None, max_length=4000)
+    allow_existing: bool = False
+
+
+class OpenClawProvenanceVerifyRequest(BaseModel):
+    provenance: dict[str, Any]
+    payload: dict[str, Any]
+
+
+def _backfill_event_id(batch_id: UUID, source_id: str) -> UUID:
+    material = f"synapse:backfill:{batch_id}:{source_id}"
+    return uuid5(NAMESPACE_URL, material)
+
+
+def _normalize_statement_text(text: str) -> str:
+    normalized = text.strip().lower()
+    normalized = re.sub(r"[^\w\s:.-]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _section_heading_from_key(section_key: str) -> str:
+    return " ".join(chunk.capitalize() for chunk in section_key.replace("_", " ").split())
+
+
+def _slugify_segment(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text or "")
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    lowered = ascii_text.strip().lower()
+    lowered = lowered.replace("_", "-")
+    lowered = re.sub(r"[^a-z0-9-]+", "-", lowered)
+    lowered = re.sub(r"-{2,}", "-", lowered).strip("-")
+    return lowered or "page"
+
+
+def _normalize_wiki_slug(raw_slug: str | None, fallback_title: str) -> str:
+    candidate = str(raw_slug or "").strip().replace("\\", "/")
+    if not candidate:
+        return _slugify_segment(fallback_title)
+    pieces = [piece.strip() for piece in candidate.split("/") if piece.strip()]
+    if not pieces:
+        return _slugify_segment(fallback_title)
+    normalized = [_slugify_segment(piece) for piece in pieces]
+    return "/".join(normalized)
+
+
+def _extract_sections_from_markdown(markdown: str) -> list[dict[str, Any]]:
+    lines = markdown.splitlines()
+    sections: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("## "):
+            heading = line[3:].strip() or "Facts"
+            section_key = _slugify_segment(heading).replace("-", "_")
+            current = {
+                "section_key": section_key,
+                "heading": heading,
+                "statements": [],
+            }
+            sections.append(current)
+            continue
+        if current is None:
+            continue
+        if line.startswith("- "):
+            statement = line[2:].strip()
+            if statement:
+                current["statements"].append(statement)
+    seen_keys: dict[str, int] = {}
+    for item in sections:
+        base_key = str(item["section_key"] or "facts").strip() or "facts"
+        count = seen_keys.get(base_key, 0) + 1
+        seen_keys[base_key] = count
+        if count > 1:
+            item["section_key"] = f"{base_key}_{count}"
+    if not sections:
+        body_lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+        if body_lines:
+            first = body_lines[0]
+            section_heading = "Overview"
+            section_key = "overview"
+            statement = re.sub(r"^#+\s*", "", first).strip()
+            sections.append(
+                {
+                    "section_key": section_key,
+                    "heading": section_heading,
+                    "statements": [statement] if statement else [],
+                }
+            )
+    return sections
+
+
+def _inject_statement_into_markdown(markdown: str, section_heading: str, statement_text: str) -> str:
+    line = f"- {statement_text}"
+    normalized_lines = markdown.splitlines()
+    if not normalized_lines:
+        return f"## {section_heading}\n{line}\n"
+
+    heading = f"## {section_heading}"
+    if heading not in normalized_lines:
+        suffix = "\n" if markdown.endswith("\n") else "\n\n"
+        return f"{markdown}{suffix}{heading}\n{line}\n"
+
+    heading_index = normalized_lines.index(heading)
+    next_heading_index = None
+    for idx in range(heading_index + 1, len(normalized_lines)):
+        if normalized_lines[idx].startswith("## "):
+            next_heading_index = idx
+            break
+
+    insert_at = next_heading_index if next_heading_index is not None else len(normalized_lines)
+    normalized_lines.insert(insert_at, line)
+    return "\n".join(normalized_lines).rstrip() + "\n"
+
+
+def _apply_section_statements_to_markdown(
+    markdown: str,
+    *,
+    section_heading: str,
+    statements: list[str],
+    mode: str,
+) -> str:
+    cleaned = [item.strip() for item in statements if item.strip()]
+    if not cleaned:
+        return markdown
+
+    lines = markdown.splitlines()
+    heading_line = f"## {section_heading}"
+
+    if not lines:
+        body = "\n".join([heading_line] + [f"- {item}" for item in cleaned])
+        return body.rstrip() + "\n"
+
+    if heading_line not in lines:
+        suffix = "\n" if markdown.endswith("\n") else "\n\n"
+        block = "\n".join([heading_line] + [f"- {item}" for item in cleaned])
+        return f"{markdown}{suffix}{block}\n"
+
+    start_idx = lines.index(heading_line)
+    end_idx = len(lines)
+    for idx in range(start_idx + 1, len(lines)):
+        if lines[idx].startswith("## "):
+            end_idx = idx
+            break
+
+    existing_block = lines[start_idx + 1 : end_idx]
+    if mode == "replace":
+        replacement = [f"- {item}" for item in cleaned]
+    else:
+        existing_norm = {
+            _normalize_statement_text(item[2:])
+            for item in existing_block
+            if item.strip().startswith("- ")
+        }
+        addition = [f"- {item}" for item in cleaned if _normalize_statement_text(item) not in existing_norm]
+        replacement = existing_block + addition
+
+    updated = lines[: start_idx + 1] + replacement + lines[end_idx:]
+    return "\n".join(updated).rstrip() + "\n"
+
+
+def _compute_claim_fingerprint(project_id: str, entity_key: str, category: str, claim_text: str) -> str:
+    material = "|".join(
+        [
+            project_id.strip().lower(),
+            entity_key.strip().lower(),
+            category.strip().lower(),
+            _normalize_statement_text(claim_text),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _canonical_json_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True, default=str)
+
+
+def _verify_openclaw_provenance_payload(
+    *,
+    provenance: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    schema = str(provenance.get("schema") or "").strip()
+    signature_alg = str(provenance.get("signature_alg") or "").strip().lower()
+    signature = str(provenance.get("signature") or "").strip().lower()
+    mode = str(provenance.get("mode") or "").strip().lower()
+    payload_sha256 = str(provenance.get("payload_sha256") or "").strip().lower()
+    key_id = str(provenance.get("key_id") or "").strip() or None
+    integration = str(provenance.get("integration") or "").strip().lower()
+
+    canonical_payload = _canonical_json_payload(payload)
+    computed_payload_sha256 = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+    payload_hash_match = bool(payload_sha256) and hmac.compare_digest(payload_sha256, computed_payload_sha256)
+
+    if schema and schema != "synapse.openclaw.provenance.v1":
+        return {
+            "valid": False,
+            "reason": "schema_mismatch",
+            "schema": schema,
+            "expected_schema": "synapse.openclaw.provenance.v1",
+            "integration": integration or None,
+            "mode": mode or None,
+            "signature_alg": signature_alg or None,
+            "key_id": key_id,
+            "computed_payload_sha256": computed_payload_sha256,
+            "provided_payload_sha256": payload_sha256 or None,
+            "payload_hash_match": payload_hash_match,
+            "signature_match": False,
+        }
+
+    if integration and integration != "openclaw":
+        return {
+            "valid": False,
+            "reason": "integration_mismatch",
+            "schema": schema or "synapse.openclaw.provenance.v1",
+            "integration": integration,
+            "expected_integration": "openclaw",
+            "mode": mode or None,
+            "signature_alg": signature_alg or None,
+            "key_id": key_id,
+            "computed_payload_sha256": computed_payload_sha256,
+            "provided_payload_sha256": payload_sha256 or None,
+            "payload_hash_match": payload_hash_match,
+            "signature_match": False,
+        }
+
+    secret = str(os.getenv("SYNAPSE_OPENCLAW_PROVENANCE_SECRET") or os.getenv("SYNAPSE_PROVENANCE_SECRET") or "").strip()
+    configured_key_id = (
+        str(os.getenv("SYNAPSE_OPENCLAW_PROVENANCE_KEY_ID") or os.getenv("SYNAPSE_PROVENANCE_KEY_ID") or "").strip()
+        or "openclaw-default"
+    )
+    key_id_match = key_id is None or not configured_key_id or key_id == configured_key_id
+
+    if signature_alg == "hmac-sha256" or mode == "signed":
+        if not secret:
+            return {
+                "valid": False,
+                "reason": "secret_missing_for_signed_provenance",
+                "schema": schema or "synapse.openclaw.provenance.v1",
+                "integration": integration or "openclaw",
+                "mode": mode or "signed",
+                "signature_alg": signature_alg or "hmac-sha256",
+                "key_id": key_id,
+                "configured_key_id": configured_key_id,
+                "key_id_match": key_id_match,
+                "computed_payload_sha256": computed_payload_sha256,
+                "provided_payload_sha256": payload_sha256 or None,
+                "payload_hash_match": payload_hash_match,
+                "signature_match": False,
+            }
+        expected_signature = hmac.new(secret.encode("utf-8"), canonical_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        signature_match = bool(signature) and hmac.compare_digest(signature, expected_signature)
+        valid = payload_hash_match and signature_match and key_id_match
+        return {
+            "valid": valid,
+            "reason": "ok" if valid else ("key_id_mismatch" if not key_id_match else "signature_or_payload_mismatch"),
+            "schema": schema or "synapse.openclaw.provenance.v1",
+            "integration": integration or "openclaw",
+            "mode": mode or "signed",
+            "signature_alg": signature_alg or "hmac-sha256",
+            "key_id": key_id,
+            "configured_key_id": configured_key_id,
+            "key_id_match": key_id_match,
+            "computed_payload_sha256": computed_payload_sha256,
+            "provided_payload_sha256": payload_sha256 or None,
+            "payload_hash_match": payload_hash_match,
+            "signature_match": signature_match,
+            "expected_signature": expected_signature,
+        }
+
+    expected_signature = computed_payload_sha256
+    signature_match = bool(signature) and hmac.compare_digest(signature, expected_signature)
+    valid = payload_hash_match and signature_match
+    return {
+        "valid": valid,
+        "reason": "ok" if valid else "signature_or_payload_mismatch",
+        "schema": schema or "synapse.openclaw.provenance.v1",
+        "integration": integration or "openclaw",
+        "mode": mode or "digest_only",
+        "signature_alg": signature_alg or "sha256",
+        "key_id": key_id,
+        "configured_key_id": configured_key_id,
+        "key_id_match": key_id_match,
+        "computed_payload_sha256": computed_payload_sha256,
+        "provided_payload_sha256": payload_sha256 or None,
+        "payload_hash_match": payload_hash_match,
+        "signature_match": signature_match,
+        "expected_signature": expected_signature,
+    }
+
+
+_TASK_ACTIVE_STATUSES = ("todo", "in_progress", "blocked")
+
+
+def _serialize_task_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    metadata = row[12] if isinstance(row[12], dict) else {}
+    return {
+        "id": row[0],
+        "project_id": row[1],
+        "title": row[2],
+        "description": row[3],
+        "status": row[4],
+        "priority": row[5],
+        "source": row[6],
+        "assignee": row[7],
+        "entity_key": row[8],
+        "category": row[9],
+        "due_at": None if row[10] is None else row[10].isoformat(),
+        "created_by": row[11],
+        "metadata": metadata,
+        "updated_by": row[13],
+        "created_at": row[14].isoformat(),
+        "updated_at": row[15].isoformat(),
+    }
+
+
+def _serialize_task_event_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "task_id": row[1],
+        "project_id": row[2],
+        "event_type": row[3],
+        "actor": row[4],
+        "payload": row[5] if isinstance(row[5], dict) else {},
+        "created_at": row[6].isoformat(),
+    }
+
+
+def _serialize_task_link_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "task_id": row[1],
+        "project_id": row[2],
+        "link_type": row[3],
+        "link_ref": row[4],
+        "note": row[5],
+        "metadata": row[6] if isinstance(row[6], dict) else {},
+        "created_by": row[7],
+        "created_at": row[8].isoformat(),
+    }
+
+
+def _insert_task_event(
+    cur,
+    *,
+    task_id: UUID,
+    project_id: str,
+    event_type: str,
+    actor: str | None,
+    payload: dict[str, Any],
+) -> UUID:
+    event_id = uuid4()
+    cur.execute(
+        """
+        INSERT INTO synapse_task_events (
+          id,
+          task_id,
+          project_id,
+          event_type,
+          actor,
+          payload,
+          created_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        """,
+        (event_id, task_id, project_id, event_type, actor, Jsonb(payload)),
+    )
+    return event_id
+
+
+_GATEKEEPER_CONFIG_HAS_LLM_COLUMNS: bool | None = None
+
+
+def _gatekeeper_config_has_llm_columns(conn) -> bool:
+    global _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS
+    if _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS is not None:
+        return _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS
+    required = {
+        "llm_assist_enabled",
+        "llm_provider",
+        "llm_model",
+        "llm_score_weight",
+        "llm_min_confidence",
+        "llm_timeout_ms",
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'gatekeeper_project_configs'
+            """
+        )
+        present = {str(row[0]) for row in cur.fetchall()}
+    _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS = required.issubset(present)
+    return _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return int(float(text))
+    except Exception:
+        return default
+    return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return float(text)
+    except Exception:
+        return default
+    return default
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _extract_calibration_holdout_metrics(calibration_report: dict[str, Any] | None) -> dict[str, float | None]:
+    report = calibration_report if isinstance(calibration_report, dict) else {}
+    best = report.get("best_candidate")
+    holdout = best.get("holdout_metrics") if isinstance(best, dict) else None
+    if not isinstance(holdout, dict):
+        holdout = report.get("holdout_metrics")
+    if not isinstance(holdout, dict):
+        holdout = {}
+    by_tier = holdout.get("by_tier") if isinstance(holdout.get("by_tier"), dict) else {}
+    golden = by_tier.get("golden_candidate") if isinstance(by_tier.get("golden_candidate"), dict) else {}
+    accuracy = holdout.get("accuracy")
+    macro_f1 = holdout.get("macro_f1")
+    if isinstance(accuracy, bool):
+        accuracy = None
+    if isinstance(macro_f1, bool):
+        macro_f1 = None
+    accuracy_value = _coerce_float(accuracy, 0.0) if accuracy is not None else None
+    macro_f1_value = _coerce_float(macro_f1, 0.0) if macro_f1 is not None else None
+    golden_precision = golden.get("precision")
+    if isinstance(golden_precision, bool):
+        golden_precision = None
+    golden_precision_value = _coerce_float(golden_precision, 0.0) if golden_precision is not None else None
+    return {
+        "accuracy": accuracy_value,
+        "macro_f1": macro_f1_value,
+        "golden_precision": golden_precision_value,
+    }
+
+
+def _normalize_threshold_list(values: list[float] | None, *, field_name: str) -> list[float]:
+    if values is None:
+        return []
+    if len(values) > 40:
+        raise HTTPException(status_code=422, detail=f"{field_name} length must be <= 40")
+    normalized: list[float] = []
+    for item in values:
+        value = _coerce_float(item, 0.0)
+        if value < 0.0 or value > 1.0:
+            raise HTTPException(status_code=422, detail=f"{field_name} values must be in range [0, 1]")
+        normalized.append(round(value, 4))
+    return normalized
+
+
+def _serialize_gatekeeper_calibration_schedule_row(row: Any) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "project_id": row[1],
+        "name": row[2],
+        "enabled": bool(row[3]),
+        "preset": row[4],
+        "interval_hours": row[5],
+        "lookback_days": int(row[6]),
+        "limit_rows": int(row[7]),
+        "holdout_ratio": float(row[8]),
+        "split_seed": row[9],
+        "weights": row[10] if isinstance(row[10], list) else [],
+        "confidences": row[11] if isinstance(row[11], list) else [],
+        "score_thresholds": row[12] if isinstance(row[12], list) else [],
+        "top_k": int(row[13]),
+        "allow_guardrail_fail": bool(row[14]),
+        "snapshot_note": row[15],
+        "updated_by": row[16],
+        "last_run_at": None if row[17] is None else row[17].isoformat(),
+        "last_status": row[18],
+        "last_run_summary": row[19] if isinstance(row[19], dict) else {},
+        "created_at": row[20].isoformat(),
+        "updated_at": row[21].isoformat(),
+    }
+
+
+def _coerce_feature_bool(value: Any) -> bool:
+    return _coerce_bool(value, False)
+
+
+def _coerce_feature_int(value: Any) -> int:
+    return _coerce_int(value, 0)
+
+
+def _coerce_feature_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_gatekeeper_config_for_apply(project_id: str, config: dict[str, Any], updated_by: str) -> GatekeeperConfigUpsertRequest:
+    return GatekeeperConfigUpsertRequest(
+        project_id=project_id,
+        updated_by=updated_by,
+        min_sources_for_golden=max(2, min(50, _coerce_int(config.get("min_sources_for_golden"), 3))),
+        conflict_free_days=max(1, min(365, _coerce_int(config.get("conflict_free_days"), 7))),
+        min_score_for_golden=max(0.0, min(1.0, _coerce_float(config.get("min_score_for_golden"), 0.72))),
+        operational_short_text_len=max(8, min(512, _coerce_int(config.get("operational_short_text_len"), 32))),
+        operational_short_token_len=max(1, min(128, _coerce_int(config.get("operational_short_token_len"), 5))),
+        llm_assist_enabled=_coerce_bool(config.get("llm_assist_enabled"), False),
+        llm_provider="openai",
+        llm_model=str(config.get("llm_model") or "gpt-4.1-mini"),
+        llm_score_weight=max(0.0, min(1.0, _coerce_float(config.get("llm_score_weight"), 0.35))),
+        llm_min_confidence=max(0.0, min(1.0, _coerce_float(config.get("llm_min_confidence"), 0.65))),
+        llm_timeout_ms=max(200, min(20000, _coerce_int(config.get("llm_timeout_ms"), 3500))),
+    )
+
+
+def _load_gatekeeper_snapshot(project_id: str, snapshot_id: UUID) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  source,
+                  config,
+                  guardrails_met,
+                  holdout_meta,
+                  calibration_report,
+                  artifact_refs,
+                  created_at
+                FROM gatekeeper_config_snapshots
+                WHERE project_id = %s
+                  AND id = %s
+                LIMIT 1
+                """,
+                (project_id, snapshot_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="gatekeeper snapshot not found")
+    return {
+        "id": row[0],
+        "source": row[1],
+        "config": row[2] if isinstance(row[2], dict) else {},
+        "guardrails_met": row[3],
+        "holdout_meta": row[4] if isinstance(row[4], dict) else {},
+        "calibration_report": row[5] if isinstance(row[5], dict) else {},
+        "artifact_refs": row[6] if isinstance(row[6], dict) else {},
+        "created_at": row[7].isoformat(),
+    }
+
+
+def _estimate_gatekeeper_tier_from_features(
+    *,
+    features: dict[str, Any],
+    current_score: float,
+    target_config: dict[str, Any],
+) -> dict[str, Any]:
+    evidence_count = max(0, _coerce_feature_int(features.get("evidence_count")))
+    repeated_count = max(0, _coerce_feature_int(features.get("repeated_count")))
+    source_diversity = max(0, _coerce_feature_int(features.get("source_diversity")))
+    is_short = _coerce_feature_bool(features.get("is_short"))
+    has_operational_pattern = _coerce_feature_bool(features.get("has_operational_pattern"))
+    has_policy_signal = _coerce_feature_bool(features.get("has_policy_signal"))
+    has_recent_open_conflict = _coerce_feature_bool(features.get("has_recent_open_conflict"))
+
+    min_sources_for_golden = max(2, min(50, _coerce_int(target_config.get("min_sources_for_golden"), 3)))
+    min_score_for_golden = max(0.0, min(1.0, _coerce_float(target_config.get("min_score_for_golden"), 0.72)))
+    llm_assist_enabled = _coerce_bool(target_config.get("llm_assist_enabled"), False)
+    llm_weight = max(0.0, min(1.0, _coerce_float(target_config.get("llm_score_weight"), 0.35)))
+    llm_min_confidence = max(0.0, min(1.0, _coerce_float(target_config.get("llm_min_confidence"), 0.65)))
+
+    score_before_llm = _coerce_float(features.get("score_before_llm"), current_score)
+    score = max(0.0, min(1.0, score_before_llm))
+    llm_applied = False
+    llm_score = _coerce_feature_float(features.get("llm_score"))
+    llm_confidence = _coerce_feature_float(features.get("llm_confidence"))
+    llm_suggested_tier = str(features.get("llm_suggested_tier") or "").strip()
+
+    if llm_assist_enabled and llm_score is not None and llm_confidence is not None and llm_confidence >= llm_min_confidence:
+        score = max(0.0, min(1.0, round((1.0 - llm_weight) * score + llm_weight * llm_score, 4)))
+        llm_applied = True
+
+    rationale = "informative fact requires moderation before promotion"
+    if has_operational_pattern and is_short and repeated_count == 0:
+        tier = "operational_memory"
+        rationale = "short operational event with low reusable signal"
+    elif has_policy_signal and (evidence_count >= 2 or repeated_count >= 1):
+        tier = "golden_candidate"
+        rationale = "policy-like fact with multi-signal support"
+    elif repeated_count >= 2:
+        tier = "golden_candidate"
+        rationale = "repeated claim pattern reached promotion threshold"
+    else:
+        tier = "insight_candidate"
+
+    if (
+        tier == "insight_candidate"
+        and source_diversity >= min_sources_for_golden
+        and score >= min_score_for_golden
+        and not has_recent_open_conflict
+    ):
+        tier = "golden_candidate"
+        rationale = "auto-promoted by source diversity threshold and conflict-free horizon"
+
+    if llm_applied:
+        if llm_suggested_tier == "golden_candidate":
+            if not has_recent_open_conflict and score >= min_score_for_golden:
+                if tier != "golden_candidate":
+                    tier = "golden_candidate"
+                    rationale = "llm-assisted promotion: high-confidence model signal and score threshold met"
+        elif llm_suggested_tier == "operational_memory":
+            if is_short and repeated_count == 0 and not has_policy_signal:
+                if tier != "operational_memory":
+                    tier = "operational_memory"
+                    rationale = "llm-assisted demotion: short low-value operational event"
+        elif llm_suggested_tier == "insight_candidate":
+            if tier == "golden_candidate" and not has_policy_signal:
+                tier = "insight_candidate"
+                rationale = "llm-assisted moderation: held in insight queue pending more evidence"
+
+    if has_recent_open_conflict and tier == "golden_candidate":
+        tier = "insight_candidate"
+        rationale = "open conflicts for entity in recent horizon; kept as insight candidate"
+
+    return {
+        "estimated_tier": tier,
+        "estimated_score": score,
+        "estimated_rationale": rationale,
+        "llm_applied": llm_applied,
+    }
+
+
+def _build_gatekeeper_config_diff(current: dict[str, Any], target: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    keys = [
+        "min_sources_for_golden",
+        "conflict_free_days",
+        "min_score_for_golden",
+        "operational_short_text_len",
+        "operational_short_token_len",
+        "llm_assist_enabled",
+        "llm_model",
+        "llm_score_weight",
+        "llm_min_confidence",
+        "llm_timeout_ms",
+    ]
+    diff: dict[str, dict[str, Any]] = {}
+    for key in keys:
+        old = current.get(key)
+        new = target.get(key)
+        if old != new:
+            diff[key] = {"current": old, "target": new}
+    return diff
+
+
+def _build_gatekeeper_rollback_preview(
+    *,
+    project_id: str,
+    snapshot_id: UUID,
+    lookback_days: int,
+    limit: int,
+    sample_size: int,
+) -> dict[str, Any]:
+    snapshot = _load_gatekeeper_snapshot(project_id, snapshot_id)
+    target_config = snapshot.get("config") if isinstance(snapshot.get("config"), dict) else {}
+    current_config = (get_gatekeeper_config(project_id).get("config") or {})
+    if not isinstance(current_config, dict):
+        current_config = {}
+
+    since = datetime.now(UTC) - timedelta(days=max(1, int(lookback_days)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT claim_id::text, tier, score, features, updated_at
+                FROM gatekeeper_decisions
+                WHERE project_id = %s
+                  AND updated_at >= %s
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (project_id, since, max(100, int(limit))),
+            )
+            rows = cur.fetchall()
+
+    current_counts = {"operational_memory": 0, "insight_candidate": 0, "golden_candidate": 0}
+    target_counts = {"operational_memory": 0, "insight_candidate": 0, "golden_candidate": 0}
+    transitions: dict[str, int] = {}
+    changed_samples: list[dict[str, Any]] = []
+    changed_total = 0
+
+    for row in rows:
+        claim_id = row[0]
+        current_tier = str(row[1] or "insight_candidate")
+        current_score = _coerce_float(row[2], 0.0)
+        features = row[3] if isinstance(row[3], dict) else {}
+        updated_at = row[4]
+
+        estimate = _estimate_gatekeeper_tier_from_features(
+            features=features,
+            current_score=current_score,
+            target_config=target_config,
+        )
+        target_tier = str(estimate["estimated_tier"])
+        current_counts[current_tier] = current_counts.get(current_tier, 0) + 1
+        target_counts[target_tier] = target_counts.get(target_tier, 0) + 1
+        transition_key = f"{current_tier}->{target_tier}"
+        transitions[transition_key] = transitions.get(transition_key, 0) + 1
+
+        if target_tier != current_tier:
+            changed_total += 1
+            if len(changed_samples) < max(1, int(sample_size)):
+                changed_samples.append(
+                    {
+                        "claim_id": claim_id,
+                        "from_tier": current_tier,
+                        "to_tier": target_tier,
+                        "score_current": round(current_score, 4),
+                        "score_estimated": round(_coerce_float(estimate.get("estimated_score"), current_score), 4),
+                        "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                        "reason": estimate.get("estimated_rationale"),
+                    }
+                )
+
+    total = len(rows)
+    changed_ratio = round((changed_total / total), 4) if total > 0 else 0.0
+    from_golden = transitions.get("golden_candidate->insight_candidate", 0) + transitions.get(
+        "golden_candidate->operational_memory", 0
+    )
+    to_golden = transitions.get("insight_candidate->golden_candidate", 0) + transitions.get(
+        "operational_memory->golden_candidate", 0
+    )
+    risk_level = "low"
+    if from_golden >= 25 or changed_ratio >= 0.35:
+        risk_level = "high"
+    elif from_golden >= 8 or changed_ratio >= 0.18:
+        risk_level = "medium"
+
+    return {
+        "project_id": project_id,
+        "snapshot_id": str(snapshot_id),
+        "snapshot": snapshot,
+        "lookback_days": int(lookback_days),
+        "limit": int(limit),
+        "config_diff": _build_gatekeeper_config_diff(current_config, target_config),
+        "impact": {
+            "decisions_scanned": total,
+            "changed_total": changed_total,
+            "changed_ratio": changed_ratio,
+            "changed_from_golden": int(from_golden),
+            "changed_to_golden": int(to_golden),
+            "risk_level": risk_level,
+            "tier_counts_current": current_counts,
+            "tier_counts_target_estimated": target_counts,
+            "transitions": transitions,
+        },
+        "changed_samples": changed_samples,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _apply_gatekeeper_rollback_from_snapshot(*, project_id: str, snapshot: dict[str, Any], updated_by: str, note: str | None) -> dict[str, Any]:
+    source_snapshot_id = str(snapshot.get("id"))
+    source_snapshot_kind = str(snapshot.get("source") or "unknown")
+    source_config = snapshot.get("config") if isinstance(snapshot.get("config"), dict) else {}
+    source_guardrails_met = snapshot.get("guardrails_met")
+    source_holdout_meta = snapshot.get("holdout_meta") if isinstance(snapshot.get("holdout_meta"), dict) else {}
+    source_calibration_report = (
+        snapshot.get("calibration_report") if isinstance(snapshot.get("calibration_report"), dict) else {}
+    )
+    source_artifact_refs = snapshot.get("artifact_refs") if isinstance(snapshot.get("artifact_refs"), dict) else {}
+
+    gatekeeper_payload = _normalize_gatekeeper_config_for_apply(project_id, source_config, updated_by=updated_by)
+    upsert_result = upsert_gatekeeper_config(gatekeeper_payload)
+    applied_config = upsert_result.get("config") if isinstance(upsert_result, dict) else {}
+    if not isinstance(applied_config, dict):
+        applied_config = {}
+
+    rollback_note = note or f"Rollback to snapshot {source_snapshot_id} (source={source_snapshot_kind})"
+    rollback_artifact_refs = dict(source_artifact_refs)
+    rollback_artifact_refs["rollback_from_snapshot_id"] = source_snapshot_id
+    rollback_artifact_refs["rollback_from_source"] = source_snapshot_kind
+    rollback_artifact_refs["rollback_at"] = datetime.now(UTC).isoformat()
+    snapshot_payload = GatekeeperConfigSnapshotCreateRequest(
+        project_id=project_id,
+        approved_by=updated_by,
+        source="rollback",
+        note=rollback_note,
+        config=applied_config,
+        guardrails_met=source_guardrails_met,
+        holdout_meta=source_holdout_meta,
+        calibration_report=source_calibration_report,
+        artifact_refs=rollback_artifact_refs,
+    )
+    snapshot_result = create_gatekeeper_config_snapshot(snapshot_payload)
+    rollback_snapshot = snapshot_result.get("snapshot") if isinstance(snapshot_result, dict) else None
+
+    return {
+        "status": "ok",
+        "project_id": project_id,
+        "rolled_back_to_snapshot_id": source_snapshot_id,
+        "config": applied_config,
+        "snapshot": rollback_snapshot,
+    }
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _quantile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    points = sorted(values)
+    if len(points) == 1:
+        return round(points[0], 3)
+    rank = (len(points) - 1) * max(0.0, min(1.0, q))
+    low = int(math.floor(rank))
+    high = int(math.ceil(rank))
+    if low == high:
+        return round(points[low], 3)
+    weight = rank - low
+    return round(points[low] * (1.0 - weight) + points[high] * weight, 3)
+
+
+def _latency_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0, "avg": None, "p50": None, "p90": None}
+    avg = round(sum(values) / len(values), 3)
+    return {
+        "count": len(values),
+        "avg": avg,
+        "p50": _quantile(values, 0.5),
+        "p90": _quantile(values, 0.9),
+    }
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(float(numerator) / float(denominator), 4)
+
+
+_INTELLIGENCE_DIGEST_KIND_DAILY = "daily"
+_INTELLIGENCE_DIGEST_KIND_WEEKLY = "weekly"
+_INTELLIGENCE_DIGEST_KIND_INCIDENT_ESCALATION_DAILY = "incident_escalation_daily"
+_INTELLIGENCE_DIGEST_KINDS = {
+    _INTELLIGENCE_DIGEST_KIND_DAILY,
+    _INTELLIGENCE_DIGEST_KIND_WEEKLY,
+    _INTELLIGENCE_DIGEST_KIND_INCIDENT_ESCALATION_DAILY,
+}
+_INTELLIGENCE_ESCALATION_SEVERITIES = {"info", "warning", "critical"}
+_INTELLIGENCE_WEEKDAY_ALIASES = {
+    "mon": "mon",
+    "monday": "mon",
+    "tue": "tue",
+    "tues": "tue",
+    "tuesday": "tue",
+    "wed": "wed",
+    "weds": "wed",
+    "wednesday": "wed",
+    "thu": "thu",
+    "thur": "thu",
+    "thurs": "thu",
+    "thursday": "thu",
+    "fri": "fri",
+    "friday": "fri",
+    "sat": "sat",
+    "saturday": "sat",
+    "sun": "sun",
+    "sunday": "sun",
+    "0": "mon",
+    "1": "tue",
+    "2": "wed",
+    "3": "thu",
+    "4": "fri",
+    "5": "sat",
+    "6": "sun",
+}
+_INTELLIGENCE_ESCALATION_OWNER_FIELDS = {
+    "owner_name",
+    "owner_contact",
+    "oncall_channel",
+    "escalation_channel",
+}
+_INTELLIGENCE_ESCALATION_OWNER_FIELD_DEFAULTS = {
+    "critical": "escalation_channel",
+    "warning": "oncall_channel",
+    "info": "oncall_channel",
+}
+_INCIDENT_SYNC_PREFLIGHT_ENFORCEMENT_MODES = {"off", "block", "pause"}
+_INCIDENT_SYNC_SCHEDULE_PREFLIGHT_ENFORCEMENT_MODES = {"inherit", "off", "block", "pause"}
+_INCIDENT_SYNC_SCHEDULE_PRESET_INTERVAL_MINUTES = {
+    "hourly": 60,
+    "every_4h": 240,
+    "daily": 1440,
+    "weekly": 10080,
+}
+
+
+def _normalize_intelligence_escalation_severity(value: Any, *, default: str = "warning") -> str:
+    text = str(value or default).strip().lower() or default
+    if text not in _INTELLIGENCE_ESCALATION_SEVERITIES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "intelligence_escalation_severity_invalid",
+                "allowed": sorted(_INTELLIGENCE_ESCALATION_SEVERITIES),
+            },
+        )
+    return text
+
+
+def _normalize_intelligence_quiet_hour_time(value: Any, *, field: str) -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", text):
+        raise HTTPException(status_code=422, detail={"code": "intelligence_quiet_hours_time_invalid", "field": field})
+    return text
+
+
+def _normalize_intelligence_quiet_hour_days(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=422, detail={"code": "intelligence_quiet_hours_days_invalid"})
+    out: list[str] = []
+    for item in value:
+        key = str(item or "").strip().lower()
+        normalized = _INTELLIGENCE_WEEKDAY_ALIASES.get(key)
+        if normalized is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "intelligence_quiet_hours_day_invalid", "value": item},
+            )
+        if normalized not in out:
+            out.append(normalized)
+    if not out:
+        raise HTTPException(status_code=422, detail={"code": "intelligence_quiet_hours_days_required"})
+    return out
+
+
+def _normalize_intelligence_delivery_playbook(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+
+    playbook: dict[str, Any] = {}
+    playbook["enabled"] = bool(raw.get("enabled", False))
+    playbook["owner_tier_enabled"] = bool(raw.get("owner_tier_enabled", True))
+    playbook["owner_tier_max_candidates"] = max(1, min(20, int(raw.get("owner_tier_max_candidates") or 5)))
+
+    owner_fields = dict(_INTELLIGENCE_ESCALATION_OWNER_FIELD_DEFAULTS)
+    custom_owner_fields = raw.get("owner_tier_channels_by_severity")
+    if custom_owner_fields is not None:
+        if not isinstance(custom_owner_fields, dict):
+            raise HTTPException(status_code=422, detail={"code": "intelligence_owner_tier_channels_invalid"})
+        for severity in sorted(_INTELLIGENCE_ESCALATION_SEVERITIES):
+            if severity not in custom_owner_fields:
+                continue
+            field = str(custom_owner_fields.get(severity) or "").strip().lower()
+            if field not in _INTELLIGENCE_ESCALATION_OWNER_FIELDS:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "intelligence_owner_tier_channel_field_invalid",
+                        "severity": severity,
+                        "allowed": sorted(_INTELLIGENCE_ESCALATION_OWNER_FIELDS),
+                    },
+                )
+            owner_fields[severity] = field
+    playbook["owner_tier_channels_by_severity"] = owner_fields
+
+    fallback_recipients_raw = raw.get("owner_tier_fallback_recipients")
+    fallback_recipients: list[str] = []
+    if fallback_recipients_raw is not None:
+        if not isinstance(fallback_recipients_raw, list):
+            raise HTTPException(status_code=422, detail={"code": "intelligence_owner_tier_fallback_invalid"})
+        for item in fallback_recipients_raw:
+            text = str(item or "").strip()
+            if not text or text in fallback_recipients:
+                continue
+            fallback_recipients.append(text[:512])
+            if len(fallback_recipients) >= 20:
+                break
+    playbook["owner_tier_fallback_recipients"] = fallback_recipients
+
+    fanout_map: dict[str, list[str]] = {severity: [] for severity in sorted(_INTELLIGENCE_ESCALATION_SEVERITIES)}
+    fanout_raw = raw.get("severity_fanout")
+    if fanout_raw is not None:
+        if not isinstance(fanout_raw, dict):
+            raise HTTPException(status_code=422, detail={"code": "intelligence_severity_fanout_invalid"})
+        for severity in sorted(_INTELLIGENCE_ESCALATION_SEVERITIES):
+            rows = fanout_raw.get(severity)
+            if rows is None:
+                continue
+            if not isinstance(rows, list):
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "intelligence_severity_fanout_row_invalid", "severity": severity},
+                )
+            normalized_rows: list[str] = []
+            for item in rows:
+                text = str(item or "").strip()
+                if not text or text in normalized_rows:
+                    continue
+                normalized_rows.append(text[:512])
+                if len(normalized_rows) >= 40:
+                    break
+            fanout_map[severity] = normalized_rows
+    playbook["severity_fanout"] = fanout_map
+
+    quiet_hours_out: dict[str, Any] = {
+        "enabled": False,
+        "timezone": "UTC",
+        "allow_severity_at_or_above": "critical",
+        "windows": [],
+    }
+    quiet_raw = raw.get("quiet_hours")
+    if quiet_raw is not None:
+        if not isinstance(quiet_raw, dict):
+            raise HTTPException(status_code=422, detail={"code": "intelligence_quiet_hours_invalid"})
+        quiet_hours_out["enabled"] = bool(quiet_raw.get("enabled", False))
+        quiet_hours_out["timezone"] = str(quiet_raw.get("timezone") or "UTC").strip()[:64] or "UTC"
+        quiet_hours_out["allow_severity_at_or_above"] = _normalize_intelligence_escalation_severity(
+            quiet_raw.get("allow_severity_at_or_above"),
+            default="critical",
+        )
+        windows_raw = quiet_raw.get("windows")
+        if windows_raw is not None:
+            if not isinstance(windows_raw, list):
+                raise HTTPException(status_code=422, detail={"code": "intelligence_quiet_hours_windows_invalid"})
+            windows: list[dict[str, Any]] = []
+            for index, item in enumerate(windows_raw):
+                if not isinstance(item, dict):
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": "intelligence_quiet_hours_window_invalid", "index": index},
+                    )
+                windows.append(
+                    {
+                        "days": _normalize_intelligence_quiet_hour_days(item.get("days")),
+                        "start": _normalize_intelligence_quiet_hour_time(item.get("start"), field=f"windows[{index}].start"),
+                        "end": _normalize_intelligence_quiet_hour_time(item.get("end"), field=f"windows[{index}].end"),
+                    }
+                )
+                if len(windows) >= 24:
+                    break
+            quiet_hours_out["windows"] = windows
+    playbook["quiet_hours"] = quiet_hours_out
+
+    return playbook
+
+
+def _normalize_intelligence_delivery_target_config(channel: str, raw: Any) -> dict[str, Any]:
+    config = dict(raw) if isinstance(raw, dict) else {}
+    if "timeout_seconds" in config:
+        config["timeout_seconds"] = max(1.0, min(60.0, float(config.get("timeout_seconds") or 8)))
+
+    digest_kinds_raw = config.get("digest_kinds")
+    if digest_kinds_raw is not None:
+        if not isinstance(digest_kinds_raw, list):
+            raise HTTPException(status_code=422, detail={"code": "intelligence_delivery_digest_kinds_invalid"})
+        normalized_kinds: list[str] = []
+        for item in digest_kinds_raw:
+            kind = _normalize_intelligence_digest_kind(str(item or "").strip() or None)
+            if kind not in normalized_kinds:
+                normalized_kinds.append(kind)
+        config["digest_kinds"] = normalized_kinds
+
+    if "incident_escalation_require_over_sla" in config:
+        config["incident_escalation_require_over_sla"] = bool(config.get("incident_escalation_require_over_sla", True))
+
+    if "incident_escalation_playbook" in config:
+        config["incident_escalation_playbook"] = _normalize_intelligence_delivery_playbook(
+            config.get("incident_escalation_playbook")
+        )
+
+    if channel == "email_smtp":
+        host = str(config.get("host") or "").strip()
+        if host:
+            config["host"] = host[:512]
+        for key in ("username", "from_email"):
+            value = str(config.get(key) or "").strip()
+            if value:
+                config[key] = value[:512]
+        if "port" in config:
+            config["port"] = max(1, min(65535, int(config.get("port") or 587)))
+        if "use_tls" in config:
+            config["use_tls"] = bool(config.get("use_tls", True))
+        if "use_ssl" in config:
+            config["use_ssl"] = bool(config.get("use_ssl", False))
+
+    return config
+
+
+def _normalize_intelligence_digest_kind(value: str | None, *, default: str = _INTELLIGENCE_DIGEST_KIND_DAILY) -> str:
+    text = str(value or default).strip().lower() or default
+    if text not in _INTELLIGENCE_DIGEST_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "intelligence_digest_kind_unsupported",
+                "allowed": sorted(_INTELLIGENCE_DIGEST_KINDS),
+            },
+        )
+    return text
+
+
+def _normalize_rejection_reason(value: str | None) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "unspecified"
+    normalized = " ".join(text.split())
+    if len(normalized) > 120:
+        return f"{normalized[:117]}..."
+    return normalized
+
+
+def _counter_to_ranked_items(
+    counter: dict[str, int],
+    *,
+    item_key: str,
+    total: int,
+    top: int = 5,
+) -> list[dict[str, Any]]:
+    rows = sorted(counter.items(), key=lambda item: (-int(item[1]), str(item[0])))[: max(1, int(top))]
+    return [
+        {
+            item_key: key,
+            "count": int(count),
+            "share": _safe_ratio(int(count), max(1, total)),
+        }
+        for key, count in rows
+    ]
+
+
+def _parse_csv_tokens(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in str(raw).split(","):
+        normalized = token.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _reviewer_cohort_key(actor: str) -> str:
+    text = actor.strip()
+    if not text:
+        return "unknown"
+    for sep in ("@", ":", "/", "_", "-"):
+        if sep in text:
+            head = text.split(sep, 1)[0].strip()
+            if head:
+                return head.lower()
+    return text.lower()
+
+
+def _rollback_attribution_group_key(*, actor: str, group_by: str) -> str:
+    normalized_actor = actor.strip()
+    if group_by == "cohort":
+        return _reviewer_cohort_key(normalized_actor)
+    return normalized_actor
+
+
+def _extract_json_payload(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {"raw_output": text}
+
+
+def _build_scheduler_command_preview(
+    *,
+    project_id: str,
+    api_url: str,
+    dry_run: bool,
+    force_run: bool,
+    skip_due_check: bool,
+) -> str:
+    parts: list[str] = [
+        "python",
+        "scripts/run_gatekeeper_calibration_scheduler.py",
+        "--use-api-schedules",
+        "--project-id",
+        project_id,
+        "--api-url",
+        api_url,
+    ]
+    if dry_run:
+        parts.append("--dry-run")
+    if force_run:
+        parts.append("--force-run")
+    if skip_due_check:
+        parts.append("--skip-due-check")
+    return " ".join(shlex.quote(item) for item in parts)
+
+
+def _load_enabled_gatekeeper_schedules(project_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+    payload = list_gatekeeper_calibration_schedules(project_id=project_id, enabled=True, limit=limit)
+    schedules = payload.get("schedules") if isinstance(payload, dict) else None
+    if not isinstance(schedules, list):
+        return []
+    return [item for item in schedules if isinstance(item, dict)]
+
+
+def _gatekeeper_operation_lock_key(project_id: str) -> int:
+    digest = hashlib.sha256(f"gatekeeper_operation:{project_id}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+
+
+def _with_gatekeeper_operation_lock(project_id: str):
+    class _LockCtx:
+        def __enter__(self_nonlocal):
+            self_nonlocal._conn_ctx = get_conn()
+            self_nonlocal._conn = self_nonlocal._conn_ctx.__enter__()
+            self_nonlocal._key = _gatekeeper_operation_lock_key(project_id)
+            with self_nonlocal._conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s)", (self_nonlocal._key,))
+                row = cur.fetchone()
+            acquired = bool(row[0]) if row else False
+            if not acquired:
+                self_nonlocal._conn_ctx.__exit__(None, None, None)
+                raise HTTPException(status_code=409, detail="calibration_operation_locked")
+            return self_nonlocal
+
+        def __exit__(self_nonlocal, exc_type, exc, tb):
+            try:
+                with self_nonlocal._conn.cursor() as cur:
+                    cur.execute("SELECT pg_advisory_unlock(%s)", (self_nonlocal._key,))
+                    cur.fetchone()
+            finally:
+                self_nonlocal._conn_ctx.__exit__(exc_type, exc, tb)
+            return False
+
+    return _LockCtx()
+
+
+def _create_operation_run_record(
+    *,
+    project_id: str,
+    operation_token: str,
+    requested_by: str | None,
+    dry_run: bool,
+    request_payload: dict[str, Any],
+    mode: str = "sync",
+    status: str = "running",
+    max_attempts: int = 3,
+    retry_of: str | None = None,
+    attempt_no: int = 1,
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, status, result_payload
+                FROM gatekeeper_calibration_operation_runs
+                WHERE project_id = %s
+                  AND operation_token = %s
+                LIMIT 1
+                """,
+                (project_id, operation_token),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                payload = existing[2] if isinstance(existing[2], dict) else {}
+                return str(existing[0]), str(existing[1] or "unknown"), payload
+
+            run_id = uuid4()
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_operation_runs (
+                  id,
+                  project_id,
+                  operation_token,
+                  requested_by,
+                  dry_run,
+                  status,
+                  mode,
+                  progress_percent,
+                  progress_phase,
+                  attempt_no,
+                  max_attempts,
+                  retry_of,
+                  request_payload,
+                  result_payload
+                )
+                VALUES (
+                  %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s, '{}'::jsonb
+                )
+                RETURNING id::text
+                """,
+                (
+                    run_id,
+                    project_id,
+                    operation_token,
+                    requested_by,
+                    dry_run,
+                    status,
+                    mode,
+                    5.0 if status == "running" else 0.0,
+                    "queued" if status == "queued" else "running",
+                    max(1, int(attempt_no)),
+                    max(1, min(20, int(max_attempts))),
+                    retry_of,
+                    Jsonb(request_payload),
+                ),
+            )
+            row = cur.fetchone()
+    return str(row[0]), None, None
+
+
+def _update_operation_run_record(
+    record_id: str,
+    *,
+    status: str | None = None,
+    result_payload: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    progress_percent: float | None = None,
+    progress_phase: str | None = None,
+    cancel_requested: bool | None = None,
+    cancel_requested_by: str | None = None,
+    set_started_at: bool = False,
+    set_finished_at: bool = False,
+    worker_id: str | None = None,
+) -> None:
+    updates: list[str] = ["updated_at = NOW()"]
+    params: list[Any] = []
+    if status is not None:
+        updates.append("status = %s")
+        params.append(status)
+    if result_payload is not None:
+        updates.append("result_payload = %s")
+        params.append(Jsonb(result_payload))
+    if error_message is not None:
+        updates.append("error_message = %s")
+        params.append(error_message[:4000])
+    if progress_percent is not None:
+        updates.append("progress_percent = %s")
+        params.append(float(max(0.0, min(100.0, progress_percent))))
+    if progress_phase is not None:
+        updates.append("progress_phase = %s")
+        params.append(progress_phase[:256])
+    if cancel_requested is not None:
+        updates.append("cancel_requested = %s")
+        params.append(bool(cancel_requested))
+        if cancel_requested:
+            updates.append("cancel_requested_at = NOW()")
+    if cancel_requested_by is not None:
+        updates.append("cancel_requested_by = %s")
+        params.append(cancel_requested_by[:256])
+    if set_started_at:
+        updates.append("started_at = COALESCE(started_at, NOW())")
+    if set_finished_at:
+        updates.append("finished_at = NOW()")
+    if worker_id is not None:
+        updates.append("worker_id = %s")
+        params.append(worker_id[:256])
+    updates.append("heartbeat_at = NOW()")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE gatekeeper_calibration_operation_runs
+                SET {set_clause}
+                WHERE id = %s
+                """.format(set_clause=", ".join(updates)),
+                (*params, record_id),
+            )
+
+
+def _append_operation_event(
+    *,
+    run_id: str,
+    project_id: str,
+    event_type: str,
+    message: str,
+    phase: str | None = None,
+    progress_percent: float | None = None,
+    payload: dict[str, Any] | None = None,
+) -> int:
+    normalized_progress = None
+    if progress_percent is not None:
+        normalized_progress = float(max(0.0, min(100.0, progress_percent)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_operation_events (
+                  operation_run_id,
+                  project_id,
+                  event_type,
+                  phase,
+                  message,
+                  progress_percent,
+                  payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    run_id,
+                    project_id,
+                    event_type[:128],
+                    (phase or "")[:128] or None,
+                    message[:2000],
+                    normalized_progress,
+                    Jsonb(payload or {}),
+                ),
+            )
+            row = cur.fetchone()
+
+            update_parts = ["updated_at = NOW()", "heartbeat_at = NOW()"]
+            update_params: list[Any] = []
+            if phase is not None:
+                update_parts.append("progress_phase = %s")
+                update_params.append(phase[:256])
+            if normalized_progress is not None:
+                update_parts.append("progress_percent = %s")
+                update_params.append(normalized_progress)
+            cur.execute(
+                f"""
+                UPDATE gatekeeper_calibration_operation_runs
+                SET {", ".join(update_parts)}
+                WHERE id = %s
+                """,
+                (*update_params, run_id),
+            )
+    return int(row[0]) if row else 0
+
+
+def _validate_live_operation_controls(
+    *,
+    project_id: str,
+    dry_run: bool,
+    confirm: bool,
+    confirmation_phrase: str | None,
+    operation_token: str | None,
+) -> None:
+    required_phrase = f"RUN {project_id}"
+    if dry_run:
+        return
+    if not confirm:
+        raise HTTPException(status_code=422, detail="calibration_operation_confirmation_required")
+    if (confirmation_phrase or "").strip() != required_phrase:
+        raise HTTPException(status_code=422, detail="calibration_operation_confirmation_phrase_mismatch")
+    if not (operation_token and operation_token.strip()):
+        raise HTTPException(status_code=422, detail="calibration_operation_token_required")
+
+
+def _operation_terminal(status: str | None) -> bool:
+    return str(status or "").strip().lower() in {"succeeded", "failed", "canceled"}
+
+
+def _default_operation_queue_control(*, project_id: str) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "paused_until": None,
+        "pause_reason": None,
+        "pause_active": False,
+        "worker_lag_sla_minutes": 20,
+        "queue_depth_warn": 12,
+        "incident_preflight_enforcement_mode": "off",
+        "incident_preflight_pause_hours": 4,
+        "incident_preflight_critical_fail_threshold": 1,
+        "updated_by": "system",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _serialize_operation_queue_control_row(row: tuple[Any, ...], *, project_id: str) -> dict[str, Any]:
+    paused_until = _parse_iso_datetime(row[1]) if row[1] is not None else None
+    return {
+        "project_id": row[0] or project_id,
+        "paused_until": None if paused_until is None else paused_until.isoformat(),
+        "pause_reason": row[2] if isinstance(row[2], str) else None,
+        "pause_active": paused_until is not None and paused_until > datetime.now(UTC),
+        "worker_lag_sla_minutes": max(1, int(row[3] or 20)),
+        "queue_depth_warn": max(1, int(row[4] or 12)),
+        "incident_preflight_enforcement_mode": _normalize_incident_sync_preflight_enforcement_mode(row[5], default="off"),
+        "incident_preflight_pause_hours": max(1, min(168, int(row[6] or 4))),
+        "incident_preflight_critical_fail_threshold": max(1, min(100, int(row[7] or 1))),
+        "updated_by": str(row[8] or "system"),
+        "created_at": None if row[9] is None else row[9].isoformat(),
+        "updated_at": None if row[10] is None else row[10].isoformat(),
+    }
+
+
+def _fetch_operation_queue_control(project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  project_id,
+                  paused_until,
+                  pause_reason,
+                  worker_lag_sla_minutes,
+                  queue_depth_warn,
+                  incident_preflight_enforcement_mode,
+                  incident_preflight_pause_hours,
+                  incident_preflight_critical_fail_threshold,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_controls
+                WHERE project_id = %s
+                LIMIT 1
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_control(project_id=project_id)
+    return _serialize_operation_queue_control_row(row, project_id=project_id)
+
+
+def _upsert_operation_queue_control(
+    *,
+    project_id: str,
+    worker_lag_sla_minutes: int,
+    queue_depth_warn: int,
+    incident_preflight_enforcement_mode: str,
+    incident_preflight_pause_hours: int,
+    incident_preflight_critical_fail_threshold: int,
+    updated_by: str,
+    paused_until: datetime | None,
+    pause_reason: str | None,
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_controls (
+                  project_id,
+                  paused_until,
+                  pause_reason,
+                  worker_lag_sla_minutes,
+                  queue_depth_warn,
+                  incident_preflight_enforcement_mode,
+                  incident_preflight_pause_hours,
+                  incident_preflight_critical_fail_threshold,
+                  updated_by,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (project_id) DO UPDATE
+                SET paused_until = EXCLUDED.paused_until,
+                    pause_reason = EXCLUDED.pause_reason,
+                    worker_lag_sla_minutes = EXCLUDED.worker_lag_sla_minutes,
+                    queue_depth_warn = EXCLUDED.queue_depth_warn,
+                    incident_preflight_enforcement_mode = EXCLUDED.incident_preflight_enforcement_mode,
+                    incident_preflight_pause_hours = EXCLUDED.incident_preflight_pause_hours,
+                    incident_preflight_critical_fail_threshold = EXCLUDED.incident_preflight_critical_fail_threshold,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  project_id,
+                  paused_until,
+                  pause_reason,
+                  worker_lag_sla_minutes,
+                  queue_depth_warn,
+                  incident_preflight_enforcement_mode,
+                  incident_preflight_pause_hours,
+                  incident_preflight_critical_fail_threshold,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    project_id,
+                    paused_until,
+                    pause_reason,
+                    max(1, min(1440, int(worker_lag_sla_minutes))),
+                    max(1, min(50000, int(queue_depth_warn))),
+                    _normalize_incident_sync_preflight_enforcement_mode(incident_preflight_enforcement_mode, default="off"),
+                    max(1, min(168, int(incident_preflight_pause_hours))),
+                    max(1, min(100, int(incident_preflight_critical_fail_threshold))),
+                    updated_by[:256],
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_control(project_id=project_id)
+    return _serialize_operation_queue_control_row(row, project_id=project_id)
+
+
+def _append_operation_queue_control_event(
+    *,
+    project_id: str,
+    action: str,
+    actor: str,
+    reason: str | None,
+    paused_until: datetime | None,
+    payload: dict[str, Any] | None = None,
+) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_control_events (
+                  project_id,
+                  action,
+                  actor,
+                  reason,
+                  paused_until,
+                  payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    project_id,
+                    action[:128],
+                    actor[:256],
+                    (reason or "").strip()[:2000] or None,
+                    paused_until,
+                    Jsonb(payload or {}),
+                ),
+            )
+            row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+def _serialize_operation_queue_incident_sync_schedule_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": str(row[0]),
+        "project_id": str(row[1]),
+        "name": str(row[2]),
+        "enabled": bool(row[3]),
+        "preset": str(row[4] or "hourly"),
+        "interval_minutes": max(5, min(10080, int(row[5] or 60))),
+        "window_hours": max(1, min(168, int(row[6] or 24))),
+        "batch_size": max(1, min(200, int(row[7] or 50))),
+        "sync_limit": max(1, min(200, int(row[8] or 200))),
+        "dry_run": bool(row[9]),
+        "force_resolve": bool(row[10]),
+        "preflight_enforcement_mode": _normalize_incident_sync_schedule_preflight_enforcement_mode(
+            row[11],
+            default="inherit",
+        ),
+        "preflight_pause_hours": None if row[12] is None else max(1, min(168, int(row[12]))),
+        "preflight_critical_fail_threshold": None if row[13] is None else max(1, min(100, int(row[13]))),
+        "preflight_include_run_before_live_sync_only": bool(row[14]),
+        "preflight_record_audit": bool(row[15]),
+        "requested_by": str(row[16] or "incident_sync_scheduler"),
+        "next_run_at": None if row[17] is None else row[17].isoformat(),
+        "last_run_at": None if row[18] is None else row[18].isoformat(),
+        "last_status": str(row[19]) if row[19] is not None else None,
+        "last_run_summary": row[20] if isinstance(row[20], dict) else {},
+        "updated_by": str(row[21] or "web_ui"),
+        "created_at": None if row[22] is None else row[22].isoformat(),
+        "updated_at": None if row[23] is None else row[23].isoformat(),
+    }
+
+
+_INCIDENT_SYNC_SCHEDULE_LIST_SORT_FIELDS: dict[str, str] = {
+    "next_run_at": "next_run_at",
+    "updated_at": "updated_at",
+    "last_run_at": "last_run_at",
+    "name": "name",
+    "project_id": "project_id",
+    "status": "LOWER(COALESCE(last_status, 'never'))",
+}
+
+
+def _resolve_incident_sync_schedule_list_sort(*, sort_by: str, sort_dir: str) -> tuple[str, str, str]:
+    normalized_sort_by = str(sort_by or "next_run_at").strip().lower()
+    sort_sql = _INCIDENT_SYNC_SCHEDULE_LIST_SORT_FIELDS.get(normalized_sort_by)
+    if sort_sql is None:
+        raise HTTPException(status_code=422, detail="incident_sync_schedule_sort_by_invalid")
+    normalized_sort_dir = str(sort_dir or "asc").strip().lower()
+    if normalized_sort_dir not in {"asc", "desc"}:
+        raise HTTPException(status_code=422, detail="incident_sync_schedule_sort_dir_invalid")
+    direction = "ASC" if normalized_sort_dir == "asc" else "DESC"
+    nulls = "NULLS LAST" if normalized_sort_by in {"next_run_at", "last_run_at"} else ""
+    return sort_sql, direction, nulls
+
+
+def _build_operation_queue_incident_sync_schedule_filters(
+    *,
+    project_ids: list[str] | None = None,
+    schedule_ids: list[str] | None = None,
+    enabled: bool | None = None,
+    due_before: datetime | None = None,
+    project_contains: str | None = None,
+    name_contains: str | None = None,
+    status: str | None = None,
+) -> tuple[str, list[Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    if project_ids:
+        targets = [str(item or "").strip() for item in project_ids if str(item or "").strip()]
+        if targets:
+            filters.append("project_id = ANY(%s)")
+            params.append(targets)
+    if schedule_ids:
+        targets = [str(item or "").strip() for item in schedule_ids if str(item or "").strip()]
+        if targets:
+            filters.append("id::text = ANY(%s)")
+            params.append(targets)
+    if enabled is not None:
+        filters.append("enabled = %s")
+        params.append(bool(enabled))
+    if due_before is not None:
+        filters.append("next_run_at <= %s")
+        params.append(due_before)
+    normalized_project_contains = str(project_contains or "").strip()
+    if normalized_project_contains:
+        filters.append("project_id ILIKE %s")
+        params.append(f"%{normalized_project_contains[:256]}%")
+    normalized_name_contains = str(name_contains or "").strip()
+    if normalized_name_contains:
+        filters.append("name ILIKE %s")
+        params.append(f"%{normalized_name_contains[:256]}%")
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status:
+        if normalized_status not in {"ok", "partial_failure", "failed", "skipped", "never"}:
+            raise HTTPException(status_code=422, detail="incident_sync_schedule_status_filter_invalid")
+        if normalized_status == "never":
+            filters.append("(last_status IS NULL OR BTRIM(last_status) = '')")
+        else:
+            filters.append("LOWER(COALESCE(last_status, '')) = %s")
+            params.append(normalized_status)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    return where, params
+
+
+def _count_operation_queue_incident_sync_schedules(
+    *,
+    project_ids: list[str] | None = None,
+    schedule_ids: list[str] | None = None,
+    enabled: bool | None = None,
+    due_before: datetime | None = None,
+    project_contains: str | None = None,
+    name_contains: str | None = None,
+    status: str | None = None,
+) -> int:
+    where, params = _build_operation_queue_incident_sync_schedule_filters(
+        project_ids=project_ids,
+        schedule_ids=schedule_ids,
+        enabled=enabled,
+        due_before=due_before,
+        project_contains=project_contains,
+        name_contains=name_contains,
+        status=status,
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM gatekeeper_calibration_queue_incident_sync_schedules
+                {where}
+                """,
+                tuple(params),
+            )
+            row = cur.fetchone()
+    return max(0, int(row[0] if row else 0))
+
+
+def _encode_operation_queue_incident_sync_schedule_cursor(offset: int) -> str:
+    safe_offset = max(0, int(offset))
+    raw = json.dumps({"offset": safe_offset}, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _decode_operation_queue_incident_sync_schedule_cursor(cursor: str | None) -> int | None:
+    raw_cursor = str(cursor or "").strip()
+    if not raw_cursor:
+        return None
+    padded = raw_cursor + "=" * (-len(raw_cursor) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        payload = json.loads(decoded)
+        offset = int(payload.get("offset") if isinstance(payload, dict) else 0)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="incident_sync_schedule_cursor_invalid") from exc
+    return max(0, offset)
+
+
+def _list_operation_queue_incident_sync_schedules(
+    *,
+    project_ids: list[str] | None = None,
+    schedule_ids: list[str] | None = None,
+    enabled: bool | None = None,
+    due_before: datetime | None = None,
+    project_contains: str | None = None,
+    name_contains: str | None = None,
+    status: str | None = None,
+    offset: int = 0,
+    sort_by: str = "next_run_at",
+    sort_dir: str = "asc",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    cap = max(1, min(500, int(limit)))
+    safe_offset = max(0, int(offset))
+    sort_sql, sort_direction, sort_nulls = _resolve_incident_sync_schedule_list_sort(
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    where, params = _build_operation_queue_incident_sync_schedule_filters(
+        project_ids=project_ids,
+        schedule_ids=schedule_ids,
+        enabled=enabled,
+        due_before=due_before,
+        project_contains=project_contains,
+        name_contains=name_contains,
+        status=status,
+    )
+    order_clause = f"{sort_sql} {sort_direction}"
+    if sort_nulls:
+        order_clause = f"{order_clause} {sort_nulls}"
+    order_clause = f"{order_clause}, updated_at DESC, name ASC, id ASC"
+    params.extend([cap, safe_offset])
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_minutes,
+                  window_hours,
+                  batch_size,
+                  sync_limit,
+                  dry_run,
+                  force_resolve,
+                  preflight_enforcement_mode,
+                  preflight_pause_hours,
+                  preflight_critical_fail_threshold,
+                  preflight_include_run_before_live_sync_only,
+                  preflight_record_audit,
+                  requested_by,
+                  next_run_at,
+                  last_run_at,
+                  last_status,
+                  last_run_summary,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_sync_schedules
+                {where}
+                ORDER BY {order_clause}
+                LIMIT %s
+                OFFSET %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return [_serialize_operation_queue_incident_sync_schedule_row(row) for row in rows]
+
+
+def _upsert_operation_queue_incident_sync_schedule(
+    *,
+    project_id: str,
+    name: str,
+    enabled: bool,
+    preset: str,
+    interval_minutes: int | None,
+    window_hours: int,
+    batch_size: int,
+    sync_limit: int,
+    dry_run: bool,
+    force_resolve: bool,
+    preflight_enforcement_mode: str,
+    preflight_pause_hours: int | None,
+    preflight_critical_fail_threshold: int | None,
+    preflight_include_run_before_live_sync_only: bool,
+    preflight_record_audit: bool,
+    requested_by: str,
+    next_run_at: datetime | None,
+    updated_by: str,
+) -> dict[str, Any]:
+    normalized_name = (name or "").strip()
+    if not normalized_name:
+        raise HTTPException(status_code=422, detail="incident_sync_schedule_name_required")
+    normalized_preset = str(preset or "hourly").strip().lower() or "hourly"
+    normalized_interval_minutes = _resolve_incident_sync_schedule_interval_minutes(
+        preset=normalized_preset,
+        interval_minutes=interval_minutes,
+    )
+    normalized_preflight_mode = _normalize_incident_sync_schedule_preflight_enforcement_mode(
+        preflight_enforcement_mode,
+        default="inherit",
+    )
+    normalized_next_run_at = _parse_iso_datetime(next_run_at)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_incident_sync_schedules (
+                  id,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_minutes,
+                  window_hours,
+                  batch_size,
+                  sync_limit,
+                  dry_run,
+                  force_resolve,
+                  preflight_enforcement_mode,
+                  preflight_pause_hours,
+                  preflight_critical_fail_threshold,
+                  preflight_include_run_before_live_sync_only,
+                  preflight_record_audit,
+                  requested_by,
+                  next_run_at,
+                  updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s)
+                ON CONFLICT (project_id, name) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    preset = EXCLUDED.preset,
+                    interval_minutes = EXCLUDED.interval_minutes,
+                    window_hours = EXCLUDED.window_hours,
+                    batch_size = EXCLUDED.batch_size,
+                    sync_limit = EXCLUDED.sync_limit,
+                    dry_run = EXCLUDED.dry_run,
+                    force_resolve = EXCLUDED.force_resolve,
+                    preflight_enforcement_mode = EXCLUDED.preflight_enforcement_mode,
+                    preflight_pause_hours = EXCLUDED.preflight_pause_hours,
+                    preflight_critical_fail_threshold = EXCLUDED.preflight_critical_fail_threshold,
+                    preflight_include_run_before_live_sync_only = EXCLUDED.preflight_include_run_before_live_sync_only,
+                    preflight_record_audit = EXCLUDED.preflight_record_audit,
+                    requested_by = EXCLUDED.requested_by,
+                    next_run_at = COALESCE(EXCLUDED.next_run_at, gatekeeper_calibration_queue_incident_sync_schedules.next_run_at),
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  id::text,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_minutes,
+                  window_hours,
+                  batch_size,
+                  sync_limit,
+                  dry_run,
+                  force_resolve,
+                  preflight_enforcement_mode,
+                  preflight_pause_hours,
+                  preflight_critical_fail_threshold,
+                  preflight_include_run_before_live_sync_only,
+                  preflight_record_audit,
+                  requested_by,
+                  next_run_at,
+                  last_run_at,
+                  last_status,
+                  last_run_summary,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    uuid4(),
+                    project_id,
+                    normalized_name[:256],
+                    bool(enabled),
+                    normalized_preset,
+                    normalized_interval_minutes,
+                    max(1, min(168, int(window_hours))),
+                    max(1, min(200, int(batch_size))),
+                    max(1, min(200, int(sync_limit))),
+                    bool(dry_run),
+                    bool(force_resolve),
+                    normalized_preflight_mode,
+                    None if preflight_pause_hours is None else max(1, min(168, int(preflight_pause_hours))),
+                    None
+                    if preflight_critical_fail_threshold is None
+                    else max(1, min(100, int(preflight_critical_fail_threshold))),
+                    bool(preflight_include_run_before_live_sync_only),
+                    bool(preflight_record_audit),
+                    (requested_by or "incident_sync_scheduler").strip()[:256] or "incident_sync_scheduler",
+                    normalized_next_run_at,
+                    (updated_by or "web_ui").strip()[:256] or "web_ui",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=500, detail="incident_sync_schedule_upsert_failed")
+    return _serialize_operation_queue_incident_sync_schedule_row(row)
+
+
+def _update_operation_queue_incident_sync_schedule_run_state(
+    *,
+    schedule_id: str,
+    last_status: str,
+    last_run_summary: dict[str, Any],
+    next_run_at: datetime,
+    updated_by: str,
+    last_run_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE gatekeeper_calibration_queue_incident_sync_schedules
+                SET
+                  last_run_at = COALESCE(%s, NOW()),
+                  last_status = %s,
+                  last_run_summary = %s,
+                  next_run_at = %s,
+                  updated_by = %s,
+                  updated_at = NOW()
+                WHERE id::text = %s
+                RETURNING
+                  id::text,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_minutes,
+                  window_hours,
+                  batch_size,
+                  sync_limit,
+                  dry_run,
+                  force_resolve,
+                  preflight_enforcement_mode,
+                  preflight_pause_hours,
+                  preflight_critical_fail_threshold,
+                  preflight_include_run_before_live_sync_only,
+                  preflight_record_audit,
+                  requested_by,
+                  next_run_at,
+                  last_run_at,
+                  last_status,
+                  last_run_summary,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    last_run_at,
+                    str(last_status or "failed").strip().lower()[:32],
+                    Jsonb(last_run_summary if isinstance(last_run_summary, dict) else {}),
+                    next_run_at,
+                    (updated_by or "incident_sync_scheduler").strip()[:256] or "incident_sync_scheduler",
+                    schedule_id,
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return _serialize_operation_queue_incident_sync_schedule_row(row)
+
+
+def _run_operation_queue_incident_sync_schedules(
+    *,
+    project_ids: list[str] | None,
+    schedule_ids: list[str] | None,
+    actor: str,
+    force_run: bool,
+    skip_due_check: bool,
+    limit: int,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    cap = max(1, min(200, int(limit)))
+    due_before = None if force_run or skip_due_check else now
+    schedules = _list_operation_queue_incident_sync_schedules(
+        project_ids=project_ids,
+        schedule_ids=schedule_ids,
+        enabled=True,
+        due_before=due_before,
+        limit=cap,
+    )
+    results: list[dict[str, Any]] = []
+    summary = {
+        "schedules_total": len(schedules),
+        "executed": 0,
+        "ok": 0,
+        "partial_failure": 0,
+        "failed": 0,
+        "skipped": 0,
+        "opened": 0,
+        "resolved": 0,
+        "sync_failed": 0,
+        "noop": 0,
+        "blocked": 0,
+        "paused": 0,
+    }
+    for schedule in schedules:
+        schedule_id = str(schedule.get("id") or "").strip()
+        project_id = str(schedule.get("project_id") or "").strip()
+        schedule_name = str(schedule.get("name") or schedule_id).strip() or schedule_id
+        interval_minutes = max(5, min(10080, int(schedule.get("interval_minutes") or 60)))
+        last_run_at = datetime.now(UTC)
+        next_run_at = last_run_at + timedelta(minutes=interval_minutes)
+        run_actor = (actor or "").strip() or str(schedule.get("requested_by") or "incident_sync_scheduler")
+        try:
+            sync_result = _sync_operation_queue_incident_hooks(
+                project_ids=[project_id],
+                actor=run_actor,
+                window_hours=max(1, min(168, int(schedule.get("window_hours") or 24))),
+                dry_run=bool(schedule.get("dry_run")),
+                force_resolve=bool(schedule.get("force_resolve")),
+                preflight_enforcement_mode=_normalize_incident_sync_schedule_preflight_enforcement_mode(
+                    schedule.get("preflight_enforcement_mode"),
+                    default="inherit",
+                ),
+                preflight_pause_hours=(
+                    None
+                    if schedule.get("preflight_pause_hours") is None
+                    else max(1, min(168, int(schedule.get("preflight_pause_hours"))))
+                ),
+                preflight_critical_fail_threshold=(
+                    None
+                    if schedule.get("preflight_critical_fail_threshold") is None
+                    else max(1, min(100, int(schedule.get("preflight_critical_fail_threshold"))))
+                ),
+                preflight_include_run_before_live_sync_only=bool(
+                    schedule.get("preflight_include_run_before_live_sync_only")
+                ),
+                preflight_record_audit=bool(schedule.get("preflight_record_audit")),
+                limit=max(1, min(200, int(schedule.get("sync_limit") or 200))),
+            )
+            sync_summary = sync_result.get("summary") if isinstance(sync_result.get("summary"), dict) else {}
+            sync_opened = int(sync_summary.get("opened") or 0)
+            sync_resolved = int(sync_summary.get("resolved") or 0)
+            sync_failed = int(sync_summary.get("failed") or 0)
+            sync_noop = int(sync_summary.get("noop") or 0)
+            sync_blocked = int(sync_summary.get("blocked") or 0)
+            sync_paused = int(sync_summary.get("paused") or 0)
+            if sync_failed > 0:
+                schedule_status = "failed"
+            elif sync_blocked > 0 or sync_paused > 0:
+                schedule_status = "partial_failure"
+            elif sync_opened == 0 and sync_resolved == 0 and sync_noop > 0:
+                schedule_status = "skipped"
+            else:
+                schedule_status = "ok"
+            failure_classes: list[str] = []
+            if sync_failed > 0:
+                failure_classes.append("sync_failed")
+            if sync_blocked > 0:
+                failure_classes.append("preflight_blocked")
+            if sync_paused > 0:
+                failure_classes.append("preflight_paused")
+            if schedule_status == "skipped" and sync_noop > 0:
+                failure_classes.append("noop")
+            failure_classes = sorted({item for item in failure_classes if item})
+            schedule_summary = {
+                "status": schedule_status,
+                "sync_summary": {
+                    "opened": sync_opened,
+                    "resolved": sync_resolved,
+                    "failed": sync_failed,
+                    "noop": sync_noop,
+                    "blocked": sync_blocked,
+                    "paused": sync_paused,
+                    "projects_total": int(sync_summary.get("projects_total") or 0),
+                },
+                "failure_classes": failure_classes,
+                "sync_generated_at": sync_result.get("generated_at"),
+                "run_actor": run_actor,
+                "force_run": bool(force_run),
+                "skip_due_check": bool(skip_due_check),
+            }
+            updated_schedule = _update_operation_queue_incident_sync_schedule_run_state(
+                schedule_id=schedule_id,
+                last_status=schedule_status,
+                last_run_summary=schedule_summary,
+                next_run_at=next_run_at,
+                updated_by=run_actor,
+                last_run_at=last_run_at,
+            )
+            audit_event_id = _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_sync_schedule_run",
+                actor=run_actor,
+                reason=f"schedule:{schedule_name}"[:2000],
+                paused_until=None,
+                payload={
+                    "schedule_id": schedule_id,
+                    "schedule_name": schedule_name,
+                    "schedule_status": schedule_status,
+                    "next_run_at": next_run_at.isoformat(),
+                    "sync_summary": schedule_summary["sync_summary"],
+                    "failure_classes": failure_classes,
+                    "force_run": bool(force_run),
+                    "skip_due_check": bool(skip_due_check),
+                },
+            )
+            summary["executed"] += 1
+            summary[schedule_status] += 1
+            summary["opened"] += sync_opened
+            summary["resolved"] += sync_resolved
+            summary["sync_failed"] += sync_failed
+            summary["noop"] += sync_noop
+            summary["blocked"] += sync_blocked
+            summary["paused"] += sync_paused
+            results.append(
+                {
+                    "schedule_id": schedule_id,
+                    "project_id": project_id,
+                    "name": schedule_name,
+                    "status": schedule_status,
+                    "updated_schedule": updated_schedule,
+                    "audit_event_id": int(audit_event_id),
+                    "sync_summary": schedule_summary["sync_summary"],
+                    "sync_generated_at": sync_result.get("generated_at"),
+                    "failure_classes": failure_classes,
+                    "sync_trace": {
+                        "requested_projects": sync_result.get("requested_projects"),
+                        "window_hours": sync_result.get("window_hours"),
+                        "dry_run": sync_result.get("dry_run"),
+                        "force_resolve": sync_result.get("force_resolve"),
+                        "preflight_enforcement_mode": sync_result.get("preflight_enforcement_mode"),
+                        "summary": sync_summary,
+                        "results": sync_result.get("results")
+                        if isinstance(sync_result.get("results"), list)
+                        else [],
+                        "generated_at": sync_result.get("generated_at"),
+                    },
+                    "run_actor": run_actor,
+                }
+            )
+        except Exception as exc:
+            error_message = str(exc)[:2000]
+            normalized_error = error_message.lower()
+            failure_classes = ["sync_exception"]
+            if "timeout" in normalized_error:
+                failure_classes.append("timeout")
+            if "network" in normalized_error or "connection" in normalized_error or "http" in normalized_error:
+                failure_classes.append("transport_error")
+            failure_classes = sorted({item for item in failure_classes if item})
+            failure_summary = {
+                "status": "failed",
+                "error": error_message,
+                "failure_classes": failure_classes,
+                "run_actor": run_actor,
+                "force_run": bool(force_run),
+                "skip_due_check": bool(skip_due_check),
+            }
+            updated_schedule = _update_operation_queue_incident_sync_schedule_run_state(
+                schedule_id=schedule_id,
+                last_status="failed",
+                last_run_summary=failure_summary,
+                next_run_at=next_run_at,
+                updated_by=run_actor,
+                last_run_at=last_run_at,
+            )
+            audit_event_id = _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_sync_schedule_failed",
+                actor=run_actor,
+                reason=f"schedule:{schedule_name}"[:2000],
+                paused_until=None,
+                payload={
+                    "schedule_id": schedule_id,
+                    "schedule_name": schedule_name,
+                    "error": error_message,
+                    "failure_classes": failure_classes,
+                    "next_run_at": next_run_at.isoformat(),
+                    "force_run": bool(force_run),
+                    "skip_due_check": bool(skip_due_check),
+                },
+            )
+            summary["executed"] += 1
+            summary["failed"] += 1
+            results.append(
+                {
+                    "schedule_id": schedule_id,
+                    "project_id": project_id,
+                    "name": schedule_name,
+                    "status": "failed",
+                    "error": error_message,
+                    "updated_schedule": updated_schedule,
+                    "audit_event_id": int(audit_event_id),
+                    "failure_classes": failure_classes,
+                    "run_actor": run_actor,
+                }
+            )
+    status = "ok" if summary["failed"] == 0 else "partial_failure"
+    return {
+        "status": status,
+        "requested_projects": project_ids or [],
+        "requested_schedule_ids": schedule_ids or [],
+        "force_run": bool(force_run),
+        "skip_due_check": bool(skip_due_check),
+        "summary": summary,
+        "results": results,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _normalize_incident_sync_schedule_run_status(value: Any, *, default: str = "unknown") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"ok", "partial_failure", "failed", "skipped"}:
+        return normalized
+    return str(default or "unknown").strip().lower() or "unknown"
+
+
+def _derive_incident_sync_schedule_failure_classes(
+    *,
+    action: str,
+    status: str,
+    payload: dict[str, Any],
+) -> list[str]:
+    classes: set[str] = set()
+    raw_classes = payload.get("failure_classes")
+    if isinstance(raw_classes, list):
+        for raw in raw_classes:
+            code = str(raw or "").strip().lower()
+            if code:
+                classes.add(code[:128])
+
+    sync_summary = payload.get("sync_summary")
+    if isinstance(sync_summary, dict):
+        if int(sync_summary.get("failed") or 0) > 0:
+            classes.add("sync_failed")
+        if int(sync_summary.get("blocked") or 0) > 0:
+            classes.add("preflight_blocked")
+        if int(sync_summary.get("paused") or 0) > 0:
+            classes.add("preflight_paused")
+        if status == "skipped" and int(sync_summary.get("noop") or 0) > 0:
+            classes.add("noop")
+
+    error_text = str(payload.get("error") or "").strip().lower()
+    if error_text:
+        if "timeout" in error_text:
+            classes.add("timeout")
+        if "network" in error_text or "connection" in error_text or "http" in error_text:
+            classes.add("transport_error")
+        if "preflight" in error_text and "block" in error_text:
+            classes.add("preflight_blocked")
+        if "preflight" in error_text and "pause" in error_text:
+            classes.add("preflight_paused")
+        if not classes:
+            classes.add("sync_exception")
+
+    if action == "incident_sync_schedule_failed":
+        classes.add("sync_exception")
+    if not classes and status in {"failed", "partial_failure"}:
+        classes.add("unknown_failure")
+    return sorted(classes)
+
+
+def _build_operation_queue_incident_sync_schedule_timeline(
+    *,
+    schedule_id: str,
+    project_id: str | None,
+    days: int,
+    limit: int,
+) -> dict[str, Any]:
+    rows = _list_operation_queue_incident_sync_schedules(schedule_ids=[schedule_id], limit=1)
+    if not rows:
+        raise HTTPException(status_code=404, detail="incident_sync_schedule_not_found")
+    schedule = rows[0]
+    target_project_id = str(schedule.get("project_id") or "").strip()
+    if project_id is not None and project_id.strip() and project_id.strip() != target_project_id:
+        raise HTTPException(status_code=404, detail="incident_sync_schedule_not_found")
+
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    cap = max(1, min(500, int(limit)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id,
+                  project_id,
+                  action,
+                  actor,
+                  reason,
+                  payload,
+                  created_at
+                FROM gatekeeper_calibration_queue_control_events
+                WHERE project_id = %s
+                  AND created_at >= %s
+                  AND action = ANY(%s)
+                  AND payload->>'schedule_id' = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (
+                    target_project_id,
+                    since,
+                    ["incident_sync_schedule_run", "incident_sync_schedule_failed"],
+                    schedule_id,
+                    cap,
+                ),
+            )
+            event_rows = cur.fetchall()
+
+    summary = {
+        "runs_total": 0,
+        "ok": 0,
+        "partial_failure": 0,
+        "failed": 0,
+        "skipped": 0,
+        "unknown": 0,
+        "latest_status": None,
+        "latest_run_at": None,
+    }
+    trend_buckets: dict[str, dict[str, int | str]] = {}
+    failure_class_counts: dict[str, int] = {}
+    runs: list[dict[str, Any]] = []
+
+    for row in event_rows:
+        payload = row[5] if isinstance(row[5], dict) else {}
+        action = str(row[2] or "").strip().lower()
+        status_value = "failed" if action == "incident_sync_schedule_failed" else payload.get("schedule_status")
+        status = _normalize_incident_sync_schedule_run_status(status_value)
+        created_at = row[6]
+        created_at_iso = created_at.isoformat() if created_at is not None else datetime.now(UTC).isoformat()
+        parsed_created_at = _parse_iso_datetime(created_at_iso)
+        sync_summary_raw = payload.get("sync_summary")
+        sync_summary = sync_summary_raw if isinstance(sync_summary_raw, dict) else {}
+        normalized_sync_summary = {
+            "opened": int(sync_summary.get("opened") or 0),
+            "resolved": int(sync_summary.get("resolved") or 0),
+            "failed": int(sync_summary.get("failed") or 0),
+            "noop": int(sync_summary.get("noop") or 0),
+            "blocked": int(sync_summary.get("blocked") or 0),
+            "paused": int(sync_summary.get("paused") or 0),
+            "projects_total": int(sync_summary.get("projects_total") or 0),
+        }
+        failure_classes = _derive_incident_sync_schedule_failure_classes(
+            action=action,
+            status=status,
+            payload=payload,
+        )
+
+        if parsed_created_at is not None:
+            day_key = parsed_created_at.date().isoformat()
+        else:
+            day_key = created_at_iso[:10]
+        bucket = trend_buckets.get(day_key)
+        if bucket is None:
+            bucket = {
+                "day": day_key,
+                "runs": 0,
+                "ok": 0,
+                "partial_failure": 0,
+                "failed": 0,
+                "skipped": 0,
+                "unknown": 0,
+            }
+            trend_buckets[day_key] = bucket
+
+        summary["runs_total"] = int(summary["runs_total"]) + 1
+        if status in {"ok", "partial_failure", "failed", "skipped"}:
+            summary[status] = int(summary[status]) + 1
+            bucket[status] = int(bucket.get(status, 0)) + 1
+        else:
+            summary["unknown"] = int(summary["unknown"]) + 1
+            bucket["unknown"] = int(bucket.get("unknown", 0)) + 1
+        bucket["runs"] = int(bucket.get("runs", 0)) + 1
+
+        if summary["latest_run_at"] is None:
+            summary["latest_run_at"] = created_at_iso
+            summary["latest_status"] = status
+
+        for code in failure_classes:
+            failure_class_counts[code] = failure_class_counts.get(code, 0) + 1
+
+        runs.append(
+            {
+                "audit_event_id": int(row[0]),
+                "project_id": str(row[1]),
+                "action": action,
+                "status": status,
+                "actor": str(row[3] or "incident_sync_scheduler"),
+                "reason": row[4] if isinstance(row[4], str) else None,
+                "created_at": created_at_iso,
+                "next_run_at": payload.get("next_run_at") if isinstance(payload.get("next_run_at"), str) else None,
+                "force_run": bool(payload.get("force_run")),
+                "skip_due_check": bool(payload.get("skip_due_check")),
+                "sync_summary": normalized_sync_summary,
+                "error": payload.get("error") if isinstance(payload.get("error"), str) else None,
+                "failure_classes": failure_classes,
+            }
+        )
+
+    trend = [trend_buckets[key] for key in sorted(trend_buckets.keys())]
+    failure_classes = [
+        {"code": code, "count": int(count)}
+        for code, count in sorted(failure_class_counts.items(), key=lambda pair: (-int(pair[1]), str(pair[0])))
+    ]
+    return {
+        "schedule_id": schedule_id,
+        "project_id": target_project_id,
+        "days": int(days),
+        "since": since.isoformat(),
+        "schedule": schedule,
+        "summary": summary,
+        "trend": trend,
+        "failure_classes": failure_classes,
+        "runs": runs,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _default_operation_queue_ownership(*, project_id: str) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "owner_name": None,
+        "owner_contact": None,
+        "oncall_channel": None,
+        "escalation_channel": None,
+        "updated_by": "system",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _serialize_operation_queue_ownership_row(row: tuple[Any, ...], *, project_id: str) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "owner_name": row[0] if isinstance(row[0], str) else None,
+        "owner_contact": row[1] if isinstance(row[1], str) else None,
+        "oncall_channel": row[2] if isinstance(row[2], str) else None,
+        "escalation_channel": row[3] if isinstance(row[3], str) else None,
+        "updated_by": str(row[4] or "system"),
+        "created_at": None if row[5] is None else row[5].isoformat(),
+        "updated_at": None if row[6] is None else row[6].isoformat(),
+    }
+
+
+def _fetch_operation_queue_ownership(project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  owner_name,
+                  owner_contact,
+                  oncall_channel,
+                  escalation_channel,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_ownership
+                WHERE project_id = %s
+                LIMIT 1
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_ownership(project_id=project_id)
+    return _serialize_operation_queue_ownership_row(row, project_id=project_id)
+
+
+def _upsert_operation_queue_ownership(
+    *,
+    project_id: str,
+    owner_name: str | None,
+    owner_contact: str | None,
+    oncall_channel: str | None,
+    escalation_channel: str | None,
+    updated_by: str,
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_ownership (
+                  project_id,
+                  owner_name,
+                  owner_contact,
+                  oncall_channel,
+                  escalation_channel,
+                  updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id) DO UPDATE
+                SET
+                  owner_name = EXCLUDED.owner_name,
+                  owner_contact = EXCLUDED.owner_contact,
+                  oncall_channel = EXCLUDED.oncall_channel,
+                  escalation_channel = EXCLUDED.escalation_channel,
+                  updated_by = EXCLUDED.updated_by,
+                  updated_at = NOW()
+                RETURNING
+                  owner_name,
+                  owner_contact,
+                  oncall_channel,
+                  escalation_channel,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    project_id,
+                    (owner_name or "").strip()[:256] or None,
+                    (owner_contact or "").strip()[:512] or None,
+                    (oncall_channel or "").strip()[:512] or None,
+                    (escalation_channel or "").strip()[:512] or None,
+                    (updated_by or "web_ui").strip()[:256] or "web_ui",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_ownership(project_id=project_id)
+    return _serialize_operation_queue_ownership_row(row, project_id=project_id)
+
+
+def _list_operation_queue_ownership(*, project_ids: list[str] | None = None, limit: int = 200) -> dict[str, dict[str, Any]]:
+    if project_ids:
+        targets: list[str] = []
+        seen: set[str] = set()
+        for item in project_ids:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            targets.append(text)
+            if len(targets) >= max(1, min(200, int(limit))):
+                break
+        if not targets:
+            return {}
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      project_id,
+                      owner_name,
+                      owner_contact,
+                      oncall_channel,
+                      escalation_channel,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM gatekeeper_calibration_queue_ownership
+                    WHERE project_id = ANY(%s)
+                    ORDER BY updated_at DESC, project_id ASC
+                    """,
+                    (targets,),
+                )
+                rows = cur.fetchall()
+        return {
+            str(row[0]): {
+                "project_id": str(row[0]),
+                "owner_name": row[1] if isinstance(row[1], str) else None,
+                "owner_contact": row[2] if isinstance(row[2], str) else None,
+                "oncall_channel": row[3] if isinstance(row[3], str) else None,
+                "escalation_channel": row[4] if isinstance(row[4], str) else None,
+                "updated_by": str(row[5] or "system"),
+                "created_at": None if row[6] is None else row[6].isoformat(),
+                "updated_at": None if row[7] is None else row[7].isoformat(),
+            }
+            for row in rows
+        }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  project_id,
+                  owner_name,
+                  owner_contact,
+                  oncall_channel,
+                  escalation_channel,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_ownership
+                ORDER BY updated_at DESC, project_id ASC
+                LIMIT %s
+                """,
+                (max(1, min(200, int(limit))),),
+            )
+            rows = cur.fetchall()
+    return {
+        str(row[0]): {
+            "project_id": str(row[0]),
+            "owner_name": row[1] if isinstance(row[1], str) else None,
+            "owner_contact": row[2] if isinstance(row[2], str) else None,
+            "oncall_channel": row[3] if isinstance(row[3], str) else None,
+            "escalation_channel": row[4] if isinstance(row[4], str) else None,
+            "updated_by": str(row[5] or "system"),
+            "created_at": None if row[6] is None else row[6].isoformat(),
+            "updated_at": None if row[7] is None else row[7].isoformat(),
+        }
+        for row in rows
+    }
+
+
+def _normalize_incident_open_on_health(values: list[str] | None) -> list[str]:
+    allowed = {"healthy", "watch", "critical"}
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        value = str(raw or "").strip().lower()
+        if not value or value not in allowed or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    if not out:
+        return ["critical"]
+    return out
+
+
+def _normalize_incident_open_on_health_optional(values: list[str] | None) -> list[str]:
+    if values is None:
+        return []
+    allowed = {"healthy", "watch", "critical"}
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw or "").strip().lower()
+        if not value or value not in allowed or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _normalize_incident_severity_by_health(values: Any) -> dict[str, str]:
+    if not isinstance(values, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("healthy", "watch", "critical"):
+        text = str(values.get(key) or "").strip()
+        if not text:
+            continue
+        out[key] = text[:64]
+    return out
+
+
+_QUEUE_INCIDENT_PROVIDERS = {"webhook", "pagerduty", "jira"}
+_PAGERDUTY_EVENTS_API_URL = "https://events.pagerduty.com/v2/enqueue"
+_INCIDENT_SECRET_MASK = "********"
+_INCIDENT_SECRET_CLEAR_TOKEN = "__clear__"
+_INCIDENT_SECRET_SCOPE_HOOK = "hook"
+_INCIDENT_SECRET_SCOPE_POLICY = "policy"
+_INCIDENT_SECRET_EDIT_ROLES_DEFAULT = ["incident_admin", "security_admin", "admin"]
+_INCIDENT_SECRET_RBAC_MODE = str(os.getenv("SYNAPSE_INCIDENT_SECRET_RBAC_MODE", "open") or "open").strip().lower()
+
+
+def _trim_optional_text(value: Any, *, max_len: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text[:max_len]
+
+
+def _normalize_incident_secret_roles(value: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    values = value if value is not None else _INCIDENT_SECRET_EDIT_ROLES_DEFAULT
+    for raw in values:
+        role = str(raw or "").strip().lower()
+        if not role or role in seen:
+            continue
+        seen.add(role)
+        out.append(role[:64])
+    if not out:
+        return list(_INCIDENT_SECRET_EDIT_ROLES_DEFAULT)
+    return out[:16]
+
+
+def _parse_incident_actor_roles(value: str | None) -> set[str]:
+    if value is None:
+        return set()
+    out: set[str] = set()
+    for raw in value.split(","):
+        role = str(raw or "").strip().lower()
+        if not role:
+            continue
+        out.add(role[:64])
+    return out
+
+
+def _incident_secret_can_edit(*, required_roles: list[str], actor_roles: set[str]) -> bool:
+    required = {str(item or "").strip().lower() for item in required_roles if str(item or "").strip()}
+    if not required:
+        return True
+    if actor_roles:
+        return bool(required.intersection(actor_roles))
+    return _INCIDENT_SECRET_RBAC_MODE != "enforce"
+
+
+def _assert_incident_secret_edit_allowed(
+    *,
+    project_id: str,
+    scope: str,
+    required_roles: list[str],
+    actor_roles: set[str],
+) -> None:
+    if _incident_secret_can_edit(required_roles=required_roles, actor_roles=actor_roles):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "incident_secret_edit_forbidden",
+            "project_id": project_id,
+            "scope": scope,
+            "required_roles": required_roles,
+        },
+    )
+
+
+def _incident_provider_secret_keys(provider: str) -> list[str]:
+    if provider == "pagerduty":
+        return ["routing_key"]
+    if provider == "jira":
+        return ["api_token"]
+    return []
+
+
+def _is_incident_secret_mask_value(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text == _INCIDENT_SECRET_MASK or text.lower() in {"redacted", "masked", "__unchanged__"}
+
+
+def _is_incident_secret_clear_value(value: Any) -> bool:
+    return str(value or "").strip().lower() == _INCIDENT_SECRET_CLEAR_TOKEN
+
+
+def _fetch_incident_secret_values(
+    *,
+    project_id: str,
+    scope: str,
+    scope_ref: str,
+    provider: str,
+) -> dict[str, str]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT secret_key, secret_value
+                FROM gatekeeper_calibration_queue_incident_secrets
+                WHERE project_id = %s
+                  AND scope = %s
+                  AND scope_ref = %s
+                  AND provider = %s
+                """,
+                (project_id, scope, scope_ref, provider),
+            )
+            rows = cur.fetchall()
+    out: dict[str, str] = {}
+    for row in rows:
+        key = str(row[0] or "").strip()
+        value = str(row[1] or "")
+        if not key:
+            continue
+        out[key] = value
+    return out
+
+
+def _upsert_incident_secret(
+    *,
+    project_id: str,
+    scope: str,
+    scope_ref: str,
+    provider: str,
+    secret_key: str,
+    secret_value: str,
+    actor: str,
+) -> dict[str, Any]:
+    secret_hash = hashlib.sha256(secret_value.encode("utf-8")).hexdigest()
+    event_action = "created"
+    version_before: int | None = None
+    version_after: int = 1
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, version, secret_hash
+                FROM gatekeeper_calibration_queue_incident_secrets
+                WHERE project_id = %s
+                  AND scope = %s
+                  AND scope_ref = %s
+                  AND provider = %s
+                  AND secret_key = %s
+                LIMIT 1
+                """,
+                (project_id, scope, scope_ref, provider, secret_key),
+            )
+            existing = cur.fetchone()
+            if existing is None:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_calibration_queue_incident_secrets (
+                      id,
+                      project_id,
+                      scope,
+                      scope_ref,
+                      provider,
+                      secret_key,
+                      secret_value,
+                      secret_hash,
+                      version,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, NOW(), NOW())
+                    """,
+                    (
+                        uuid4(),
+                        project_id,
+                        scope,
+                        scope_ref,
+                        provider,
+                        secret_key,
+                        secret_value,
+                        secret_hash,
+                        actor,
+                    ),
+                )
+                event_action = "created"
+                version_before = None
+                version_after = 1
+            else:
+                version_before = int(existing[1] or 1)
+                existing_hash = str(existing[2] or "")
+                if existing_hash == secret_hash:
+                    version_after = version_before
+                    cur.execute(
+                        """
+                        UPDATE gatekeeper_calibration_queue_incident_secrets
+                        SET updated_by = %s,
+                            updated_at = NOW()
+                        WHERE project_id = %s
+                          AND scope = %s
+                          AND scope_ref = %s
+                          AND provider = %s
+                          AND secret_key = %s
+                        """,
+                        (actor, project_id, scope, scope_ref, provider, secret_key),
+                    )
+                else:
+                    version_after = version_before + 1
+                    event_action = "rotated"
+                    cur.execute(
+                        """
+                        UPDATE gatekeeper_calibration_queue_incident_secrets
+                        SET secret_value = %s,
+                            secret_hash = %s,
+                            version = %s,
+                            updated_by = %s,
+                            updated_at = NOW()
+                        WHERE project_id = %s
+                          AND scope = %s
+                          AND scope_ref = %s
+                          AND provider = %s
+                          AND secret_key = %s
+                        """,
+                        (
+                            secret_value,
+                            secret_hash,
+                            version_after,
+                            actor,
+                            project_id,
+                            scope,
+                            scope_ref,
+                            provider,
+                            secret_key,
+                        ),
+                    )
+            if event_action in {"created", "rotated"}:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_calibration_queue_incident_secret_events (
+                      id,
+                      project_id,
+                      scope,
+                      scope_ref,
+                      provider,
+                      secret_key,
+                      action,
+                      version_before,
+                      version_after,
+                      actor,
+                      created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    """,
+                    (
+                        uuid4(),
+                        project_id,
+                        scope,
+                        scope_ref,
+                        provider,
+                        secret_key,
+                        event_action,
+                        version_before,
+                        version_after,
+                        actor,
+                    ),
+                )
+    return {
+        "secret_key": secret_key,
+        "action": event_action,
+        "version_before": version_before,
+        "version_after": version_after,
+    }
+
+
+def _clear_incident_secret(
+    *,
+    project_id: str,
+    scope: str,
+    scope_ref: str,
+    provider: str,
+    secret_key: str,
+    actor: str,
+) -> None:
+    version_before: int | None = None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT version
+                FROM gatekeeper_calibration_queue_incident_secrets
+                WHERE project_id = %s
+                  AND scope = %s
+                  AND scope_ref = %s
+                  AND provider = %s
+                  AND secret_key = %s
+                LIMIT 1
+                """,
+                (project_id, scope, scope_ref, provider, secret_key),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return
+            version_before = int(row[0] or 1)
+            cur.execute(
+                """
+                DELETE FROM gatekeeper_calibration_queue_incident_secrets
+                WHERE project_id = %s
+                  AND scope = %s
+                  AND scope_ref = %s
+                  AND provider = %s
+                  AND secret_key = %s
+                """,
+                (project_id, scope, scope_ref, provider, secret_key),
+            )
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_incident_secret_events (
+                  id,
+                  project_id,
+                  scope,
+                  scope_ref,
+                  provider,
+                  secret_key,
+                  action,
+                  version_before,
+                  version_after,
+                  actor,
+                  created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'cleared', %s, NULL, %s, NOW())
+                """,
+                (uuid4(), project_id, scope, scope_ref, provider, secret_key, version_before, actor),
+            )
+
+
+def _clear_incident_scope_secrets_for_other_providers(
+    *,
+    project_id: str,
+    scope: str,
+    scope_ref: str,
+    keep_provider: str | None,
+    actor: str,
+    required_roles: list[str] | None = None,
+    actor_roles: set[str] | None = None,
+) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if keep_provider is None:
+                cur.execute(
+                    """
+                    SELECT provider, secret_key
+                    FROM gatekeeper_calibration_queue_incident_secrets
+                    WHERE project_id = %s
+                      AND scope = %s
+                      AND scope_ref = %s
+                    """,
+                    (project_id, scope, scope_ref),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT provider, secret_key
+                    FROM gatekeeper_calibration_queue_incident_secrets
+                    WHERE project_id = %s
+                      AND scope = %s
+                      AND scope_ref = %s
+                      AND provider <> %s
+                    """,
+                    (project_id, scope, scope_ref, keep_provider),
+                )
+            rows = cur.fetchall()
+    if rows and required_roles is not None:
+        _assert_incident_secret_edit_allowed(
+            project_id=project_id,
+            scope=scope,
+            required_roles=required_roles,
+            actor_roles=actor_roles or set(),
+        )
+    for row in rows:
+        provider = str(row[0] or "").strip()
+        secret_key = str(row[1] or "").strip()
+        if not provider or not secret_key:
+            continue
+        _clear_incident_secret(
+            project_id=project_id,
+            scope=scope,
+            scope_ref=scope_ref,
+            provider=provider,
+            secret_key=secret_key,
+            actor=actor,
+        )
+
+
+def _merge_incident_provider_config_with_secrets(
+    *,
+    provider: str,
+    base_config: dict[str, Any],
+    secret_values: dict[str, str],
+    include_secrets: bool,
+) -> dict[str, Any]:
+    config = _normalize_operation_queue_incident_provider_config(provider, base_config)
+    for secret_key in _incident_provider_secret_keys(provider):
+        stored_secret = str(secret_values.get(secret_key) or "").strip()
+        visible_value = _trim_optional_text(config.get(secret_key), max_len=4096)
+        has_secret = bool(stored_secret or visible_value)
+        if include_secrets:
+            config[secret_key] = stored_secret or visible_value
+        elif has_secret:
+            config[secret_key] = _INCIDENT_SECRET_MASK
+        else:
+            config[secret_key] = None
+    return config
+
+
+def _prepare_incident_provider_config_secret_updates(
+    *,
+    provider: str,
+    normalized_config: dict[str, Any],
+    existing_secrets: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, str], list[str], bool]:
+    stored_config = dict(normalized_config)
+    effective_config = dict(normalized_config)
+    rotated: dict[str, str] = {}
+    cleared: list[str] = []
+    changed = False
+    for secret_key in _incident_provider_secret_keys(provider):
+        incoming_raw = stored_config.get(secret_key)
+        incoming = str(incoming_raw or "").strip() if incoming_raw is not None else None
+        existing = str(existing_secrets.get(secret_key) or "").strip() or None
+        resolved = existing
+        if incoming is None:
+            resolved = existing
+        elif _is_incident_secret_mask_value(incoming):
+            resolved = existing
+        elif _is_incident_secret_clear_value(incoming):
+            resolved = None
+            if existing is not None:
+                cleared.append(secret_key)
+                changed = True
+        elif incoming:
+            resolved = incoming
+            if existing != incoming:
+                rotated[secret_key] = incoming
+                changed = True
+        else:
+            resolved = existing
+        stored_config[secret_key] = None
+        effective_config[secret_key] = resolved
+    return stored_config, effective_config, rotated, cleared, changed
+
+
+def _mask_incident_provider_config_for_response(
+    *,
+    provider: str,
+    config: dict[str, Any],
+    include_secrets: bool,
+) -> dict[str, Any]:
+    normalized = _normalize_operation_queue_incident_provider_config(provider, config)
+    if include_secrets:
+        return normalized
+    for secret_key in _incident_provider_secret_keys(provider):
+        secret_value = _trim_optional_text(normalized.get(secret_key), max_len=4096)
+        normalized[secret_key] = _INCIDENT_SECRET_MASK if secret_value else None
+    return normalized
+
+
+def _normalize_operation_queue_incident_provider(value: Any) -> str:
+    provider = str(value or "webhook").strip().lower() or "webhook"
+    if provider not in _QUEUE_INCIDENT_PROVIDERS:
+        raise HTTPException(status_code=422, detail="incident_provider_unsupported")
+    return provider
+
+
+def _normalize_operation_queue_incident_provider_config(provider: str, value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    if provider == "webhook":
+        headers: dict[str, str] = {}
+        raw_headers = raw.get("headers")
+        if isinstance(raw_headers, dict):
+            for key, item in raw_headers.items():
+                header_name = str(key or "").strip()[:128]
+                header_value = str(item or "").strip()[:2048]
+                if not header_name or not header_value:
+                    continue
+                headers[header_name] = header_value
+        return {"headers": headers}
+
+    if provider == "pagerduty":
+        severity_by_health: dict[str, str] = {"healthy": "warning", "watch": "warning", "critical": "critical"}
+        raw_severity = raw.get("severity_by_health")
+        if isinstance(raw_severity, dict):
+            for key in ("healthy", "watch", "critical"):
+                candidate = str(raw_severity.get(key) or "").strip().lower()
+                if candidate in {"info", "warning", "error", "critical"}:
+                    severity_by_health[key] = candidate
+        return {
+            "routing_key": _trim_optional_text(raw.get("routing_key"), max_len=512),
+            "source": _trim_optional_text(raw.get("source"), max_len=256) or "synapse",
+            "component": _trim_optional_text(raw.get("component"), max_len=256),
+            "group": _trim_optional_text(raw.get("group"), max_len=256),
+            "class": _trim_optional_text(raw.get("class"), max_len=256) or "queue-operations",
+            "dedup_key_prefix": _trim_optional_text(raw.get("dedup_key_prefix"), max_len=256) or "synapse-queue",
+            "incident_url_template": _trim_optional_text(raw.get("incident_url_template"), max_len=2048),
+            "severity_by_health": severity_by_health,
+        }
+
+    if provider == "jira":
+        labels: list[str] = []
+        raw_labels = raw.get("labels")
+        if isinstance(raw_labels, list):
+            for item in raw_labels[:12]:
+                text = str(item or "").strip()
+                if not text or text in labels:
+                    continue
+                labels.append(text[:64])
+        priority_by_health: dict[str, str] = {}
+        raw_priorities = raw.get("priority_by_health")
+        if isinstance(raw_priorities, dict):
+            for key in ("healthy", "watch", "critical"):
+                priority = _trim_optional_text(raw_priorities.get(key), max_len=128)
+                if priority is not None:
+                    priority_by_health[key] = priority
+        auth_mode = str(raw.get("auth_mode") or "basic").strip().lower() or "basic"
+        if auth_mode not in {"basic", "bearer"}:
+            auth_mode = "basic"
+        base_url = _trim_optional_text(raw.get("base_url"), max_len=2048)
+        return {
+            "base_url": base_url.rstrip("/") if isinstance(base_url, str) else None,
+            "project_key": _trim_optional_text(raw.get("project_key"), max_len=64),
+            "issue_type": _trim_optional_text(raw.get("issue_type"), max_len=128) or "Incident",
+            "auth_mode": auth_mode,
+            "email": _trim_optional_text(raw.get("email"), max_len=256),
+            "api_token": _trim_optional_text(raw.get("api_token"), max_len=2048),
+            "resolve_transition_id": _trim_optional_text(raw.get("resolve_transition_id"), max_len=64),
+            "title_prefix": _trim_optional_text(raw.get("title_prefix"), max_len=256) or "[Synapse Queue]",
+            "labels": labels,
+            "browse_url_template": _trim_optional_text(raw.get("browse_url_template"), max_len=2048),
+            "priority_by_health": priority_by_health,
+        }
+
+    return {}
+
+
+def _validate_operation_queue_incident_hook_requirements(
+    *,
+    provider: str,
+    enabled: bool,
+    auto_resolve: bool,
+    open_webhook_url: str | None,
+    resolve_webhook_url: str | None,
+    provider_config: dict[str, Any],
+) -> None:
+    if not enabled:
+        return
+    if provider == "webhook":
+        if open_webhook_url is None:
+            raise HTTPException(status_code=422, detail="incident_open_webhook_url_required")
+        return
+    if provider == "pagerduty":
+        if not str(provider_config.get("routing_key") or "").strip():
+            raise HTTPException(status_code=422, detail="pagerduty_routing_key_required")
+        return
+    if provider == "jira":
+        if not str(provider_config.get("base_url") or "").strip():
+            raise HTTPException(status_code=422, detail="jira_base_url_required")
+        if not str(provider_config.get("project_key") or "").strip():
+            raise HTTPException(status_code=422, detail="jira_project_key_required")
+        auth_mode = str(provider_config.get("auth_mode") or "basic")
+        if auth_mode == "basic" and not str(provider_config.get("email") or "").strip():
+            raise HTTPException(status_code=422, detail="jira_email_required")
+        if not str(provider_config.get("api_token") or "").strip():
+            raise HTTPException(status_code=422, detail="jira_api_token_required")
+        if auto_resolve:
+            transition_id = str(provider_config.get("resolve_transition_id") or "").strip()
+            if not transition_id and not str(resolve_webhook_url or "").strip():
+                raise HTTPException(status_code=422, detail="jira_resolve_transition_or_webhook_required")
+        return
+
+
+def _normalize_incident_policy_alert_code(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        raise HTTPException(status_code=422, detail="incident_policy_alert_code_required")
+    return text[:128]
+
+
+def _normalize_incident_preflight_preset_key(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        text = fallback
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", text)
+    normalized = normalized.strip("-.")
+    normalized = re.sub(r"-{2,}", "-", normalized)
+    if not normalized:
+        raise HTTPException(status_code=422, detail="incident_preflight_preset_key_required")
+    return normalized[:128]
+
+
+def _normalize_incident_preflight_alert_codes(
+    *,
+    primary: str,
+    additional: list[str] | None,
+) -> list[str]:
+    base = _normalize_incident_policy_alert_code(primary)
+    out = [base]
+    for item in additional or []:
+        normalized = _normalize_incident_policy_alert_code(item)
+        if normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def _normalize_incident_preflight_expected_decision(value: Any) -> str:
+    decision = str(value or "open").strip().lower()
+    if decision not in {"open", "skip", "invalid_ok"}:
+        raise HTTPException(status_code=422, detail="incident_preflight_expected_decision_invalid")
+    return decision
+
+
+def _normalize_incident_preflight_severity(value: Any) -> str:
+    severity = str(value or "warning").strip().lower()
+    if severity not in {"info", "warning", "critical"}:
+        raise HTTPException(status_code=422, detail="incident_preflight_severity_invalid")
+    return severity
+
+
+def _normalize_incident_preflight_required_provider(value: Any) -> str | None:
+    if value is None:
+        return None
+    provider = _normalize_operation_queue_incident_provider(value)
+    if provider == "webhook" and str(value or "").strip().lower() not in {"webhook"}:
+        # Preserve explicit null semantics for "inherit"/empty strings from callers.
+        raw = str(value or "").strip().lower()
+        if raw in {"", "none", "null", "inherit"}:
+            return None
+    return provider
+
+
+def _normalize_incident_sync_preflight_enforcement_mode(value: Any, *, default: str = "off") -> str:
+    text = str(value or default).strip().lower() or default
+    if text not in _INCIDENT_SYNC_PREFLIGHT_ENFORCEMENT_MODES:
+        return default
+    return text
+
+
+def _normalize_incident_sync_schedule_preflight_enforcement_mode(
+    value: Any,
+    *,
+    default: str = "inherit",
+) -> str:
+    text = str(value or default).strip().lower() or default
+    if text not in _INCIDENT_SYNC_SCHEDULE_PREFLIGHT_ENFORCEMENT_MODES:
+        return default
+    return text
+
+
+def _resolve_incident_sync_schedule_interval_minutes(*, preset: str, interval_minutes: int | None) -> int:
+    normalized_preset = str(preset or "hourly").strip().lower() or "hourly"
+    if normalized_preset != "custom":
+        mapped = _INCIDENT_SYNC_SCHEDULE_PRESET_INTERVAL_MINUTES.get(normalized_preset)
+        if mapped is None:
+            raise HTTPException(status_code=422, detail="incident_sync_schedule_preset_invalid")
+        return int(mapped)
+    if interval_minutes is None:
+        raise HTTPException(status_code=422, detail="incident_sync_schedule_interval_minutes_required")
+    return max(5, min(10080, int(interval_minutes)))
+
+
+def _default_operation_queue_incident_preflight_preset(*, project_id: str, preset_key: str) -> dict[str, Any]:
+    return {
+        "id": None,
+        "project_id": project_id,
+        "preset_key": preset_key,
+        "name": preset_key,
+        "enabled": True,
+        "alert_code": "queue_depth_critical",
+        "health": "critical",
+        "additional_alert_codes": [],
+        "expected_decision": "open",
+        "required_provider": None,
+        "run_before_live_sync": True,
+        "severity": "warning",
+        "strict_mode": True,
+        "metadata": {},
+        "updated_by": "web_ui",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _default_operation_queue_incident_policy(*, project_id: str, alert_code: str) -> dict[str, Any]:
+    secret_roles = list(_INCIDENT_SECRET_EDIT_ROLES_DEFAULT)
+    return {
+        "id": None,
+        "project_id": project_id,
+        "alert_code": alert_code,
+        "enabled": True,
+        "priority": 100,
+        "provider_override": None,
+        "open_webhook_url": None,
+        "resolve_webhook_url": None,
+        "provider_config_override": {},
+        "severity_by_health": {},
+        "open_on_health": [],
+        "secret_edit_roles": secret_roles,
+        "secret_access": {
+            "required_roles": secret_roles,
+            "can_edit": _incident_secret_can_edit(required_roles=secret_roles, actor_roles=set()),
+        },
+        "updated_by": "system",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _fetch_operation_queue_incident_policy(
+    *,
+    project_id: str,
+    alert_code: str,
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+) -> dict[str, Any] | None:
+    normalized_alert_code = _normalize_incident_policy_alert_code(alert_code)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  alert_code,
+                  enabled,
+                  priority,
+                  provider_override,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config_override,
+                  severity_by_health,
+                  open_on_health,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_policies
+                WHERE project_id = %s
+                  AND alert_code = %s
+                LIMIT 1
+                """,
+                (project_id, normalized_alert_code),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return _serialize_operation_queue_incident_policy_row(
+        row,
+        include_secrets=include_secrets,
+        actor_roles=actor_roles,
+    )
+
+
+def _serialize_operation_queue_incident_policy_row(
+    row: tuple[Any, ...],
+    *,
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+) -> dict[str, Any]:
+    roles = actor_roles or set()
+    provider_override = row[5] if isinstance(row[5], str) and row[5].strip() else None
+    normalized_provider = _normalize_operation_queue_incident_provider(provider_override) if provider_override else None
+    provider_config_override_raw = row[8] if isinstance(row[8], dict) else {}
+    provider_config_override = provider_config_override_raw
+    secret_values: dict[str, str] = {}
+    if normalized_provider is not None:
+        secret_values = _fetch_incident_secret_values(
+            project_id=str(row[1]),
+            scope=_INCIDENT_SECRET_SCOPE_POLICY,
+            scope_ref=str(row[0]),
+            provider=normalized_provider,
+        )
+        provider_config_override = _merge_incident_provider_config_with_secrets(
+            provider=normalized_provider,
+            base_config=provider_config_override_raw,
+            secret_values=secret_values,
+            include_secrets=include_secrets,
+        )
+    open_on_health = _normalize_incident_open_on_health_optional(row[10] if isinstance(row[10], list) else [])
+    secret_edit_roles = _normalize_incident_secret_roles(row[11] if isinstance(row[11], list) else None)
+    return {
+        "id": str(row[0]),
+        "project_id": str(row[1]),
+        "alert_code": str(row[2]),
+        "enabled": bool(row[3]),
+        "priority": max(1, min(1000, int(row[4] or 100))),
+        "provider_override": normalized_provider,
+        "open_webhook_url": row[6] if isinstance(row[6], str) else None,
+        "resolve_webhook_url": row[7] if isinstance(row[7], str) else None,
+        "provider_config_override": provider_config_override,
+        "severity_by_health": _normalize_incident_severity_by_health(row[9]),
+        "open_on_health": open_on_health,
+        "secret_edit_roles": secret_edit_roles,
+        "secret_access": {
+            "required_roles": secret_edit_roles,
+            "can_edit": _incident_secret_can_edit(required_roles=secret_edit_roles, actor_roles=roles),
+        },
+        "provider_config_override_secret_keys": sorted(
+            [key for key in _incident_provider_secret_keys(normalized_provider or "") if key in secret_values or bool(provider_config_override.get(key))]
+        ),
+        "updated_by": str(row[12] or "system"),
+        "created_at": None if row[13] is None else row[13].isoformat(),
+        "updated_at": None if row[14] is None else row[14].isoformat(),
+    }
+
+
+def _upsert_operation_queue_incident_policy(
+    *,
+    project_id: str,
+    alert_code: str,
+    enabled: bool,
+    priority: int,
+    provider_override: str | None,
+    open_webhook_url: str | None,
+    resolve_webhook_url: str | None,
+    provider_config_override: dict[str, Any] | None,
+    severity_by_health: dict[str, Any] | None,
+    open_on_health: list[str] | None,
+    secret_edit_roles: list[str] | None,
+    actor_roles: set[str],
+    updated_by: str,
+) -> dict[str, Any]:
+    normalized_alert_code = _normalize_incident_policy_alert_code(alert_code)
+    existing_policy = _fetch_operation_queue_incident_policy(
+        project_id=project_id,
+        alert_code=normalized_alert_code,
+        include_secrets=True,
+        actor_roles=actor_roles,
+    )
+    normalized_provider_override = (
+        _normalize_operation_queue_incident_provider(provider_override) if provider_override is not None else None
+    )
+    normalized_open_url = _trim_optional_text(open_webhook_url, max_len=2048)
+    normalized_resolve_url = _trim_optional_text(resolve_webhook_url, max_len=2048)
+    normalized_config_override: dict[str, Any] = {}
+    if normalized_provider_override is not None:
+        normalized_config_override = _normalize_operation_queue_incident_provider_config(
+            normalized_provider_override,
+            provider_config_override,
+        )
+    elif provider_config_override:
+        raise HTTPException(status_code=422, detail="incident_policy_provider_override_required")
+    normalized_severity = _normalize_incident_severity_by_health(severity_by_health)
+    normalized_open_on_health = _normalize_incident_open_on_health_optional(open_on_health)
+    normalized_secret_roles = _normalize_incident_secret_roles(
+        secret_edit_roles
+        if secret_edit_roles is not None
+        else (
+            existing_policy.get("secret_edit_roles")
+            if isinstance(existing_policy, dict) and isinstance(existing_policy.get("secret_edit_roles"), list)
+            else None
+        )
+    )
+    existing_policy_id = str(existing_policy.get("id") or "").strip() if isinstance(existing_policy, dict) else ""
+    existing_secret_values: dict[str, str] = {}
+    if normalized_provider_override is not None and existing_policy_id:
+        existing_secret_values = _fetch_incident_secret_values(
+            project_id=project_id,
+            scope=_INCIDENT_SECRET_SCOPE_POLICY,
+            scope_ref=existing_policy_id,
+            provider=normalized_provider_override,
+        )
+    (
+        stored_config_override,
+        effective_config_override,
+        rotated_secrets,
+        cleared_secrets,
+        secret_change_requested,
+    ) = _prepare_incident_provider_config_secret_updates(
+        provider=normalized_provider_override or "webhook",
+        normalized_config=normalized_config_override if normalized_provider_override is not None else {},
+        existing_secrets=existing_secret_values,
+    )
+    if normalized_provider_override is not None and secret_change_requested:
+        _assert_incident_secret_edit_allowed(
+            project_id=project_id,
+            scope=_INCIDENT_SECRET_SCOPE_POLICY,
+            required_roles=normalized_secret_roles,
+            actor_roles=actor_roles,
+        )
+    policy_id = uuid4()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_incident_policies (
+                  id,
+                  project_id,
+                  alert_code,
+                  enabled,
+                  priority,
+                  provider_override,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config_override,
+                  severity_by_health,
+                  open_on_health,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (project_id, alert_code) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    priority = EXCLUDED.priority,
+                    provider_override = EXCLUDED.provider_override,
+                    open_webhook_url = EXCLUDED.open_webhook_url,
+                    resolve_webhook_url = EXCLUDED.resolve_webhook_url,
+                    provider_config_override = EXCLUDED.provider_config_override,
+                    severity_by_health = EXCLUDED.severity_by_health,
+                    open_on_health = EXCLUDED.open_on_health,
+                    secret_edit_roles = EXCLUDED.secret_edit_roles,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  id::text,
+                  project_id,
+                  alert_code,
+                  enabled,
+                  priority,
+                  provider_override,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config_override,
+                  severity_by_health,
+                  open_on_health,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    policy_id,
+                    project_id,
+                    normalized_alert_code,
+                    bool(enabled),
+                    max(1, min(1000, int(priority))),
+                    normalized_provider_override,
+                    normalized_open_url,
+                    normalized_resolve_url,
+                    Jsonb(stored_config_override),
+                    Jsonb(normalized_severity),
+                    Jsonb(normalized_open_on_health),
+                    normalized_secret_roles,
+                    (updated_by or "web_ui").strip()[:256] or "web_ui",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_incident_policy(project_id=project_id, alert_code=normalized_alert_code)
+    policy = _serialize_operation_queue_incident_policy_row(row, actor_roles=actor_roles)
+    policy_scope_ref = str(policy.get("id") or "").strip()
+    if normalized_provider_override is not None and policy_scope_ref:
+        for key, value in rotated_secrets.items():
+            _upsert_incident_secret(
+                project_id=project_id,
+                scope=_INCIDENT_SECRET_SCOPE_POLICY,
+                scope_ref=policy_scope_ref,
+                provider=normalized_provider_override,
+                secret_key=key,
+                secret_value=value,
+                actor=(updated_by or "web_ui").strip()[:256] or "web_ui",
+            )
+        for key in cleared_secrets:
+            _clear_incident_secret(
+                project_id=project_id,
+                scope=_INCIDENT_SECRET_SCOPE_POLICY,
+                scope_ref=policy_scope_ref,
+                provider=normalized_provider_override,
+                secret_key=key,
+                actor=(updated_by or "web_ui").strip()[:256] or "web_ui",
+            )
+    if policy_scope_ref:
+        _clear_incident_scope_secrets_for_other_providers(
+            project_id=project_id,
+            scope=_INCIDENT_SECRET_SCOPE_POLICY,
+            scope_ref=policy_scope_ref,
+            keep_provider=normalized_provider_override,
+            actor=(updated_by or "web_ui").strip()[:256] or "web_ui",
+            required_roles=normalized_secret_roles,
+            actor_roles=actor_roles,
+        )
+    return _fetch_operation_queue_incident_policy(
+        project_id=project_id,
+        alert_code=normalized_alert_code,
+        actor_roles=actor_roles,
+    ) or policy
+
+
+def _list_operation_queue_incident_policies(
+    *,
+    project_ids: list[str] | None = None,
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    cap = max(1, min(1000, int(limit)))
+    filters: list[str] = []
+    params: list[Any] = []
+    if project_ids:
+        targets = [str(item or "").strip() for item in project_ids if str(item or "").strip()]
+        if targets:
+            filters.append("project_id = ANY(%s)")
+            params.append(targets)
+    params.append(cap)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  alert_code,
+                  enabled,
+                  priority,
+                  provider_override,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config_override,
+                  severity_by_health,
+                  open_on_health,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_policies
+                {where}
+                ORDER BY project_id ASC, priority ASC, updated_at DESC, alert_code ASC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return [
+        _serialize_operation_queue_incident_policy_row(
+            row,
+            include_secrets=include_secrets,
+            actor_roles=actor_roles,
+        )
+        for row in rows
+    ]
+
+
+def _list_operation_queue_incident_policies_grouped(
+    *,
+    project_ids: list[str],
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+    limit: int = 1000,
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    rows = _list_operation_queue_incident_policies(
+        project_ids=project_ids,
+        include_secrets=include_secrets,
+        actor_roles=actor_roles,
+        limit=limit,
+    )
+    for item in rows:
+        project_id = str(item.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        grouped.setdefault(project_id, []).append(item)
+    return grouped
+
+
+def _serialize_operation_queue_incident_preflight_preset_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": str(row[0]),
+        "project_id": str(row[1]),
+        "preset_key": str(row[2]),
+        "name": str(row[3]),
+        "enabled": bool(row[4]),
+        "alert_code": _normalize_incident_policy_alert_code(row[5]),
+        "health": str(row[6] or "critical"),
+        "additional_alert_codes": [
+            _normalize_incident_policy_alert_code(item) for item in (row[7] if isinstance(row[7], list) else [])
+        ],
+        "expected_decision": _normalize_incident_preflight_expected_decision(row[8]),
+        "required_provider": (
+            _normalize_operation_queue_incident_provider(row[9])
+            if isinstance(row[9], str) and row[9].strip()
+            else None
+        ),
+        "run_before_live_sync": bool(row[10]),
+        "severity": _normalize_incident_preflight_severity(row[11]),
+        "strict_mode": bool(row[12]),
+        "metadata": row[13] if isinstance(row[13], dict) else {},
+        "updated_by": str(row[14] or "web_ui"),
+        "created_at": None if row[15] is None else row[15].isoformat(),
+        "updated_at": None if row[16] is None else row[16].isoformat(),
+    }
+
+
+def _list_operation_queue_incident_preflight_presets(
+    *,
+    project_ids: list[str] | None = None,
+    preset_ids: list[str] | None = None,
+    include_disabled: bool = True,
+    include_run_before_live_sync_only: bool = False,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    cap = max(1, min(5000, int(limit)))
+    filters: list[str] = []
+    params: list[Any] = []
+    if project_ids:
+        targets = [str(item or "").strip() for item in project_ids if str(item or "").strip()]
+        if targets:
+            filters.append("project_id = ANY(%s)")
+            params.append(targets)
+    if preset_ids:
+        targets = [str(item or "").strip() for item in preset_ids if str(item or "").strip()]
+        if targets:
+            filters.append("id::text = ANY(%s)")
+            params.append(targets)
+    if not include_disabled:
+        filters.append("enabled = TRUE")
+    if include_run_before_live_sync_only:
+        filters.append("run_before_live_sync = TRUE")
+    params.append(cap)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  preset_key,
+                  name,
+                  enabled,
+                  alert_code,
+                  health,
+                  additional_alert_codes,
+                  expected_decision,
+                  required_provider,
+                  run_before_live_sync,
+                  severity,
+                  strict_mode,
+                  metadata,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_preflight_presets
+                {where}
+                ORDER BY
+                  project_id ASC,
+                  enabled DESC,
+                  run_before_live_sync DESC,
+                  severity DESC,
+                  updated_at DESC,
+                  preset_key ASC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return [_serialize_operation_queue_incident_preflight_preset_row(row) for row in rows]
+
+
+def _upsert_operation_queue_incident_preflight_preset(
+    *,
+    project_id: str,
+    preset_key: str | None,
+    name: str,
+    enabled: bool,
+    alert_code: str,
+    health: str,
+    additional_alert_codes: list[str] | None,
+    expected_decision: str,
+    required_provider: str | None,
+    run_before_live_sync: bool,
+    severity: str,
+    strict_mode: bool,
+    metadata: dict[str, Any] | None,
+    updated_by: str,
+) -> dict[str, Any]:
+    normalized_alert_codes = _normalize_incident_preflight_alert_codes(
+        primary=alert_code,
+        additional=additional_alert_codes,
+    )
+    primary_alert = normalized_alert_codes[0]
+    additional = normalized_alert_codes[1:]
+    normalized_key = _normalize_incident_preflight_preset_key(
+        preset_key,
+        fallback=f"{primary_alert}-{str(health or 'critical').strip().lower()}",
+    )
+    normalized_name = str(name or "").strip()
+    if not normalized_name:
+        raise HTTPException(status_code=422, detail="incident_preflight_name_required")
+    normalized_health = str(health or "critical").strip().lower()
+    if normalized_health not in {"healthy", "watch", "critical"}:
+        raise HTTPException(status_code=422, detail="incident_health_unsupported")
+    normalized_expected = _normalize_incident_preflight_expected_decision(expected_decision)
+    normalized_provider = _normalize_incident_preflight_required_provider(required_provider)
+    normalized_severity = _normalize_incident_preflight_severity(severity)
+    normalized_metadata = metadata if isinstance(metadata, dict) else {}
+    preset_id = uuid4()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_incident_preflight_presets (
+                  id,
+                  project_id,
+                  preset_key,
+                  name,
+                  enabled,
+                  alert_code,
+                  health,
+                  additional_alert_codes,
+                  expected_decision,
+                  required_provider,
+                  run_before_live_sync,
+                  severity,
+                  strict_mode,
+                  metadata,
+                  updated_by,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (project_id, preset_key) DO UPDATE
+                SET
+                  name = EXCLUDED.name,
+                  enabled = EXCLUDED.enabled,
+                  alert_code = EXCLUDED.alert_code,
+                  health = EXCLUDED.health,
+                  additional_alert_codes = EXCLUDED.additional_alert_codes,
+                  expected_decision = EXCLUDED.expected_decision,
+                  required_provider = EXCLUDED.required_provider,
+                  run_before_live_sync = EXCLUDED.run_before_live_sync,
+                  severity = EXCLUDED.severity,
+                  strict_mode = EXCLUDED.strict_mode,
+                  metadata = EXCLUDED.metadata,
+                  updated_by = EXCLUDED.updated_by,
+                  updated_at = NOW()
+                RETURNING
+                  id::text,
+                  project_id,
+                  preset_key,
+                  name,
+                  enabled,
+                  alert_code,
+                  health,
+                  additional_alert_codes,
+                  expected_decision,
+                  required_provider,
+                  run_before_live_sync,
+                  severity,
+                  strict_mode,
+                  metadata,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    preset_id,
+                    project_id,
+                    normalized_key,
+                    normalized_name[:256],
+                    bool(enabled),
+                    primary_alert,
+                    normalized_health,
+                    Jsonb(additional),
+                    normalized_expected,
+                    normalized_provider,
+                    bool(run_before_live_sync),
+                    normalized_severity,
+                    bool(strict_mode),
+                    Jsonb(normalized_metadata),
+                    (updated_by or "web_ui").strip()[:256] or "web_ui",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_incident_preflight_preset(project_id=project_id, preset_key=normalized_key)
+    return _serialize_operation_queue_incident_preflight_preset_row(row)
+
+
+def _suggest_incident_preflight_recommendation(reason: str) -> str:
+    if reason == "simulation_invalid":
+        return "Review incident hook/provider configuration and required secrets before live sync."
+    if reason == "expected_open_but_skipped":
+        return "Check policy priority or open_on_health so critical signals route to incident opening."
+    if reason == "expected_skip_but_opened":
+        return "Tighten policy open_on_health and alert routing to avoid undesired ticket storms."
+    if reason == "expected_invalid_but_valid":
+        return "Preset expects invalid route; update expectation or deliberately enforce stricter hook validation."
+    if reason == "required_provider_mismatch":
+        return "Align provider override/hook provider with preflight required provider."
+    return "Inspect simulation route trace and policy ordering for this alert."
+
+
+def _evaluate_operation_queue_incident_preflight_check(
+    *,
+    preset: dict[str, Any],
+    simulation: dict[str, Any],
+) -> dict[str, Any]:
+    expected = _normalize_incident_preflight_expected_decision(preset.get("expected_decision"))
+    required_provider = _normalize_incident_preflight_required_provider(preset.get("required_provider"))
+    strict_mode = bool(preset.get("strict_mode"))
+    sim_status = str(simulation.get("status") or "invalid")
+    decision = simulation.get("decision") if isinstance(simulation.get("decision"), dict) else {}
+    should_open = bool(decision.get("should_open_incident"))
+    skip_reason = str(decision.get("skip_reason") or "") or None
+    effective_hook = simulation.get("effective_hook") if isinstance(simulation.get("effective_hook"), dict) else {}
+    provider_after = _normalize_operation_queue_incident_provider(effective_hook.get("provider"))
+    fail_reasons: list[str] = []
+
+    if required_provider is not None and provider_after != required_provider:
+        fail_reasons.append("required_provider_mismatch")
+    if expected == "open" and not should_open:
+        fail_reasons.append("expected_open_but_skipped")
+    if expected == "skip" and should_open:
+        fail_reasons.append("expected_skip_but_opened")
+    if expected == "invalid_ok":
+        if sim_status != "invalid":
+            fail_reasons.append("expected_invalid_but_valid")
+    elif strict_mode and sim_status != "ok":
+        fail_reasons.append("simulation_invalid")
+
+    passed = len(fail_reasons) == 0
+    severity = _normalize_incident_preflight_severity(preset.get("severity"))
+    first_reason = fail_reasons[0] if fail_reasons else None
+    return {
+        "preset_id": str(preset.get("id") or ""),
+        "project_id": str(preset.get("project_id") or ""),
+        "preset_key": str(preset.get("preset_key") or ""),
+        "preset_name": str(preset.get("name") or ""),
+        "enabled": bool(preset.get("enabled")),
+        "run_before_live_sync": bool(preset.get("run_before_live_sync")),
+        "alert_code": str(preset.get("alert_code") or ""),
+        "health": str(preset.get("health") or "critical"),
+        "additional_alert_codes": [
+            str(item) for item in (preset.get("additional_alert_codes") if isinstance(preset.get("additional_alert_codes"), list) else [])
+        ],
+        "expected_decision": expected,
+        "required_provider": required_provider,
+        "severity": severity,
+        "strict_mode": strict_mode,
+        "status": "passed" if passed else "failed",
+        "fail_reasons": fail_reasons,
+        "recommendation": None if passed or first_reason is None else _suggest_incident_preflight_recommendation(first_reason),
+        "simulation": {
+            "status": sim_status,
+            "decision": {
+                "should_open_incident": should_open,
+                "skip_reason": skip_reason,
+            },
+            "provider_after_policy": provider_after,
+            "provider_before_policy": (
+                simulation.get("route_trace", {}).get("provider_before_policy")
+                if isinstance(simulation.get("route_trace"), dict)
+                else None
+            ),
+            "matched_policy_id": (
+                simulation.get("route_trace", {}).get("matched_policy_id")
+                if isinstance(simulation.get("route_trace"), dict)
+                else None
+            ),
+            "matched_policy_alert_code": (
+                simulation.get("route_trace", {}).get("matched_policy_alert_code")
+                if isinstance(simulation.get("route_trace"), dict)
+                else None
+            ),
+            "generated_at": simulation.get("generated_at"),
+        },
+    }
+
+
+def _run_operation_queue_incident_preflight(
+    *,
+    project_ids: list[str] | None,
+    preset_ids: list[str] | None,
+    include_disabled: bool,
+    include_run_before_live_sync_only: bool,
+    actor: str,
+    actor_roles: set[str],
+    record_audit: bool,
+    limit: int,
+) -> dict[str, Any]:
+    targets = _list_operation_queue_projects(limit=limit, requested=project_ids or None)
+    preset_id_filter = [str(item or "").strip() for item in (preset_ids or []) if str(item or "").strip()]
+    presets = _list_operation_queue_incident_preflight_presets(
+        project_ids=targets or None,
+        preset_ids=preset_id_filter or None,
+        include_disabled=include_disabled,
+        include_run_before_live_sync_only=include_run_before_live_sync_only,
+        limit=max(200, min(5000, int(limit) * 20)),
+    )
+    # If explicit preset ids were requested, include projects from those presets as targets.
+    for preset in presets:
+        project_id = str(preset.get("project_id") or "").strip()
+        if project_id and project_id not in targets:
+            targets.append(project_id)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for preset in presets:
+        project_id = str(preset.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        grouped.setdefault(project_id, []).append(preset)
+
+    checks: list[dict[str, Any]] = []
+    by_severity = {"info": 0, "warning": 0, "critical": 0}
+    project_rollups: dict[str, dict[str, Any]] = {}
+    for project_id, rows in grouped.items():
+        rollup = {
+            "project_id": project_id,
+            "checks_total": 0,
+            "passed": 0,
+            "failed": 0,
+            "critical_alerts": 0,
+            "warning_alerts": 0,
+            "info_alerts": 0,
+        }
+        for preset in rows:
+            simulation = _simulate_operation_queue_incident_policy_route(
+                project_id=project_id,
+                alert_code=str(preset.get("alert_code") or ""),
+                health=str(preset.get("health") or "critical"),
+                additional_alert_codes=(
+                    preset.get("additional_alert_codes")
+                    if isinstance(preset.get("additional_alert_codes"), list)
+                    else []
+                ),
+                include_secrets=False,
+                actor=actor,
+                actor_roles=actor_roles,
+                append_audit_event=False,
+            )
+            check = _evaluate_operation_queue_incident_preflight_check(
+                preset=preset,
+                simulation=simulation,
+            )
+            checks.append(check)
+            rollup["checks_total"] += 1
+            if check["status"] == "passed":
+                rollup["passed"] += 1
+            else:
+                rollup["failed"] += 1
+                severity = _normalize_incident_preflight_severity(check.get("severity"))
+                by_severity[severity] += 1
+                if severity == "critical":
+                    rollup["critical_alerts"] += 1
+                elif severity == "warning":
+                    rollup["warning_alerts"] += 1
+                else:
+                    rollup["info_alerts"] += 1
+                if record_audit:
+                    _append_operation_queue_control_event(
+                        project_id=project_id,
+                        action="incident_preflight_alert",
+                        actor=(actor or "web_ui").strip()[:256] or "web_ui",
+                        reason=f"preflight:{check.get('preset_key')}:{','.join(check.get('fail_reasons') or [])}"[:2000],
+                        paused_until=None,
+                        payload={
+                            "preset_id": check.get("preset_id"),
+                            "preset_key": check.get("preset_key"),
+                            "preset_name": check.get("preset_name"),
+                            "expected_decision": check.get("expected_decision"),
+                            "fail_reasons": check.get("fail_reasons"),
+                            "severity": severity,
+                            "provider_after_policy": check.get("simulation", {}).get("provider_after_policy"),
+                            "skip_reason": check.get("simulation", {}).get("decision", {}).get("skip_reason"),
+                        },
+                    )
+        project_rollups[project_id] = rollup
+        if record_audit and rollup["checks_total"] > 0:
+            _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_preflight_run",
+                actor=(actor or "web_ui").strip()[:256] or "web_ui",
+                reason="queue_incident_preflight_run",
+                paused_until=None,
+                payload={
+                    "checks_total": int(rollup["checks_total"]),
+                    "passed": int(rollup["passed"]),
+                    "failed": int(rollup["failed"]),
+                    "critical_alerts": int(rollup["critical_alerts"]),
+                    "warning_alerts": int(rollup["warning_alerts"]),
+                    "info_alerts": int(rollup["info_alerts"]),
+                },
+            )
+
+    checks.sort(
+        key=lambda item: (
+            0 if str(item.get("status") or "") == "failed" else 1,
+            {"critical": 0, "warning": 1, "info": 2}.get(str(item.get("severity") or "warning"), 3),
+            str(item.get("project_id") or ""),
+            str(item.get("preset_key") or ""),
+        )
+    )
+    rollup_rows = list(project_rollups.values())
+    rollup_rows.sort(
+        key=lambda item: (
+            -int(item.get("failed") or 0),
+            -int(item.get("critical_alerts") or 0),
+            str(item.get("project_id") or ""),
+        )
+    )
+
+    summary = {
+        "projects_total": len(rollup_rows),
+        "presets_total": len(presets),
+        "checks_total": len(checks),
+        "passed": sum(1 for item in checks if str(item.get("status") or "") == "passed"),
+        "failed": sum(1 for item in checks if str(item.get("status") or "") == "failed"),
+        "alerts_total": sum(int(by_severity[item]) for item in ["info", "warning", "critical"]),
+        "alerts_by_severity": by_severity,
+    }
+    alerts = [item for item in checks if str(item.get("status") or "") == "failed"]
+    return {
+        "requested_projects": project_ids or [],
+        "preset_ids": preset_id_filter,
+        "include_disabled": bool(include_disabled),
+        "include_run_before_live_sync_only": bool(include_run_before_live_sync_only),
+        "record_audit": bool(record_audit),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": summary,
+        "project_rollups": rollup_rows,
+        "alerts": alerts[:200],
+        "results": checks[:1000],
+    }
+
+
+def _resolve_operation_queue_incident_hook_policy(
+    *,
+    hook: dict[str, Any],
+    policy_rows: list[dict[str, Any]],
+    health: str,
+    alert_codes: list[str],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if not policy_rows or not alert_codes:
+        return hook, None
+    normalized_alerts = {str(item or "").strip().lower() for item in alert_codes if str(item or "").strip()}
+    if not normalized_alerts:
+        return hook, None
+    matched: dict[str, Any] | None = None
+    for item in policy_rows:
+        if not isinstance(item, dict):
+            continue
+        if not bool(item.get("enabled")):
+            continue
+        code = str(item.get("alert_code") or "").strip().lower()
+        if not code or code not in normalized_alerts:
+            continue
+        matched = item
+        break
+    if matched is None:
+        return hook, None
+
+    effective = dict(hook)
+    base_provider = _normalize_operation_queue_incident_provider(effective.get("provider"))
+    provider_override_raw = matched.get("provider_override")
+    provider = _normalize_operation_queue_incident_provider(provider_override_raw) if provider_override_raw else base_provider
+    effective["provider"] = provider
+    if matched.get("open_webhook_url"):
+        effective["open_webhook_url"] = _trim_optional_text(matched.get("open_webhook_url"), max_len=2048)
+    if matched.get("resolve_webhook_url"):
+        effective["resolve_webhook_url"] = _trim_optional_text(matched.get("resolve_webhook_url"), max_len=2048)
+
+    base_config_source = effective.get("provider_config") if provider == base_provider else {}
+    base_config = _normalize_operation_queue_incident_provider_config(provider, base_config_source)
+    policy_config = matched.get("provider_config_override") if isinstance(matched.get("provider_config_override"), dict) else {}
+    merged_config: dict[str, Any] = dict(base_config)
+    for key, value in policy_config.items():
+        merged_config[str(key)] = value
+    merged_config = _normalize_operation_queue_incident_provider_config(provider, merged_config)
+
+    severity = _normalize_incident_severity_by_health(matched.get("severity_by_health"))
+    if severity:
+        if provider == "pagerduty":
+            existing = merged_config.get("severity_by_health") if isinstance(merged_config.get("severity_by_health"), dict) else {}
+            merged_config["severity_by_health"] = {**existing, **severity}
+        elif provider == "jira":
+            existing = merged_config.get("priority_by_health") if isinstance(merged_config.get("priority_by_health"), dict) else {}
+            merged_config["priority_by_health"] = {**existing, **severity}
+        else:
+            merged_config["severity_by_health"] = severity
+    effective["provider_config"] = merged_config
+
+    open_on_health = _normalize_incident_open_on_health_optional(
+        matched.get("open_on_health") if isinstance(matched.get("open_on_health"), list) else []
+    )
+    if open_on_health:
+        effective["open_on_health"] = open_on_health
+
+    _validate_operation_queue_incident_hook_requirements(
+        provider=provider,
+        enabled=bool(effective.get("enabled")),
+        auto_resolve=bool(effective.get("auto_resolve")),
+        open_webhook_url=_trim_optional_text(effective.get("open_webhook_url"), max_len=2048),
+        resolve_webhook_url=_trim_optional_text(effective.get("resolve_webhook_url"), max_len=2048),
+        provider_config=merged_config,
+    )
+
+    effective["matched_policy_id"] = matched.get("id")
+    effective["matched_policy_alert_code"] = matched.get("alert_code")
+    return effective, matched
+
+
+def _simulate_operation_queue_incident_policy_route(
+    *,
+    project_id: str,
+    alert_code: str,
+    health: str,
+    additional_alert_codes: list[str] | None,
+    include_secrets: bool,
+    actor: str,
+    actor_roles: set[str] | None = None,
+    append_audit_event: bool = True,
+) -> dict[str, Any]:
+    roles = actor_roles or set()
+    normalized_alert_code = _normalize_incident_policy_alert_code(alert_code)
+    normalized_health = str(health or "critical").strip().lower()
+    if normalized_health not in {"healthy", "watch", "critical"}:
+        raise HTTPException(status_code=422, detail="incident_health_unsupported")
+    hook = _fetch_operation_queue_incident_hook(
+        project_id,
+        include_secrets=True,
+        actor_roles=roles,
+    )
+    policy_rows = _list_operation_queue_incident_policies(
+        project_ids=[project_id],
+        include_secrets=True,
+        actor_roles=roles,
+        limit=500,
+    )
+    alert_codes = [normalized_alert_code]
+    for item in additional_alert_codes or []:
+        code = _normalize_incident_policy_alert_code(item)
+        if code not in alert_codes:
+            alert_codes.append(code)
+    effective_hook, matched_policy = _resolve_operation_queue_incident_hook_policy(
+        hook=hook,
+        policy_rows=policy_rows,
+        health=normalized_health,
+        alert_codes=alert_codes,
+    )
+    provider = _normalize_operation_queue_incident_provider(effective_hook.get("provider"))
+    provider_config = _normalize_operation_queue_incident_provider_config(provider, effective_hook.get("provider_config"))
+    open_on_health = _normalize_incident_open_on_health(
+        effective_hook.get("open_on_health") if isinstance(effective_hook.get("open_on_health"), list) else None
+    )
+    hook_secret_roles = _normalize_incident_secret_roles(
+        effective_hook.get("secret_edit_roles") if isinstance(effective_hook.get("secret_edit_roles"), list) else None
+    )
+    can_include_hook_secrets = bool(
+        include_secrets
+        and _incident_secret_can_edit(required_roles=hook_secret_roles, actor_roles=roles)
+    )
+    matched_policy_secret_roles = _normalize_incident_secret_roles(
+        matched_policy.get("secret_edit_roles")
+        if isinstance(matched_policy, dict) and isinstance(matched_policy.get("secret_edit_roles"), list)
+        else None
+    )
+    can_include_policy_secrets = bool(
+        include_secrets
+        and (
+            matched_policy is None
+            or _incident_secret_can_edit(required_roles=matched_policy_secret_roles, actor_roles=roles)
+        )
+    )
+    effective_include_secrets = bool(can_include_hook_secrets and can_include_policy_secrets)
+    should_open = normalized_health in set(open_on_health)
+    validation_error: str | None = None
+    try:
+        _validate_operation_queue_incident_hook_requirements(
+            provider=provider,
+            enabled=bool(effective_hook.get("enabled")),
+            auto_resolve=bool(effective_hook.get("auto_resolve")),
+            open_webhook_url=_trim_optional_text(effective_hook.get("open_webhook_url"), max_len=2048),
+            resolve_webhook_url=_trim_optional_text(effective_hook.get("resolve_webhook_url"), max_len=2048),
+            provider_config=provider_config,
+        )
+    except HTTPException as exc:
+        validation_error = exc.detail if isinstance(exc.detail, str) else "incident_hook_invalid"
+    masked_config = _mask_incident_provider_config_for_response(
+        provider=provider,
+        config=provider_config,
+        include_secrets=effective_include_secrets,
+    )
+    matched_policy_response: dict[str, Any] | None = None
+    if isinstance(matched_policy, dict):
+        policy_provider = (
+            _normalize_operation_queue_incident_provider(matched_policy.get("provider_override"))
+            if matched_policy.get("provider_override")
+            else None
+        )
+        policy_config_override = (
+            matched_policy.get("provider_config_override")
+            if isinstance(matched_policy.get("provider_config_override"), dict)
+            else {}
+        )
+        if policy_provider is not None:
+            policy_config_override = _mask_incident_provider_config_for_response(
+                provider=policy_provider,
+                config=policy_config_override,
+                include_secrets=bool(include_secrets and can_include_policy_secrets),
+            )
+        matched_policy_response = {
+            "id": matched_policy.get("id"),
+            "project_id": matched_policy.get("project_id"),
+            "alert_code": matched_policy.get("alert_code"),
+            "enabled": bool(matched_policy.get("enabled")),
+            "priority": max(1, min(1000, int(matched_policy.get("priority") or 100))),
+            "provider_override": policy_provider,
+            "open_webhook_url": _trim_optional_text(matched_policy.get("open_webhook_url"), max_len=2048),
+            "resolve_webhook_url": _trim_optional_text(matched_policy.get("resolve_webhook_url"), max_len=2048),
+            "provider_config_override": policy_config_override,
+            "severity_by_health": _normalize_incident_severity_by_health(matched_policy.get("severity_by_health")),
+            "open_on_health": _normalize_incident_open_on_health_optional(
+                matched_policy.get("open_on_health") if isinstance(matched_policy.get("open_on_health"), list) else []
+            ),
+            "secret_edit_roles": matched_policy_secret_roles,
+            "secret_access": {
+                "required_roles": matched_policy_secret_roles,
+                "can_edit": _incident_secret_can_edit(required_roles=matched_policy_secret_roles, actor_roles=roles),
+            },
+            "provider_config_override_secret_keys": (
+                matched_policy.get("provider_config_override_secret_keys")
+                if isinstance(matched_policy.get("provider_config_override_secret_keys"), list)
+                else []
+            ),
+            "updated_by": matched_policy.get("updated_by"),
+            "created_at": matched_policy.get("created_at"),
+            "updated_at": matched_policy.get("updated_at"),
+        }
+    trace_candidates = []
+    for item in policy_rows:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("alert_code") or "").strip().lower()
+        if code not in set(alert_codes):
+            continue
+        trace_candidates.append(
+            {
+                "id": item.get("id"),
+                "alert_code": code,
+                "enabled": bool(item.get("enabled")),
+                "priority": max(1, min(1000, int(item.get("priority") or 100))),
+                "provider_override": item.get("provider_override"),
+                "matched": bool(
+                    isinstance(matched_policy, dict)
+                    and str(item.get("id") or "").strip() == str(matched_policy.get("id") or "").strip()
+                ),
+            }
+        )
+    trace_candidates.sort(key=lambda item: (int(item.get("priority") or 100), str(item.get("alert_code") or "")))
+    if append_audit_event:
+        _append_operation_queue_control_event(
+            project_id=project_id,
+            action="incident_policy_simulated",
+            actor=(actor or "web_ui").strip()[:256] or "web_ui",
+            reason="queue_incident_policy_simulation",
+            paused_until=None,
+            payload={
+                "alert_codes": alert_codes,
+                "health": normalized_health,
+                "matched_policy_id": matched_policy.get("id") if isinstance(matched_policy, dict) else None,
+                "matched_policy_alert_code": matched_policy.get("alert_code") if isinstance(matched_policy, dict) else None,
+                "provider": provider,
+                "validation_error": validation_error,
+                "should_open": bool(should_open),
+                "include_secrets_requested": bool(include_secrets),
+                "include_secrets_effective": effective_include_secrets,
+            },
+        )
+    return {
+        "status": "invalid" if validation_error else "ok",
+        "project_id": project_id,
+        "health": normalized_health,
+        "alert_codes": alert_codes,
+        "dry_run": True,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "matched_policy": matched_policy_response,
+        "secrets": {
+            "requested": bool(include_secrets),
+            "included": effective_include_secrets,
+            "hook_access_granted": can_include_hook_secrets,
+            "policy_access_granted": can_include_policy_secrets,
+        },
+        "effective_hook": {
+            "enabled": bool(effective_hook.get("enabled")),
+            "provider": provider,
+            "open_webhook_url": _trim_optional_text(effective_hook.get("open_webhook_url"), max_len=2048),
+            "resolve_webhook_url": _trim_optional_text(effective_hook.get("resolve_webhook_url"), max_len=2048),
+            "provider_config": masked_config,
+            "provider_config_keys": sorted([str(key) for key in masked_config.keys()]),
+            "open_on_health": open_on_health,
+            "auto_resolve": bool(effective_hook.get("auto_resolve")),
+            "cooldown_minutes": max(1, min(1440, int(effective_hook.get("cooldown_minutes") or 30))),
+            "timeout_sec": max(1, min(60, int(effective_hook.get("timeout_sec") or 10))),
+        },
+        "route_trace": {
+            "matched_policy_id": matched_policy_response.get("id") if isinstance(matched_policy_response, dict) else None,
+            "matched_policy_alert_code": (
+                matched_policy_response.get("alert_code") if isinstance(matched_policy_response, dict) else None
+            ),
+            "provider_before_policy": _normalize_operation_queue_incident_provider(hook.get("provider")),
+            "provider_after_policy": provider,
+            "candidate_policies": trace_candidates[:50],
+        },
+        "decision": {
+            "should_open_incident": bool(should_open and bool(effective_hook.get("enabled")) and validation_error is None),
+            "skip_reason": validation_error
+            or (
+                "hook_disabled"
+                if not bool(effective_hook.get("enabled"))
+                else ("health_not_in_open_on" if not should_open else None)
+            ),
+            "ticket_side_effects": False,
+        },
+    }
+
+
+def _default_operation_queue_incident_hook(*, project_id: str) -> dict[str, Any]:
+    secret_roles = list(_INCIDENT_SECRET_EDIT_ROLES_DEFAULT)
+    return {
+        "project_id": project_id,
+        "enabled": False,
+        "provider": "webhook",
+        "open_webhook_url": None,
+        "resolve_webhook_url": None,
+        "provider_config": {"headers": {}},
+        "open_on_health": ["critical"],
+        "auto_resolve": True,
+        "cooldown_minutes": 30,
+        "timeout_sec": 10,
+        "secret_edit_roles": secret_roles,
+        "secret_access": {
+            "required_roles": secret_roles,
+            "can_edit": _incident_secret_can_edit(required_roles=secret_roles, actor_roles=set()),
+        },
+        "updated_by": "system",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _serialize_operation_queue_incident_hook_row(
+    row: tuple[Any, ...],
+    *,
+    project_id: str,
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+) -> dict[str, Any]:
+    roles = actor_roles or set()
+    provider = _normalize_operation_queue_incident_provider(row[2])
+    secret_values = _fetch_incident_secret_values(
+        project_id=str(row[0] or project_id),
+        scope=_INCIDENT_SECRET_SCOPE_HOOK,
+        scope_ref=str(row[0] or project_id),
+        provider=provider,
+    )
+    provider_config = _merge_incident_provider_config_with_secrets(
+        provider=provider,
+        base_config=row[5] if isinstance(row[5], dict) else {},
+        secret_values=secret_values,
+        include_secrets=include_secrets,
+    )
+    open_on = row[6] if isinstance(row[6], list) else ["critical"]
+    secret_edit_roles = _normalize_incident_secret_roles(row[10] if isinstance(row[10], list) else None)
+    return {
+        "project_id": str(row[0] or project_id),
+        "enabled": bool(row[1]),
+        "provider": provider,
+        "open_webhook_url": row[3] if isinstance(row[3], str) else None,
+        "resolve_webhook_url": row[4] if isinstance(row[4], str) else None,
+        "provider_config": provider_config,
+        "open_on_health": _normalize_incident_open_on_health([str(item) for item in open_on]),
+        "auto_resolve": bool(row[7]),
+        "cooldown_minutes": max(1, min(1440, int(row[8] or 30))),
+        "timeout_sec": max(1, min(60, int(row[9] or 10))),
+        "secret_edit_roles": secret_edit_roles,
+        "secret_access": {
+            "required_roles": secret_edit_roles,
+            "can_edit": _incident_secret_can_edit(required_roles=secret_edit_roles, actor_roles=roles),
+        },
+        "provider_config_secret_keys": sorted(
+            [key for key in _incident_provider_secret_keys(provider) if key in secret_values or bool(provider_config.get(key))]
+        ),
+        "updated_by": str(row[11] or "system"),
+        "created_at": None if row[12] is None else row[12].isoformat(),
+        "updated_at": None if row[13] is None else row[13].isoformat(),
+    }
+
+
+def _fetch_operation_queue_incident_hook(
+    project_id: str,
+    *,
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  project_id,
+                  enabled,
+                  provider,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config,
+                  open_on_health,
+                  auto_resolve,
+                  cooldown_minutes,
+                  timeout_sec,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_hooks
+                WHERE project_id = %s
+                LIMIT 1
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_incident_hook(project_id=project_id)
+    return _serialize_operation_queue_incident_hook_row(
+        row,
+        project_id=project_id,
+        include_secrets=include_secrets,
+        actor_roles=actor_roles,
+    )
+
+
+def _upsert_operation_queue_incident_hook(
+    *,
+    project_id: str,
+    enabled: bool,
+    provider: str,
+    open_webhook_url: str | None,
+    resolve_webhook_url: str | None,
+    provider_config: dict[str, Any] | None,
+    open_on_health: list[str],
+    auto_resolve: bool,
+    cooldown_minutes: int,
+    timeout_sec: int,
+    secret_edit_roles: list[str] | None,
+    actor_roles: set[str],
+    updated_by: str,
+) -> dict[str, Any]:
+    existing_hook = _fetch_operation_queue_incident_hook(
+        project_id,
+        include_secrets=True,
+        actor_roles=actor_roles,
+    )
+    normalized_provider = _normalize_operation_queue_incident_provider(provider)
+    normalized_provider_config = _normalize_operation_queue_incident_provider_config(normalized_provider, provider_config)
+    normalized_open = _normalize_incident_open_on_health(open_on_health)
+    normalized_secret_roles = _normalize_incident_secret_roles(
+        secret_edit_roles
+        if secret_edit_roles is not None
+        else (
+            existing_hook.get("secret_edit_roles")
+            if isinstance(existing_hook, dict) and isinstance(existing_hook.get("secret_edit_roles"), list)
+            else None
+        )
+    )
+    existing_secret_values = _fetch_incident_secret_values(
+        project_id=project_id,
+        scope=_INCIDENT_SECRET_SCOPE_HOOK,
+        scope_ref=project_id,
+        provider=normalized_provider,
+    )
+    (
+        stored_provider_config,
+        effective_provider_config,
+        rotated_secrets,
+        cleared_secrets,
+        secret_change_requested,
+    ) = _prepare_incident_provider_config_secret_updates(
+        provider=normalized_provider,
+        normalized_config=normalized_provider_config,
+        existing_secrets=existing_secret_values,
+    )
+    if secret_change_requested:
+        _assert_incident_secret_edit_allowed(
+            project_id=project_id,
+            scope=_INCIDENT_SECRET_SCOPE_HOOK,
+            required_roles=normalized_secret_roles,
+            actor_roles=actor_roles,
+        )
+    normalized_open_url = (open_webhook_url or "").strip()[:2048] or None
+    normalized_resolve_url = (resolve_webhook_url or "").strip()[:2048] or None
+    _validate_operation_queue_incident_hook_requirements(
+        provider=normalized_provider,
+        enabled=bool(enabled),
+        auto_resolve=bool(auto_resolve),
+        open_webhook_url=normalized_open_url,
+        resolve_webhook_url=normalized_resolve_url,
+        provider_config=effective_provider_config,
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_incident_hooks (
+                  project_id,
+                  enabled,
+                  provider,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config,
+                  open_on_health,
+                  auto_resolve,
+                  cooldown_minutes,
+                  timeout_sec,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (project_id) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    provider = EXCLUDED.provider,
+                    open_webhook_url = EXCLUDED.open_webhook_url,
+                    resolve_webhook_url = EXCLUDED.resolve_webhook_url,
+                    provider_config = EXCLUDED.provider_config,
+                    open_on_health = EXCLUDED.open_on_health,
+                    auto_resolve = EXCLUDED.auto_resolve,
+                    cooldown_minutes = EXCLUDED.cooldown_minutes,
+                    timeout_sec = EXCLUDED.timeout_sec,
+                    secret_edit_roles = EXCLUDED.secret_edit_roles,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  project_id,
+                  enabled,
+                  provider,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config,
+                  open_on_health,
+                  auto_resolve,
+                  cooldown_minutes,
+                  timeout_sec,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    project_id,
+                    bool(enabled),
+                    normalized_provider,
+                    normalized_open_url,
+                    normalized_resolve_url,
+                    Jsonb(stored_provider_config),
+                    Jsonb(normalized_open),
+                    bool(auto_resolve),
+                    max(1, min(1440, int(cooldown_minutes))),
+                    max(1, min(60, int(timeout_sec))),
+                    normalized_secret_roles,
+                    (updated_by or "web_ui").strip()[:256] or "web_ui",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return _default_operation_queue_incident_hook(project_id=project_id)
+    hook = _serialize_operation_queue_incident_hook_row(
+        row,
+        project_id=project_id,
+        actor_roles=actor_roles,
+    )
+    actor = (updated_by or "web_ui").strip()[:256] or "web_ui"
+    for key, value in rotated_secrets.items():
+        _upsert_incident_secret(
+            project_id=project_id,
+            scope=_INCIDENT_SECRET_SCOPE_HOOK,
+            scope_ref=project_id,
+            provider=normalized_provider,
+            secret_key=key,
+            secret_value=value,
+            actor=actor,
+        )
+    for key in cleared_secrets:
+        _clear_incident_secret(
+            project_id=project_id,
+            scope=_INCIDENT_SECRET_SCOPE_HOOK,
+            scope_ref=project_id,
+            provider=normalized_provider,
+            secret_key=key,
+            actor=actor,
+        )
+    _clear_incident_scope_secrets_for_other_providers(
+        project_id=project_id,
+        scope=_INCIDENT_SECRET_SCOPE_HOOK,
+        scope_ref=project_id,
+        keep_provider=normalized_provider,
+        actor=actor,
+        required_roles=normalized_secret_roles,
+        actor_roles=actor_roles,
+    )
+    return _fetch_operation_queue_incident_hook(project_id, actor_roles=actor_roles) or hook
+
+
+def _list_operation_queue_incident_hooks(
+    *,
+    project_ids: list[str] | None = None,
+    include_secrets: bool = False,
+    actor_roles: set[str] | None = None,
+    limit: int = 200,
+) -> dict[str, dict[str, Any]]:
+    if project_ids:
+        targets: list[str] = []
+        seen: set[str] = set()
+        for item in project_ids:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            targets.append(text)
+            if len(targets) >= max(1, min(200, int(limit))):
+                break
+        if not targets:
+            return {}
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      project_id,
+                      enabled,
+                      provider,
+                      open_webhook_url,
+                      resolve_webhook_url,
+                      provider_config,
+                      open_on_health,
+                      auto_resolve,
+                      cooldown_minutes,
+                      timeout_sec,
+                      secret_edit_roles,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM gatekeeper_calibration_queue_incident_hooks
+                    WHERE project_id = ANY(%s)
+                    ORDER BY updated_at DESC, project_id ASC
+                    """,
+                    (targets,),
+                )
+                rows = cur.fetchall()
+        return {
+            str(row[0]): _serialize_operation_queue_incident_hook_row(
+                row,
+                project_id=str(row[0]),
+                include_secrets=include_secrets,
+                actor_roles=actor_roles,
+            )
+            for row in rows
+        }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  project_id,
+                  enabled,
+                  provider,
+                  open_webhook_url,
+                  resolve_webhook_url,
+                  provider_config,
+                  open_on_health,
+                  auto_resolve,
+                  cooldown_minutes,
+                  timeout_sec,
+                  secret_edit_roles,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_hooks
+                ORDER BY updated_at DESC, project_id ASC
+                LIMIT %s
+                """,
+                (max(1, min(200, int(limit))),),
+            )
+            rows = cur.fetchall()
+    return {
+        str(row[0]): _serialize_operation_queue_incident_hook_row(
+            row,
+            project_id=str(row[0]),
+            include_secrets=include_secrets,
+            actor_roles=actor_roles,
+        )
+        for row in rows
+    }
+
+
+def _serialize_operation_queue_incident_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": str(row[0]),
+        "project_id": str(row[1]),
+        "status": str(row[2]),
+        "trigger_health": str(row[3]),
+        "trigger_alert_codes": [str(item) for item in (row[4] if isinstance(row[4], list) else [])],
+        "open_reason": row[5] if isinstance(row[5], str) else None,
+        "resolve_reason": row[6] if isinstance(row[6], str) else None,
+        "external_provider": str(row[7] or "webhook"),
+        "external_ticket_id": row[8] if isinstance(row[8], str) else None,
+        "external_ticket_url": row[9] if isinstance(row[9], str) else None,
+        "open_payload": row[10] if isinstance(row[10], dict) else {},
+        "resolve_payload": row[11] if isinstance(row[11], dict) else {},
+        "opened_at": row[12].isoformat() if row[12] is not None else None,
+        "resolved_at": row[13].isoformat() if row[13] is not None else None,
+        "last_sync_at": row[14].isoformat() if row[14] is not None else None,
+        "created_by": str(row[15] or "system"),
+        "updated_by": str(row[16] or "system"),
+    }
+
+
+def _fetch_open_operation_queue_incident(project_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  status,
+                  trigger_health,
+                  trigger_alert_codes,
+                  open_reason,
+                  resolve_reason,
+                  external_provider,
+                  external_ticket_id,
+                  external_ticket_url,
+                  open_payload,
+                  resolve_payload,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  created_by,
+                  updated_by
+                FROM gatekeeper_calibration_queue_incidents
+                WHERE project_id = %s
+                  AND status = 'open'
+                  AND resolved_at IS NULL
+                ORDER BY opened_at DESC, id DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+    return None if row is None else _serialize_operation_queue_incident_row(row)
+
+
+def _fetch_latest_operation_queue_incident(project_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  status,
+                  trigger_health,
+                  trigger_alert_codes,
+                  open_reason,
+                  resolve_reason,
+                  external_provider,
+                  external_ticket_id,
+                  external_ticket_url,
+                  open_payload,
+                  resolve_payload,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  created_by,
+                  updated_by
+                FROM gatekeeper_calibration_queue_incidents
+                WHERE project_id = %s
+                ORDER BY COALESCE(resolved_at, opened_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+    return None if row is None else _serialize_operation_queue_incident_row(row)
+
+
+def _touch_operation_queue_incident_sync(*, incident_id: str, updated_by: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE gatekeeper_calibration_queue_incidents
+                SET last_sync_at = NOW(),
+                    updated_by = %s
+                WHERE id::text = %s
+                """,
+                ((updated_by or "system").strip()[:256] or "system", incident_id),
+            )
+
+
+def _create_operation_queue_incident_open(
+    *,
+    project_id: str,
+    trigger_health: str,
+    trigger_alert_codes: list[str],
+    open_reason: str | None,
+    external_provider: str,
+    external_ticket_id: str | None,
+    external_ticket_url: str | None,
+    open_payload: dict[str, Any] | None,
+    created_by: str,
+) -> dict[str, Any]:
+    incident_id = uuid4()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_incidents (
+                  id,
+                  project_id,
+                  status,
+                  trigger_health,
+                  trigger_alert_codes,
+                  open_reason,
+                  external_provider,
+                  external_ticket_id,
+                  external_ticket_url,
+                  open_payload,
+                  resolve_payload,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  created_by,
+                  updated_by
+                )
+                VALUES (%s, %s, 'open', %s, %s, %s, %s, %s, %s, %s, '{}'::jsonb, NOW(), NULL, NOW(), %s, %s)
+                RETURNING
+                  id::text,
+                  project_id,
+                  status,
+                  trigger_health,
+                  trigger_alert_codes,
+                  open_reason,
+                  resolve_reason,
+                  external_provider,
+                  external_ticket_id,
+                  external_ticket_url,
+                  open_payload,
+                  resolve_payload,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  created_by,
+                  updated_by
+                """,
+                (
+                    incident_id,
+                    project_id,
+                    (trigger_health or "critical").strip()[:64] or "critical",
+                    Jsonb([str(item) for item in trigger_alert_codes if str(item).strip()]),
+                    (open_reason or "").strip()[:2000] or None,
+                    (external_provider or "webhook").strip()[:64] or "webhook",
+                    (external_ticket_id or "").strip()[:512] or None,
+                    (external_ticket_url or "").strip()[:2048] or None,
+                    Jsonb(open_payload or {}),
+                    (created_by or "system").strip()[:256] or "system",
+                    (created_by or "system").strip()[:256] or "system",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=500, detail="queue_incident_open_persist_failed")
+    return _serialize_operation_queue_incident_row(row)
+
+
+def _resolve_operation_queue_incident(
+    *,
+    incident_id: str,
+    resolve_reason: str | None,
+    resolve_payload: dict[str, Any] | None,
+    updated_by: str,
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE gatekeeper_calibration_queue_incidents
+                SET status = 'resolved',
+                    resolve_reason = %s,
+                    resolve_payload = %s,
+                    resolved_at = NOW(),
+                    last_sync_at = NOW(),
+                    updated_by = %s
+                WHERE id::text = %s
+                  AND status = 'open'
+                  AND resolved_at IS NULL
+                RETURNING
+                  id::text,
+                  project_id,
+                  status,
+                  trigger_health,
+                  trigger_alert_codes,
+                  open_reason,
+                  resolve_reason,
+                  external_provider,
+                  external_ticket_id,
+                  external_ticket_url,
+                  open_payload,
+                  resolve_payload,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  created_by,
+                  updated_by
+                """,
+                (
+                    (resolve_reason or "").strip()[:2000] or None,
+                    Jsonb(resolve_payload or {}),
+                    (updated_by or "system").strip()[:256] or "system",
+                    incident_id,
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="queue_incident_open_not_found")
+    return _serialize_operation_queue_incident_row(row)
+
+
+def _list_operation_queue_incidents(
+    *,
+    project_ids: list[str] | None = None,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+    if project_ids:
+        targets = [str(item or "").strip() for item in project_ids if str(item or "").strip()]
+        if targets:
+            filters.append("project_id = ANY(%s)")
+            params.append(targets)
+    if status in {"open", "resolved"}:
+        filters.append("status = %s")
+        params.append(status)
+    params.append(max(1, min(500, int(limit))))
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  status,
+                  trigger_health,
+                  trigger_alert_codes,
+                  open_reason,
+                  resolve_reason,
+                  external_provider,
+                  external_ticket_id,
+                  external_ticket_url,
+                  open_payload,
+                  resolve_payload,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  created_by,
+                  updated_by
+                FROM gatekeeper_calibration_queue_incidents
+                {where}
+                ORDER BY COALESCE(resolved_at, opened_at) DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return [_serialize_operation_queue_incident_row(row) for row in rows]
+
+
+def _build_operation_queue_incident_brief(
+    *,
+    throughput: dict[str, Any],
+    ownership: dict[str, Any],
+    health: str,
+    alert_codes: list[str],
+) -> dict[str, Any]:
+    queue = throughput.get("queue") if isinstance(throughput.get("queue"), dict) else {}
+    worker_lag = throughput.get("worker_lag") if isinstance(throughput.get("worker_lag"), dict) else {}
+    return {
+        "health": health,
+        "alert_codes": alert_codes,
+        "queue": {
+            "depth_total": int(queue.get("depth_total") or 0),
+            "queued": int(queue.get("queued") or 0),
+            "running": int(queue.get("running") or 0),
+            "queued_wait_p90_minutes": ((queue.get("queued_age_minutes") or {}).get("p90") if isinstance(queue.get("queued_age_minutes"), dict) else None),
+        },
+        "worker_lag": {
+            "stale_workers": int(worker_lag.get("stale_workers") or 0),
+            "p90_minutes": ((worker_lag.get("lag_minutes") or {}).get("p90") if isinstance(worker_lag.get("lag_minutes"), dict) else None),
+        },
+        "owner": {
+            "owner_name": ownership.get("owner_name"),
+            "owner_contact": ownership.get("owner_contact"),
+            "oncall_channel": ownership.get("oncall_channel"),
+            "escalation_channel": ownership.get("escalation_channel"),
+        },
+    }
+
+
+def _build_operation_queue_incident_open_dispatch(
+    *,
+    hook: dict[str, Any],
+    project_id: str,
+    actor: str,
+    generated_at: str,
+    health: str,
+    alert_codes: list[str],
+    throughput: dict[str, Any],
+    ownership: dict[str, Any],
+) -> dict[str, Any]:
+    provider = _normalize_operation_queue_incident_provider(hook.get("provider"))
+    provider_config = _normalize_operation_queue_incident_provider_config(provider, hook.get("provider_config"))
+    brief = _build_operation_queue_incident_brief(
+        throughput=throughput,
+        ownership=ownership,
+        health=health,
+        alert_codes=alert_codes,
+    )
+    if provider == "webhook":
+        url = str(hook.get("open_webhook_url") or "").strip()
+        if not url:
+            raise HTTPException(status_code=422, detail="incident_open_webhook_url_required")
+        headers = provider_config.get("headers") if isinstance(provider_config.get("headers"), dict) else {}
+        return {
+            "provider": provider,
+            "method": "POST",
+            "url": url,
+            "headers": {str(k): str(v) for k, v in headers.items()},
+            "payload": {
+                "event": "queue_incident_opened",
+                "generated_at": generated_at,
+                "actor": actor,
+                "project_id": project_id,
+                "health": health,
+                "alert_codes": alert_codes,
+                "throughput": throughput,
+                "ownership": ownership,
+            },
+        }
+    if provider == "pagerduty":
+        routing_key = str(provider_config.get("routing_key") or "").strip()
+        if not routing_key:
+            raise HTTPException(status_code=422, detail="pagerduty_routing_key_required")
+        dedup_key = f"{str(provider_config.get('dedup_key_prefix') or 'synapse-queue').strip()}:{project_id}"[:255]
+        severity_by_health = provider_config.get("severity_by_health") if isinstance(provider_config.get("severity_by_health"), dict) else {}
+        severity = str(severity_by_health.get(health) or severity_by_health.get("critical") or "critical").strip().lower()
+        payload = {
+            "routing_key": routing_key,
+            "event_action": "trigger",
+            "dedup_key": dedup_key,
+            "payload": {
+                "summary": f"[Synapse Queue] {project_id} health={health} requires incident action",
+                "severity": severity if severity in {"info", "warning", "error", "critical"} else "critical",
+                "source": str(provider_config.get("source") or "synapse"),
+                "class": str(provider_config.get("class") or "queue-operations"),
+                "custom_details": {
+                    "project_id": project_id,
+                    "actor": actor,
+                    "generated_at": generated_at,
+                    "brief": brief,
+                },
+            },
+        }
+        if provider_config.get("component"):
+            payload["payload"]["component"] = str(provider_config.get("component"))
+        if provider_config.get("group"):
+            payload["payload"]["group"] = str(provider_config.get("group"))
+        return {
+            "provider": provider,
+            "method": "POST",
+            "url": str(hook.get("open_webhook_url") or "").strip() or _PAGERDUTY_EVENTS_API_URL,
+            "headers": {},
+            "payload": payload,
+        }
+    if provider == "jira":
+        base_url = str(provider_config.get("base_url") or "").rstrip("/")
+        project_key = str(provider_config.get("project_key") or "").strip()
+        api_token = str(provider_config.get("api_token") or "").strip()
+        auth_mode = str(provider_config.get("auth_mode") or "basic").strip().lower()
+        if not base_url:
+            raise HTTPException(status_code=422, detail="jira_base_url_required")
+        if not project_key:
+            raise HTTPException(status_code=422, detail="jira_project_key_required")
+        if not api_token:
+            raise HTTPException(status_code=422, detail="jira_api_token_required")
+        auth_header = None
+        if auth_mode == "bearer":
+            auth_header = f"Bearer {api_token}"
+        else:
+            email = str(provider_config.get("email") or "").strip()
+            if not email:
+                raise HTTPException(status_code=422, detail="jira_email_required")
+            token = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("utf-8")
+            auth_header = f"Basic {token}"
+
+        priority_by_health = provider_config.get("priority_by_health") if isinstance(provider_config.get("priority_by_health"), dict) else {}
+        priority_name = str(priority_by_health.get(health) or "").strip()
+        labels = provider_config.get("labels") if isinstance(provider_config.get("labels"), list) else []
+        summary = f"{str(provider_config.get('title_prefix') or '[Synapse Queue]')} {project_id}: {health}"
+        description = (
+            f"Generated by Synapse queue governance.\n"
+            f"Project: {project_id}\n"
+            f"Health: {health}\n"
+            f"Alert codes: {', '.join(alert_codes) if alert_codes else '-'}\n"
+            f"Queued depth: {brief['queue']['depth_total']}\n"
+            f"Queued wait p90: {brief['queue']['queued_wait_p90_minutes']}\n"
+            f"Stale workers: {brief['worker_lag']['stale_workers']}\n"
+            f"On-call: {brief['owner']['oncall_channel'] or '-'}\n"
+        )
+        fields: dict[str, Any] = {
+            "project": {"key": project_key},
+            "summary": summary[:255],
+            "description": description[:4000],
+            "issuetype": {"name": str(provider_config.get("issue_type") or "Incident")},
+            "labels": [str(item) for item in labels if str(item).strip()],
+        }
+        if priority_name:
+            fields["priority"] = {"name": priority_name}
+        return {
+            "provider": provider,
+            "method": "POST",
+            "url": str(hook.get("open_webhook_url") or "").strip() or f"{base_url}/rest/api/2/issue",
+            "headers": {"Authorization": auth_header, "Accept": "application/json"},
+            "payload": {"fields": fields},
+        }
+    raise HTTPException(status_code=422, detail="incident_provider_unsupported")
+
+
+def _build_operation_queue_incident_resolve_dispatch(
+    *,
+    hook: dict[str, Any],
+    existing_incident: dict[str, Any],
+    project_id: str,
+    actor: str,
+    generated_at: str,
+    health: str,
+    alert_codes: list[str],
+    throughput: dict[str, Any],
+    ownership: dict[str, Any],
+) -> dict[str, Any]:
+    provider = _normalize_operation_queue_incident_provider(hook.get("provider"))
+    provider_config = _normalize_operation_queue_incident_provider_config(provider, hook.get("provider_config"))
+    if provider == "webhook":
+        open_url = str(hook.get("open_webhook_url") or "").strip()
+        resolve_url = str(hook.get("resolve_webhook_url") or "").strip() or open_url
+        if not resolve_url:
+            raise HTTPException(status_code=422, detail="incident_resolve_webhook_url_required")
+        headers = provider_config.get("headers") if isinstance(provider_config.get("headers"), dict) else {}
+        return {
+            "provider": provider,
+            "method": "POST",
+            "url": resolve_url,
+            "headers": {str(k): str(v) for k, v in headers.items()},
+            "payload": {
+                "event": "queue_incident_resolved",
+                "generated_at": generated_at,
+                "actor": actor,
+                "project_id": project_id,
+                "resolution_reason": "queue_health_recovered",
+                "current_health": health,
+                "alert_codes": alert_codes,
+                "throughput": throughput,
+                "ownership": ownership,
+                "incident": existing_incident,
+            },
+        }
+    if provider == "pagerduty":
+        routing_key = str(provider_config.get("routing_key") or "").strip()
+        if not routing_key:
+            raise HTTPException(status_code=422, detail="pagerduty_routing_key_required")
+        dedup_key = str(existing_incident.get("external_ticket_id") or "").strip()
+        if not dedup_key:
+            dedup_key = f"{str(provider_config.get('dedup_key_prefix') or 'synapse-queue').strip()}:{project_id}"[:255]
+        return {
+            "provider": provider,
+            "method": "POST",
+            "url": str(hook.get("resolve_webhook_url") or "").strip() or str(hook.get("open_webhook_url") or "").strip() or _PAGERDUTY_EVENTS_API_URL,
+            "headers": {},
+            "payload": {
+                "routing_key": routing_key,
+                "event_action": "resolve",
+                "dedup_key": dedup_key,
+                "payload": {
+                    "summary": f"[Synapse Queue] {project_id} recovered to {health}",
+                    "source": str(provider_config.get("source") or "synapse"),
+                },
+            },
+        }
+    if provider == "jira":
+        base_url = str(provider_config.get("base_url") or "").rstrip("/")
+        api_token = str(provider_config.get("api_token") or "").strip()
+        auth_mode = str(provider_config.get("auth_mode") or "basic").strip().lower()
+        if not base_url:
+            raise HTTPException(status_code=422, detail="jira_base_url_required")
+        if not api_token:
+            raise HTTPException(status_code=422, detail="jira_api_token_required")
+        auth_header = None
+        if auth_mode == "bearer":
+            auth_header = f"Bearer {api_token}"
+        else:
+            email = str(provider_config.get("email") or "").strip()
+            if not email:
+                raise HTTPException(status_code=422, detail="jira_email_required")
+            token = base64.b64encode(f"{email}:{api_token}".encode("utf-8")).decode("utf-8")
+            auth_header = f"Basic {token}"
+        explicit_resolve_url = str(hook.get("resolve_webhook_url") or "").strip()
+        if explicit_resolve_url:
+            return {
+                "provider": provider,
+                "method": "POST",
+                "url": explicit_resolve_url,
+                "headers": {"Authorization": auth_header, "Accept": "application/json"},
+                "payload": {
+                    "event": "queue_incident_resolved",
+                    "generated_at": generated_at,
+                    "actor": actor,
+                    "project_id": project_id,
+                    "resolution_reason": "queue_health_recovered",
+                    "current_health": health,
+                    "alert_codes": alert_codes,
+                    "incident": existing_incident,
+                },
+            }
+        transition_id = str(provider_config.get("resolve_transition_id") or "").strip()
+        issue_key = str(existing_incident.get("external_ticket_id") or "").strip()
+        if not transition_id:
+            raise HTTPException(status_code=422, detail="jira_resolve_transition_or_webhook_required")
+        if not issue_key:
+            raise HTTPException(status_code=422, detail="jira_ticket_id_missing")
+        return {
+            "provider": provider,
+            "method": "POST",
+            "url": f"{base_url}/rest/api/2/issue/{quote(issue_key, safe='')}/transitions",
+            "headers": {"Authorization": auth_header, "Accept": "application/json"},
+            "payload": {"transition": {"id": transition_id}},
+        }
+    raise HTTPException(status_code=422, detail="incident_provider_unsupported")
+
+
+def _dispatch_operation_queue_incident_request(
+    *,
+    method: str,
+    webhook_url: str,
+    payload: dict[str, Any],
+    timeout_sec: int,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    encoded = json.dumps(payload).encode("utf-8")
+    merged_headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "synapse-gatekeeper/queue-incident-hook",
+    }
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            header_key = str(key or "").strip()[:128]
+            header_value = str(value or "").strip()[:4096]
+            if not header_key or not header_value:
+                continue
+            merged_headers[header_key] = header_value
+    request = Request(
+        webhook_url,
+        data=encoded,
+        headers=merged_headers,
+        method=(method or "POST").strip().upper() or "POST",
+    )
+    try:
+        with urlopen(request, timeout=max(1, min(60, int(timeout_sec)))) as response:
+            status_code = int(getattr(response, "status", 200) or 200)
+            body_text = response.read(4096).decode("utf-8", errors="replace")
+            body_json = None
+            try:
+                decoded = json.loads(body_text) if body_text.strip() else None
+                if isinstance(decoded, dict):
+                    body_json = decoded
+            except json.JSONDecodeError:
+                body_json = None
+            return {
+                "ok": 200 <= status_code < 300,
+                "http_status": status_code,
+                "body_text": body_text[:4000],
+                "body_json": body_json,
+            }
+    except HTTPError as exc:
+        body = exc.read(4096).decode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "http_status": int(exc.code or 0),
+            "error_code": "http_error",
+            "reason": str(exc.reason),
+            "body_text": body[:4000],
+            "body_json": None,
+        }
+    except URLError as exc:
+        return {
+            "ok": False,
+            "http_status": 0,
+            "error_code": "unreachable",
+            "reason": str(exc.reason),
+            "body_text": "",
+            "body_json": None,
+        }
+
+
+def _extract_operation_queue_incident_ticket(
+    *,
+    provider: str,
+    response_payload: dict[str, Any] | None,
+    request_payload: dict[str, Any] | None,
+    provider_config: dict[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    parsed = response_payload if isinstance(response_payload, dict) else {}
+    config = provider_config if isinstance(provider_config, dict) else {}
+    request_meta = request_payload if isinstance(request_payload, dict) else {}
+    if provider == "pagerduty":
+        dedup = str(parsed.get("dedup_key") or request_meta.get("dedup_key") or "").strip()[:512] or None
+        url = None
+        template = str(config.get("incident_url_template") or "").strip()
+        if template and dedup:
+            url = template.replace("{dedup_key}", dedup)[:2048]
+        for key in ("incident_url", "url", "html_url", "link"):
+            value = parsed.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                url = text[:2048]
+                break
+        return dedup, url
+    if provider == "jira":
+        ticket_id = None
+        for key in ("key", "issue_key", "id", "ticket_id"):
+            value = parsed.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                ticket_id = text[:512]
+                break
+        ticket_url = None
+        for key in ("self", "ticket_url", "url", "html_url", "link"):
+            value = parsed.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                ticket_url = text[:2048]
+                break
+        browse_template = str(config.get("browse_url_template") or "").strip()
+        base_url = str(config.get("base_url") or "").rstrip("/")
+        if ticket_id and not ticket_url:
+            if browse_template:
+                ticket_url = browse_template.replace("{issue_key}", ticket_id)[:2048]
+            elif base_url:
+                ticket_url = f"{base_url}/browse/{quote(ticket_id, safe='')}"[:2048]
+        return ticket_id, ticket_url
+    ticket_id = None
+    ticket_url = None
+    for key in ("ticket_id", "incident_id", "id", "key", "issue_id"):
+        value = parsed.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            ticket_id = text[:512]
+            break
+    for key in ("ticket_url", "url", "html_url", "link"):
+        value = parsed.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            ticket_url = text[:2048]
+            break
+    return ticket_id, ticket_url
+
+
+def _fetch_operation_queue_control_event(*, event_id: int, project_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id,
+                  project_id,
+                  action,
+                  actor,
+                  reason,
+                  paused_until,
+                  payload,
+                  created_at
+                FROM gatekeeper_calibration_queue_control_events
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (int(event_id), project_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "project_id": str(row[1]),
+        "action": str(row[2]),
+        "actor": str(row[3]),
+        "reason": row[4] if isinstance(row[4], str) else None,
+        "paused_until": None if row[5] is None else row[5].isoformat(),
+        "payload": row[6] if isinstance(row[6], dict) else {},
+        "created_at": row[7].isoformat(),
+    }
+
+
+def _append_operation_queue_audit_annotation(
+    *,
+    event_id: int,
+    project_id: str,
+    status: str,
+    created_by: str,
+    note: str | None,
+    follow_up_owner: str | None,
+) -> dict[str, Any]:
+    annotation_id = uuid4()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_queue_audit_annotations (
+                  id,
+                  event_id,
+                  project_id,
+                  status,
+                  note,
+                  follow_up_owner,
+                  created_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                  id::text,
+                  event_id,
+                  project_id,
+                  status,
+                  note,
+                  follow_up_owner,
+                  created_by,
+                  created_at
+                """,
+                (
+                    annotation_id,
+                    int(event_id),
+                    project_id,
+                    status,
+                    (note or "").strip()[:4000] or None,
+                    (follow_up_owner or "").strip()[:256] or None,
+                    (created_by or "web_ui").strip()[:256] or "web_ui",
+                ),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=500, detail="queue_audit_annotation_persist_failed")
+    return {
+        "id": str(row[0]),
+        "event_id": int(row[1]),
+        "project_id": str(row[2]),
+        "status": str(row[3]),
+        "note": row[4] if isinstance(row[4], str) else None,
+        "follow_up_owner": row[5] if isinstance(row[5], str) else None,
+        "created_by": str(row[6]),
+        "created_at": row[7].isoformat(),
+    }
+
+
+def _build_operation_queue_throughput(*, project_id: str, window_hours: int = 24) -> dict[str, Any]:
+    control = _fetch_operation_queue_control(project_id)
+    lag_sla_minutes = max(1, int(control.get("worker_lag_sla_minutes") or 20))
+    window_hours = max(1, min(168, int(window_hours)))
+    window_since = datetime.now(UTC) - timedelta(hours=window_hours)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE status = 'queued')::int AS queued_count,
+                  COUNT(*) FILTER (WHERE status = 'running')::int AS running_count,
+                  COUNT(*) FILTER (WHERE status = 'cancel_requested')::int AS cancel_requested_count,
+                  COUNT(*) FILTER (WHERE status = 'succeeded')::int AS succeeded_count,
+                  COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count,
+                  COUNT(*) FILTER (WHERE status = 'canceled')::int AS canceled_count,
+                  MIN(created_at) FILTER (WHERE status = 'queued') AS oldest_queued_at,
+                  MAX(created_at) FILTER (WHERE status = 'queued') AS newest_queued_at,
+                  COUNT(*) FILTER (
+                    WHERE status IN ('running', 'cancel_requested')
+                      AND COALESCE(heartbeat_at, updated_at, created_at) < NOW() - (%s * INTERVAL '1 minute')
+                  )::int AS stale_workers,
+                  COUNT(*) FILTER (
+                    WHERE status IN ('succeeded', 'failed', 'canceled')
+                      AND COALESCE(finished_at, updated_at, created_at) >= %s
+                  )::int AS terminal_in_window,
+                  COUNT(*) FILTER (
+                    WHERE status = 'succeeded'
+                      AND COALESCE(finished_at, updated_at, created_at) >= %s
+                  )::int AS succeeded_in_window,
+                  COUNT(*) FILTER (
+                    WHERE status = 'failed'
+                      AND COALESCE(finished_at, updated_at, created_at) >= %s
+                  )::int AS failed_in_window,
+                  COUNT(*) FILTER (
+                    WHERE status = 'canceled'
+                      AND COALESCE(finished_at, updated_at, created_at) >= %s
+                  )::int AS canceled_in_window
+                FROM gatekeeper_calibration_operation_runs
+                WHERE project_id = %s
+                  AND mode = 'async'
+                """,
+                (
+                    lag_sla_minutes,
+                    window_since,
+                    window_since,
+                    window_since,
+                    window_since,
+                    project_id,
+                ),
+            )
+            summary_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                  EXTRACT(EPOCH FROM (NOW() - created_at)) / 60.0
+                FROM gatekeeper_calibration_operation_runs
+                WHERE project_id = %s
+                  AND mode = 'async'
+                  AND status = 'queued'
+                ORDER BY created_at ASC
+                LIMIT 5000
+                """,
+                (project_id,),
+            )
+            queued_age_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                  EXTRACT(EPOCH FROM (NOW() - COALESCE(heartbeat_at, updated_at, created_at))) / 60.0
+                FROM gatekeeper_calibration_operation_runs
+                WHERE project_id = %s
+                  AND mode = 'async'
+                  AND status IN ('running', 'cancel_requested')
+                ORDER BY updated_at DESC
+                LIMIT 2000
+                """,
+                (project_id,),
+            )
+            running_lag_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                  EXTRACT(EPOCH FROM (COALESCE(finished_at, updated_at, created_at) - COALESCE(started_at, created_at))) / 60.0
+                FROM gatekeeper_calibration_operation_runs
+                WHERE project_id = %s
+                  AND mode = 'async'
+                  AND status IN ('succeeded', 'failed', 'canceled')
+                  AND COALESCE(finished_at, updated_at, created_at) >= %s
+                ORDER BY COALESCE(finished_at, updated_at, created_at) DESC
+                LIMIT 5000
+                """,
+                (project_id, window_since),
+            )
+            duration_rows = cur.fetchall()
+
+    queued_ages = [max(0.0, float(row[0] or 0.0)) for row in queued_age_rows]
+    running_lags = [max(0.0, float(row[0] or 0.0)) for row in running_lag_rows]
+    duration_minutes = [max(0.0, float(row[0] or 0.0)) for row in duration_rows]
+
+    oldest_queued_at = _parse_iso_datetime(summary_row[6]) if summary_row and summary_row[6] is not None else None
+    newest_queued_at = _parse_iso_datetime(summary_row[7]) if summary_row and summary_row[7] is not None else None
+    queue_depth = int(summary_row[0] or 0) + int(summary_row[1] or 0) + int(summary_row[2] or 0) if summary_row else 0
+    pending_depth = int(summary_row[0] or 0) if summary_row else 0
+    running_depth = int(summary_row[1] or 0) if summary_row else 0
+    cancel_requested_depth = int(summary_row[2] or 0) if summary_row else 0
+
+    health = "healthy"
+    alerts: list[dict[str, Any]] = []
+    if queue_depth >= int(control["queue_depth_warn"]) * 2:
+        health = "critical"
+        alerts.append(
+            {
+                "code": "queue_depth_critical",
+                "severity": "critical",
+                "message": f"Queue depth {queue_depth} is above critical threshold {int(control['queue_depth_warn']) * 2}.",
+            }
+        )
+    elif queue_depth > int(control["queue_depth_warn"]):
+        health = "watch"
+        alerts.append(
+            {
+                "code": "queue_depth_warn",
+                "severity": "warning",
+                "message": f"Queue depth {queue_depth} is above warning threshold {int(control['queue_depth_warn'])}.",
+            }
+        )
+    stale_workers = int(summary_row[8] or 0) if summary_row else 0
+    if stale_workers > 0:
+        health = "critical"
+        alerts.append(
+            {
+                "code": "worker_lag_stale",
+                "severity": "critical",
+                "message": f"{stale_workers} running workers are above lag SLA ({lag_sla_minutes}m).",
+            }
+        )
+    p90_queued_age = _quantile(queued_ages, 0.9)
+    if p90_queued_age is not None and p90_queued_age > float(lag_sla_minutes):
+        if health == "healthy":
+            health = "watch"
+        alerts.append(
+            {
+                "code": "queue_wait_lag",
+                "severity": "warning",
+                "message": f"Queued run p90 wait {p90_queued_age:.2f}m exceeds lag SLA ({lag_sla_minutes}m).",
+            }
+        )
+    if bool(control.get("pause_active")):
+        alerts.append(
+            {
+                "code": "queue_paused",
+                "severity": "info",
+                "message": f"Queue paused until {control.get('paused_until')}.",
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "window_hours": window_hours,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "control": control,
+        "queue": {
+            "depth_total": queue_depth,
+            "queued": pending_depth,
+            "running": running_depth,
+            "cancel_requested": cancel_requested_depth,
+            "succeeded": int(summary_row[3] or 0) if summary_row else 0,
+            "failed": int(summary_row[4] or 0) if summary_row else 0,
+            "canceled": int(summary_row[5] or 0) if summary_row else 0,
+            "oldest_queued_at": None if oldest_queued_at is None else oldest_queued_at.isoformat(),
+            "newest_queued_at": None if newest_queued_at is None else newest_queued_at.isoformat(),
+            "oldest_queued_age_minutes": None
+            if oldest_queued_at is None
+            else round(max(0.0, (datetime.now(UTC) - oldest_queued_at).total_seconds() / 60.0), 3),
+            "queued_age_minutes": _latency_stats(queued_ages),
+        },
+        "worker_lag": {
+            "sla_minutes": lag_sla_minutes,
+            "stale_workers": stale_workers,
+            "lag_minutes": _latency_stats(running_lags),
+        },
+        "throughput_window": {
+            "since": window_since.isoformat(),
+            "terminal_total": int(summary_row[9] or 0) if summary_row else 0,
+            "succeeded": int(summary_row[10] or 0) if summary_row else 0,
+            "failed": int(summary_row[11] or 0) if summary_row else 0,
+            "canceled": int(summary_row[12] or 0) if summary_row else 0,
+            "duration_minutes": _latency_stats(duration_minutes),
+        },
+        "health": health,
+        "alerts": alerts,
+    }
+
+
+def _build_operation_queue_autoscaling_recommendation(
+    *,
+    project_id: str,
+    window_hours: int = 24,
+    history_hours: int = 72,
+) -> dict[str, Any]:
+    window_hours = max(1, min(168, int(window_hours)))
+    history_hours = max(24, min(720, int(history_hours)))
+    throughput = _build_operation_queue_throughput(project_id=project_id, window_hours=window_hours)
+    control = throughput.get("control") if isinstance(throughput.get("control"), dict) else {}
+    queue = throughput.get("queue") if isinstance(throughput.get("queue"), dict) else {}
+    worker_lag = throughput.get("worker_lag") if isinstance(throughput.get("worker_lag"), dict) else {}
+    throughput_window = throughput.get("throughput_window") if isinstance(throughput.get("throughput_window"), dict) else {}
+    history_since = datetime.now(UTC) - timedelta(hours=history_hours)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH runs AS (
+                  SELECT
+                    created_at,
+                    started_at,
+                    COALESCE(finished_at, updated_at, created_at) AS terminal_at,
+                    status,
+                    EXTRACT(EPOCH FROM (COALESCE(finished_at, updated_at, created_at) - COALESCE(started_at, created_at))) / 60.0 AS duration_minutes
+                  FROM gatekeeper_calibration_operation_runs
+                  WHERE project_id = %s
+                    AND mode = 'async'
+                )
+                SELECT
+                  COUNT(*) FILTER (WHERE created_at >= %s)::int AS created_total,
+                  COUNT(*) FILTER (WHERE started_at IS NOT NULL AND started_at >= %s)::int AS started_total,
+                  COUNT(*) FILTER (
+                    WHERE status IN ('succeeded', 'failed', 'canceled')
+                      AND terminal_at >= %s
+                  )::int AS terminal_total,
+                  COUNT(*) FILTER (
+                    WHERE status IN ('succeeded', 'failed', 'canceled')
+                      AND terminal_at >= %s
+                      AND duration_minutes IS NOT NULL
+                  )::int AS duration_count,
+                  AVG(duration_minutes) FILTER (
+                    WHERE status IN ('succeeded', 'failed', 'canceled')
+                      AND terminal_at >= %s
+                      AND duration_minutes IS NOT NULL
+                  ) AS duration_avg_minutes,
+                  percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_minutes) FILTER (
+                    WHERE status IN ('succeeded', 'failed', 'canceled')
+                      AND terminal_at >= %s
+                      AND duration_minutes IS NOT NULL
+                  ) AS duration_p50_minutes,
+                  percentile_cont(0.9) WITHIN GROUP (ORDER BY duration_minutes) FILTER (
+                    WHERE status IN ('succeeded', 'failed', 'canceled')
+                      AND terminal_at >= %s
+                      AND duration_minutes IS NOT NULL
+                  ) AS duration_p90_minutes
+                FROM runs
+                """,
+                (
+                    project_id,
+                    history_since,
+                    history_since,
+                    history_since,
+                    history_since,
+                    history_since,
+                    history_since,
+                    history_since,
+                ),
+            )
+            stats_row = cur.fetchone()
+
+            cur.execute(
+                """
+                WITH hourly AS (
+                  SELECT date_trunc('hour', created_at) AS hour_bucket, COUNT(*)::int AS cnt
+                  FROM gatekeeper_calibration_operation_runs
+                  WHERE project_id = %s
+                    AND mode = 'async'
+                    AND created_at >= %s
+                  GROUP BY 1
+                )
+                SELECT
+                  COALESCE(AVG(cnt)::float, 0.0),
+                  COALESCE(MAX(cnt)::int, 0),
+                  COUNT(*)::int
+                FROM hourly
+                """,
+                (project_id, history_since),
+            )
+            arrival_row = cur.fetchone()
+
+            cur.execute(
+                """
+                WITH hourly AS (
+                  SELECT date_trunc('hour', COALESCE(finished_at, updated_at, created_at)) AS hour_bucket, COUNT(*)::int AS cnt
+                  FROM gatekeeper_calibration_operation_runs
+                  WHERE project_id = %s
+                    AND mode = 'async'
+                    AND status IN ('succeeded', 'failed', 'canceled')
+                    AND COALESCE(finished_at, updated_at, created_at) >= %s
+                  GROUP BY 1
+                )
+                SELECT
+                  COALESCE(AVG(cnt)::float, 0.0),
+                  COALESCE(MAX(cnt)::int, 0),
+                  COUNT(*)::int
+                FROM hourly
+                """,
+                (project_id, history_since),
+            )
+            completion_row = cur.fetchone()
+
+    created_total = int(stats_row[0] or 0) if stats_row else 0
+    started_total = int(stats_row[1] or 0) if stats_row else 0
+    terminal_total = int(stats_row[2] or 0) if stats_row else 0
+    duration_count = int(stats_row[3] or 0) if stats_row else 0
+    duration_avg = float(stats_row[4]) if stats_row and stats_row[4] is not None else None
+    duration_p50 = float(stats_row[5]) if stats_row and stats_row[5] is not None else None
+    duration_p90 = float(stats_row[6]) if stats_row and stats_row[6] is not None else None
+
+    arrivals_per_active_hour = float(arrival_row[0] or 0.0) if arrival_row else 0.0
+    arrival_peak_per_hour = int(arrival_row[1] or 0) if arrival_row else 0
+    arrival_active_hours = int(arrival_row[2] or 0) if arrival_row else 0
+    completions_per_active_hour = float(completion_row[0] or 0.0) if completion_row else 0.0
+    completion_peak_per_hour = int(completion_row[1] or 0) if completion_row else 0
+    completion_active_hours = int(completion_row[2] or 0) if completion_row else 0
+
+    queue_depth = int(queue.get("depth_total") or 0)
+    queue_running = int(queue.get("running") or 0)
+    queue_cancel_requested = int(queue.get("cancel_requested") or 0)
+    queue_wait_p90 = (
+        float(queue.get("queued_age_minutes", {}).get("p90"))
+        if isinstance(queue.get("queued_age_minutes"), dict)
+        and queue.get("queued_age_minutes", {}).get("p90") is not None
+        else None
+    )
+    worker_lag_p90 = (
+        float(worker_lag.get("lag_minutes", {}).get("p90"))
+        if isinstance(worker_lag.get("lag_minutes"), dict)
+        and worker_lag.get("lag_minutes", {}).get("p90") is not None
+        else None
+    )
+    stale_workers = int(worker_lag.get("stale_workers") or 0)
+
+    lag_budget_minutes_current = max(1, int(control.get("worker_lag_sla_minutes") or 20))
+    queue_depth_warn_current = max(1, int(control.get("queue_depth_warn") or 12))
+    active_workers_estimate = max(0, queue_running + queue_cancel_requested)
+
+    observed_duration_minutes = duration_p50
+    if observed_duration_minutes is None:
+        observed_duration_minutes = (
+            float(throughput_window.get("duration_minutes", {}).get("p50"))
+            if isinstance(throughput_window.get("duration_minutes"), dict)
+            and throughput_window.get("duration_minutes", {}).get("p50") is not None
+            else None
+        )
+    if observed_duration_minutes is None:
+        observed_duration_minutes = duration_p90
+    if observed_duration_minutes is None or observed_duration_minutes <= 0:
+        observed_duration_minutes = 12.0
+    observed_duration_minutes = max(1.0, min(180.0, float(observed_duration_minutes)))
+    single_worker_capacity_per_hour = 60.0 / observed_duration_minutes
+
+    history_window_hours = max(1.0, float(history_hours))
+    arrival_rate_per_hour = float(created_total) / history_window_hours
+    completion_rate_per_hour = float(terminal_total) / history_window_hours
+    demand_rate_per_hour = max(arrival_rate_per_hour, completion_rate_per_hour)
+    demand_rate_per_hour = max(demand_rate_per_hour, min(float(arrival_peak_per_hour), arrival_rate_per_hour * 2.5 + 1.0))
+
+    baseline_workers = int(math.ceil(demand_rate_per_hour / max(single_worker_capacity_per_hour, 1e-6)))
+    lag_budget_hours = max(1.0, float(lag_budget_minutes_current) / 60.0)
+    backlog_workers = int(math.ceil((float(queue_depth) / lag_budget_hours) / max(single_worker_capacity_per_hour, 1e-6))) if queue_depth > 0 else 0
+    worker_target = max(1, baseline_workers, backlog_workers, active_workers_estimate)
+    if str(throughput.get("health") or "healthy") == "critical":
+        worker_target = int(math.ceil(worker_target * 1.2))
+    elif str(throughput.get("health") or "healthy") == "watch":
+        worker_target = int(math.ceil(worker_target * 1.1))
+    if queue_wait_p90 is not None and queue_wait_p90 > float(lag_budget_minutes_current):
+        worker_target = max(worker_target, active_workers_estimate + 1, baseline_workers + 1)
+    worker_target = max(1, min(128, int(worker_target)))
+    worker_delta = int(worker_target - max(1, active_workers_estimate))
+
+    lag_budget_minutes_target = lag_budget_minutes_current
+    if queue_wait_p90 is not None and queue_wait_p90 > float(lag_budget_minutes_current) * 1.5:
+        lag_budget_minutes_target = min(240, max(lag_budget_minutes_current, int(math.ceil(queue_wait_p90 * 1.15))))
+    elif (
+        queue_wait_p90 is not None
+        and queue_wait_p90 < float(lag_budget_minutes_current) * 0.5
+        and queue_depth <= 2
+    ):
+        lag_budget_minutes_target = max(5, int(math.ceil(max(queue_wait_p90 * 1.35, 5.0))))
+    elif worker_lag_p90 is not None and stale_workers > 0 and worker_lag_p90 > float(lag_budget_minutes_current) * 1.05:
+        lag_budget_minutes_target = min(240, max(lag_budget_minutes_current, int(math.ceil(worker_lag_p90 * 1.2))))
+    lag_budget_minutes_target = max(1, min(1440, int(lag_budget_minutes_target)))
+
+    sustainable_depth = int(math.ceil(worker_target * single_worker_capacity_per_hour * (float(lag_budget_minutes_target) / 60.0)))
+    expected_wait_depth = int(math.ceil(arrival_rate_per_hour * (float(lag_budget_minutes_target) / 60.0)))
+    queue_depth_warn_target = max(4, sustainable_depth + max(2, worker_target), expected_wait_depth + max(2, worker_target))
+    if queue_depth >= queue_depth_warn_current * 2 and queue_depth_warn_target < queue_depth_warn_current:
+        queue_depth_warn_target = queue_depth_warn_current
+    queue_depth_warn_target = max(1, min(50000, int(queue_depth_warn_target)))
+
+    rationale: list[str] = []
+    if queue_depth > 0:
+        rationale.append(f"Current queue depth is {queue_depth}; target workers account for backlog drain within lag budget.")
+    if queue_wait_p90 is not None:
+        rationale.append(
+            f"Queued wait p90 is {queue_wait_p90:.2f}m versus lag budget {lag_budget_minutes_current}m."
+        )
+    rationale.append(
+        f"Rolling demand over {history_hours}h: arrivals {arrival_rate_per_hour:.2f}/h, completions {completion_rate_per_hour:.2f}/h."
+    )
+    rationale.append(
+        f"Median terminal runtime is {observed_duration_minutes:.2f}m, so one worker handles about {single_worker_capacity_per_hour:.2f} ops/hour."
+    )
+
+    actions: list[dict[str, Any]] = []
+    if worker_delta >= 2:
+        actions.append(
+            {
+                "id": "increase_workers",
+                "priority": "high",
+                "title": f"Increase worker concurrency to {worker_target}",
+                "detail": f"Current active estimate is {active_workers_estimate}; backlog and demand require +{worker_delta} workers.",
+            }
+        )
+    elif worker_delta == 1:
+        actions.append(
+            {
+                "id": "raise_workers_minor",
+                "priority": "medium",
+                "title": f"Increase worker concurrency to {worker_target}",
+                "detail": "Small backlog pressure detected; one extra worker should stabilize queue lag.",
+            }
+        )
+    elif worker_delta <= -2:
+        actions.append(
+            {
+                "id": "reduce_workers",
+                "priority": "medium",
+                "title": f"Reduce worker concurrency to {worker_target}",
+                "detail": f"Observed demand is below current active estimate ({active_workers_estimate}); reclaim capacity safely.",
+            }
+        )
+
+    if lag_budget_minutes_target != lag_budget_minutes_current:
+        actions.append(
+            {
+                "id": "tune_lag_budget",
+                "priority": "medium",
+                "title": f"Adjust lag budget to {lag_budget_minutes_target}m",
+                "detail": f"Current lag budget is {lag_budget_minutes_current}m; update worker lag SLA to match observed queue/heartbeat behavior.",
+            }
+        )
+    if queue_depth_warn_target != queue_depth_warn_current:
+        actions.append(
+            {
+                "id": "tune_depth_warn",
+                "priority": "low",
+                "title": f"Set queue depth warning to {queue_depth_warn_target}",
+                "detail": f"Current warning threshold {queue_depth_warn_current} is misaligned with projected capacity envelope.",
+            }
+        )
+    if bool(control.get("pause_active")) and queue_depth > 0:
+        actions.append(
+            {
+                "id": "review_pause_window",
+                "priority": "medium",
+                "title": "Review active pause window",
+                "detail": "Queue is paused while backlog exists; resume earlier if maintenance allows.",
+            }
+        )
+
+    confidence = 0.35
+    confidence += min(0.35, float(terminal_total) / 120.0 * 0.35)
+    confidence += min(0.2, float(created_total) / 160.0 * 0.2)
+    confidence += min(0.1, float(max(arrival_active_hours, completion_active_hours)) / 24.0 * 0.1)
+    if created_total < 5:
+        confidence = min(confidence, 0.45)
+    confidence = round(max(0.05, min(0.99, confidence)), 3)
+
+    return {
+        "project_id": project_id,
+        "window_hours": window_hours,
+        "history_hours": history_hours,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "health": str(throughput.get("health") or "healthy"),
+        "current": {
+            "worker_concurrency_estimate": active_workers_estimate,
+            "worker_lag_sla_minutes": lag_budget_minutes_current,
+            "queue_depth_warn": queue_depth_warn_current,
+        },
+        "observed": {
+            "history_since": history_since.isoformat(),
+            "created_total": created_total,
+            "started_total": started_total,
+            "terminal_total": terminal_total,
+            "duration_count": duration_count,
+            "duration_minutes": {
+                "avg": None if duration_avg is None else round(duration_avg, 3),
+                "p50": None if duration_p50 is None else round(duration_p50, 3),
+                "p90": None if duration_p90 is None else round(duration_p90, 3),
+            },
+            "arrival_rate_per_hour": round(arrival_rate_per_hour, 4),
+            "completion_rate_per_hour": round(completion_rate_per_hour, 4),
+            "arrival_peak_per_hour": arrival_peak_per_hour,
+            "completion_peak_per_hour": completion_peak_per_hour,
+            "arrivals_per_active_hour": round(arrivals_per_active_hour, 4),
+            "completions_per_active_hour": round(completions_per_active_hour, 4),
+            "queue_depth": queue_depth,
+            "queue_wait_p90_minutes": None if queue_wait_p90 is None else round(queue_wait_p90, 3),
+            "worker_lag_p90_minutes": None if worker_lag_p90 is None else round(worker_lag_p90, 3),
+            "single_worker_capacity_per_hour": round(single_worker_capacity_per_hour, 4),
+        },
+        "recommendation": {
+            "worker_concurrency_target": worker_target,
+            "worker_concurrency_delta": worker_delta,
+            "worker_lag_sla_minutes": lag_budget_minutes_target,
+            "queue_depth_warn": queue_depth_warn_target,
+            "confidence": confidence,
+            "rationale": rationale[:8],
+        },
+        "actions": actions,
+    }
+
+
+def _list_operation_queue_projects(*, limit: int = 20, requested: list[str] | None = None) -> list[str]:
+    if requested:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in requested:
+            project_id = str(item or "").strip()
+            if not project_id or project_id in seen:
+                continue
+            seen.add(project_id)
+            out.append(project_id)
+            if len(out) >= max(1, min(200, int(limit))):
+                break
+        return out
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH ranked_runs AS (
+                  SELECT project_id, MAX(created_at) AS last_seen_at
+                  FROM gatekeeper_calibration_operation_runs
+                  WHERE mode = 'async'
+                  GROUP BY project_id
+                ),
+                ranked_controls AS (
+                  SELECT project_id, MAX(updated_at) AS last_seen_at
+                  FROM gatekeeper_calibration_queue_controls
+                  GROUP BY project_id
+                ),
+                merged AS (
+                  SELECT project_id, last_seen_at FROM ranked_runs
+                  UNION ALL
+                  SELECT project_id, last_seen_at FROM ranked_controls
+                )
+                SELECT project_id
+                FROM (
+                  SELECT project_id, MAX(last_seen_at) AS rank_ts
+                  FROM merged
+                  GROUP BY project_id
+                ) ranked
+                ORDER BY rank_ts DESC NULLS LAST, project_id ASC
+                LIMIT %s
+                """,
+                (max(1, min(200, int(limit))),),
+            )
+            rows = cur.fetchall()
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def _build_operation_queue_throughput_compare_payload(
+    *,
+    requested: list[str] | None,
+    limit: int,
+    window_hours: int,
+) -> dict[str, Any]:
+    targets = _list_operation_queue_projects(limit=limit, requested=requested or None)
+    rows = [_build_operation_queue_throughput(project_id=item, window_hours=window_hours) for item in targets]
+    owners = _list_operation_queue_ownership(project_ids=targets, limit=limit)
+    open_incidents = {
+        str(item.get("project_id") or ""): item
+        for item in _list_operation_queue_incidents(project_ids=targets, status="open", limit=limit)
+        if isinstance(item, dict) and str(item.get("project_id") or "").strip()
+    }
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "").strip()
+        item["ownership"] = owners.get(project_id) or _default_operation_queue_ownership(project_id=project_id)
+        item["incident"] = open_incidents.get(project_id)
+    rows.sort(
+        key=lambda item: (
+            {"critical": 0, "watch": 1, "healthy": 2}.get(str(item.get("health") or "healthy"), 3),
+            -int(((item.get("queue") or {}).get("depth_total") or 0)),
+            str(item.get("project_id") or ""),
+        )
+    )
+    return {
+        "window_hours": int(window_hours),
+        "requested_projects": requested or [],
+        "projects": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _serialize_queue_throughput_compare_csv(payload: dict[str, Any]) -> str:
+    rows = payload.get("projects") if isinstance(payload.get("projects"), list) else []
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "generated_at",
+            "window_hours",
+            "project_id",
+            "health",
+            "pause_active",
+            "paused_until",
+            "incident_preflight_enforcement_mode",
+            "incident_preflight_pause_hours",
+            "incident_preflight_critical_fail_threshold",
+            "queue_depth_total",
+            "queue_queued",
+            "queue_running",
+            "queue_cancel_requested",
+            "queue_depth_warn",
+            "worker_lag_sla_minutes",
+            "worker_lag_p90_minutes",
+            "worker_lag_stale_workers",
+            "queued_wait_p90_minutes",
+            "terminal_total",
+            "succeeded",
+            "failed",
+            "canceled",
+            "owner_name",
+            "owner_contact",
+            "oncall_channel",
+            "escalation_channel",
+            "incident_status",
+            "incident_ticket_id",
+            "incident_ticket_url",
+            "incident_opened_at",
+        ]
+    )
+    generated_at = str(payload.get("generated_at") or datetime.now(UTC).isoformat())
+    window_hours = int(payload.get("window_hours") or 24)
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        queue = item.get("queue") if isinstance(item.get("queue"), dict) else {}
+        control = item.get("control") if isinstance(item.get("control"), dict) else {}
+        worker_lag = item.get("worker_lag") if isinstance(item.get("worker_lag"), dict) else {}
+        throughput_window = item.get("throughput_window") if isinstance(item.get("throughput_window"), dict) else {}
+        ownership = item.get("ownership") if isinstance(item.get("ownership"), dict) else {}
+        incident = item.get("incident") if isinstance(item.get("incident"), dict) else {}
+        queued_stats = queue.get("queued_age_minutes") if isinstance(queue.get("queued_age_minutes"), dict) else {}
+        lag_stats = worker_lag.get("lag_minutes") if isinstance(worker_lag.get("lag_minutes"), dict) else {}
+        writer.writerow(
+            [
+                generated_at,
+                window_hours,
+                str(item.get("project_id") or ""),
+                str(item.get("health") or "healthy"),
+                bool(control.get("pause_active")),
+                control.get("paused_until"),
+                _normalize_incident_sync_preflight_enforcement_mode(
+                    control.get("incident_preflight_enforcement_mode"),
+                    default="off",
+                ),
+                max(1, min(168, int(control.get("incident_preflight_pause_hours") or 4))),
+                max(1, min(100, int(control.get("incident_preflight_critical_fail_threshold") or 1))),
+                int(queue.get("depth_total") or 0),
+                int(queue.get("queued") or 0),
+                int(queue.get("running") or 0),
+                int(queue.get("cancel_requested") or 0),
+                int(control.get("queue_depth_warn") or 0),
+                int(control.get("worker_lag_sla_minutes") or 0),
+                lag_stats.get("p90"),
+                int(worker_lag.get("stale_workers") or 0),
+                queued_stats.get("p90"),
+                int(throughput_window.get("terminal_total") or 0),
+                int(throughput_window.get("succeeded") or 0),
+                int(throughput_window.get("failed") or 0),
+                int(throughput_window.get("canceled") or 0),
+                ownership.get("owner_name"),
+                ownership.get("owner_contact"),
+                ownership.get("oncall_channel"),
+                ownership.get("escalation_channel"),
+                incident.get("status"),
+                incident.get("external_ticket_id"),
+                incident.get("external_ticket_url"),
+                incident.get("opened_at"),
+            ]
+        )
+    return output.getvalue()
+
+
+def _post_queue_governance_webhook(
+    *,
+    webhook_url: str,
+    payload: dict[str, Any],
+    timeout_sec: int,
+) -> tuple[int, str]:
+    encoded = json.dumps(payload).encode("utf-8")
+    request = Request(
+        webhook_url,
+        data=encoded,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "synapse-gatekeeper/queue-governance-export",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=max(1, min(60, int(timeout_sec)))) as response:
+            status_code = int(getattr(response, "status", 200) or 200)
+            body = response.read(2048).decode("utf-8", errors="replace")
+            return status_code, body
+    except HTTPError as exc:
+        body = exc.read(2048).decode("utf-8", errors="replace")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "queue_governance_webhook_http_error",
+                "status_code": int(exc.code or 0),
+                "body": body,
+            },
+        ) from exc
+    except URLError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "queue_governance_webhook_unreachable",
+                "reason": str(exc.reason),
+            },
+        ) from exc
+
+
+def _build_queue_governance_digest_payload(
+    *,
+    requested: list[str] | None,
+    limit: int = 30,
+    window_hours: int = 24,
+    audit_days: int = 7,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    compare_payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested or [],
+        limit=limit,
+        window_hours=window_hours,
+    )
+    projects = compare_payload.get("projects") if isinstance(compare_payload.get("projects"), list) else []
+    targets = [str(item.get("project_id") or "").strip() for item in projects if isinstance(item, dict)]
+    targets = [item for item in targets if item]
+    now = datetime.now(UTC)
+    since = now - timedelta(days=max(1, min(365, int(audit_days))))
+
+    latest_actions: dict[str, dict[str, Any]] = {}
+    if targets:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT ON (project_id)
+                      project_id,
+                      action,
+                      actor,
+                      reason,
+                      paused_until,
+                      created_at
+                    FROM gatekeeper_calibration_queue_control_events
+                    WHERE project_id = ANY(%s)
+                      AND created_at >= %s
+                      AND action IN ('pause', 'bulk_pause', 'resume', 'bulk_resume')
+                    ORDER BY project_id, created_at DESC, id DESC
+                    """,
+                    (targets, since),
+                )
+                rows = cur.fetchall()
+        latest_actions = {
+            str(row[0]): {
+                "action": str(row[1]),
+                "actor": str(row[2]),
+                "reason": row[3] if isinstance(row[3], str) else None,
+                "paused_until": None if row[4] is None else row[4].isoformat(),
+                "created_at": row[5].isoformat(),
+            }
+            for row in rows
+        }
+
+    health_rank = {"critical": 0, "watch": 1, "healthy": 2}
+    top_congestion = sorted(
+        [item for item in projects if isinstance(item, dict)],
+        key=lambda item: (
+            health_rank.get(str(item.get("health") or "healthy"), 3),
+            -int((item.get("queue") or {}).get("depth_total") or 0),
+            -float(((item.get("queue") or {}).get("queued_age_minutes") or {}).get("p90") or 0.0),
+        ),
+    )[: max(1, min(20, int(top_n)))]
+
+    unreviewed_pauses: list[dict[str, Any]] = []
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        control = item.get("control") if isinstance(item.get("control"), dict) else {}
+        if not bool(control.get("pause_active")):
+            continue
+        latest = latest_actions.get(project_id) or {}
+        action = str(latest.get("action") or "")
+        if action not in {"pause", "bulk_pause"}:
+            continue
+        created_at = _parse_iso_datetime(latest.get("created_at"))
+        pause_age_minutes = None
+        if created_at is not None:
+            pause_age_minutes = round(max(0.0, (now - created_at).total_seconds() / 60.0), 3)
+        unreviewed_pauses.append(
+            {
+                "project_id": project_id,
+                "paused_until": control.get("paused_until"),
+                "pause_reason": control.get("pause_reason"),
+                "pause_updated_by": control.get("updated_by"),
+                "latest_action": action,
+                "latest_actor": latest.get("actor"),
+                "latest_reason": latest.get("reason"),
+                "latest_event_at": latest.get("created_at"),
+                "pause_age_minutes": pause_age_minutes,
+                "queue_depth": int((item.get("queue") or {}).get("depth_total") or 0),
+                "health": str(item.get("health") or "healthy"),
+                "ownership": item.get("ownership") if isinstance(item.get("ownership"), dict) else _default_operation_queue_ownership(project_id=project_id),
+            }
+        )
+    unreviewed_pauses.sort(
+        key=lambda item: (
+            health_rank.get(str(item.get("health") or "healthy"), 3),
+            -int(item.get("queue_depth") or 0),
+            -float(item.get("pause_age_minutes") or 0.0),
+            str(item.get("project_id") or ""),
+        )
+    )
+
+    summary = {
+        "projects_total": len(projects),
+        "critical_projects": sum(1 for item in projects if isinstance(item, dict) and str(item.get("health") or "healthy") == "critical"),
+        "watch_projects": sum(1 for item in projects if isinstance(item, dict) and str(item.get("health") or "healthy") == "watch"),
+        "paused_projects": sum(
+            1
+            for item in projects
+            if isinstance(item, dict) and bool((item.get("control") or {}).get("pause_active"))
+        ),
+        "unreviewed_pauses": len(unreviewed_pauses),
+        "congested_projects": sum(
+            1
+            for item in projects
+            if isinstance(item, dict) and int((item.get("queue") or {}).get("depth_total") or 0) > 0
+        ),
+        "open_incidents": sum(
+            1
+            for item in projects
+            if isinstance(item, dict)
+            and isinstance(item.get("incident"), dict)
+            and str((item.get("incident") or {}).get("status") or "") == "open"
+        ),
+    }
+
+    return {
+        "window_hours": int(window_hours),
+        "audit_days": int(audit_days),
+        "requested_projects": requested or [],
+        "generated_at": now.isoformat(),
+        "summary": summary,
+        "top_congestion": [
+            {
+                "project_id": str(item.get("project_id") or ""),
+                "health": str(item.get("health") or "healthy"),
+                "queue_depth": int((item.get("queue") or {}).get("depth_total") or 0),
+                "queued": int((item.get("queue") or {}).get("queued") or 0),
+                "running": int((item.get("queue") or {}).get("running") or 0),
+                "queued_wait_p90_minutes": ((item.get("queue") or {}).get("queued_age_minutes") or {}).get("p90"),
+                "worker_lag_p90_minutes": ((item.get("worker_lag") or {}).get("lag_minutes") or {}).get("p90"),
+                "stale_workers": int((item.get("worker_lag") or {}).get("stale_workers") or 0),
+                "pause_active": bool((item.get("control") or {}).get("pause_active")),
+                "ownership": item.get("ownership") if isinstance(item.get("ownership"), dict) else _default_operation_queue_ownership(project_id=str(item.get("project_id") or "")),
+                "incident": item.get("incident") if isinstance(item.get("incident"), dict) else None,
+            }
+            for item in top_congestion
+        ],
+        "unreviewed_pauses": unreviewed_pauses[: max(1, min(30, int(top_n) * 3))],
+    }
+
+
+def _queue_incident_age_bucket(age_minutes: float | None) -> str:
+    if age_minutes is None:
+        return "unknown"
+    if age_minutes < 60.0:
+        return "under_1h"
+    if age_minutes < 240.0:
+        return "between_1h_4h"
+    if age_minutes < 720.0:
+        return "between_4h_12h"
+    if age_minutes < 1440.0:
+        return "between_12h_24h"
+    if age_minutes < 4320.0:
+        return "between_24h_72h"
+    return "over_72h"
+
+
+_INCIDENT_MTTA_PROXY_KEYS: tuple[str, ...] = (
+    "acknowledged_at",
+    "ack_at",
+    "accepted_at",
+    "created_at",
+    "incident_created_at",
+    "provider_created_at",
+    "first_response_at",
+)
+
+
+def _incident_mtta_proxy_timestamp(
+    *,
+    opened_at: datetime | None,
+    last_sync_at: datetime | None,
+    open_payload: dict[str, Any] | None,
+) -> datetime | None:
+    if opened_at is None:
+        return None
+    payload = open_payload if isinstance(open_payload, dict) else {}
+    candidates: list[datetime] = []
+    for key in _INCIDENT_MTTA_PROXY_KEYS:
+        parsed = _parse_iso_datetime(payload.get(key))
+        if parsed is not None:
+            candidates.append(parsed)
+    nested_sources = [payload.get("delivery"), payload.get("provider_response"), payload.get("provider_payload")]
+    for nested in nested_sources:
+        if not isinstance(nested, dict):
+            continue
+        for key in _INCIDENT_MTTA_PROXY_KEYS:
+            parsed = _parse_iso_datetime(nested.get(key))
+            if parsed is not None:
+                candidates.append(parsed)
+    if last_sync_at is not None:
+        candidates.append(last_sync_at)
+    valid = [ts for ts in candidates if ts >= opened_at]
+    if not valid:
+        return None
+    return min(valid)
+
+
+def _build_queue_incident_escalation_digest_payload(
+    *,
+    requested: list[str] | None,
+    limit: int = 30,
+    window_hours: int = 24,
+    incident_sla_hours: int = 24,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    compare_payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested or [],
+        limit=limit,
+        window_hours=window_hours,
+    )
+    projects = compare_payload.get("projects") if isinstance(compare_payload.get("projects"), list) else []
+    now = datetime.now(UTC)
+    open_rows: list[dict[str, Any]] = []
+    ownership_gap_rows: list[dict[str, Any]] = []
+    incident_sla_minutes = max(1, min(168, int(incident_sla_hours))) * 60
+    age_buckets = {
+        "under_1h": 0,
+        "between_1h_4h": 0,
+        "between_4h_12h": 0,
+        "between_12h_24h": 0,
+        "between_24h_72h": 0,
+        "over_72h": 0,
+        "unknown": 0,
+    }
+    over_sla_count = 0
+    critical_open_incidents = 0
+    incidents_missing_owner = 0
+    incidents_missing_oncall = 0
+    incidents_missing_escalation = 0
+    incidents_without_ticket = 0
+    routing_ready_open_incidents = 0
+    ownership_gap_with_open_incident = 0
+
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        health = str(item.get("health") or "healthy")
+        queue = item.get("queue") if isinstance(item.get("queue"), dict) else {}
+        queue_depth = int(queue.get("depth_total") or 0)
+        control = item.get("control") if isinstance(item.get("control"), dict) else {}
+        ownership = item.get("ownership") if isinstance(item.get("ownership"), dict) else _default_operation_queue_ownership(project_id=project_id)
+        owner_name = str(ownership.get("owner_name") or "").strip()
+        oncall_channel = str(ownership.get("oncall_channel") or "").strip()
+        escalation_channel = str(ownership.get("escalation_channel") or "").strip()
+        owner_contact = str(ownership.get("owner_contact") or "").strip()
+        missing_fields: list[str] = []
+        if not owner_name:
+            missing_fields.append("owner_name")
+        if not oncall_channel:
+            missing_fields.append("oncall_channel")
+        if not escalation_channel:
+            missing_fields.append("escalation_channel")
+
+        incident = item.get("incident") if isinstance(item.get("incident"), dict) else None
+        incident_open = incident is not None and str(incident.get("status") or "") == "open"
+        incident_opened_at = _parse_iso_datetime(incident.get("opened_at") if incident else None)
+        incident_age_minutes = None
+        if incident_opened_at is not None:
+            incident_age_minutes = round(max(0.0, (now - incident_opened_at).total_seconds() / 60.0), 3)
+        ticket_id = str((incident or {}).get("external_ticket_id") or "").strip()
+        ticket_url = str((incident or {}).get("external_ticket_url") or "").strip()
+        has_ticket = bool(ticket_id or ticket_url)
+
+        if missing_fields:
+            gap_score = len(missing_fields)
+            if health == "critical":
+                gap_score += 3
+            elif health == "watch":
+                gap_score += 1
+            if incident_open:
+                gap_score += 2
+            if queue_depth > 0:
+                gap_score += 1
+            if incident_age_minutes is not None and incident_age_minutes >= incident_sla_minutes:
+                gap_score += 2
+            if incident_open:
+                ownership_gap_with_open_incident += 1
+            ownership_gap_rows.append(
+                {
+                    "project_id": project_id,
+                    "health": health,
+                    "queue_depth": queue_depth,
+                    "incident_open": incident_open,
+                    "incident_age_minutes": incident_age_minutes,
+                    "missing_fields": missing_fields,
+                    "ownership": {
+                        "owner_name": owner_name or None,
+                        "owner_contact": owner_contact or None,
+                        "oncall_channel": oncall_channel or None,
+                        "escalation_channel": escalation_channel or None,
+                    },
+                    "gap_score": int(gap_score),
+                }
+            )
+
+        if not incident_open:
+            continue
+
+        age_bucket = _queue_incident_age_bucket(incident_age_minutes)
+        age_buckets[age_bucket] += 1
+        over_sla = incident_age_minutes is not None and incident_age_minutes >= incident_sla_minutes
+        if over_sla:
+            over_sla_count += 1
+        if health == "critical":
+            critical_open_incidents += 1
+        if "owner_name" in missing_fields:
+            incidents_missing_owner += 1
+        if "oncall_channel" in missing_fields:
+            incidents_missing_oncall += 1
+        if "escalation_channel" in missing_fields:
+            incidents_missing_escalation += 1
+        if not has_ticket:
+            incidents_without_ticket += 1
+        if not missing_fields and has_ticket:
+            routing_ready_open_incidents += 1
+
+        risk_score = 0
+        if health == "critical":
+            risk_score += 4
+        elif health == "watch":
+            risk_score += 2
+        if queue_depth > 0:
+            risk_score += 1
+        if queue_depth >= 20:
+            risk_score += 1
+        if incident_age_minutes is not None:
+            if incident_age_minutes >= 60.0:
+                risk_score += 1
+            if incident_age_minutes >= 240.0:
+                risk_score += 2
+            if incident_age_minutes >= 1440.0:
+                risk_score += 2
+        if over_sla:
+            risk_score += 2
+        if bool(control.get("pause_active")):
+            risk_score += 1
+        risk_score += len(missing_fields)
+        if not has_ticket:
+            risk_score += 2
+
+        if "owner_name" in missing_fields:
+            recommended_action = "assign_owner_now"
+        elif "oncall_channel" in missing_fields:
+            recommended_action = "set_oncall_channel"
+        elif "escalation_channel" in missing_fields:
+            recommended_action = "set_escalation_channel"
+        elif not has_ticket:
+            recommended_action = "attach_or_create_ticket"
+        elif over_sla and escalation_channel:
+            recommended_action = "escalate_to_escalation_channel"
+        elif over_sla and oncall_channel:
+            recommended_action = "escalate_to_oncall_channel"
+        else:
+            recommended_action = "monitor_until_next_sync"
+
+        open_rows.append(
+            {
+                "project_id": project_id,
+                "health": health,
+                "queue_depth": queue_depth,
+                "pause_active": bool(control.get("pause_active")),
+                "over_sla": bool(over_sla),
+                "risk_score": int(risk_score),
+                "recommended_action": recommended_action,
+                "incident": {
+                    "id": str(incident.get("id") or ""),
+                    "status": str(incident.get("status") or ""),
+                    "external_provider": str(incident.get("external_provider") or ""),
+                    "trigger_health": str(incident.get("trigger_health") or ""),
+                    "ticket_id": ticket_id or None,
+                    "ticket_url": ticket_url or None,
+                    "opened_at": incident.get("opened_at"),
+                    "age_minutes": incident_age_minutes,
+                    "last_sync_at": incident.get("last_sync_at"),
+                },
+                "ownership": {
+                    "owner_name": owner_name or None,
+                    "owner_contact": owner_contact or None,
+                    "oncall_channel": oncall_channel or None,
+                    "escalation_channel": escalation_channel or None,
+                },
+                "missing_fields": missing_fields,
+            }
+        )
+
+    health_rank = {"critical": 0, "watch": 1, "healthy": 2}
+    open_rows.sort(
+        key=lambda item: (
+            0 if bool(item.get("over_sla")) else 1,
+            -int(item.get("risk_score") or 0),
+            health_rank.get(str(item.get("health") or "healthy"), 3),
+            -float(((item.get("incident") or {}).get("age_minutes") or 0.0)),
+            -int(item.get("queue_depth") or 0),
+            str(item.get("project_id") or ""),
+        )
+    )
+    ownership_gap_rows.sort(
+        key=lambda item: (
+            -int(item.get("gap_score") or 0),
+            health_rank.get(str(item.get("health") or "healthy"), 3),
+            -int(item.get("queue_depth") or 0),
+            str(item.get("project_id") or ""),
+        )
+    )
+
+    open_total = len(open_rows)
+    summary = {
+        "projects_total": len(projects),
+        "open_incidents": open_total,
+        "open_incidents_over_sla": over_sla_count,
+        "critical_open_incidents": critical_open_incidents,
+        "incidents_missing_owner": incidents_missing_owner,
+        "incidents_missing_oncall_channel": incidents_missing_oncall,
+        "incidents_missing_escalation_channel": incidents_missing_escalation,
+        "incidents_without_ticket": incidents_without_ticket,
+        "routing_ready_open_incidents": routing_ready_open_incidents,
+        "routing_ready_rate": _safe_ratio(routing_ready_open_incidents, max(1, open_total)),
+        "ownership_gap_projects": len(ownership_gap_rows),
+        "ownership_gap_with_open_incident": ownership_gap_with_open_incident,
+    }
+    max_candidates = max(1, min(50, int(top_n)))
+    return {
+        "window_hours": int(window_hours),
+        "incident_sla_hours": int(max(1, min(168, int(incident_sla_hours)))),
+        "requested_projects": requested or [],
+        "generated_at": now.isoformat(),
+        "summary": summary,
+        "age_buckets": age_buckets,
+        "escalation_candidates": open_rows[:max_candidates],
+        "ownership_gaps": ownership_gap_rows[: max(10, max_candidates * 2)],
+    }
+
+
+def _sync_operation_queue_incident_hooks(
+    *,
+    project_ids: list[str] | None,
+    actor: str,
+    window_hours: int,
+    dry_run: bool,
+    force_resolve: bool,
+    preflight_enforcement_mode: str,
+    preflight_pause_hours: int | None,
+    preflight_critical_fail_threshold: int | None,
+    preflight_include_run_before_live_sync_only: bool,
+    preflight_record_audit: bool,
+    limit: int,
+) -> dict[str, Any]:
+    targets = _list_operation_queue_projects(limit=limit, requested=project_ids or None)
+    policy_map = _list_operation_queue_incident_policies_grouped(
+        project_ids=targets,
+        include_secrets=True,
+        limit=1000,
+    )
+    now = datetime.now(UTC)
+    generated_at = now.isoformat()
+    rows: list[dict[str, Any]] = []
+    opened_total = 0
+    resolved_total = 0
+    failed_total = 0
+    noop_total = 0
+    blocked_total = 0
+    paused_total = 0
+    for project_id in targets:
+        throughput = _build_operation_queue_throughput(project_id=project_id, window_hours=window_hours)
+        control = throughput.get("control") if isinstance(throughput.get("control"), dict) else _fetch_operation_queue_control(project_id)
+        ownership = _fetch_operation_queue_ownership(project_id)
+        hook = _fetch_operation_queue_incident_hook(project_id, include_secrets=True)
+        provider = _normalize_operation_queue_incident_provider(hook.get("provider"))
+        provider_config = _normalize_operation_queue_incident_provider_config(provider, hook.get("provider_config"))
+        hook["provider"] = provider
+        hook["provider_config"] = provider_config
+        health = str(throughput.get("health") or "healthy")
+        alerts = throughput.get("alerts") if isinstance(throughput.get("alerts"), list) else []
+        alert_codes = [str(item.get("code") or "").strip() for item in alerts if isinstance(item, dict)]
+        alert_codes = [item for item in alert_codes if item]
+        existing_open = _fetch_open_operation_queue_incident(project_id)
+        latest = _fetch_latest_operation_queue_incident(project_id)
+
+        project_preflight_mode = _normalize_incident_sync_preflight_enforcement_mode(
+            control.get("incident_preflight_enforcement_mode"),
+            default="off",
+        )
+        requested_preflight_mode = str(preflight_enforcement_mode or "inherit").strip().lower()
+        if requested_preflight_mode in {"off", "block", "pause"}:
+            effective_preflight_mode = requested_preflight_mode
+        else:
+            effective_preflight_mode = project_preflight_mode
+        effective_preflight_pause_hours = max(
+            1,
+            min(
+                168,
+                int(
+                    preflight_pause_hours
+                    if preflight_pause_hours is not None
+                    else (control.get("incident_preflight_pause_hours") or 4)
+                ),
+            ),
+        )
+        effective_preflight_critical_threshold = max(
+            1,
+            min(
+                100,
+                int(
+                    preflight_critical_fail_threshold
+                    if preflight_critical_fail_threshold is not None
+                    else (control.get("incident_preflight_critical_fail_threshold") or 1)
+                ),
+            ),
+        )
+        preflight_gate: dict[str, Any] = {
+            "mode": effective_preflight_mode,
+            "project_mode": project_preflight_mode,
+            "pause_hours": effective_preflight_pause_hours,
+            "critical_fail_threshold": effective_preflight_critical_threshold,
+            "include_run_before_live_sync_only": bool(preflight_include_run_before_live_sync_only),
+            "record_audit": bool(preflight_record_audit),
+        }
+
+        if effective_preflight_mode != "off":
+            preflight_result = _run_operation_queue_incident_preflight(
+                project_ids=[project_id],
+                preset_ids=None,
+                include_disabled=False,
+                include_run_before_live_sync_only=preflight_include_run_before_live_sync_only,
+                actor=actor,
+                actor_roles=set(),
+                record_audit=preflight_record_audit,
+                limit=max(20, min(200, int(limit))),
+            )
+            project_rollups = (
+                preflight_result.get("project_rollups")
+                if isinstance(preflight_result.get("project_rollups"), list)
+                else []
+            )
+            project_rollup = next(
+                (
+                    item
+                    for item in project_rollups
+                    if isinstance(item, dict) and str(item.get("project_id") or "") == project_id
+                ),
+                None,
+            )
+            critical_alerts = int(
+                (
+                    ((project_rollup or {}).get("critical_alerts"))
+                    if isinstance(project_rollup, dict)
+                    else (((preflight_result.get("summary") or {}).get("alerts_by_severity") or {}).get("critical"))
+                )
+                or 0
+            )
+            checks_total = int(
+                ((project_rollup or {}).get("checks_total"))
+                if isinstance(project_rollup, dict)
+                else int((preflight_result.get("summary") or {}).get("checks_total") or 0)
+            )
+            failed_checks = int(
+                ((project_rollup or {}).get("failed"))
+                if isinstance(project_rollup, dict)
+                else int((preflight_result.get("summary") or {}).get("failed") or 0)
+            )
+            preflight_gate.update(
+                {
+                    "checks_total": checks_total,
+                    "failed_checks": failed_checks,
+                    "critical_alerts": critical_alerts,
+                    "should_gate": checks_total > 0 and critical_alerts >= effective_preflight_critical_threshold,
+                    "generated_at": preflight_result.get("generated_at"),
+                }
+            )
+            if bool(preflight_gate.get("should_gate")):
+                gate_action = "blocked_by_preflight" if effective_preflight_mode == "block" else "paused_by_preflight"
+                if dry_run:
+                    gate_action = f"would_{gate_action}"
+                row: dict[str, Any] = {
+                    "project_id": project_id,
+                    "health": health,
+                    "provider": provider,
+                    "hook_enabled": bool(hook.get("enabled")),
+                    "matched_policy": None,
+                    "incident_before": existing_open,
+                    "incident_after": existing_open,
+                    "action": gate_action,
+                    "preflight": preflight_gate,
+                }
+                if not dry_run:
+                    failed_total += 1
+                    if effective_preflight_mode == "block":
+                        blocked_total += 1
+                        _append_operation_queue_control_event(
+                            project_id=project_id,
+                            action="incident_sync_blocked_preflight",
+                            actor=actor,
+                            reason=f"critical preflight failures: {critical_alerts}",
+                            paused_until=None,
+                            payload={
+                                "critical_alerts": critical_alerts,
+                                "checks_total": checks_total,
+                                "failed_checks": failed_checks,
+                                "critical_fail_threshold": effective_preflight_critical_threshold,
+                                "mode": effective_preflight_mode,
+                            },
+                        )
+                    else:
+                        paused_total += 1
+                        paused_until = datetime.now(UTC) + timedelta(hours=effective_preflight_pause_hours)
+                        existing_paused_until = _parse_iso_datetime(control.get("paused_until"))
+                        if existing_paused_until is not None and existing_paused_until > paused_until:
+                            paused_until = existing_paused_until
+                        pause_reason = (
+                            f"incident sync paused by preflight: {critical_alerts} critical alerts "
+                            f"(threshold {effective_preflight_critical_threshold})"
+                        )
+                        control = _upsert_operation_queue_control(
+                            project_id=project_id,
+                            worker_lag_sla_minutes=max(1, int(control.get("worker_lag_sla_minutes") or 20)),
+                            queue_depth_warn=max(1, int(control.get("queue_depth_warn") or 12)),
+                            incident_preflight_enforcement_mode=effective_preflight_mode,
+                            incident_preflight_pause_hours=effective_preflight_pause_hours,
+                            incident_preflight_critical_fail_threshold=effective_preflight_critical_threshold,
+                            updated_by=actor,
+                            paused_until=paused_until,
+                            pause_reason=pause_reason[:2000],
+                        )
+                        row["control_after"] = control
+                        _append_operation_queue_control_event(
+                            project_id=project_id,
+                            action="incident_sync_paused_preflight",
+                            actor=actor,
+                            reason=pause_reason[:2000],
+                            paused_until=paused_until,
+                            payload={
+                                "critical_alerts": critical_alerts,
+                                "checks_total": checks_total,
+                                "failed_checks": failed_checks,
+                                "critical_fail_threshold": effective_preflight_critical_threshold,
+                                "pause_hours": effective_preflight_pause_hours,
+                                "mode": effective_preflight_mode,
+                            },
+                        )
+                else:
+                    noop_total += 1
+                    if effective_preflight_mode == "block":
+                        blocked_total += 1
+                    else:
+                        paused_total += 1
+                rows.append(row)
+                continue
+        try:
+            effective_hook, matched_policy = _resolve_operation_queue_incident_hook_policy(
+                hook=hook,
+                policy_rows=policy_map.get(project_id, []),
+                health=health,
+                alert_codes=alert_codes,
+            )
+            effective_provider = _normalize_operation_queue_incident_provider(effective_hook.get("provider"))
+            effective_provider_config = _normalize_operation_queue_incident_provider_config(
+                effective_provider,
+                effective_hook.get("provider_config"),
+            )
+            effective_hook["provider"] = effective_provider
+            effective_hook["provider_config"] = effective_provider_config
+            open_on_health = set(_normalize_incident_open_on_health(effective_hook.get("open_on_health")))
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "incident_policy_invalid"
+            rows.append(
+                {
+                    "project_id": project_id,
+                    "health": health,
+                    "provider": provider,
+                    "hook_enabled": bool(hook.get("enabled")),
+                    "matched_policy": None,
+                    "incident_before": existing_open,
+                    "incident_after": existing_open,
+                    "action": "policy_invalid",
+                    "error": detail,
+                }
+            )
+            _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_policy_invalid",
+                actor=actor,
+                reason=str(detail)[:2000],
+                paused_until=None,
+                payload={"alert_codes": alert_codes},
+            )
+            failed_total += 1
+            continue
+
+        base_row: dict[str, Any] = {
+            "project_id": project_id,
+            "health": health,
+            "provider": effective_provider,
+            "hook_enabled": bool(hook.get("enabled")),
+            "matched_policy": matched_policy,
+            "incident_before": existing_open,
+            "action": "noop",
+        }
+        if not bool(hook.get("enabled")):
+            base_row["action"] = "hook_disabled"
+            base_row["incident_after"] = existing_open
+            rows.append(base_row)
+            noop_total += 1
+            continue
+        try:
+            _validate_operation_queue_incident_hook_requirements(
+                provider=effective_provider,
+                enabled=bool(effective_hook.get("enabled")),
+                auto_resolve=bool(effective_hook.get("auto_resolve")),
+                open_webhook_url=_trim_optional_text(effective_hook.get("open_webhook_url"), max_len=2048),
+                resolve_webhook_url=_trim_optional_text(effective_hook.get("resolve_webhook_url"), max_len=2048),
+                provider_config=effective_provider_config,
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "incident_hook_invalid"
+            base_row["action"] = "hook_invalid"
+            base_row["error"] = detail
+            base_row["incident_after"] = existing_open
+            _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_hook_invalid",
+                actor=actor,
+                reason=str(detail)[:2000],
+                paused_until=None,
+                payload={"provider": effective_provider},
+            )
+            rows.append(base_row)
+            failed_total += 1
+            continue
+
+        should_open = health in open_on_health
+        if should_open:
+            if existing_open is not None:
+                _touch_operation_queue_incident_sync(incident_id=str(existing_open["id"]), updated_by=actor)
+                base_row["action"] = "already_open"
+                base_row["incident_after"] = existing_open
+                rows.append(base_row)
+                noop_total += 1
+                continue
+
+            cooldown_minutes = max(1, min(1440, int(hook.get("cooldown_minutes") or 30)))
+            cooldown_marker = None
+            if latest is not None:
+                cooldown_marker = _parse_iso_datetime(latest.get("resolved_at")) or _parse_iso_datetime(latest.get("opened_at"))
+            if cooldown_marker is not None and cooldown_marker + timedelta(minutes=cooldown_minutes) > now:
+                base_row["action"] = "cooldown_active"
+                base_row["cooldown_until"] = (cooldown_marker + timedelta(minutes=cooldown_minutes)).isoformat()
+                base_row["incident_after"] = None
+                rows.append(base_row)
+                noop_total += 1
+                continue
+
+            try:
+                open_dispatch = _build_operation_queue_incident_open_dispatch(
+                    hook=effective_hook,
+                    project_id=project_id,
+                    actor=actor,
+                    generated_at=generated_at,
+                    health=health,
+                    alert_codes=alert_codes,
+                    throughput=throughput,
+                    ownership=ownership,
+                )
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else "incident_open_dispatch_failed"
+                base_row["action"] = "open_config_error"
+                base_row["error"] = detail
+                base_row["incident_after"] = None
+                rows.append(base_row)
+                failed_total += 1
+                continue
+            if dry_run:
+                base_row["action"] = "would_open"
+                base_row["incident_after"] = None
+                base_row["payload_preview"] = {
+                    "provider": effective_provider,
+                    "method": open_dispatch.get("method"),
+                    "url": open_dispatch.get("url"),
+                    "payload": open_dispatch.get("payload"),
+                }
+                rows.append(base_row)
+                noop_total += 1
+                continue
+
+            delivery = _dispatch_operation_queue_incident_request(
+                method=str(open_dispatch.get("method") or "POST"),
+                webhook_url=str(open_dispatch.get("url") or ""),
+                payload=open_dispatch.get("payload") if isinstance(open_dispatch.get("payload"), dict) else {},
+                headers=open_dispatch.get("headers") if isinstance(open_dispatch.get("headers"), dict) else {},
+                timeout_sec=max(1, min(60, int(effective_hook.get("timeout_sec") or 10))),
+            )
+            base_row["webhook"] = {
+                "provider": effective_provider,
+                "method": str(open_dispatch.get("method") or "POST"),
+                "url": str(open_dispatch.get("url") or "")[:256],
+                "status": int(delivery.get("http_status") or 0),
+            }
+            if not bool(delivery.get("ok")):
+                base_row["action"] = "open_failed"
+                base_row["error"] = str(delivery.get("reason") or delivery.get("error_code") or "webhook_open_failed")
+                _append_operation_queue_control_event(
+                    project_id=project_id,
+                    action="incident_ticket_open_failed",
+                    actor=actor,
+                    reason=base_row["error"],
+                    paused_until=None,
+                    payload={
+                        "http_status": int(delivery.get("http_status") or 0),
+                        "error_code": delivery.get("error_code"),
+                        "provider": effective_provider,
+                        "health": health,
+                        "alert_codes": alert_codes,
+                    },
+                )
+                base_row["incident_after"] = None
+                rows.append(base_row)
+                failed_total += 1
+                continue
+
+            body_json = delivery.get("body_json") if isinstance(delivery.get("body_json"), dict) else None
+            ticket_id, ticket_url = _extract_operation_queue_incident_ticket(
+                provider=effective_provider,
+                response_payload=body_json,
+                request_payload=open_dispatch.get("payload") if isinstance(open_dispatch.get("payload"), dict) else {},
+                provider_config=effective_provider_config,
+            )
+            incident = _create_operation_queue_incident_open(
+                project_id=project_id,
+                trigger_health=health,
+                trigger_alert_codes=alert_codes,
+                open_reason="critical_queue_state",
+                external_provider=effective_provider,
+                external_ticket_id=ticket_id,
+                external_ticket_url=ticket_url,
+                open_payload={
+                    "provider": effective_provider,
+                    "request": {
+                        "method": str(open_dispatch.get("method") or "POST"),
+                        "url": str(open_dispatch.get("url") or "")[:2048],
+                        "header_keys": sorted(
+                            [str(key) for key in (open_dispatch.get("headers") or {}).keys()]
+                        )
+                        if isinstance(open_dispatch.get("headers"), dict)
+                        else [],
+                    },
+                    "webhook_status": int(delivery.get("http_status") or 0),
+                    "response_json": body_json or {},
+                    "response_preview": str(delivery.get("body_text") or "")[:1000],
+                },
+                created_by=actor,
+            )
+            _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_ticket_opened",
+                actor=actor,
+                reason=f"{effective_provider}:{str(open_dispatch.get('url') or '')[:180]}",
+                paused_until=None,
+                payload={
+                    "incident_id": incident.get("id"),
+                    "external_ticket_id": incident.get("external_ticket_id"),
+                    "webhook_status": int(delivery.get("http_status") or 0),
+                    "provider": effective_provider,
+                    "health": health,
+                    "alert_codes": alert_codes,
+                },
+            )
+            base_row["action"] = "opened"
+            base_row["incident_after"] = incident
+            rows.append(base_row)
+            opened_total += 1
+            continue
+
+        if existing_open is None:
+            base_row["action"] = "no_incident"
+            base_row["incident_after"] = None
+            rows.append(base_row)
+            noop_total += 1
+            continue
+
+        if not bool(effective_hook.get("auto_resolve")) and not force_resolve:
+            _touch_operation_queue_incident_sync(incident_id=str(existing_open["id"]), updated_by=actor)
+            base_row["action"] = "open_retained"
+            base_row["incident_after"] = existing_open
+            rows.append(base_row)
+            noop_total += 1
+            continue
+
+        try:
+            resolve_dispatch = _build_operation_queue_incident_resolve_dispatch(
+                hook=effective_hook,
+                existing_incident=existing_open,
+                project_id=project_id,
+                actor=actor,
+                generated_at=generated_at,
+                health=health,
+                alert_codes=alert_codes,
+                throughput=throughput,
+                ownership=ownership,
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "incident_resolve_dispatch_failed"
+            base_row["action"] = "resolve_config_error"
+            base_row["error"] = detail
+            base_row["incident_after"] = existing_open
+            rows.append(base_row)
+            failed_total += 1
+            continue
+        if dry_run:
+            base_row["action"] = "would_resolve"
+            base_row["incident_after"] = existing_open
+            base_row["payload_preview"] = {
+                "provider": effective_provider,
+                "method": resolve_dispatch.get("method"),
+                "url": resolve_dispatch.get("url"),
+                "payload": resolve_dispatch.get("payload"),
+            }
+            rows.append(base_row)
+            noop_total += 1
+            continue
+
+        delivery = _dispatch_operation_queue_incident_request(
+            method=str(resolve_dispatch.get("method") or "POST"),
+            webhook_url=str(resolve_dispatch.get("url") or ""),
+            payload=resolve_dispatch.get("payload") if isinstance(resolve_dispatch.get("payload"), dict) else {},
+            headers=resolve_dispatch.get("headers") if isinstance(resolve_dispatch.get("headers"), dict) else {},
+            timeout_sec=max(1, min(60, int(effective_hook.get("timeout_sec") or 10))),
+        )
+        base_row["webhook"] = {
+            "provider": effective_provider,
+            "method": str(resolve_dispatch.get("method") or "POST"),
+            "url": str(resolve_dispatch.get("url") or "")[:256],
+            "status": int(delivery.get("http_status") or 0),
+        }
+        if not bool(delivery.get("ok")):
+            base_row["action"] = "resolve_failed"
+            base_row["error"] = str(delivery.get("reason") or delivery.get("error_code") or "webhook_resolve_failed")
+            _append_operation_queue_control_event(
+                project_id=project_id,
+                action="incident_ticket_resolve_failed",
+                actor=actor,
+                reason=base_row["error"],
+                paused_until=None,
+                payload={
+                    "incident_id": existing_open.get("id"),
+                    "http_status": int(delivery.get("http_status") or 0),
+                    "error_code": delivery.get("error_code"),
+                    "provider": effective_provider,
+                    "health": health,
+                    "alert_codes": alert_codes,
+                },
+            )
+            base_row["incident_after"] = existing_open
+            rows.append(base_row)
+            failed_total += 1
+            continue
+
+        resolved = _resolve_operation_queue_incident(
+            incident_id=str(existing_open["id"]),
+            resolve_reason="queue_health_recovered",
+            resolve_payload={
+                "provider": effective_provider,
+                "request": {
+                    "method": str(resolve_dispatch.get("method") or "POST"),
+                    "url": str(resolve_dispatch.get("url") or "")[:2048],
+                    "header_keys": sorted(
+                        [str(key) for key in (resolve_dispatch.get("headers") or {}).keys()]
+                    )
+                    if isinstance(resolve_dispatch.get("headers"), dict)
+                    else [],
+                },
+                "webhook_status": int(delivery.get("http_status") or 0),
+                "response_json": delivery.get("body_json") if isinstance(delivery.get("body_json"), dict) else {},
+                "response_preview": str(delivery.get("body_text") or "")[:1000],
+                "health": health,
+                "alert_codes": alert_codes,
+            },
+            updated_by=actor,
+        )
+        _append_operation_queue_control_event(
+            project_id=project_id,
+            action="incident_ticket_resolved",
+            actor=actor,
+            reason=f"{effective_provider}:{str(resolve_dispatch.get('url') or '')[:180]}",
+            paused_until=None,
+            payload={
+                "incident_id": resolved.get("id"),
+                "external_ticket_id": resolved.get("external_ticket_id"),
+                "webhook_status": int(delivery.get("http_status") or 0),
+                "provider": effective_provider,
+                "health": health,
+            },
+        )
+        base_row["action"] = "resolved"
+        base_row["incident_after"] = resolved
+        rows.append(base_row)
+        resolved_total += 1
+
+    return {
+        "requested_projects": project_ids or [],
+        "window_hours": int(window_hours),
+        "dry_run": bool(dry_run),
+        "force_resolve": bool(force_resolve),
+        "preflight_enforcement_mode": str(preflight_enforcement_mode or "inherit").strip().lower() or "inherit",
+        "preflight_include_run_before_live_sync_only": bool(preflight_include_run_before_live_sync_only),
+        "preflight_record_audit": bool(preflight_record_audit),
+        "projects_total": len(targets),
+        "summary": {
+            "opened": opened_total,
+            "resolved": resolved_total,
+            "failed": failed_total,
+            "noop": noop_total,
+            "blocked": blocked_total,
+            "paused": paused_total,
+        },
+        "results": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _build_operation_queue_owner_rollups_payload(
+    *,
+    requested: list[str] | None,
+    limit: int,
+    window_hours: int,
+    sla_hours: int,
+) -> dict[str, Any]:
+    compare_payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested or [],
+        limit=limit,
+        window_hours=window_hours,
+    )
+    projects = compare_payload.get("projects") if isinstance(compare_payload.get("projects"), list) else []
+    now = datetime.now(UTC)
+    owner_buckets: dict[str, dict[str, Any]] = {}
+    project_to_owner_key: dict[str, str] = {}
+
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        ownership = item.get("ownership") if isinstance(item.get("ownership"), dict) else _default_operation_queue_ownership(project_id=project_id)
+        owner_name = str(ownership.get("owner_name") or "").strip() or "unassigned"
+        oncall_channel = str(ownership.get("oncall_channel") or "").strip() or "unassigned"
+        owner_contact = ownership.get("owner_contact") if isinstance(ownership.get("owner_contact"), str) else None
+        escalation_channel = ownership.get("escalation_channel") if isinstance(ownership.get("escalation_channel"), str) else None
+        owner_key = f"{owner_name}::{oncall_channel}"
+        project_to_owner_key[project_id] = owner_key
+        queue = item.get("queue") if isinstance(item.get("queue"), dict) else {}
+        control = item.get("control") if isinstance(item.get("control"), dict) else {}
+        incident = item.get("incident") if isinstance(item.get("incident"), dict) else None
+        health = str(item.get("health") or "healthy")
+        queued_wait_p90 = (
+            float(queue.get("queued_age_minutes", {}).get("p90"))
+            if isinstance(queue.get("queued_age_minutes"), dict)
+            and queue.get("queued_age_minutes", {}).get("p90") is not None
+            else None
+        )
+
+        bucket = owner_buckets.get(owner_key)
+        if bucket is None:
+            bucket = {
+                "owner_key": owner_key,
+                "owner_name": owner_name,
+                "oncall_channel": oncall_channel,
+                "owner_contact": owner_contact,
+                "escalation_channel": escalation_channel,
+                "projects_total": 0,
+                "health_counts": {"critical": 0, "watch": 0, "healthy": 0},
+                "queue_depth_total": 0,
+                "queue_wait_p90_values": [],
+                "open_incidents": 0,
+                "paused_projects": 0,
+                "governance_events_total": 0,
+                "governance_resolved_events": 0,
+                "governance_pending_events": 0,
+                "governance_mttr_values": [],
+                "governance_pending_age_values": [],
+                "governance_sla_breaches": 0,
+                "projects": [],
+            }
+            owner_buckets[owner_key] = bucket
+
+        bucket["projects_total"] += 1
+        if health in {"critical", "watch", "healthy"}:
+            bucket["health_counts"][health] += 1
+        else:
+            bucket["health_counts"]["healthy"] += 1
+        queue_depth = int(queue.get("depth_total") or 0)
+        bucket["queue_depth_total"] += queue_depth
+        if queued_wait_p90 is not None:
+            bucket["queue_wait_p90_values"].append(max(0.0, queued_wait_p90))
+        if incident is not None and str(incident.get("status") or "") == "open":
+            bucket["open_incidents"] += 1
+        if bool(control.get("pause_active")):
+            bucket["paused_projects"] += 1
+        bucket["projects"].append(
+            {
+                "project_id": project_id,
+                "health": health,
+                "queue_depth": queue_depth,
+                "queued_wait_p90_minutes": None if queued_wait_p90 is None else round(queued_wait_p90, 3),
+                "pause_active": bool(control.get("pause_active")),
+                "incident_open": incident is not None and str(incident.get("status") or "") == "open",
+            }
+        )
+
+    targets = list(project_to_owner_key.keys())
+    if targets:
+        since = now - timedelta(hours=max(1, min(168 * 14, int(window_hours))))
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      e.project_id,
+                      e.created_at,
+                      ann.status,
+                      ann.created_at
+                    FROM gatekeeper_calibration_queue_control_events e
+                    LEFT JOIN LATERAL (
+                      SELECT
+                        a.status,
+                        a.created_at
+                      FROM gatekeeper_calibration_queue_audit_annotations a
+                      WHERE a.event_id = e.id
+                      ORDER BY a.created_at DESC, a.id DESC
+                      LIMIT 1
+                    ) ann ON TRUE
+                    WHERE e.project_id = ANY(%s)
+                      AND e.created_at >= %s
+                    ORDER BY e.created_at DESC, e.id DESC
+                    LIMIT %s
+                    """,
+                    (targets, since, max(500, len(targets) * 80)),
+                )
+                rows = cur.fetchall()
+        for row in rows:
+            project_id = str(row[0] or "").strip()
+            owner_key = project_to_owner_key.get(project_id)
+            if not owner_key:
+                continue
+            bucket = owner_buckets.get(owner_key)
+            if bucket is None:
+                continue
+            event_created_at = _parse_iso_datetime(row[1])
+            annotation_status = str(row[2] or "") if row[2] is not None else ""
+            annotation_created_at = _parse_iso_datetime(row[3]) if row[3] is not None else None
+            bucket["governance_events_total"] += 1
+            if annotation_status == "resolved" and event_created_at is not None and annotation_created_at is not None:
+                minutes = max(0.0, (annotation_created_at - event_created_at).total_seconds() / 60.0)
+                bucket["governance_resolved_events"] += 1
+                bucket["governance_mttr_values"].append(minutes)
+            else:
+                if event_created_at is None:
+                    continue
+                age_minutes = max(0.0, (now - event_created_at).total_seconds() / 60.0)
+                bucket["governance_pending_events"] += 1
+                bucket["governance_pending_age_values"].append(age_minutes)
+                if age_minutes >= float(max(1, int(sla_hours)) * 60):
+                    bucket["governance_sla_breaches"] += 1
+
+    owner_rows: list[dict[str, Any]] = []
+    for bucket in owner_buckets.values():
+        queue_wait_stats = _latency_stats([float(value) for value in bucket["queue_wait_p90_values"]])
+        mttr_stats = _latency_stats([float(value) for value in bucket["governance_mttr_values"]])
+        pending_age_stats = _latency_stats([float(value) for value in bucket["governance_pending_age_values"]])
+        owner_rows.append(
+            {
+                "owner_key": bucket["owner_key"],
+                "owner_name": bucket["owner_name"],
+                "oncall_channel": bucket["oncall_channel"],
+                "owner_contact": bucket["owner_contact"],
+                "escalation_channel": bucket["escalation_channel"],
+                "projects_total": int(bucket["projects_total"]),
+                "health": {
+                    "critical": int(bucket["health_counts"]["critical"]),
+                    "watch": int(bucket["health_counts"]["watch"]),
+                    "healthy": int(bucket["health_counts"]["healthy"]),
+                },
+                "queue_depth_total": int(bucket["queue_depth_total"]),
+                "queue_depth_avg": round(float(bucket["queue_depth_total"]) / max(1, int(bucket["projects_total"])), 3),
+                "queue_wait_p90_minutes": queue_wait_stats,
+                "open_incidents": int(bucket["open_incidents"]),
+                "paused_projects": int(bucket["paused_projects"]),
+                "governance": {
+                    "events_total": int(bucket["governance_events_total"]),
+                    "resolved_events": int(bucket["governance_resolved_events"]),
+                    "pending_events": int(bucket["governance_pending_events"]),
+                    "sla_breaches": int(bucket["governance_sla_breaches"]),
+                    "mttr_minutes": mttr_stats,
+                    "pending_age_minutes": {
+                        **pending_age_stats,
+                        "max": (
+                            None
+                            if not bucket["governance_pending_age_values"]
+                            else round(max(float(value) for value in bucket["governance_pending_age_values"]), 3)
+                        ),
+                    },
+                },
+                "projects": sorted(
+                    bucket["projects"],
+                    key=lambda item: (
+                        {"critical": 0, "watch": 1, "healthy": 2}.get(str(item.get("health") or "healthy"), 3),
+                        -int(item.get("queue_depth") or 0),
+                        str(item.get("project_id") or ""),
+                    ),
+                ),
+            }
+        )
+
+    owner_rows.sort(
+        key=lambda item: (
+            -int((item.get("health") or {}).get("critical") or 0),
+            -int((item.get("governance") or {}).get("sla_breaches") or 0),
+            -int(item.get("queue_depth_total") or 0),
+            str(item.get("owner_name") or ""),
+        )
+    )
+    summary = {
+        "owners_total": len(owner_rows),
+        "projects_total": len(targets),
+        "critical_projects": sum(int((item.get("health") or {}).get("critical") or 0) for item in owner_rows),
+        "watch_projects": sum(int((item.get("health") or {}).get("watch") or 0) for item in owner_rows),
+        "open_incidents": sum(int(item.get("open_incidents") or 0) for item in owner_rows),
+        "pending_events": sum(int((item.get("governance") or {}).get("pending_events") or 0) for item in owner_rows),
+        "sla_breaches": sum(int((item.get("governance") or {}).get("sla_breaches") or 0) for item in owner_rows),
+    }
+    return {
+        "window_hours": int(window_hours),
+        "sla_hours": int(sla_hours),
+        "requested_projects": requested or [],
+        "generated_at": now.isoformat(),
+        "summary": summary,
+        "owners": owner_rows,
+    }
+
+
+def _build_operation_queue_governance_drift_payload(
+    *,
+    requested: list[str] | None,
+    limit: int,
+    window_hours: int,
+    audit_days: int,
+) -> dict[str, Any]:
+    compare_payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested or [],
+        limit=limit,
+        window_hours=window_hours,
+    )
+    projects = compare_payload.get("projects") if isinstance(compare_payload.get("projects"), list) else []
+    digest_payload = _build_queue_governance_digest_payload(
+        requested=requested or [],
+        limit=limit,
+        window_hours=window_hours,
+        audit_days=audit_days,
+        top_n=max(5, min(20, int(limit))),
+    )
+    unresolved_pauses = (
+        digest_payload.get("unreviewed_pauses")
+        if isinstance(digest_payload.get("unreviewed_pauses"), list)
+        else []
+    )
+    pause_age_buckets = {
+        "under_1h": 0,
+        "between_1h_4h": 0,
+        "between_4h_12h": 0,
+        "between_12h_24h": 0,
+        "over_24h": 0,
+    }
+    for item in unresolved_pauses:
+        if not isinstance(item, dict):
+            continue
+        age = float(item.get("pause_age_minutes") or 0.0)
+        if age < 60.0:
+            pause_age_buckets["under_1h"] += 1
+        elif age < 240.0:
+            pause_age_buckets["between_1h_4h"] += 1
+        elif age < 720.0:
+            pause_age_buckets["between_4h_12h"] += 1
+        elif age < 1440.0:
+            pause_age_buckets["between_12h_24h"] += 1
+        else:
+            pause_age_buckets["over_24h"] += 1
+
+    drift_rows: list[dict[str, Any]] = []
+    owner_missing = 0
+    oncall_missing = 0
+    escalation_missing = 0
+    critical_without_owner = 0
+    open_incidents_without_owner = 0
+
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        ownership = item.get("ownership") if isinstance(item.get("ownership"), dict) else _default_operation_queue_ownership(project_id=project_id)
+        incident = item.get("incident") if isinstance(item.get("incident"), dict) else None
+        health = str(item.get("health") or "healthy")
+        queue = item.get("queue") if isinstance(item.get("queue"), dict) else {}
+        control = item.get("control") if isinstance(item.get("control"), dict) else {}
+        owner_name = str(ownership.get("owner_name") or "").strip()
+        oncall_channel = str(ownership.get("oncall_channel") or "").strip()
+        escalation_channel = str(ownership.get("escalation_channel") or "").strip()
+        missing_fields: list[str] = []
+        if not owner_name:
+            owner_missing += 1
+            missing_fields.append("owner_name")
+        if not oncall_channel:
+            oncall_missing += 1
+            missing_fields.append("oncall_channel")
+        if not escalation_channel:
+            escalation_missing += 1
+            missing_fields.append("escalation_channel")
+        if health == "critical" and not owner_name:
+            critical_without_owner += 1
+        incident_open = incident is not None and str(incident.get("status") or "") == "open"
+        if incident_open and not owner_name:
+            open_incidents_without_owner += 1
+
+        pause_age_minutes = None
+        for pause_item in unresolved_pauses:
+            if (
+                isinstance(pause_item, dict)
+                and str(pause_item.get("project_id") or "").strip() == project_id
+            ):
+                pause_age_minutes = (
+                    None
+                    if pause_item.get("pause_age_minutes") is None
+                    else float(pause_item.get("pause_age_minutes") or 0.0)
+                )
+                break
+
+        risk_score = 0
+        if health == "critical":
+            risk_score += 3
+        elif health == "watch":
+            risk_score += 1
+        if incident_open:
+            risk_score += 2
+        if bool(control.get("pause_active")):
+            risk_score += 1
+        if pause_age_minutes is not None and pause_age_minutes >= 240.0:
+            risk_score += 2
+        risk_score += len(missing_fields)
+
+        drift_rows.append(
+            {
+                "project_id": project_id,
+                "health": health,
+                "queue_depth": int(queue.get("depth_total") or 0),
+                "pause_active": bool(control.get("pause_active")),
+                "pause_age_minutes": None if pause_age_minutes is None else round(pause_age_minutes, 3),
+                "incident_open": incident_open,
+                "ownership": {
+                    "owner_name": owner_name or None,
+                    "oncall_channel": oncall_channel or None,
+                    "escalation_channel": escalation_channel or None,
+                },
+                "missing_fields": missing_fields,
+                "risk_score": int(risk_score),
+            }
+        )
+
+    drift_rows.sort(
+        key=lambda item: (
+            -int(item.get("risk_score") or 0),
+            {"critical": 0, "watch": 1, "healthy": 2}.get(str(item.get("health") or "healthy"), 3),
+            -int(item.get("queue_depth") or 0),
+            str(item.get("project_id") or ""),
+        )
+    )
+
+    projects_total = len(projects)
+    summary = {
+        "projects_total": projects_total,
+        "ownership_coverage": {
+            "owner_name_rate": _safe_ratio(projects_total - owner_missing, max(1, projects_total)),
+            "oncall_channel_rate": _safe_ratio(projects_total - oncall_missing, max(1, projects_total)),
+            "escalation_channel_rate": _safe_ratio(projects_total - escalation_missing, max(1, projects_total)),
+            "missing_owner_name": owner_missing,
+            "missing_oncall_channel": oncall_missing,
+            "missing_escalation_channel": escalation_missing,
+        },
+        "unresolved_pauses": len(unresolved_pauses),
+        "critical_without_owner": critical_without_owner,
+        "open_incidents_without_owner": open_incidents_without_owner,
+    }
+    return {
+        "window_hours": int(window_hours),
+        "audit_days": int(audit_days),
+        "requested_projects": requested or [],
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": summary,
+        "pause_age_buckets": pause_age_buckets,
+        "drift_projects": drift_rows,
+    }
+
+
+def _build_operation_queue_incident_slo_board_payload(
+    *,
+    requested: list[str] | None,
+    limit: int,
+    window_hours: int,
+    incident_window_days: int,
+    mttr_sla_hours: int,
+    mtta_proxy_sla_minutes: int,
+    rotation_lag_sla_hours: int,
+    secret_max_age_days: int,
+    top_n: int,
+) -> dict[str, Any]:
+    window_hours_norm = max(1, min(168, int(window_hours)))
+    incident_window_days_norm = max(1, min(180, int(incident_window_days)))
+    mttr_sla_hours_norm = max(1, min(168, int(mttr_sla_hours)))
+    mtta_proxy_sla_minutes_norm = max(1, min(1440, int(mtta_proxy_sla_minutes)))
+    rotation_lag_sla_hours_norm = max(1, min(24 * 90, int(rotation_lag_sla_hours)))
+    secret_max_age_days_norm = max(1, min(365, int(secret_max_age_days)))
+    top_n_norm = max(1, min(50, int(top_n)))
+    limit_norm = max(1, min(200, int(limit)))
+
+    compare_payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested or [],
+        limit=limit_norm,
+        window_hours=window_hours_norm,
+    )
+    projects = compare_payload.get("projects") if isinstance(compare_payload.get("projects"), list) else []
+    targets = [str(item.get("project_id") or "").strip() for item in projects if isinstance(item, dict)]
+    targets = [item for item in targets if item]
+
+    # Include projects that only emit incident governance artifacts (hooks/policies/secrets)
+    # so the board can stay cross-project even before queue throughput rows appear.
+    if not requested:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH hook_projects AS (
+                      SELECT project_id, MAX(updated_at) AS rank_ts
+                      FROM gatekeeper_calibration_queue_incident_hooks
+                      GROUP BY project_id
+                    ),
+                    policy_projects AS (
+                      SELECT project_id, MAX(updated_at) AS rank_ts
+                      FROM gatekeeper_calibration_queue_incident_policies
+                      GROUP BY project_id
+                    ),
+                    incident_projects AS (
+                      SELECT project_id, MAX(COALESCE(last_sync_at, resolved_at, opened_at)) AS rank_ts
+                      FROM gatekeeper_calibration_queue_incidents
+                      GROUP BY project_id
+                    ),
+                    secret_projects AS (
+                      SELECT project_id, MAX(updated_at) AS rank_ts
+                      FROM gatekeeper_calibration_queue_incident_secrets
+                      GROUP BY project_id
+                    ),
+                    ownership_projects AS (
+                      SELECT project_id, MAX(updated_at) AS rank_ts
+                      FROM gatekeeper_calibration_queue_ownership
+                      GROUP BY project_id
+                    ),
+                    merged AS (
+                      SELECT project_id, rank_ts FROM hook_projects
+                      UNION ALL
+                      SELECT project_id, rank_ts FROM policy_projects
+                      UNION ALL
+                      SELECT project_id, rank_ts FROM incident_projects
+                      UNION ALL
+                      SELECT project_id, rank_ts FROM secret_projects
+                      UNION ALL
+                      SELECT project_id, rank_ts FROM ownership_projects
+                    )
+                    SELECT project_id
+                    FROM (
+                      SELECT project_id, MAX(rank_ts) AS rank_ts
+                      FROM merged
+                      GROUP BY project_id
+                    ) ranked
+                    ORDER BY rank_ts DESC NULLS LAST, project_id ASC
+                    LIMIT %s
+                    """,
+                    (limit_norm,),
+                )
+                rows = cur.fetchall()
+        existing = set(targets)
+        for row in rows:
+            project_id = str(row[0] or "").strip()
+            if not project_id or project_id in existing:
+                continue
+            throughput = _build_operation_queue_throughput(project_id=project_id, window_hours=window_hours_norm)
+            throughput["ownership"] = _fetch_operation_queue_ownership(project_id)
+            throughput["incident"] = _fetch_open_operation_queue_incident(project_id)
+            projects.append(throughput)
+            existing.add(project_id)
+            targets.append(project_id)
+            if len(projects) >= limit_norm:
+                break
+
+    if not targets:
+        return {
+            "window_hours": window_hours_norm,
+            "incident_window_days": incident_window_days_norm,
+            "mttr_sla_hours": mttr_sla_hours_norm,
+            "mtta_proxy_sla_minutes": mtta_proxy_sla_minutes_norm,
+            "rotation_lag_sla_hours": rotation_lag_sla_hours_norm,
+            "secret_max_age_days": secret_max_age_days_norm,
+            "requested_projects": requested or [],
+            "generated_at": datetime.now(UTC).isoformat(),
+            "summary": {
+                "projects_total": 0,
+                "open_incidents": 0,
+                "open_incidents_over_mttr_sla": 0,
+                "resolved_incidents_window": 0,
+                "mtta_proxy_minutes": _latency_stats([]),
+                "mttr_minutes": _latency_stats([]),
+                "projects_mtta_over_sla": 0,
+                "projects_mttr_over_sla": 0,
+                "rotation_lag_projects_over_sla": 0,
+                "secret_required_total": 0,
+                "secret_missing_required": 0,
+                "secret_stale_required": 0,
+                "secret_posture": {"healthy": 0, "watch": 0, "critical": 0},
+                "slo_status": {"healthy": 0, "watch": 0, "critical": 0},
+            },
+            "trends": [],
+            "leaderboard": [],
+            "projects": [],
+        }
+
+    now = datetime.now(UTC)
+    incident_since = now - timedelta(days=incident_window_days_norm)
+    mttr_sla_minutes = float(mttr_sla_hours_norm * 60)
+    secret_max_age_hours = float(secret_max_age_days_norm * 24)
+
+    incidents_by_project: dict[str, list[dict[str, Any]]] = {}
+    hooks_by_project: dict[str, dict[str, Any]] = {}
+    policies_by_project: dict[str, list[dict[str, Any]]] = {}
+    secrets_by_project: dict[str, dict[tuple[str, str, str, str], datetime]] = {}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  status,
+                  opened_at,
+                  resolved_at,
+                  last_sync_at,
+                  open_payload
+                FROM gatekeeper_calibration_queue_incidents
+                WHERE project_id = ANY(%s)
+                  AND (
+                    status = 'open'
+                    OR opened_at >= %s
+                    OR resolved_at >= %s
+                  )
+                ORDER BY opened_at DESC, id DESC
+                """,
+                (targets, incident_since, incident_since),
+            )
+            incident_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT project_id, enabled, provider
+                FROM gatekeeper_calibration_queue_incident_hooks
+                WHERE project_id = ANY(%s)
+                """,
+                (targets,),
+            )
+            hook_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT id::text, project_id, enabled, provider_override
+                FROM gatekeeper_calibration_queue_incident_policies
+                WHERE project_id = ANY(%s)
+                """,
+                (targets,),
+            )
+            policy_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                  project_id,
+                  scope,
+                  scope_ref,
+                  provider,
+                  secret_key,
+                  updated_at
+                FROM gatekeeper_calibration_queue_incident_secrets
+                WHERE project_id = ANY(%s)
+                """,
+                (targets,),
+            )
+            secret_rows = cur.fetchall()
+
+    for row in incident_rows:
+        project_id = str(row[1] or "").strip()
+        if not project_id:
+            continue
+        incidents_by_project.setdefault(project_id, []).append(
+            {
+                "id": str(row[0] or ""),
+                "status": str(row[2] or ""),
+                "opened_at": row[3] if isinstance(row[3], datetime) else None,
+                "resolved_at": row[4] if isinstance(row[4], datetime) else None,
+                "last_sync_at": row[5] if isinstance(row[5], datetime) else None,
+                "open_payload": row[6] if isinstance(row[6], dict) else {},
+            }
+        )
+    for row in hook_rows:
+        project_id = str(row[0] or "").strip()
+        if not project_id:
+            continue
+        hooks_by_project[project_id] = {
+            "enabled": bool(row[1]),
+            "provider": _normalize_operation_queue_incident_provider(row[2]),
+        }
+    for row in policy_rows:
+        project_id = str(row[1] or "").strip()
+        if not project_id:
+            continue
+        policies_by_project.setdefault(project_id, []).append(
+            {
+                "id": str(row[0] or ""),
+                "enabled": bool(row[2]),
+                "provider_override": _normalize_operation_queue_incident_provider(row[3]),
+            }
+        )
+    for row in secret_rows:
+        project_id = str(row[0] or "").strip()
+        scope = str(row[1] or "").strip()
+        scope_ref = str(row[2] or "").strip()
+        provider = _normalize_operation_queue_incident_provider(row[3])
+        secret_key = str(row[4] or "").strip()
+        updated_at = row[5] if isinstance(row[5], datetime) else None
+        if not project_id or not scope or not scope_ref or not provider or not secret_key or updated_at is None:
+            continue
+        project_bucket = secrets_by_project.setdefault(project_id, {})
+        project_bucket[(scope, scope_ref, provider, secret_key)] = updated_at
+
+    trend_days = max(7, min(30, incident_window_days_norm))
+    trend_start = now.date() - timedelta(days=trend_days - 1)
+    trend_buckets: dict[str, dict[str, Any]] = {}
+    for day_offset in range(trend_days):
+        day_key = (trend_start + timedelta(days=day_offset)).isoformat()
+        trend_buckets[day_key] = {
+            "day": day_key,
+            "opened_incidents": 0,
+            "resolved_incidents": 0,
+            "mtta_values": [],
+            "mttr_values": [],
+        }
+
+    global_mtta_values: list[float] = []
+    global_mttr_values: list[float] = []
+    open_incidents_total = 0
+    open_incidents_over_mttr_sla = 0
+    resolved_incidents_window_total = 0
+    rotation_lag_over_sla_total = 0
+    secret_required_total = 0
+    secret_missing_total = 0
+    secret_stale_total = 0
+    secret_posture_counts = {"healthy": 0, "watch": 0, "critical": 0}
+    slo_status_counts = {"healthy": 0, "watch": 0, "critical": 0}
+
+    rows: list[dict[str, Any]] = []
+    for item in projects:
+        if not isinstance(item, dict):
+            continue
+        project_id = str(item.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        health = str(item.get("health") or "healthy")
+        queue = item.get("queue") if isinstance(item.get("queue"), dict) else {}
+        queue_depth = int(queue.get("depth_total") or 0)
+        ownership = (
+            item.get("ownership")
+            if isinstance(item.get("ownership"), dict)
+            else _default_operation_queue_ownership(project_id=project_id)
+        )
+        owner_name = str(ownership.get("owner_name") or "").strip()
+        oncall_channel = str(ownership.get("oncall_channel") or "").strip()
+        escalation_channel = str(ownership.get("escalation_channel") or "").strip()
+        owner_contact = str(ownership.get("owner_contact") or "").strip()
+        ownership_updated_at = _parse_iso_datetime(ownership.get("updated_at"))
+        rotation_lag_hours = (
+            round(max(0.0, (now - ownership_updated_at).total_seconds() / 3600.0), 3)
+            if ownership_updated_at is not None
+            else None
+        )
+        rotation_lag_over_sla = (
+            rotation_lag_hours is not None and rotation_lag_hours >= float(rotation_lag_sla_hours_norm)
+        )
+        if rotation_lag_over_sla:
+            rotation_lag_over_sla_total += 1
+
+        project_incidents = incidents_by_project.get(project_id, [])
+        project_mtta_values: list[float] = []
+        project_mttr_values: list[float] = []
+        project_resolved_count_window = 0
+        latest_resolved_at: datetime | None = None
+        latest_resolved_mttr_minutes: float | None = None
+        for incident_row in project_incidents:
+            opened_at = incident_row.get("opened_at")
+            if not isinstance(opened_at, datetime):
+                continue
+            mtta_proxy_ts = _incident_mtta_proxy_timestamp(
+                opened_at=opened_at,
+                last_sync_at=incident_row.get("last_sync_at")
+                if isinstance(incident_row.get("last_sync_at"), datetime)
+                else None,
+                open_payload=incident_row.get("open_payload")
+                if isinstance(incident_row.get("open_payload"), dict)
+                else {},
+            )
+            mtta_minutes = None
+            if mtta_proxy_ts is not None and opened_at >= incident_since:
+                mtta_minutes = round(max(0.0, (mtta_proxy_ts - opened_at).total_seconds() / 60.0), 3)
+                project_mtta_values.append(float(mtta_minutes))
+                global_mtta_values.append(float(mtta_minutes))
+
+            opened_day = opened_at.date().isoformat()
+            trend_bucket = trend_buckets.get(opened_day)
+            if trend_bucket is not None:
+                trend_bucket["opened_incidents"] += 1
+                if mtta_minutes is not None:
+                    trend_bucket["mtta_values"].append(float(mtta_minutes))
+
+            resolved_at = incident_row.get("resolved_at")
+            if not isinstance(resolved_at, datetime) or resolved_at < incident_since:
+                continue
+            mttr_minutes = round(max(0.0, (resolved_at - opened_at).total_seconds() / 60.0), 3)
+            project_mttr_values.append(float(mttr_minutes))
+            global_mttr_values.append(float(mttr_minutes))
+            project_resolved_count_window += 1
+            resolved_incidents_window_total += 1
+            if latest_resolved_at is None or resolved_at > latest_resolved_at:
+                latest_resolved_at = resolved_at
+                latest_resolved_mttr_minutes = float(mttr_minutes)
+            resolved_day = resolved_at.date().isoformat()
+            resolved_bucket = trend_buckets.get(resolved_day)
+            if resolved_bucket is not None:
+                resolved_bucket["resolved_incidents"] += 1
+                resolved_bucket["mttr_values"].append(float(mttr_minutes))
+
+        project_mtta_stats = _latency_stats(project_mtta_values)
+        project_mttr_stats = _latency_stats(project_mttr_values)
+
+        open_incident = item.get("incident") if isinstance(item.get("incident"), dict) else None
+        open_incident_active = (
+            open_incident is not None
+            and str(open_incident.get("status") or "") == "open"
+            and open_incident.get("resolved_at") in {None, ""}
+        )
+        open_incident_age_minutes = None
+        open_mtta_proxy_minutes = None
+        if open_incident_active:
+            open_incidents_total += 1
+            opened_at = _parse_iso_datetime(open_incident.get("opened_at"))
+            if opened_at is not None:
+                open_incident_age_minutes = round(max(0.0, (now - opened_at).total_seconds() / 60.0), 3)
+            open_proxy_ts = _incident_mtta_proxy_timestamp(
+                opened_at=opened_at,
+                last_sync_at=_parse_iso_datetime(open_incident.get("last_sync_at")),
+                open_payload=open_incident.get("open_payload")
+                if isinstance(open_incident.get("open_payload"), dict)
+                else {},
+            )
+            if opened_at is not None and open_proxy_ts is not None:
+                open_mtta_proxy_minutes = round(max(0.0, (open_proxy_ts - opened_at).total_seconds() / 60.0), 3)
+
+        mttr_over_sla = False
+        if open_incident_age_minutes is not None and open_incident_age_minutes >= mttr_sla_minutes:
+            mttr_over_sla = True
+            open_incidents_over_mttr_sla += 1
+        elif project_mttr_stats.get("p90") is not None and float(project_mttr_stats["p90"]) >= mttr_sla_minutes:
+            mttr_over_sla = True
+        mtta_slo_value = (
+            float(open_mtta_proxy_minutes)
+            if open_mtta_proxy_minutes is not None
+            else (float(project_mtta_stats["p90"]) if project_mtta_stats.get("p90") is not None else None)
+        )
+        mtta_over_sla = mtta_slo_value is not None and mtta_slo_value >= float(mtta_proxy_sla_minutes_norm)
+
+        required_secret_refs: set[tuple[str, str, str, str]] = set()
+        hook_meta = hooks_by_project.get(project_id) or {}
+        if bool(hook_meta.get("enabled")):
+            hook_provider = _normalize_operation_queue_incident_provider(hook_meta.get("provider"))
+            for secret_key in _incident_provider_secret_keys(hook_provider):
+                required_secret_refs.add(("hook", project_id, hook_provider, secret_key))
+        for policy_meta in policies_by_project.get(project_id, []):
+            if not isinstance(policy_meta, dict) or not bool(policy_meta.get("enabled")):
+                continue
+            policy_provider = _normalize_operation_queue_incident_provider(policy_meta.get("provider_override"))
+            policy_id = str(policy_meta.get("id") or "").strip()
+            if not policy_id:
+                continue
+            for secret_key in _incident_provider_secret_keys(policy_provider):
+                required_secret_refs.add(("policy", policy_id, policy_provider, secret_key))
+
+        secret_required_total += len(required_secret_refs)
+        project_secret_map = secrets_by_project.get(project_id, {})
+        secret_configured = 0
+        secret_missing_required = 0
+        secret_stale_required = 0
+        secret_oldest_age_hours = None
+        stale_secret_keys: list[dict[str, Any]] = []
+        for scope, scope_ref, provider, secret_key in sorted(required_secret_refs):
+            updated_at = project_secret_map.get((scope, scope_ref, provider, secret_key))
+            if updated_at is None:
+                secret_missing_required += 1
+                continue
+            secret_configured += 1
+            age_hours = round(max(0.0, (now - updated_at).total_seconds() / 3600.0), 3)
+            if secret_oldest_age_hours is None or age_hours > secret_oldest_age_hours:
+                secret_oldest_age_hours = age_hours
+            if age_hours >= secret_max_age_hours:
+                secret_stale_required += 1
+                stale_secret_keys.append(
+                    {
+                        "scope": scope,
+                        "scope_ref": scope_ref,
+                        "provider": provider,
+                        "secret_key": secret_key,
+                        "age_hours": age_hours,
+                    }
+                )
+        secret_missing_total += secret_missing_required
+        secret_stale_total += secret_stale_required
+        if secret_missing_required > 0:
+            secret_posture = "critical"
+        elif secret_stale_required > 0:
+            secret_posture = "watch"
+        else:
+            secret_posture = "healthy"
+        secret_posture_counts[secret_posture] += 1
+
+        risk_score = 0
+        if health == "critical":
+            risk_score += 3
+        elif health == "watch":
+            risk_score += 1
+        if queue_depth >= 20:
+            risk_score += 2
+        elif queue_depth > 0:
+            risk_score += 1
+        if mttr_over_sla:
+            risk_score += 3
+        if mtta_over_sla:
+            risk_score += 1
+        if rotation_lag_over_sla:
+            risk_score += 1
+        if not owner_name:
+            risk_score += 1
+        if not oncall_channel:
+            risk_score += 1
+        if not escalation_channel:
+            risk_score += 1
+        risk_score += secret_missing_required * 2
+        risk_score += secret_stale_required
+
+        if risk_score >= 8:
+            slo_status = "critical"
+        elif risk_score >= 4:
+            slo_status = "watch"
+        else:
+            slo_status = "healthy"
+        slo_status_counts[slo_status] += 1
+
+        rows.append(
+            {
+                "project_id": project_id,
+                "health": health,
+                "queue_depth": queue_depth,
+                "slo_status": slo_status,
+                "risk_score": int(risk_score),
+                "incident": {
+                    "open": bool(open_incident_active),
+                    "external_provider": (
+                        str(open_incident.get("external_provider") or "")
+                        if isinstance(open_incident, dict)
+                        else ""
+                    ),
+                    "open_age_minutes": open_incident_age_minutes,
+                    "mtta_proxy_minutes": open_mtta_proxy_minutes,
+                    "mtta_proxy_p90_minutes": project_mtta_stats.get("p90"),
+                    "mttr_last_minutes": latest_resolved_mttr_minutes,
+                    "mttr_p90_minutes": project_mttr_stats.get("p90"),
+                    "resolved_incidents_window": int(project_resolved_count_window),
+                },
+                "ownership": {
+                    "owner_name": owner_name or None,
+                    "owner_contact": owner_contact or None,
+                    "oncall_channel": oncall_channel or None,
+                    "escalation_channel": escalation_channel or None,
+                    "updated_at": ownership.get("updated_at"),
+                    "rotation_lag_hours": rotation_lag_hours,
+                    "rotation_lag_over_sla": bool(rotation_lag_over_sla),
+                },
+                "secrets": {
+                    "required": len(required_secret_refs),
+                    "configured": int(secret_configured),
+                    "missing_required": int(secret_missing_required),
+                    "stale_required": int(secret_stale_required),
+                    "oldest_age_hours": secret_oldest_age_hours,
+                    "posture": secret_posture,
+                    "stale_keys": stale_secret_keys[:8],
+                },
+                "slo": {
+                    "mtta_proxy_sla_minutes": int(mtta_proxy_sla_minutes_norm),
+                    "mtta_proxy_value_minutes": mtta_slo_value,
+                    "mtta_proxy_over_sla": bool(mtta_over_sla),
+                    "mttr_sla_minutes": int(mttr_sla_minutes),
+                    "mttr_value_minutes": (
+                        open_incident_age_minutes
+                        if open_incident_age_minutes is not None
+                        else project_mttr_stats.get("p90")
+                    ),
+                    "mttr_over_sla": bool(mttr_over_sla),
+                    "rotation_lag_sla_hours": int(rotation_lag_sla_hours_norm),
+                    "rotation_lag_over_sla": bool(rotation_lag_over_sla),
+                    "secret_max_age_hours": int(secret_max_age_hours),
+                    "secret_missing_required": int(secret_missing_required),
+                    "secret_stale_required": int(secret_stale_required),
+                },
+            }
+        )
+
+    health_rank = {"critical": 0, "watch": 1, "healthy": 2}
+    rows.sort(
+        key=lambda item: (
+            health_rank.get(str(item.get("slo_status") or "healthy"), 3),
+            -int(item.get("risk_score") or 0),
+            health_rank.get(str(item.get("health") or "healthy"), 3),
+            -float(((item.get("incident") or {}).get("open_age_minutes") or 0.0)),
+            -int(item.get("queue_depth") or 0),
+            str(item.get("project_id") or ""),
+        )
+    )
+
+    trends: list[dict[str, Any]] = []
+    for day_key in sorted(trend_buckets.keys()):
+        bucket = trend_buckets[day_key]
+        mtta_stats = _latency_stats([float(value) for value in bucket["mtta_values"]])
+        mttr_stats = _latency_stats([float(value) for value in bucket["mttr_values"]])
+        trends.append(
+            {
+                "day": day_key,
+                "opened_incidents": int(bucket["opened_incidents"]),
+                "resolved_incidents": int(bucket["resolved_incidents"]),
+                "mtta_proxy_minutes_avg": mtta_stats.get("avg"),
+                "mtta_proxy_minutes_p90": mtta_stats.get("p90"),
+                "mttr_minutes_avg": mttr_stats.get("avg"),
+                "mttr_minutes_p90": mttr_stats.get("p90"),
+            }
+        )
+
+    summary = {
+        "projects_total": len(rows),
+        "open_incidents": int(open_incidents_total),
+        "open_incidents_over_mttr_sla": int(open_incidents_over_mttr_sla),
+        "resolved_incidents_window": int(resolved_incidents_window_total),
+        "mtta_proxy_minutes": _latency_stats(global_mtta_values),
+        "mttr_minutes": _latency_stats(global_mttr_values),
+        "projects_mtta_over_sla": sum(
+            1 for item in rows if bool(((item.get("slo") or {}).get("mtta_proxy_over_sla")))
+        ),
+        "projects_mttr_over_sla": sum(
+            1 for item in rows if bool(((item.get("slo") or {}).get("mttr_over_sla")))
+        ),
+        "rotation_lag_projects_over_sla": int(rotation_lag_over_sla_total),
+        "secret_required_total": int(secret_required_total),
+        "secret_missing_required": int(secret_missing_total),
+        "secret_stale_required": int(secret_stale_total),
+        "secret_posture": secret_posture_counts,
+        "slo_status": slo_status_counts,
+    }
+    return {
+        "window_hours": int(window_hours_norm),
+        "incident_window_days": int(incident_window_days_norm),
+        "mttr_sla_hours": int(mttr_sla_hours_norm),
+        "mtta_proxy_sla_minutes": int(mtta_proxy_sla_minutes_norm),
+        "rotation_lag_sla_hours": int(rotation_lag_sla_hours_norm),
+        "secret_max_age_days": int(secret_max_age_days_norm),
+        "requested_projects": requested or [],
+        "generated_at": now.isoformat(),
+        "summary": summary,
+        "trends": trends,
+        "leaderboard": rows[:top_n_norm],
+        "projects": rows,
+    }
+
+
+def _serialize_operation_run_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "project_id": row[1],
+        "operation_token": row[2],
+        "requested_by": row[3],
+        "dry_run": bool(row[4]),
+        "status": row[5],
+        "mode": row[6],
+        "progress_percent": float(row[7] or 0.0),
+        "progress_phase": row[8],
+        "attempt_no": int(row[9] or 1),
+        "max_attempts": int(row[10] or 1),
+        "retry_of": row[11],
+        "cancel_requested": bool(row[12]),
+        "cancel_requested_by": row[13],
+        "cancel_requested_at": None if row[14] is None else row[14].isoformat(),
+        "started_at": None if row[15] is None else row[15].isoformat(),
+        "finished_at": None if row[16] is None else row[16].isoformat(),
+        "heartbeat_at": None if row[17] is None else row[17].isoformat(),
+        "worker_id": row[18],
+        "error_message": row[19],
+        "request_payload": row[20] if isinstance(row[20], dict) else {},
+        "result_payload": row[21] if isinstance(row[21], dict) else {},
+        "created_at": row[22].isoformat(),
+        "updated_at": row[23].isoformat(),
+        "events_count": int(row[24] or 0),
+        "last_event_id": int(row[25] or 0) if row[25] is not None else None,
+    }
+
+
+def _fetch_operation_run(*, run_id: UUID, project_id: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  r.id::text,
+                  r.project_id,
+                  r.operation_token,
+                  r.requested_by,
+                  r.dry_run,
+                  r.status,
+                  r.mode,
+                  r.progress_percent,
+                  r.progress_phase,
+                  r.attempt_no,
+                  r.max_attempts,
+                  r.retry_of::text,
+                  r.cancel_requested,
+                  r.cancel_requested_by,
+                  r.cancel_requested_at,
+                  r.started_at,
+                  r.finished_at,
+                  r.heartbeat_at,
+                  r.worker_id,
+                  r.error_message,
+                  r.request_payload,
+                  r.result_payload,
+                  r.created_at,
+                  r.updated_at,
+                  COALESCE(ev.events_count, 0) AS events_count,
+                  ev.last_event_id
+                FROM gatekeeper_calibration_operation_runs r
+                LEFT JOIN LATERAL (
+                  SELECT COUNT(*)::int AS events_count, MAX(id)::bigint AS last_event_id
+                  FROM gatekeeper_calibration_operation_events
+                  WHERE operation_run_id = r.id
+                ) ev ON TRUE
+                WHERE r.id = %s
+                  AND r.project_id = %s
+                LIMIT 1
+                """,
+                (run_id, project_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return _serialize_operation_run_row(row)
+
+
+def _fetch_operation_run_by_token(*, project_id: str, operation_token: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM gatekeeper_calibration_operation_runs
+                WHERE project_id = %s
+                  AND operation_token = %s
+                LIMIT 1
+                """,
+                (project_id, operation_token),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return _fetch_operation_run(run_id=row[0], project_id=project_id)
+
+
+def _fetch_operation_events(
+    *,
+    run_id: UUID,
+    after_event_id: int = 0,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id,
+                  operation_run_id::text,
+                  project_id,
+                  event_type,
+                  phase,
+                  message,
+                  progress_percent,
+                  payload,
+                  created_at
+                FROM gatekeeper_calibration_operation_events
+                WHERE operation_run_id = %s
+                  AND id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (run_id, max(0, int(after_event_id)), max(1, min(1000, int(limit)))),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": int(row[0]),
+            "operation_run_id": row[1],
+            "project_id": row[2],
+            "event_type": row[3],
+            "phase": row[4],
+            "message": row[5],
+            "progress_percent": None if row[6] is None else float(row[6]),
+            "payload": row[7] if isinstance(row[7], dict) else {},
+            "created_at": row[8].isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def _normalize_operation_token(*, project_id: str, dry_run: bool, raw_token: str | None) -> str:
+    token = (raw_token or "").strip()
+    if token:
+        return token
+    if not dry_run:
+        raise HTTPException(status_code=422, detail="calibration_operation_token_required")
+    return f"dryrun-{project_id}-{uuid4().hex[:16]}"
+
+
+def _run_gatekeeper_calibration_scheduler(
+    *,
+    project_id: str,
+    api_url: str | None,
+    database_url: str | None,
+    dry_run: bool,
+    force_run: bool,
+    skip_due_check: bool,
+    fail_on_alert: bool,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    schedules = _load_enabled_gatekeeper_schedules(project_id)
+    if not schedules:
+        raise HTTPException(status_code=404, detail="calibration_schedule_not_found")
+
+    root = Path(__file__).resolve().parents[3]
+    script_path = root / "scripts" / "run_gatekeeper_calibration_scheduler.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=500, detail="calibration_scheduler_script_not_found")
+
+    resolved_api_url = str(api_url or os.getenv("SYNAPSE_API_URL") or "http://127.0.0.1:8080").strip()
+    resolved_database_url = str(
+        database_url or os.getenv("DATABASE_URL") or "postgresql://synapse:synapse@localhost:55432/synapse"
+    ).strip()
+    schedules_payload = {"schedules": schedules}
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--schedules-json",
+        json.dumps(schedules_payload, ensure_ascii=False),
+        "--project-id",
+        project_id,
+        "--api-url",
+        resolved_api_url,
+        "--database-url",
+        resolved_database_url,
+    ]
+    if dry_run:
+        cmd.append("--dry-run")
+    if force_run:
+        cmd.append("--force-run")
+    if skip_due_check:
+        cmd.append("--skip-due-check")
+    if fail_on_alert:
+        cmd.append("--fail-on-alert")
+
+    started = datetime.now(UTC)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=max(30, int(timeout_sec)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"calibration_scheduler_timeout:{max(30, int(timeout_sec))}s",
+        ) from exc
+    duration_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
+
+    stdout = proc.stdout or ""
+    stderr = (proc.stderr or "").strip()
+    payload = _extract_json_payload(stdout)
+    status_value = str(payload.get("status") or "")
+    allowed_nonzero = proc.returncode != 0 and status_value in {"partial_failure", "alert"}
+    if proc.returncode != 0 and not allowed_nonzero:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "calibration_scheduler_failed",
+                "returncode": proc.returncode,
+                "stderr_tail": stderr[-2000:] if stderr else None,
+                "stdout_tail": stdout[-2000:] if stdout else None,
+            },
+        )
+
+    return {
+        "project_id": project_id,
+        "dry_run": bool(dry_run),
+        "force_run": bool(force_run),
+        "skip_due_check": bool(skip_due_check),
+        "command_preview": _build_scheduler_command_preview(
+            project_id=project_id,
+            api_url=resolved_api_url,
+            dry_run=dry_run,
+            force_run=force_run,
+            skip_due_check=skip_due_check,
+        ),
+        "process": {
+            "returncode": int(proc.returncode),
+            "duration_ms": duration_ms,
+            "stderr_tail": stderr[-2000:] if stderr else None,
+        },
+        "summary": payload if isinstance(payload, dict) else {},
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+app = FastAPI(title="Synapse API", version="0.1.0")
+
+_cors_origins_raw = os.getenv("SYNAPSE_UI_ORIGINS", "*").strip()
+if _cors_origins_raw == "*":
+    _cors_origins = ["*"]
+else:
+    _cors_origins = [item.strip() for item in _cors_origins_raw.split(",") if item.strip()]
+    if not _cors_origins:
+        _cors_origins = ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=[
+        "X-Synapse-Retrieval-Graph-Max-Hops",
+        "X-Synapse-Retrieval-Graph-Boost-Hop1",
+        "X-Synapse-Retrieval-Graph-Boost-Hop2",
+        "X-Synapse-Retrieval-Graph-Boost-Hop3",
+        "X-Synapse-Retrieval-Graph-Boost-Other",
+        "X-Synapse-Retrieval-Context-Policy-Mode",
+        "X-Synapse-Retrieval-Context-Min-Confidence",
+        "X-Synapse-Retrieval-Context-Min-Total-Score",
+        "X-Synapse-Retrieval-Context-Min-Lexical-Score",
+        "X-Synapse-Retrieval-Context-Min-Token-Overlap-Ratio",
+    ],
+)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+    except Exception:
+        return {"status": "degraded"}
+    return {"status": "ok"}
+
+
+@app.post("/v1/openclaw/provenance/verify")
+def verify_openclaw_provenance(payload: OpenClawProvenanceVerifyRequest) -> dict[str, Any]:
+    result = _verify_openclaw_provenance_payload(
+        provenance=payload.provenance,
+        payload=payload.payload,
+    )
+    return {
+        "status": "ok",
+        "verification": result,
+    }
+
+
+@app.post("/v1/events", response_model=None)
+def ingest_events(
+    batch: EventBatch,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    inserted = 0
+    response: dict[str, int]
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/events",
+            idempotency_key=idempotency_key,
+            request_payload=batch.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                for event in batch.events:
+                    payload = dict(event.payload)
+                    if event.trace_id or event.span_id or event.parent_span_id:
+                        synapse_meta = payload.get("_synapse")
+                        synapse_meta_dict = dict(synapse_meta) if isinstance(synapse_meta, dict) else {}
+                        if event.trace_id:
+                            synapse_meta_dict["trace_id"] = event.trace_id
+                        if event.span_id:
+                            synapse_meta_dict["span_id"] = event.span_id
+                        if event.parent_span_id:
+                            synapse_meta_dict["parent_span_id"] = event.parent_span_id
+                        payload["_synapse"] = synapse_meta_dict
+                    if event.tags:
+                        payload["_tags"] = event.tags
+                    if idempotency_key:
+                        payload["_idempotency_key"] = idempotency_key
+
+                    cur.execute(
+                        """
+                        INSERT INTO events (
+                          id, project_id, agent_id, session_id, event_type, payload, observed_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (
+                            event.id,
+                            event.project_id,
+                            event.agent_id,
+                            event.session_id,
+                            event.event_type,
+                            Jsonb(payload),
+                            event.observed_at,
+                        ),
+                    )
+                    inserted += cur.rowcount
+                response = {"accepted": len(batch.events), "inserted": inserted, "deduplicated": len(batch.events) - inserted}
+                mark_request_completed(
+                    conn,
+                    endpoint="/v1/events",
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint="/v1/events",
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+    return response
+
+
+@app.post("/v1/facts/proposals", response_model=None)
+def propose_fact(
+    payload: ClaimProposal,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    response = {"status": "queued"}
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/facts/proposals",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO claim_proposals (claim_id, project_id, claim_payload, status)
+                    VALUES (%s, %s, %s, 'queued')
+                    ON CONFLICT (claim_id) DO UPDATE
+                    SET claim_payload = EXCLUDED.claim_payload,
+                        status = 'queued',
+                        updated_at = NOW()
+                    """,
+                    (
+                        payload.claim.id,
+                        payload.claim.project_id,
+                        Jsonb(payload.claim.model_dump(mode="json")),
+                    ),
+                )
+                mark_request_completed(
+                    conn,
+                    endpoint="/v1/facts/proposals",
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint="/v1/facts/proposals",
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+    return response
+
+
+@app.post("/v1/backfill/memory", response_model=None)
+def ingest_memory_backfill(
+    payload: MemoryBackfillRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    batch = payload.batch
+    batch_id = batch.batch_id or uuid4()
+    inserted = 0
+    accepted = len(batch.records)
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/backfill/memory",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO memory_backfill_batches (
+                      id, project_id, source_system, agent_id, session_id, status, cursor, created_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, 'collecting', %s, %s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET source_system = EXCLUDED.source_system,
+                        agent_id = COALESCE(EXCLUDED.agent_id, memory_backfill_batches.agent_id),
+                        session_id = COALESCE(EXCLUDED.session_id, memory_backfill_batches.session_id),
+                        cursor = COALESCE(EXCLUDED.cursor, memory_backfill_batches.cursor),
+                        created_by = COALESCE(EXCLUDED.created_by, memory_backfill_batches.created_by),
+                        updated_at = NOW()
+                    RETURNING project_id, status
+                    """,
+                    (
+                        batch_id,
+                        batch.project_id,
+                        batch.source_system,
+                        batch.agent_id,
+                        batch.session_id,
+                        batch.cursor,
+                        batch.created_by,
+                    ),
+                )
+                existing_project_id, existing_status = cur.fetchone()
+                if existing_project_id != batch.project_id:
+                    response = {"error": "batch_id_project_mismatch"}
+                    mark_request_failed(
+                        conn,
+                        endpoint="/v1/backfill/memory",
+                        idempotency_key=idempotency_key,
+                        error_message="batch_id_project_mismatch",
+                    )
+                    return JSONResponse(status_code=409, content=response)
+                if existing_status == "completed":
+                    response = {
+                        "batch_id": str(batch_id),
+                        "status": "completed",
+                        "accepted": accepted,
+                        "inserted": 0,
+                        "deduplicated": accepted,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint="/v1/backfill/memory",
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+
+                for record in batch.records:
+                    event_payload = {
+                        "source_id": record.source_id,
+                        "content": record.content,
+                        "valid_from": record.valid_from.isoformat() if record.valid_from else None,
+                        "valid_to": record.valid_to.isoformat() if record.valid_to else None,
+                        "entity_key": record.entity_key,
+                        "category": record.category,
+                        "metadata": record.metadata or {},
+                        "_tags": record.tags or [],
+                        "backfill": {
+                            "batch_id": str(batch_id),
+                            "source_system": batch.source_system,
+                            "cursor": batch.cursor,
+                            "ingested_at": datetime.now(UTC).isoformat(),
+                        },
+                    }
+                    if idempotency_key:
+                        event_payload["_idempotency_key"] = idempotency_key
+
+                    cur.execute(
+                        """
+                        INSERT INTO events (
+                          id, project_id, agent_id, session_id, event_type, payload, observed_at
+                        )
+                        VALUES (%s, %s, %s, %s, 'memory_backfill', %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (
+                            _backfill_event_id(batch_id, record.source_id),
+                            batch.project_id,
+                            batch.agent_id,
+                            batch.session_id,
+                            Jsonb(event_payload),
+                            record.observed_at or datetime.now(UTC),
+                        ),
+                    )
+                    inserted += cur.rowcount
+
+                next_status = "ready" if batch.finalize else "collecting"
+                cur.execute(
+                    """
+                    UPDATE memory_backfill_batches
+                    SET total_items = total_items + %s,
+                        inserted_events = inserted_events + %s,
+                        status = CASE
+                          WHEN status = 'completed' THEN status
+                          WHEN %s THEN 'ready'
+                          ELSE 'collecting'
+                        END,
+                        cursor = COALESCE(%s, cursor),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING total_items, inserted_events, status
+                    """,
+                    (inserted, inserted, batch.finalize, batch.cursor, batch_id),
+                )
+                total_items, inserted_events, saved_status = cur.fetchone()
+                response = {
+                    "batch_id": str(batch_id),
+                    "status": saved_status,
+                    "accepted": accepted,
+                    "inserted": inserted,
+                    "deduplicated": accepted - inserted,
+                    "total_items": int(total_items),
+                    "inserted_events": int(inserted_events),
+                    "next_action": "run_worker" if next_status == "ready" else "continue_upload",
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint="/v1/backfill/memory",
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint="/v1/backfill/memory",
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/backfill/batches/{batch_id}")
+def get_memory_backfill_batch(batch_id: UUID, project_id: str) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  source_system,
+                  agent_id,
+                  session_id,
+                  status,
+                  total_items,
+                  inserted_events,
+                  processed_events,
+                  generated_claims,
+                  cursor,
+                  created_by,
+                  created_at,
+                  updated_at
+                FROM memory_backfill_batches
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (batch_id, project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return JSONResponse(status_code=404, content={"error": "backfill_batch_not_found"})
+    return {
+        "batch": {
+            "id": row[0],
+            "project_id": row[1],
+            "source_system": row[2],
+            "agent_id": row[3],
+            "session_id": row[4],
+            "status": row[5],
+            "total_items": int(row[6]),
+            "inserted_events": int(row[7]),
+            "processed_events": int(row[8]),
+            "generated_claims": int(row[9]),
+            "cursor": row[10],
+            "created_by": row[11],
+            "created_at": row[12].isoformat(),
+            "updated_at": row[13].isoformat(),
+        }
+    }
+
+
+@app.post("/v1/wiki/pages", response_model=None)
+def create_wiki_page(
+    payload: WikiPageCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/wiki/pages"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                title = payload.title.strip()
+                slug = _normalize_wiki_slug(payload.slug, title)
+                entity_key = (payload.entity_key or "").strip() or slug
+                page_type = re.sub(r"[^a-z0-9_/-]+", "_", payload.page_type.strip().lower() or "operations").strip("_")
+                if not page_type:
+                    page_type = "operations"
+                markdown = (payload.initial_markdown or "").strip()
+                if not markdown:
+                    markdown = f"# {title}\n\n## Overview\n- Add first approved fact.\n"
+                elif not markdown.endswith("\n"):
+                    markdown = f"{markdown}\n"
+                status = payload.status
+                change_summary = (
+                    payload.change_summary.strip() if isinstance(payload.change_summary, str) and payload.change_summary.strip() else None
+                ) or f"Page created by {payload.created_by}"
+
+                cur.execute(
+                    """
+                    SELECT id::text, title, slug, entity_key, page_type, status, current_version
+                    FROM wiki_pages
+                    WHERE project_id = %s
+                      AND slug = %s
+                    LIMIT 1
+                    """,
+                    (payload.project_id, slug),
+                )
+                existing = cur.fetchone()
+                if existing is not None:
+                    existing_payload = {
+                        "id": existing[0],
+                        "title": existing[1],
+                        "slug": existing[2],
+                        "entity_key": existing[3],
+                        "page_type": existing[4],
+                        "status": existing[5],
+                        "current_version": int(existing[6]),
+                    }
+                    if payload.allow_existing:
+                        response = {"status": "existing", "page": existing_payload}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+                    response = {
+                        "error": "page_slug_exists",
+                        "existing_page": existing_payload,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=409,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=409, content=response)
+
+                page_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO wiki_pages (
+                      id, project_id, page_type, title, slug, entity_key, status, current_version, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s)
+                    """,
+                    (
+                        page_id,
+                        payload.project_id,
+                        page_type,
+                        title,
+                        slug,
+                        entity_key,
+                        status,
+                        Jsonb({"source": "guided_builder", "created_by": payload.created_by}),
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO wiki_page_versions (
+                      id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                    )
+                    VALUES (%s, %s, 1, %s, %s, 'human', %s, %s)
+                    """,
+                    (uuid4(), page_id, markdown, Jsonb([]), payload.created_by, change_summary),
+                )
+
+                sections = _extract_sections_from_markdown(markdown)
+                inserted_statement_ids: list[str] = []
+                for index, section in enumerate(sections):
+                    section_key = str(section.get("section_key") or f"section_{index + 1}")
+                    heading = str(section.get("heading") or _section_heading_from_key(section_key))
+                    statements = section.get("statements") or []
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (page_id, section_key) DO UPDATE
+                        SET heading = EXCLUDED.heading,
+                            order_index = EXCLUDED.order_index,
+                            statement_count = EXCLUDED.statement_count
+                        """,
+                        (
+                            page_id,
+                            section_key,
+                            heading,
+                            index,
+                            len(statements),
+                        ),
+                    )
+                    for statement_text in statements:
+                        statement = str(statement_text).strip()
+                        if not statement:
+                            continue
+                        statement_id = uuid4()
+                        fingerprint = _compute_claim_fingerprint(payload.project_id, entity_key, page_type, statement)
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_statements (
+                              id, project_id, page_id, section_key, statement_text, normalized_text,
+                              claim_fingerprint, status, metadata, valid_from
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                            """,
+                            (
+                                statement_id,
+                                payload.project_id,
+                                page_id,
+                                section_key,
+                                statement,
+                                _normalize_statement_text(statement),
+                                fingerprint,
+                                Jsonb({"source": "manual_page_create", "created_by": payload.created_by}),
+                            ),
+                        )
+                        inserted_statement_ids.append(str(statement_id))
+
+                snapshot_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (snapshot_id, payload.project_id, payload.created_by, change_summary),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                    VALUES (%s, %s, 1)
+                    """,
+                    (snapshot_id, page_id),
+                )
+                response = {
+                    "status": "created",
+                    "page": {
+                        "id": str(page_id),
+                        "title": title,
+                        "slug": slug,
+                        "entity_key": entity_key,
+                        "page_type": page_type,
+                        "status": status,
+                        "current_version": 1,
+                    },
+                    "latest_version": {
+                        "version": 1,
+                        "markdown": markdown,
+                        "source": "human",
+                        "created_by": payload.created_by,
+                    },
+                    "snapshot_id": str(snapshot_id),
+                    "inserted_statements": len(inserted_statement_ids),
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/wiki/pages/search")
+def search_wiki_pages(
+    project_id: str,
+    q: str = Query(min_length=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    needle = q.strip().lower()
+    like = f"%{needle}%"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  p.id::text,
+                  p.title,
+                  p.slug,
+                  p.entity_key,
+                  p.page_type,
+                  p.status,
+                  CASE
+                    WHEN lower(p.entity_key) = %s THEN 1.00
+                    WHEN lower(p.slug) = %s THEN 0.95
+                    WHEN lower(p.title) LIKE %s THEN 0.85
+                    WHEN EXISTS (
+                      SELECT 1
+                      FROM wiki_page_aliases a
+                      WHERE a.page_id = p.id
+                        AND lower(a.alias_text) LIKE %s
+                    ) THEN 0.80
+                    ELSE 0.40
+                  END AS score
+                FROM wiki_pages p
+                WHERE p.project_id = %s
+                  AND (
+                    lower(p.entity_key) = %s
+                    OR lower(p.slug) = %s
+                    OR lower(p.title) LIKE %s
+                    OR EXISTS (
+                      SELECT 1
+                      FROM wiki_page_aliases a
+                      WHERE a.page_id = p.id
+                        AND lower(a.alias_text) LIKE %s
+                    )
+                  )
+                ORDER BY score DESC, p.updated_at DESC
+                LIMIT %s
+                """,
+                (needle, needle, like, like, project_id, needle, needle, like, like, limit),
+            )
+            rows = cur.fetchall()
+    results = [
+        {
+            "id": row[0],
+            "title": row[1],
+            "slug": row[2],
+            "entity_key": row[3],
+            "page_type": row[4],
+            "status": row[5],
+            "score": float(row[6]),
+        }
+        for row in rows
+    ]
+    return {"results": results}
+
+
+@app.get("/v1/mcp/retrieval/explain")
+def explain_mcp_retrieval(
+    response: Response,
+    project_id: str,
+    q: str = Query(min_length=1),
+    limit: int = Query(default=10, ge=1, le=100),
+    entity_key: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    page_type: str | None = Query(default=None),
+    related_entity_key: str | None = Query(default=None),
+    context_policy_mode: str | None = Query(default=None),
+    min_retrieval_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
+    min_total_score: float | None = Query(default=None, ge=0.0, le=2.0),
+    min_lexical_score: float | None = Query(default=None, ge=0.0, le=2.0),
+    min_token_overlap_ratio: float | None = Query(default=None, ge=0.0, le=1.0),
+) -> dict[str, Any]:
+    normalized_query = q.strip()
+    normalized_limit = normalize_limit_value(limit, default=10, minimum=1, maximum=100)
+    normalized_related = clean_optional_filter(related_entity_key)
+    entity_filter = clean_optional_filter(entity_key)
+    category_filter = clean_optional_filter(category)
+    page_type_filter = clean_optional_filter(page_type)
+    graph_config = load_graph_config_from_env()
+    graph_config_payload = serialize_graph_config(graph_config)
+    context_policy = resolve_context_policy_config(
+        base=load_context_policy_config_from_env(),
+        mode=context_policy_mode,
+        min_confidence=min_retrieval_confidence,
+        min_total_score=min_total_score,
+        min_lexical_score=min_lexical_score,
+        min_token_overlap_ratio=min_token_overlap_ratio,
+    )
+    context_policy_payload = serialize_context_policy_config(context_policy)
+    for header_key, header_value in build_graph_config_headers(graph_config).items():
+        response.headers[header_key] = header_value
+    for header_key, header_value in build_context_policy_headers(context_policy).items():
+        response.headers[header_key] = header_value
+    if not normalized_query:
+        return {
+            "project_id": project_id,
+            "query": "",
+            "source": "api_mcp_compatible_retrieval_explain",
+            "filters": {
+                "entity_key": entity_filter,
+                "category": category_filter,
+                "page_type": page_type_filter,
+                "related_entity_key": normalized_related,
+            },
+            "results": [],
+            "graph_config": graph_config_payload,
+            "context_policy": context_policy_payload,
+            "policy_filtered_out": 0,
+            "explainability": {
+                "version": "v1",
+                "query_tokens": [],
+                "related_entity_key": normalized_related,
+                "context_policy": context_policy_payload,
+            },
+        }
+    plan = build_retrieval_search_plan(
+        project_id=project_id,
+        query=normalized_query,
+        limit=normalized_limit,
+        entity_key=entity_filter,
+        category=category_filter,
+        page_type=page_type_filter,
+        related_entity_key=normalized_related,
+        graph_config=graph_config,
+    )
+    if plan is None:
+        return {
+            "project_id": project_id,
+            "query": "",
+            "source": "api_mcp_compatible_retrieval_explain",
+            "filters": {
+                "entity_key": entity_filter,
+                "category": category_filter,
+                "page_type": page_type_filter,
+                "related_entity_key": normalized_related,
+            },
+            "results": [],
+            "graph_config": graph_config_payload,
+            "context_policy": context_policy_payload,
+            "policy_filtered_out": 0,
+            "explainability": {
+                "version": "v1",
+                "query_tokens": [],
+                "related_entity_key": normalized_related,
+                "context_policy": context_policy_payload,
+            },
+        }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(plan.sql, plan.params)
+            rows = cur.fetchall()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        payload = {
+            "statement_id": row[0],
+            "statement_text": row[1],
+            "section_key": row[2],
+            "valid_from": row[3].isoformat() if row[3] is not None else None,
+            "valid_to": row[4].isoformat() if row[4] is not None else None,
+            "created_at": row[5].isoformat() if row[5] is not None else None,
+            "page": {
+                "id": row[6],
+                "title": row[7],
+                "slug": row[8],
+                "entity_key": row[9],
+                "page_type": row[10],
+            },
+            "category": row[11] or None,
+            "score": round(float(row[12]), 4),
+            "graph_hops": int(row[13]) if row[13] is not None else None,
+            "graph_boost": round(float(row[14]), 4),
+        }
+        results.append(
+            build_retrieval_explain_fields(
+                query=plan.query,
+                related_entity_key=plan.related_entity_key,
+                result=payload,
+                query_tokens_override=plan.query_tokens,
+                context_policy=context_policy,
+            )
+        )
+    filtered_out = 0
+    if normalize_context_policy_mode(context_policy.mode) == "enforced":
+        before = len(results)
+        results = [
+            row
+            for row in results
+            if isinstance(row.get("context_policy"), dict) and bool(row["context_policy"].get("eligible"))
+        ]
+        filtered_out = max(0, before - len(results))
+
+    return {
+        "project_id": project_id,
+        "query": plan.query,
+        "source": "api_mcp_compatible_retrieval_explain",
+        "filters": {
+            "entity_key": plan.entity_key,
+            "category": plan.category,
+            "page_type": plan.page_type,
+            "related_entity_key": plan.related_entity_key,
+        },
+        "results": results,
+        "graph_config": graph_config_payload,
+        "context_policy": context_policy_payload,
+        "policy_filtered_out": filtered_out,
+        "explainability": {
+            "version": "v1",
+            "query_tokens": list(plan.query_tokens),
+            "related_entity_key": plan.related_entity_key,
+            "context_policy": context_policy_payload,
+        },
+    }
+
+
+@app.get("/v1/wiki/pages/{slug}")
+def get_wiki_page(slug: str, project_id: str) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, title, entity_key, page_type, status, current_version
+                FROM wiki_pages
+                WHERE project_id = %s
+                  AND slug = %s
+                LIMIT 1
+                """,
+                (project_id, slug),
+            )
+            page = cur.fetchone()
+            if page is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+
+            cur.execute(
+                """
+                SELECT version, markdown, source, created_by, created_at
+                FROM wiki_page_versions
+                WHERE page_id = %s
+                ORDER BY version DESC
+                LIMIT 1
+                """,
+                (page[0],),
+            )
+            latest_version = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT section_key, heading, order_index, statement_count
+                FROM wiki_sections
+                WHERE page_id = %s
+                ORDER BY order_index ASC, section_key ASC
+                """,
+                (page[0],),
+            )
+            sections = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT id::text, section_key, statement_text, claim_fingerprint, valid_from, valid_to, created_at
+                FROM wiki_statements
+                WHERE page_id = %s
+                  AND status = 'active'
+                  AND (valid_from IS NULL OR valid_from <= NOW())
+                  AND (valid_to IS NULL OR valid_to >= NOW())
+                ORDER BY created_at DESC
+                LIMIT 200
+                """,
+                (page[0],),
+            )
+            statements = cur.fetchall()
+
+    return {
+        "page": {
+            "id": str(page[0]),
+            "title": page[1],
+            "slug": slug,
+            "entity_key": page[2],
+            "page_type": page[3],
+            "status": page[4],
+            "current_version": page[5],
+        },
+        "latest_version": None
+        if latest_version is None
+        else {
+            "version": latest_version[0],
+            "markdown": latest_version[1],
+            "source": latest_version[2],
+            "created_by": latest_version[3],
+            "created_at": latest_version[4].isoformat(),
+        },
+        "sections": [
+            {
+                "section_key": row[0],
+                "heading": row[1],
+                "order_index": row[2],
+                "statement_count": row[3],
+            }
+            for row in sections
+        ],
+        "statements": [
+            {
+                "id": row[0],
+                "section_key": row[1],
+                "statement_text": row[2],
+                "claim_fingerprint": row[3],
+                "valid_from": row[4].isoformat() if row[4] is not None else None,
+                "valid_to": row[5].isoformat() if row[5] is not None else None,
+                "created_at": row[6].isoformat(),
+            }
+            for row in statements
+        ],
+    }
+
+
+@app.get("/v1/wiki/pages/{slug}/history")
+def get_wiki_page_history(
+    slug: str,
+    project_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    include_markdown: bool = Query(default=True),
+) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, title, entity_key, page_type, status, current_version
+                FROM wiki_pages
+                WHERE project_id = %s
+                  AND slug = %s
+                LIMIT 1
+                """,
+                (project_id, slug),
+            )
+            page = cur.fetchone()
+            if page is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+
+            cur.execute(
+                """
+                SELECT version, markdown, source, created_by, change_summary, created_at
+                FROM wiki_page_versions
+                WHERE page_id = %s
+                ORDER BY version DESC
+                LIMIT %s
+                """,
+                (page[0], limit),
+            )
+            rows = cur.fetchall()
+
+    versions = []
+    for row in rows:
+        item = {
+            "version": int(row[0]),
+            "source": row[2],
+            "created_by": row[3],
+            "change_summary": row[4],
+            "created_at": row[5].isoformat(),
+            "markdown_length": len(str(row[1] or "")),
+        }
+        if include_markdown:
+            item["markdown"] = str(row[1] or "")
+        versions.append(item)
+
+    return {
+        "page": {
+            "id": str(page[0]),
+            "title": page[1],
+            "slug": slug,
+            "entity_key": page[2],
+            "page_type": page[3],
+            "status": page[4],
+            "current_version": int(page[5]) if page[5] is not None else None,
+        },
+        "versions": versions,
+    }
+
+
+@app.get("/v1/wiki/drafts")
+def list_wiki_drafts(
+    project_id: str,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if status is None:
+                cur.execute(
+                    """
+                    SELECT
+                      d.id::text,
+                      d.claim_id::text,
+                      d.page_id::text,
+                      d.section_key,
+                      d.decision,
+                      d.confidence,
+                      d.rationale,
+                      d.status,
+                      d.created_at,
+                      p.title,
+                      p.slug
+                    FROM wiki_draft_changes d
+                    LEFT JOIN wiki_pages p ON p.id = d.page_id
+                    WHERE d.project_id = %s
+                    ORDER BY d.created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      d.id::text,
+                      d.claim_id::text,
+                      d.page_id::text,
+                      d.section_key,
+                      d.decision,
+                      d.confidence,
+                      d.rationale,
+                      d.status,
+                      d.created_at,
+                      p.title,
+                      p.slug
+                    FROM wiki_draft_changes d
+                    LEFT JOIN wiki_pages p ON p.id = d.page_id
+                    WHERE d.project_id = %s
+                      AND d.status = %s
+                    ORDER BY d.created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, status, limit),
+                )
+            rows = cur.fetchall()
+    drafts = [
+        {
+            "id": row[0],
+            "claim_id": row[1],
+            "page_id": row[2],
+            "section_key": row[3],
+            "decision": row[4],
+            "confidence": float(row[5]),
+            "rationale": row[6],
+            "status": row[7],
+            "created_at": row[8].isoformat(),
+            "page": {"title": row[9], "slug": row[10]},
+        }
+        for row in rows
+    ]
+    return {"drafts": drafts}
+
+
+@app.get("/v1/wiki/drafts/{draft_id}")
+def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  d.id::text,
+                  d.claim_id,
+                  d.page_id,
+                  d.section_key,
+                  d.decision,
+                  d.confidence,
+                  d.rationale,
+                  d.status,
+                  d.created_at,
+                  d.updated_at,
+                  d.markdown_patch,
+                  d.semantic_diff,
+                  d.evidence,
+                  p.title,
+                  p.slug,
+                  p.page_type,
+                  p.entity_key,
+                  c.claim_text,
+                  c.category,
+                  c.entity_key,
+                  c.status,
+                  c.valid_from,
+                  c.valid_to,
+                  c.created_at
+                FROM wiki_draft_changes d
+                LEFT JOIN wiki_pages p ON p.id = d.page_id
+                LEFT JOIN claims c ON c.id = d.claim_id
+                WHERE d.id = %s
+                  AND d.project_id = %s
+                LIMIT 1
+                """,
+                (draft_id, project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return JSONResponse(status_code=404, content={"error": "draft_not_found"})
+
+            (
+                draft_id_text,
+                claim_id_value,
+                page_id_value,
+                section_key,
+                decision_value,
+                confidence_value,
+                rationale_text,
+                draft_status,
+                draft_created_at,
+                draft_updated_at,
+                markdown_patch,
+                semantic_diff,
+                evidence,
+                page_title,
+                page_slug,
+                page_type,
+                page_entity_key,
+                claim_text,
+                claim_category,
+                claim_entity_key,
+                claim_status,
+                claim_valid_from,
+                claim_valid_to,
+                claim_created_at,
+            ) = row
+
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  conflict_type,
+                  resolution_status,
+                  details,
+                  resolved_by,
+                  resolved_at,
+                  created_at
+                FROM wiki_conflicts
+                WHERE project_id = %s
+                  AND claim_id = %s
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (project_id, claim_id_value),
+            )
+            conflict_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  action_type,
+                  reviewed_by,
+                  decision_before,
+                  decision_after,
+                  draft_status_before,
+                  draft_status_after,
+                  note,
+                  reason,
+                  payload,
+                  result,
+                  created_at
+                FROM moderation_actions
+                WHERE project_id = %s
+                  AND draft_id = %s
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (project_id, draft_id),
+            )
+            action_rows = cur.fetchall()
+
+    conflicts = [
+        {
+            "id": item[0],
+            "conflict_type": item[1],
+            "resolution_status": item[2],
+            "details": item[3],
+            "resolved_by": item[4],
+            "resolved_at": item[5].isoformat() if item[5] is not None else None,
+            "created_at": item[6].isoformat(),
+        }
+        for item in conflict_rows
+    ]
+
+    moderation_actions = [
+        {
+            "id": item[0],
+            "action_type": item[1],
+            "reviewed_by": item[2],
+            "decision_before": item[3],
+            "decision_after": item[4],
+            "draft_status_before": item[5],
+            "draft_status_after": item[6],
+            "note": item[7],
+            "reason": item[8],
+            "payload": item[9],
+            "result": item[10],
+            "created_at": item[11].isoformat(),
+        }
+        for item in action_rows
+    ]
+
+    return {
+        "draft": {
+            "id": draft_id_text,
+            "claim_id": str(claim_id_value),
+            "page_id": str(page_id_value),
+            "section_key": section_key,
+            "decision": decision_value,
+            "confidence": float(confidence_value),
+            "rationale": rationale_text,
+            "status": draft_status,
+            "created_at": draft_created_at.isoformat(),
+            "updated_at": draft_updated_at.isoformat(),
+            "markdown_patch": markdown_patch,
+            "semantic_diff": semantic_diff,
+            "evidence": evidence,
+            "page": {
+                "title": page_title,
+                "slug": page_slug,
+                "page_type": page_type,
+                "entity_key": page_entity_key,
+            },
+            "claim": {
+                "claim_text": claim_text,
+                "category": claim_category,
+                "entity_key": claim_entity_key,
+                "status": claim_status,
+                "valid_from": claim_valid_from.isoformat() if claim_valid_from is not None else None,
+                "valid_to": claim_valid_to.isoformat() if claim_valid_to is not None else None,
+                "created_at": claim_created_at.isoformat() if claim_created_at is not None else None,
+            },
+        },
+        "conflicts": conflicts,
+        "moderation_actions": moderation_actions,
+    }
+
+
+def _conflict_recommendation(conflict_type: str, details: dict[str, Any]) -> str:
+    normalized = (conflict_type or "").strip().lower()
+    if normalized == "predicate_polarity_mismatch":
+        return "Validate temporal overlap and choose authoritative polarity, then force-approve or reject draft."
+    if normalized == "semantic_contradiction":
+        return "Review source evidence; keep only one active statement for the same operational condition."
+    if normalized == "policy_override":
+        return "Escalate to policy owner and ensure old policy statement is superseded before approval."
+    if details.get("similarity") is not None:
+        return "High similarity detected; confirm whether this is reinforcement or true contradiction."
+    return "Review evidence context and resolve conflict using approve/reject workflow."
+
+
+def _conflict_root_cause(conflict_type: str, details: dict[str, Any]) -> str:
+    normalized = (conflict_type or "").strip().lower()
+    if normalized == "predicate_polarity_mismatch":
+        return "Incoming claim polarity conflicts with existing active statement in overlapping time window."
+    if normalized == "semantic_contradiction":
+        return "Semantically opposite statements detected for the same entity/section."
+    if normalized == "policy_override":
+        return "New policy candidate conflicts with current published policy."
+    similarity = details.get("similarity")
+    if similarity is not None:
+        return f"Conflict flagged by synthesis heuristics (similarity={similarity})."
+    return "Conflict flagged by synthesis heuristics."
+
+
+@app.get("/v1/wiki/drafts/{draft_id}/conflicts/explain")
+def explain_wiki_draft_conflicts(
+    draft_id: UUID,
+    project_id: str,
+    limit: int = Query(default=20, ge=1, le=200),
+    resolution_status: str | None = Query(default="open"),
+    include_entity_neighbors: bool = Query(default=True),
+) -> dict[str, Any]:
+    status_filter = (resolution_status or "").strip().lower() or None
+    if status_filter not in {None, "open", "resolved", "dismissed"}:
+        status_filter = "open"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  d.claim_id::text,
+                  COALESCE(c.entity_key, p.entity_key) AS scope_entity_key,
+                  c.claim_text
+                FROM wiki_draft_changes d
+                LEFT JOIN claims c ON c.id = d.claim_id
+                LEFT JOIN wiki_pages p ON p.id = d.page_id
+                WHERE d.id = %s
+                  AND d.project_id = %s
+                LIMIT 1
+                """,
+                (draft_id, project_id),
+            )
+            scope_row = cur.fetchone()
+            if scope_row is None:
+                return JSONResponse(status_code=404, content={"error": "draft_not_found"})
+
+            scope_claim_id = str(scope_row[0])
+            scope_entity_key = str(scope_row[1]) if scope_row[1] is not None else None
+
+            if include_entity_neighbors and scope_entity_key:
+                cur.execute(
+                    """
+                    SELECT
+                      wc.id::text,
+                      wc.conflict_type,
+                      wc.resolution_status,
+                      wc.created_at,
+                      wc.resolved_at,
+                      wc.resolved_by,
+                      COALESCE(wc.details, '{}'::jsonb),
+                      p.id::text,
+                      p.title,
+                      p.slug,
+                      p.entity_key,
+                      c.id::text,
+                      c.entity_key,
+                      c.category,
+                      c.claim_text,
+                      c.valid_from,
+                      c.valid_to,
+                      ws.id::text,
+                      ws.section_key,
+                      ws.statement_text,
+                      ws.valid_from,
+                      ws.valid_to,
+                      CASE
+                        WHEN wc.claim_id::text = %s THEN 0
+                        WHEN lower(COALESCE(c.entity_key, '')) = lower(%s) THEN 1
+                        ELSE 2
+                      END AS rank_score
+                    FROM wiki_conflicts wc
+                    LEFT JOIN wiki_pages p ON p.id = wc.page_id
+                    LEFT JOIN claims c ON c.id = wc.claim_id
+                    LEFT JOIN wiki_statements ws ON ws.id = wc.conflicting_statement_id
+                    WHERE wc.project_id = %s
+                      AND (%s::text IS NULL OR wc.resolution_status = %s)
+                      AND (
+                        wc.claim_id::text = %s
+                        OR lower(COALESCE(c.entity_key, '')) = lower(%s)
+                        OR lower(COALESCE(p.entity_key, '')) = lower(%s)
+                      )
+                    ORDER BY rank_score ASC, wc.created_at DESC
+                    LIMIT %s
+                    """,
+                    (
+                        scope_claim_id,
+                        scope_entity_key,
+                        project_id,
+                        status_filter,
+                        status_filter,
+                        scope_claim_id,
+                        scope_entity_key,
+                        scope_entity_key,
+                        limit,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      wc.id::text,
+                      wc.conflict_type,
+                      wc.resolution_status,
+                      wc.created_at,
+                      wc.resolved_at,
+                      wc.resolved_by,
+                      COALESCE(wc.details, '{}'::jsonb),
+                      p.id::text,
+                      p.title,
+                      p.slug,
+                      p.entity_key,
+                      c.id::text,
+                      c.entity_key,
+                      c.category,
+                      c.claim_text,
+                      c.valid_from,
+                      c.valid_to,
+                      ws.id::text,
+                      ws.section_key,
+                      ws.statement_text,
+                      ws.valid_from,
+                      ws.valid_to,
+                      0 AS rank_score
+                    FROM wiki_conflicts wc
+                    LEFT JOIN wiki_pages p ON p.id = wc.page_id
+                    LEFT JOIN claims c ON c.id = wc.claim_id
+                    LEFT JOIN wiki_statements ws ON ws.id = wc.conflicting_statement_id
+                    WHERE wc.project_id = %s
+                      AND (%s::text IS NULL OR wc.resolution_status = %s)
+                      AND wc.claim_id::text = %s
+                    ORDER BY wc.created_at DESC
+                    LIMIT %s
+                    """,
+                    (
+                        project_id,
+                        status_filter,
+                        status_filter,
+                        scope_claim_id,
+                        limit,
+                    ),
+                )
+            rows = cur.fetchall()
+
+    conflicts = []
+    for row in rows:
+        details_obj = row[6] if isinstance(row[6], dict) else {}
+        conflict_type = str(row[1] or "")
+        conflicts.append(
+            {
+                "conflict_id": row[0],
+                "conflict_type": conflict_type,
+                "resolution_status": row[2],
+                "created_at": row[3].isoformat() if row[3] is not None else None,
+                "resolved_at": row[4].isoformat() if row[4] is not None else None,
+                "resolved_by": row[5],
+                "details": details_obj,
+                "root_cause": _conflict_root_cause(conflict_type, details_obj),
+                "recommendation": _conflict_recommendation(conflict_type, details_obj),
+                "page": {
+                    "id": row[7],
+                    "title": row[8],
+                    "slug": row[9],
+                    "entity_key": row[10],
+                },
+                "incoming_claim": {
+                    "id": row[11],
+                    "entity_key": row[12],
+                    "category": row[13],
+                    "claim_text": row[14],
+                    "valid_from": row[15].isoformat() if row[15] is not None else None,
+                    "valid_to": row[16].isoformat() if row[16] is not None else None,
+                },
+                "conflicting_statement": {
+                    "id": row[17],
+                    "section_key": row[18],
+                    "statement_text": row[19],
+                    "valid_from": row[20].isoformat() if row[20] is not None else None,
+                    "valid_to": row[21].isoformat() if row[21] is not None else None,
+                },
+                "rank_score": int(row[22]),
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "draft_id": str(draft_id),
+        "source": "api_conflict_explain_mcp_compatible",
+        "scope": {
+            "claim_id": scope_claim_id,
+            "entity_key": scope_entity_key,
+        },
+        "resolution_status": status_filter,
+        "conflicts": conflicts,
+    }
+
+
+@app.post("/v1/wiki/drafts/{draft_id}/approve", response_model=None)
+def approve_wiki_draft(
+    draft_id: UUID,
+    payload: DraftApproveRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = f"/v1/wiki/drafts/{draft_id}/approve"
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        try:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                          d.id,
+                          d.project_id,
+                          d.claim_id,
+                          d.page_id,
+                          d.section_key,
+                          d.decision,
+                          d.status,
+                          d.evidence,
+                          d.rationale,
+                          p.title,
+                          p.slug,
+                          p.page_type,
+                          p.status,
+                          p.current_version,
+                          c.claim_text,
+                          c.claim_fingerprint,
+                          c.entity_key,
+                          c.category,
+                          c.status,
+                          c.valid_from,
+                          c.valid_to
+                        FROM wiki_draft_changes d
+                        JOIN wiki_pages p ON p.id = d.page_id
+                        LEFT JOIN claims c ON c.id = d.claim_id
+                        WHERE d.id = %s
+                          AND d.project_id = %s
+                        FOR UPDATE OF d, p
+                        """,
+                        (draft_id, payload.project_id),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise HTTPException(status_code=404, detail="draft_not_found")
+
+                    (
+                        _draft_id,
+                        project_id,
+                        claim_id,
+                        page_id,
+                        section_key,
+                        decision_value,
+                        draft_status,
+                        evidence_json,
+                        draft_rationale,
+                        page_title,
+                        page_slug,
+                        page_type,
+                        page_status,
+                        current_version,
+                        claim_text,
+                        claim_fingerprint,
+                        entity_key,
+                        category,
+                        claim_status,
+                        claim_valid_from,
+                        claim_valid_to,
+                    ) = row
+
+                    if draft_status == "approved":
+                        response = {
+                            "status": "approved",
+                            "draft_id": str(draft_id),
+                            "project_id": project_id,
+                            "page_slug": page_slug,
+                            "idempotent": True,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+                    if draft_status == "rejected":
+                        raise HTTPException(status_code=409, detail="draft_already_rejected")
+                    if draft_status not in {"pending_review", "blocked_conflict"}:
+                        raise HTTPException(status_code=409, detail=f"draft_status_not_approvable:{draft_status}")
+
+                    effective_section_key = section_key or "facts"
+                    statement_text = (payload.edited_statement_text or claim_text or "").strip()
+                    structured_section_edits = [
+                        {
+                            "section_key": edit.section_key.strip(),
+                            "heading": (edit.heading or "").strip() or None,
+                            "mode": edit.mode,
+                            "statements": [item.strip() for item in edit.statements if item.strip()],
+                        }
+                        for edit in (payload.section_edits or [])
+                    ]
+                    structured_section_edits = [edit for edit in structured_section_edits if edit["section_key"] and edit["statements"]]
+                    has_structured_edits = bool(structured_section_edits)
+
+                    final_decision = str(decision_value)
+                    apply_statement = final_decision in {"new_page", "new_section", "new_statement"}
+                    if final_decision == "conflict":
+                        if not payload.force:
+                            raise HTTPException(status_code=409, detail="draft_has_conflict_use_force_true")
+                        final_decision = "new_statement"
+                        apply_statement = True
+                        cur.execute(
+                            """
+                            UPDATE wiki_conflicts
+                            SET resolution_status = 'resolved',
+                                resolved_by = %s,
+                                resolved_at = NOW()
+                            WHERE claim_id = %s
+                              AND resolution_status = 'open'
+                            """,
+                            (payload.reviewed_by, claim_id),
+                        )
+                    elif final_decision in {"reinforcement", "duplicate_ignored"}:
+                        apply_statement = False
+
+                    if has_structured_edits and not apply_statement and final_decision in {"reinforcement", "duplicate_ignored"}:
+                        final_decision = "new_statement"
+
+                    if apply_statement and not statement_text:
+                        if has_structured_edits:
+                            apply_statement = False
+                        else:
+                            raise HTTPException(status_code=409, detail="missing_statement_text_for_approval")
+
+                    section_heading = _section_heading_from_key(effective_section_key)
+                    if apply_statement:
+                        cur.execute(
+                            """
+                            SELECT heading
+                            FROM wiki_sections
+                            WHERE page_id = %s
+                              AND section_key = %s
+                            LIMIT 1
+                            """,
+                            (page_id, effective_section_key),
+                        )
+                        section_row = cur.fetchone()
+                        if section_row is None:
+                            cur.execute(
+                                """
+                                SELECT COALESCE(MAX(order_index), -1) + 1
+                                FROM wiki_sections
+                                WHERE page_id = %s
+                                """,
+                                (page_id,),
+                            )
+                            next_order = int(cur.fetchone()[0])
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                                VALUES (%s, %s, %s, %s, 0)
+                                ON CONFLICT (page_id, section_key) DO NOTHING
+                                """,
+                                (page_id, effective_section_key, section_heading, next_order),
+                            )
+                        else:
+                            section_heading = str(section_row[0])
+
+                    statement_inserted = False
+                    statement_id: UUID | None = None
+                    inserted_statement_ids: list[str] = []
+                    touched_section_keys: set[str] = set()
+                    effective_claim_fingerprint = claim_fingerprint or _compute_claim_fingerprint(
+                        project_id,
+                        entity_key or page_slug,
+                        category or page_type,
+                        statement_text or str(claim_text or ""),
+                    )
+                    if apply_statement:
+                        touched_section_keys.add(effective_section_key)
+                        cur.execute(
+                            """
+                            SELECT id
+                            FROM wiki_statements
+                            WHERE page_id = %s
+                              AND section_key = %s
+                              AND claim_fingerprint = %s
+                              AND status = 'active'
+                              AND tstzrange(COALESCE(valid_from, '-infinity'::timestamptz), COALESCE(valid_to, 'infinity'::timestamptz), '[]')
+                                  && tstzrange(COALESCE(%s::timestamptz, '-infinity'::timestamptz), COALESCE(%s::timestamptz, 'infinity'::timestamptz), '[]')
+                            LIMIT 1
+                            """,
+                            (
+                                page_id,
+                                effective_section_key,
+                                effective_claim_fingerprint,
+                                claim_valid_from,
+                                claim_valid_to,
+                            ),
+                        )
+                        existing_statement = cur.fetchone()
+                        if existing_statement is None:
+                            statement_id = uuid4()
+                            statement_metadata = {
+                                "source": "human_moderation",
+                                "reviewed_by": payload.reviewed_by,
+                                "draft_id": str(draft_id),
+                                "claim_id": str(claim_id),
+                                "note": payload.note,
+                            }
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_statements (
+                                  id, project_id, page_id, section_key, statement_text, normalized_text,
+                                  claim_fingerprint, status, metadata, valid_from, valid_to
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, %s, %s)
+                                """,
+                                (
+                                    statement_id,
+                                    project_id,
+                                    page_id,
+                                    effective_section_key,
+                                    statement_text,
+                                    _normalize_statement_text(statement_text),
+                                    effective_claim_fingerprint,
+                                    Jsonb(statement_metadata),
+                                    claim_valid_from or datetime.now(UTC),
+                                    claim_valid_to,
+                                ),
+                            )
+                            statement_inserted = True
+                            inserted_statement_ids.append(str(statement_id))
+                        else:
+                            statement_id = existing_statement[0]
+
+                    cur.execute(
+                        """
+                        SELECT version, markdown
+                        FROM wiki_page_versions
+                        WHERE page_id = %s
+                        ORDER BY version DESC
+                        LIMIT 1
+                        """,
+                        (page_id,),
+                    )
+                    latest_version = cur.fetchone()
+                    previous_version = int(latest_version[0]) if latest_version is not None else int(current_version or 0)
+                    previous_markdown = str(latest_version[1]) if latest_version is not None else f"# {page_title}\n"
+                    next_markdown = previous_markdown
+                    if apply_statement:
+                        next_markdown = _inject_statement_into_markdown(previous_markdown, section_heading, statement_text)
+
+                    for edit in structured_section_edits:
+                        edit_section_key = str(edit["section_key"])
+                        edit_heading = str(edit["heading"] or _section_heading_from_key(edit_section_key))
+                        edit_mode = str(edit["mode"])
+                        edit_statements = [str(item) for item in edit["statements"]]
+                        touched_section_keys.add(edit_section_key)
+
+                        cur.execute(
+                            """
+                            SELECT heading
+                            FROM wiki_sections
+                            WHERE page_id = %s
+                              AND section_key = %s
+                            LIMIT 1
+                            """,
+                            (page_id, edit_section_key),
+                        )
+                        existing_section = cur.fetchone()
+                        if existing_section is None:
+                            cur.execute(
+                                """
+                                SELECT COALESCE(MAX(order_index), -1) + 1
+                                FROM wiki_sections
+                                WHERE page_id = %s
+                                """,
+                                (page_id,),
+                            )
+                            edit_order = int(cur.fetchone()[0])
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                                VALUES (%s, %s, %s, %s, 0)
+                                ON CONFLICT (page_id, section_key) DO NOTHING
+                                """,
+                                (page_id, edit_section_key, edit_heading, edit_order),
+                            )
+                        elif edit.get("heading"):
+                            cur.execute(
+                                """
+                                UPDATE wiki_sections
+                                SET heading = %s
+                                WHERE page_id = %s
+                                  AND section_key = %s
+                                """,
+                                (edit_heading, page_id, edit_section_key),
+                            )
+                        else:
+                            edit_heading = str(existing_section[0])
+
+                        if edit_mode == "replace":
+                            cur.execute(
+                                """
+                                UPDATE wiki_statements
+                                SET status = 'superseded',
+                                    valid_to = NOW(),
+                                    updated_at = NOW()
+                                WHERE page_id = %s
+                                  AND section_key = %s
+                                  AND status = 'active'
+                                """,
+                                (page_id, edit_section_key),
+                            )
+
+                        for item in edit_statements:
+                            item_fp = _compute_claim_fingerprint(
+                                project_id,
+                                entity_key or page_slug,
+                                category or page_type,
+                                item,
+                            )
+                            cur.execute(
+                                """
+                                SELECT id
+                                FROM wiki_statements
+                                WHERE page_id = %s
+                                  AND section_key = %s
+                                  AND claim_fingerprint = %s
+                                  AND status = 'active'
+                                LIMIT 1
+                                """,
+                                (page_id, edit_section_key, item_fp),
+                            )
+                            existing_item = cur.fetchone()
+                            if existing_item is not None:
+                                continue
+                            structured_statement_id = uuid4()
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_statements (
+                                  id, project_id, page_id, section_key, statement_text, normalized_text,
+                                  claim_fingerprint, status, metadata, valid_from
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                                """,
+                                (
+                                    structured_statement_id,
+                                    project_id,
+                                    page_id,
+                                    edit_section_key,
+                                    item,
+                                    _normalize_statement_text(item),
+                                    item_fp,
+                                    Jsonb(
+                                        {
+                                            "source": "human_moderation_structured",
+                                            "reviewed_by": payload.reviewed_by,
+                                            "draft_id": str(draft_id),
+                                            "claim_id": str(claim_id),
+                                            "note": payload.note,
+                                        }
+                                    ),
+                                ),
+                            )
+                            inserted_statement_ids.append(str(structured_statement_id))
+
+                        next_markdown = _apply_section_statements_to_markdown(
+                            next_markdown,
+                            section_heading=edit_heading,
+                            statements=edit_statements,
+                            mode=edit_mode,
+                        )
+
+                    for touched_key in touched_section_keys:
+                        cur.execute(
+                            """
+                            UPDATE wiki_sections ws
+                            SET statement_count = (
+                              SELECT COUNT(*)
+                              FROM wiki_statements st
+                              WHERE st.page_id = ws.page_id
+                                AND st.section_key = ws.section_key
+                                AND st.status = 'active'
+                            )
+                            WHERE ws.page_id = %s
+                              AND ws.section_key = %s
+                            """,
+                            (page_id, touched_key),
+                        )
+                    statement_inserted = statement_inserted or bool(inserted_statement_ids)
+                    next_version = previous_version + 1
+                    change_summary = f"Draft {draft_id} approved by {payload.reviewed_by}; decision={final_decision}"
+
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_page_versions (
+                          id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 'human', %s, %s)
+                        """,
+                        (
+                            uuid4(),
+                            page_id,
+                            next_version,
+                            next_markdown,
+                            Jsonb([]),
+                            payload.reviewed_by,
+                            change_summary,
+                        ),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE wiki_pages
+                        SET status = 'published',
+                            current_version = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (next_version, page_id),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE wiki_draft_changes
+                        SET status = 'approved',
+                            decision = %s,
+                            rationale = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            final_decision,
+                            f"{draft_rationale}; approved_by={payload.reviewed_by}",
+                            draft_id,
+                        ),
+                    )
+                    moderation_metadata = {"moderated_by": payload.reviewed_by, "moderation_note": payload.note}
+                    cur.execute(
+                        """
+                        UPDATE claims
+                        SET status = 'approved',
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (Jsonb(moderation_metadata), claim_id),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_claim_links (claim_id, page_id, section_key, insertion_status)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (claim_id, page_id, section_key) DO UPDATE
+                        SET insertion_status = EXCLUDED.insertion_status,
+                            created_at = NOW()
+                        """,
+                        (claim_id, page_id, effective_section_key, final_decision),
+                    )
+                    snapshot_id = uuid4()
+                    snapshot_note = payload.note or change_summary
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (snapshot_id, project_id, payload.reviewed_by, snapshot_note),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (snapshot_id, page_id, next_version),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO moderation_actions (
+                          id, project_id, draft_id, claim_id, page_id, action_type, reviewed_by,
+                          decision_before, decision_after, draft_status_before, draft_status_after,
+                          note, payload, result
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 'approve', %s, %s, %s, %s, 'approved', %s, %s, %s)
+                        """,
+                        (
+                            uuid4(),
+                            project_id,
+                            draft_id,
+                            claim_id,
+                            page_id,
+                            payload.reviewed_by,
+                            str(decision_value),
+                            final_decision,
+                            str(draft_status),
+                            payload.note,
+                            Jsonb(payload.model_dump(mode="json")),
+                            Jsonb(
+                                {
+                                    "status": "approved",
+                                    "page_version": next_version,
+                                    "snapshot_id": str(snapshot_id),
+                                    "statement_inserted": statement_inserted,
+                                    "inserted_statement_ids": inserted_statement_ids,
+                                }
+                            ),
+                        ),
+                    )
+
+                response = {
+                    "status": "approved",
+                    "draft_id": str(draft_id),
+                    "project_id": project_id,
+                    "page_slug": page_slug,
+                    "page_version": next_version,
+                    "snapshot_id": str(snapshot_id),
+                    "statement_inserted": statement_inserted,
+                    "statement_id": str(statement_id) if statement_id is not None else None,
+                    "statement_ids": inserted_statement_ids,
+                    "structured_edits_applied": len(structured_section_edits),
+                    "decision": final_decision,
+                }
+            mark_request_completed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except HTTPException as exc:
+            mark_request_failed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                error_message=f"http_{exc.status_code}:{exc.detail}",
+            )
+            raise
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
+
+
+@app.post("/v1/wiki/drafts/{draft_id}/reject", response_model=None)
+def reject_wiki_draft(
+    draft_id: UUID,
+    payload: DraftRejectRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = f"/v1/wiki/drafts/{draft_id}/reject"
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        try:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT d.claim_id, d.page_id, d.section_key, d.status, d.project_id, p.slug, d.decision
+                        FROM wiki_draft_changes d
+                        JOIN wiki_pages p ON p.id = d.page_id
+                        WHERE d.id = %s
+                          AND d.project_id = %s
+                        FOR UPDATE OF d, p
+                        """,
+                        (draft_id, payload.project_id),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise HTTPException(status_code=404, detail="draft_not_found")
+                    claim_id, page_id, section_key, draft_status, project_id, page_slug, decision_value = row
+                    if draft_status == "rejected":
+                        response = {
+                            "status": "rejected",
+                            "draft_id": str(draft_id),
+                            "project_id": project_id,
+                            "page_slug": page_slug,
+                            "idempotent": True,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+                    if draft_status == "approved":
+                        raise HTTPException(status_code=409, detail="draft_already_approved")
+
+                    cur.execute(
+                        """
+                        UPDATE wiki_draft_changes
+                        SET status = 'rejected',
+                            rationale = rationale || %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (f"; rejected_by={payload.reviewed_by}", draft_id),
+                    )
+                    reject_meta = {"rejected_by": payload.reviewed_by, "reject_reason": payload.reason}
+                    cur.execute(
+                        """
+                        UPDATE claims
+                        SET status = 'rejected',
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (Jsonb(reject_meta), claim_id),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_claim_links (claim_id, page_id, section_key, insertion_status)
+                        VALUES (%s, %s, %s, 'rejected')
+                        ON CONFLICT (claim_id, page_id, section_key) DO UPDATE
+                        SET insertion_status = 'rejected',
+                            created_at = NOW()
+                        """,
+                        (claim_id, page_id, section_key or "facts"),
+                    )
+                    if payload.dismiss_conflicts:
+                        cur.execute(
+                            """
+                            UPDATE wiki_conflicts
+                            SET resolution_status = 'dismissed',
+                                resolved_by = %s,
+                                resolved_at = NOW()
+                            WHERE claim_id = %s
+                              AND resolution_status = 'open'
+                            """,
+                            (payload.reviewed_by, claim_id),
+                        )
+                    cur.execute(
+                        """
+                        INSERT INTO moderation_actions (
+                          id, project_id, draft_id, claim_id, page_id, action_type, reviewed_by,
+                          decision_before, decision_after, draft_status_before, draft_status_after,
+                          reason, payload, result
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 'reject', %s, %s, 'rejected', %s, 'rejected', %s, %s, %s)
+                        """,
+                        (
+                            uuid4(),
+                            project_id,
+                            draft_id,
+                            claim_id,
+                            page_id,
+                            payload.reviewed_by,
+                            str(decision_value),
+                            str(draft_status),
+                            payload.reason,
+                            Jsonb(payload.model_dump(mode="json")),
+                            Jsonb({"status": "rejected", "dismiss_conflicts": payload.dismiss_conflicts}),
+                        ),
+                    )
+                response = {
+                    "status": "rejected",
+                    "draft_id": str(draft_id),
+                    "project_id": project_id,
+                    "page_slug": page_slug,
+                }
+            mark_request_completed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except HTTPException as exc:
+            mark_request_failed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                error_message=f"http_{exc.status_code}:{exc.detail}",
+            )
+            raise
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
+
+
+@app.get("/v1/wiki/moderation/actions")
+def list_moderation_actions(
+    project_id: str,
+    action_type: str | None = Query(default=None, pattern="^(approve|reject)$"),
+    reviewed_by: str | None = Query(default=None),
+    draft_id: UUID | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if action_type is not None:
+        filters.append("action_type = %s")
+        params.append(action_type)
+    if reviewed_by is not None:
+        filters.append("reviewed_by = %s")
+        params.append(reviewed_by)
+    if draft_id is not None:
+        filters.append("draft_id = %s")
+        params.append(draft_id)
+    params.append(limit)
+    where_clause = " AND ".join(filters)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  draft_id::text,
+                  claim_id::text,
+                  page_id::text,
+                  action_type,
+                  reviewed_by,
+                  decision_before,
+                  decision_after,
+                  draft_status_before,
+                  draft_status_after,
+                  note,
+                  reason,
+                  payload,
+                  result,
+                  created_at
+                FROM moderation_actions
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+
+    actions = [
+        {
+            "id": row[0],
+            "draft_id": row[1],
+            "claim_id": row[2],
+            "page_id": row[3],
+            "action_type": row[4],
+            "reviewed_by": row[5],
+            "decision_before": row[6],
+            "decision_after": row[7],
+            "draft_status_before": row[8],
+            "draft_status_after": row[9],
+            "note": row[10],
+            "reason": row[11],
+            "payload": row[12],
+            "result": row[13],
+            "created_at": row[14].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"actions": actions}
+
+
+@app.get("/v1/wiki/moderation/throughput")
+def get_wiki_moderation_throughput(
+    project_id: str,
+    window_hours: int = Query(default=24, ge=1, le=24 * 30),
+    top_reviewers: int = Query(default=5, ge=1, le=20),
+) -> dict[str, Any]:
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE ma.action_type = 'approve')::int AS approvals,
+                  COUNT(*) FILTER (WHERE ma.action_type = 'reject')::int AS rejections,
+                  COUNT(*)::int AS actions_total,
+                  COUNT(DISTINCT ma.reviewed_by)::int AS reviewers_active,
+                  COUNT(*) FILTER (
+                    WHERE ma.draft_status_before = 'blocked_conflict'
+                  )::int AS conflict_unblocks
+                FROM moderation_actions ma
+                WHERE ma.project_id = %s
+                  AND ma.created_at >= %s
+                """,
+                (project_id, cutoff),
+            )
+            summary_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                  AVG(EXTRACT(EPOCH FROM (ma.created_at - d.created_at)) / 60.0) AS avg_minutes,
+                  percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (ma.created_at - d.created_at)) / 60.0
+                  ) AS p50_minutes,
+                  percentile_cont(0.9) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (ma.created_at - d.created_at)) / 60.0
+                  ) AS p90_minutes
+                FROM moderation_actions ma
+                JOIN wiki_draft_changes d ON d.id = ma.draft_id
+                WHERE ma.project_id = %s
+                  AND ma.created_at >= %s
+                  AND ma.action_type IN ('approve', 'reject')
+                  AND ma.created_at >= d.created_at
+                """,
+                (project_id, cutoff),
+            )
+            latency_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE status = 'pending_review')::int AS pending_review,
+                  COUNT(*) FILTER (WHERE status = 'blocked_conflict')::int AS blocked_conflict,
+                  COUNT(*) FILTER (WHERE status IN ('pending_review', 'blocked_conflict'))::int AS open_total
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                """,
+                (project_id,),
+            )
+            backlog_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT COUNT(*)::int
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                  AND created_at >= %s
+                """,
+                (project_id, cutoff),
+            )
+            created_row = cur.fetchone()
+
+            cur.execute(
+                """
+                SELECT
+                  reviewed_by,
+                  COUNT(*)::int AS actions_total,
+                  COUNT(*) FILTER (WHERE action_type = 'approve')::int AS approvals,
+                  COUNT(*) FILTER (WHERE action_type = 'reject')::int AS rejections
+                FROM moderation_actions
+                WHERE project_id = %s
+                  AND created_at >= %s
+                GROUP BY reviewed_by
+                ORDER BY actions_total DESC, reviewed_by ASC
+                LIMIT %s
+                """,
+                (project_id, cutoff, top_reviewers),
+            )
+            reviewer_rows = cur.fetchall()
+
+    approvals = int((summary_row[0] if summary_row else 0) or 0)
+    rejections = int((summary_row[1] if summary_row else 0) or 0)
+    actions_total = int((summary_row[2] if summary_row else 0) or 0)
+    reviewers_active = int((summary_row[3] if summary_row else 0) or 0)
+    conflict_unblocks = int((summary_row[4] if summary_row else 0) or 0)
+
+    avg_minutes = float(latency_row[0]) if latency_row and latency_row[0] is not None else None
+    p50_minutes = float(latency_row[1]) if latency_row and latency_row[1] is not None else None
+    p90_minutes = float(latency_row[2]) if latency_row and latency_row[2] is not None else None
+
+    pending_review = int((backlog_row[0] if backlog_row else 0) or 0)
+    blocked_conflict = int((backlog_row[1] if backlog_row else 0) or 0)
+    open_total = int((backlog_row[2] if backlog_row else 0) or 0)
+    drafts_created = int((created_row[0] if created_row else 0) or 0)
+
+    approval_rate = round(approvals / actions_total, 4) if actions_total > 0 else None
+    processed_per_hour = round(actions_total / max(1, window_hours), 3)
+    net_backlog_delta = int(drafts_created - actions_total)
+
+    alerts: list[str] = []
+    health = "healthy"
+    if actions_total == 0 and open_total >= 10:
+        alerts.append("No moderation actions in selected window while backlog remains open.")
+    if blocked_conflict >= 8:
+        alerts.append("Blocked conflicts are high; prioritize conflict resolution queue.")
+    if p90_minutes is not None and p90_minutes >= 24 * 60:
+        alerts.append("p90 moderation latency is above 24 hours.")
+
+    if (actions_total == 0 and open_total >= 10) or open_total >= 40:
+        health = "critical"
+    elif blocked_conflict >= 8 or open_total >= 15 or (p90_minutes is not None and p90_minutes >= 12 * 60):
+        health = "watch"
+
+    return {
+        "project_id": project_id,
+        "window_hours": int(window_hours),
+        "since": cutoff.isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "health": health,
+        "alerts": alerts,
+        "metrics": {
+            "actions_total": actions_total,
+            "approvals": approvals,
+            "rejections": rejections,
+            "approval_rate": approval_rate,
+            "reviewers_active": reviewers_active,
+            "processed_per_hour": processed_per_hour,
+            "drafts_created": drafts_created,
+            "net_backlog_delta": net_backlog_delta,
+            "conflict_unblocks": conflict_unblocks,
+            "latency_minutes": {
+                "avg": round(float(avg_minutes), 2) if avg_minutes is not None else None,
+                "p50": round(float(p50_minutes), 2) if p50_minutes is not None else None,
+                "p90": round(float(p90_minutes), 2) if p90_minutes is not None else None,
+            },
+        },
+        "backlog": {
+            "open_total": open_total,
+            "pending_review": pending_review,
+            "blocked_conflict": blocked_conflict,
+        },
+        "top_reviewers": [
+            {
+                "reviewed_by": row[0],
+                "actions_total": int(row[1] or 0),
+                "approvals": int(row[2] or 0),
+                "rejections": int(row[3] or 0),
+            }
+            for row in reviewer_rows
+        ],
+    }
+
+
+@app.get("/v1/gatekeeper/decisions")
+def list_gatekeeper_decisions(
+    project_id: str,
+    tier: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if tier is None:
+                cur.execute(
+                    """
+                    SELECT claim_id::text, tier, score, rationale, features, updated_at
+                    FROM gatekeeper_decisions
+                    WHERE project_id = %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT claim_id::text, tier, score, rationale, features, updated_at
+                    FROM gatekeeper_decisions
+                    WHERE project_id = %s
+                      AND tier = %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, tier, limit),
+                )
+            rows = cur.fetchall()
+    decisions = [
+        {
+            "claim_id": row[0],
+            "tier": row[1],
+            "score": float(row[2]),
+            "rationale": row[3],
+            "features": row[4],
+            "updated_at": row[5].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"decisions": decisions}
+
+
+@app.get("/v1/gatekeeper/config")
+def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
+        with conn.cursor() as cur:
+            if has_llm_columns:
+                cur.execute(
+                    """
+                    SELECT
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM gatekeeper_project_configs
+                    WHERE project_id = %s
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM gatekeeper_project_configs
+                    WHERE project_id = %s
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                )
+            row = cur.fetchone()
+    if row is None:
+        return {
+            "config": {
+                "project_id": project_id,
+                "min_sources_for_golden": 3,
+                "conflict_free_days": 7,
+                "min_score_for_golden": 0.72,
+                "operational_short_text_len": 32,
+                "operational_short_token_len": 5,
+                "llm_assist_enabled": False,
+                "llm_provider": "openai",
+                "llm_model": "gpt-4.1-mini",
+                "llm_score_weight": 0.35,
+                "llm_min_confidence": 0.65,
+                "llm_timeout_ms": 3500,
+                "updated_by": None,
+                "created_at": None,
+                "updated_at": None,
+                "source": "default",
+            }
+        }
+    if has_llm_columns:
+        return {
+            "config": {
+                "project_id": project_id,
+                "min_sources_for_golden": int(row[0]),
+                "conflict_free_days": int(row[1]),
+                "min_score_for_golden": float(row[2]),
+                "operational_short_text_len": int(row[3]),
+                "operational_short_token_len": int(row[4]),
+                "llm_assist_enabled": bool(row[5]),
+                "llm_provider": str(row[6]),
+                "llm_model": str(row[7]),
+                "llm_score_weight": float(row[8]),
+                "llm_min_confidence": float(row[9]),
+                "llm_timeout_ms": int(row[10]),
+                "updated_by": row[11],
+                "created_at": row[12].isoformat(),
+                "updated_at": row[13].isoformat(),
+                "source": "project_override",
+            }
+        }
+    return {
+        "config": {
+            "project_id": project_id,
+            "min_sources_for_golden": int(row[0]),
+            "conflict_free_days": int(row[1]),
+            "min_score_for_golden": float(row[2]),
+            "operational_short_text_len": int(row[3]),
+            "operational_short_token_len": int(row[4]),
+            "llm_assist_enabled": False,
+            "llm_provider": "openai",
+            "llm_model": "gpt-4.1-mini",
+            "llm_score_weight": 0.35,
+            "llm_min_confidence": 0.65,
+            "llm_timeout_ms": 3500,
+            "updated_by": row[5],
+            "created_at": row[6].isoformat(),
+            "updated_at": row[7].isoformat(),
+            "source": "project_override",
+        }
+    }
+
+
+@app.put("/v1/gatekeeper/config")
+def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str, Any]:
+    with get_conn() as conn:
+        has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
+        with conn.cursor() as cur:
+            if has_llm_columns:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_project_configs (
+                      project_id,
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      updated_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id) DO UPDATE
+                    SET min_sources_for_golden = EXCLUDED.min_sources_for_golden,
+                        conflict_free_days = EXCLUDED.conflict_free_days,
+                        min_score_for_golden = EXCLUDED.min_score_for_golden,
+                        operational_short_text_len = EXCLUDED.operational_short_text_len,
+                        operational_short_token_len = EXCLUDED.operational_short_token_len,
+                        llm_assist_enabled = EXCLUDED.llm_assist_enabled,
+                        llm_provider = EXCLUDED.llm_provider,
+                        llm_model = EXCLUDED.llm_model,
+                        llm_score_weight = EXCLUDED.llm_score_weight,
+                        llm_min_confidence = EXCLUDED.llm_min_confidence,
+                        llm_timeout_ms = EXCLUDED.llm_timeout_ms,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    RETURNING
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    """,
+                    (
+                        payload.project_id,
+                        payload.min_sources_for_golden,
+                        payload.conflict_free_days,
+                        payload.min_score_for_golden,
+                        payload.operational_short_text_len,
+                        payload.operational_short_token_len,
+                        payload.llm_assist_enabled,
+                        payload.llm_provider,
+                        payload.llm_model,
+                        payload.llm_score_weight,
+                        payload.llm_min_confidence,
+                        payload.llm_timeout_ms,
+                        payload.updated_by,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_project_configs (
+                      project_id,
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      updated_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id) DO UPDATE
+                    SET min_sources_for_golden = EXCLUDED.min_sources_for_golden,
+                        conflict_free_days = EXCLUDED.conflict_free_days,
+                        min_score_for_golden = EXCLUDED.min_score_for_golden,
+                        operational_short_text_len = EXCLUDED.operational_short_text_len,
+                        operational_short_token_len = EXCLUDED.operational_short_token_len,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    RETURNING
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    """,
+                    (
+                        payload.project_id,
+                        payload.min_sources_for_golden,
+                        payload.conflict_free_days,
+                        payload.min_score_for_golden,
+                        payload.operational_short_text_len,
+                        payload.operational_short_token_len,
+                        payload.updated_by,
+                    ),
+                )
+            row = cur.fetchone()
+    if has_llm_columns:
+        return {
+            "status": "ok",
+            "config": {
+                "project_id": payload.project_id,
+                "min_sources_for_golden": int(row[0]),
+                "conflict_free_days": int(row[1]),
+                "min_score_for_golden": float(row[2]),
+                "operational_short_text_len": int(row[3]),
+                "operational_short_token_len": int(row[4]),
+                "llm_assist_enabled": bool(row[5]),
+                "llm_provider": str(row[6]),
+                "llm_model": str(row[7]),
+                "llm_score_weight": float(row[8]),
+                "llm_min_confidence": float(row[9]),
+                "llm_timeout_ms": int(row[10]),
+                "updated_by": row[11],
+                "created_at": row[12].isoformat(),
+                "updated_at": row[13].isoformat(),
+                "source": "project_override",
+            },
+        }
+    return {
+        "status": "ok",
+        "config": {
+            "project_id": payload.project_id,
+            "min_sources_for_golden": int(row[0]),
+            "conflict_free_days": int(row[1]),
+            "min_score_for_golden": float(row[2]),
+            "operational_short_text_len": int(row[3]),
+            "operational_short_token_len": int(row[4]),
+            "llm_assist_enabled": False,
+            "llm_provider": "openai",
+            "llm_model": "gpt-4.1-mini",
+            "llm_score_weight": 0.35,
+            "llm_min_confidence": 0.65,
+            "llm_timeout_ms": 3500,
+            "updated_by": row[5],
+            "created_at": row[6].isoformat(),
+            "updated_at": row[7].isoformat(),
+            "source": "project_override",
+        },
+    }
+
+
+@app.get("/v1/gatekeeper/config/snapshots")
+def list_gatekeeper_config_snapshots(
+    project_id: str,
+    source: str | None = Query(default=None, pattern="^(calibration_cycle|manual|rollback)$"),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> dict[str, Any]:
+    params: list[Any] = [project_id]
+    filters = ["project_id = %s"]
+    if source is not None:
+        filters.append("source = %s")
+        params.append(source)
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  source,
+                  approved_by,
+                  note,
+                  config,
+                  guardrails_met,
+                  holdout_meta,
+                  calibration_report,
+                  artifact_refs,
+                  created_at
+                FROM gatekeeper_config_snapshots
+                WHERE {' AND '.join(filters)}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+
+    snapshots = [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "source": row[2],
+            "approved_by": row[3],
+            "note": row[4],
+            "config": row[5],
+            "guardrails_met": row[6],
+            "holdout_meta": row[7],
+            "calibration_report": row[8],
+            "artifact_refs": row[9],
+            "created_at": row[10].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"snapshots": snapshots}
+
+
+@app.post("/v1/gatekeeper/config/snapshots")
+def create_gatekeeper_config_snapshot(payload: GatekeeperConfigSnapshotCreateRequest) -> dict[str, Any]:
+    config = payload.config if isinstance(payload.config, dict) else {}
+    holdout_meta = payload.holdout_meta if isinstance(payload.holdout_meta, dict) else {}
+    calibration_report = payload.calibration_report if isinstance(payload.calibration_report, dict) else {}
+    artifact_refs = payload.artifact_refs if isinstance(payload.artifact_refs, dict) else {}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_config_snapshots (
+                  id,
+                  project_id,
+                  source,
+                  approved_by,
+                  note,
+                  config,
+                  guardrails_met,
+                  holdout_meta,
+                  calibration_report,
+                  artifact_refs
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING
+                  id::text,
+                  project_id,
+                  source,
+                  approved_by,
+                  note,
+                  config,
+                  guardrails_met,
+                  holdout_meta,
+                  calibration_report,
+                  artifact_refs,
+                  created_at
+                """,
+                (
+                    str(uuid4()),
+                    payload.project_id,
+                    payload.source,
+                    payload.approved_by,
+                    payload.note,
+                    Jsonb(config),
+                    payload.guardrails_met,
+                    Jsonb(holdout_meta),
+                    Jsonb(calibration_report),
+                    Jsonb(artifact_refs),
+                ),
+            )
+            row = cur.fetchone()
+
+    return {
+        "status": "ok",
+        "snapshot": {
+            "id": row[0],
+            "project_id": row[1],
+            "source": row[2],
+            "approved_by": row[3],
+            "note": row[4],
+            "config": row[5],
+            "guardrails_met": row[6],
+            "holdout_meta": row[7],
+            "calibration_report": row[8],
+            "artifact_refs": row[9],
+            "created_at": row[10].isoformat(),
+        },
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/trends")
+def get_gatekeeper_calibration_trends(
+    project_id: str,
+    limit: int = Query(default=24, ge=2, le=120),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  s.id::text,
+                  s.created_at,
+                  s.source,
+                  s.guardrails_met,
+                  s.holdout_meta,
+                  s.calibration_report,
+                  COALESCE(ma.approvals_7d, 0) AS approvals_7d,
+                  COALESCE(ma.rejections_7d, 0) AS rejections_7d
+                FROM gatekeeper_config_snapshots s
+                LEFT JOIN LATERAL (
+                  SELECT
+                    COUNT(*) FILTER (WHERE action_type = 'approve') AS approvals_7d,
+                    COUNT(*) FILTER (WHERE action_type = 'reject') AS rejections_7d
+                  FROM moderation_actions ma
+                  WHERE ma.project_id = s.project_id
+                    AND ma.created_at > (s.created_at - INTERVAL '7 days')
+                    AND ma.created_at <= s.created_at
+                ) ma ON TRUE
+                WHERE s.project_id = %s
+                ORDER BY s.created_at DESC
+                LIMIT %s
+                """,
+                (project_id, limit),
+            )
+            rows = cur.fetchall()
+
+    points: list[dict[str, Any]] = []
+    for row in rows:
+        metrics = _extract_calibration_holdout_metrics(row[5] if isinstance(row[5], dict) else {})
+        approvals_7d = int(row[6] or 0)
+        rejections_7d = int(row[7] or 0)
+        reviewed_total = approvals_7d + rejections_7d
+        approval_rate_7d = round((approvals_7d / reviewed_total) * 100.0, 2) if reviewed_total > 0 else None
+        guardrails_met = row[3]
+        if guardrails_met is False:
+            gate_status = "failed"
+        elif guardrails_met is True and reviewed_total > 0 and approvals_7d < rejections_7d:
+            gate_status = "watch"
+        elif guardrails_met is True:
+            gate_status = "pass"
+        else:
+            gate_status = "unknown"
+        holdout_meta = row[4] if isinstance(row[4], dict) else {}
+        points.append(
+            {
+                "snapshot_id": row[0],
+                "created_at": row[1].isoformat(),
+                "source": row[2],
+                "guardrails_met": guardrails_met,
+                "gate_status": gate_status,
+                "metrics": {
+                    "accuracy": metrics.get("accuracy"),
+                    "macro_f1": metrics.get("macro_f1"),
+                    "golden_precision": metrics.get("golden_precision"),
+                },
+                "approval_gate": {
+                    "approvals_last_7d": approvals_7d,
+                    "rejections_last_7d": rejections_7d,
+                    "approval_rate_last_7d": approval_rate_7d,
+                },
+                "holdout_meta": holdout_meta,
+            }
+        )
+
+    latest = points[0] if points else None
+    previous = points[1] if len(points) > 1 else None
+
+    def _metric_delta(metric_key: str) -> float | None:
+        if latest is None or previous is None:
+            return None
+        latest_value = ((latest.get("metrics") or {}).get(metric_key))
+        prev_value = ((previous.get("metrics") or {}).get(metric_key))
+        if latest_value is None or prev_value is None:
+            return None
+        return round(float(latest_value) - float(prev_value), 4)
+
+    summary = {
+        "latest_snapshot_id": latest.get("snapshot_id") if latest else None,
+        "latest_created_at": latest.get("created_at") if latest else None,
+        "latest_gate_status": latest.get("gate_status") if latest else "unknown",
+        "latest_guardrails_met": latest.get("guardrails_met") if latest else None,
+        "latest_metrics": (latest.get("metrics") if latest else None),
+        "latest_approval_gate": (latest.get("approval_gate") if latest else None),
+        "deltas_vs_previous": {
+            "accuracy": _metric_delta("accuracy"),
+            "macro_f1": _metric_delta("macro_f1"),
+            "golden_precision": _metric_delta("golden_precision"),
+        },
+    }
+
+    return {
+        "project_id": project_id,
+        "points": points,
+        "summary": summary,
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/schedules")
+def list_gatekeeper_calibration_schedules(
+    project_id: str | None = None,
+    enabled: bool | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> dict[str, Any]:
+    filters: list[str] = []
+    params: list[Any] = []
+    if project_id is not None:
+        filters.append("project_id = %s")
+        params.append(project_id)
+    if enabled is not None:
+        filters.append("enabled = %s")
+        params.append(enabled)
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_hours,
+                  lookback_days,
+                  limit_rows,
+                  holdout_ratio,
+                  split_seed,
+                  weights,
+                  confidences,
+                  score_thresholds,
+                  top_k,
+                  allow_guardrail_fail,
+                  snapshot_note,
+                  updated_by,
+                  last_run_at,
+                  last_status,
+                  last_run_summary,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_calibration_schedules
+                {where_clause}
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return {"schedules": [_serialize_gatekeeper_calibration_schedule_row(row) for row in rows]}
+
+
+def _classify_schedule_run_status(status: str, project_cycle_status: str, alerts_count: int, returncode: int | None) -> str:
+    normalized = status.strip().lower()
+    cycle = project_cycle_status.strip().lower()
+    if normalized == "executed":
+        if returncode not in {None, 0}:
+            return "failed"
+        if cycle in {"ok", "dry_run"} and alerts_count <= 0:
+            return "ok"
+        if cycle in {"alert"} or alerts_count > 0:
+            return "alert"
+        if cycle in {"partial_failure", "failed"}:
+            return "failed"
+        return "ok"
+    if normalized in {"would_run", "preview"}:
+        return "preview"
+    if normalized in {"skipped_not_due", "skipped_disabled"}:
+        return "skipped"
+    if normalized in {"failed", "partial_failure", "alert"}:
+        if normalized == "alert":
+            return "alert"
+        return "failed"
+    return "unknown"
+
+
+@app.get("/v1/gatekeeper/calibration/schedules/observability")
+def get_gatekeeper_schedule_observability(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    schedules_payload = list_gatekeeper_calibration_schedules(project_id=project_id, enabled=None, limit=limit)
+    schedules = schedules_payload.get("schedules") if isinstance(schedules_payload, dict) else []
+    if not isinstance(schedules, list):
+        schedules = []
+    schedule_map: dict[str, dict[str, Any]] = {}
+    for item in schedules:
+        if not isinstance(item, dict):
+            continue
+        schedule_id = str(item.get("id") or "")
+        if not schedule_id:
+            continue
+        schedule_map[schedule_id] = {
+            "schedule_id": schedule_id,
+            "schedule_name": str(item.get("name") or schedule_id),
+            "enabled": bool(item.get("enabled")),
+            "preset": str(item.get("preset") or "nightly"),
+            "last_run_at": item.get("last_run_at"),
+            "last_status": item.get("last_status"),
+            "window": {
+                "total": 0,
+                "executed": 0,
+                "ok": 0,
+                "alert": 0,
+                "failed": 0,
+                "skipped": 0,
+                "preview": 0,
+                "unknown": 0,
+            },
+            "trend_map": {},
+            "failure_classes": {},
+            "last_run_result": {},
+        }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  schedule_id::text,
+                  schedule_name,
+                  status,
+                  project_cycle_status,
+                  returncode,
+                  alerts,
+                  result,
+                  created_at
+                FROM gatekeeper_calibration_run_projects
+                WHERE project_id = %s
+                  AND created_at >= %s
+                ORDER BY created_at ASC
+                LIMIT 50000
+                """,
+                (project_id, since),
+            )
+            rows = cur.fetchall()
+
+    for row in rows:
+        schedule_id = str(row[0] or "")
+        schedule_name = str(row[1] or schedule_id or "unknown_schedule")
+        status = str(row[2] or "unknown")
+        project_cycle_status = str(row[3] or "unknown")
+        returncode = row[4] if isinstance(row[4], int) else None
+        alerts = row[5] if isinstance(row[5], list) else []
+        result = row[6] if isinstance(row[6], dict) else {}
+        created_at = row[7]
+
+        item = schedule_map.get(schedule_id)
+        if item is None:
+            item = {
+                "schedule_id": schedule_id,
+                "schedule_name": schedule_name,
+                "enabled": True,
+                "preset": "unknown",
+                "last_run_at": None,
+                "last_status": None,
+                "window": {
+                    "total": 0,
+                    "executed": 0,
+                    "ok": 0,
+                    "alert": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "preview": 0,
+                    "unknown": 0,
+                },
+                "trend_map": {},
+                "failure_classes": {},
+                "last_run_result": {},
+            }
+            schedule_map[schedule_id] = item
+
+        classifier = _classify_schedule_run_status(status, project_cycle_status, len(alerts), returncode)
+        item["window"]["total"] = int(item["window"]["total"]) + 1
+        if status == "executed":
+            item["window"]["executed"] = int(item["window"]["executed"]) + 1
+        if classifier in item["window"]:
+            item["window"][classifier] = int(item["window"][classifier]) + 1
+        else:
+            item["window"]["unknown"] = int(item["window"]["unknown"]) + 1
+
+        if hasattr(created_at, "date"):
+            day_key = created_at.date().isoformat()
+        else:
+            day_key = str(created_at)
+        trend_map = item["trend_map"] if isinstance(item["trend_map"], dict) else {}
+        bucket = trend_map.get(day_key)
+        if bucket is None:
+            bucket = {"day": day_key, "ok": 0, "alert": 0, "failed": 0, "skipped": 0}
+            trend_map[day_key] = bucket
+        if classifier in {"ok", "alert", "failed", "skipped"}:
+            bucket[classifier] = int(bucket.get(classifier, 0)) + 1
+        else:
+            bucket["skipped"] = int(bucket.get("skipped", 0)) + 1
+        item["trend_map"] = trend_map
+
+        if classifier in {"alert", "failed"}:
+            failure_classes = item["failure_classes"] if isinstance(item["failure_classes"], dict) else {}
+            if alerts:
+                for alert in alerts:
+                    if not isinstance(alert, dict):
+                        continue
+                    code = str(alert.get("code") or "").strip()
+                    if not code:
+                        continue
+                    failure_classes[code] = failure_classes.get(code, 0) + 1
+            else:
+                fallback_code = f"cycle_{project_cycle_status}" if project_cycle_status != "unknown" else f"status_{status}"
+                failure_classes[fallback_code] = failure_classes.get(fallback_code, 0) + 1
+            item["failure_classes"] = failure_classes
+
+        if not item.get("last_run_at") and hasattr(created_at, "isoformat"):
+            item["last_run_at"] = created_at.isoformat()
+            item["last_status"] = status
+            item["last_run_result"] = result
+        else:
+            current_last = _parse_iso_datetime(item.get("last_run_at"))
+            candidate = _parse_iso_datetime(created_at)
+            if candidate is not None and (current_last is None or candidate >= current_last):
+                item["last_run_at"] = candidate.isoformat()
+                item["last_status"] = status
+                item["last_run_result"] = result
+
+    schedules_out: list[dict[str, Any]] = []
+    for item in schedule_map.values():
+        window = item["window"] if isinstance(item.get("window"), dict) else {}
+        executed = int(window.get("executed", 0))
+        ok_count = int(window.get("ok", 0))
+        alert_count = int(window.get("alert", 0))
+        failed_count = int(window.get("failed", 0))
+        skipped_count = int(window.get("skipped", 0))
+        success_rate = _safe_ratio(ok_count, max(1, executed))
+        alert_rate = _safe_ratio(alert_count, max(1, executed))
+        failure_rate = _safe_ratio(failed_count, max(1, executed))
+        health = "unknown"
+        if executed > 0:
+            if failed_count > 0 or success_rate < 0.8:
+                health = "critical"
+            elif alert_count > 0 or success_rate < 0.95:
+                health = "watch"
+            else:
+                health = "healthy"
+
+        failure_classes = item.get("failure_classes") if isinstance(item.get("failure_classes"), dict) else {}
+        top_failure_classes = [
+            {"code": code, "count": int(count)}
+            for code, count in sorted(failure_classes.items(), key=lambda pair: (-int(pair[1]), str(pair[0])))[:5]
+        ]
+        trend_map = item.get("trend_map") if isinstance(item.get("trend_map"), dict) else {}
+        trend = [trend_map[key] for key in sorted(trend_map.keys())][-14:]
+        schedules_out.append(
+            {
+                "schedule_id": item.get("schedule_id"),
+                "schedule_name": item.get("schedule_name"),
+                "enabled": bool(item.get("enabled")),
+                "preset": item.get("preset"),
+                "last_run_at": item.get("last_run_at"),
+                "last_status": item.get("last_status"),
+                "slo": {
+                    "health": health,
+                    "success_rate": success_rate,
+                    "alert_rate": alert_rate,
+                    "failure_rate": failure_rate,
+                },
+                "window": {
+                    "total": int(window.get("total", 0)),
+                    "executed": executed,
+                    "ok": ok_count,
+                    "alert": alert_count,
+                    "failed": failed_count,
+                    "skipped": skipped_count,
+                    "preview": int(window.get("preview", 0)),
+                    "unknown": int(window.get("unknown", 0)),
+                },
+                "trend": trend,
+                "top_failure_classes": top_failure_classes,
+            }
+        )
+
+    schedules_out.sort(key=lambda item: (str(item.get("schedule_name") or "").lower(), str(item.get("schedule_id") or "")))
+    return {
+        "project_id": project_id,
+        "days": int(days),
+        "since": since.isoformat(),
+        "schedules": schedules_out,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/observability/compare")
+def get_gatekeeper_observability_compare(
+    days: int = Query(default=30, ge=1, le=365),
+    project_ids: str | None = None,
+    limit: int = Query(default=30, ge=1, le=200),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    requested_projects = _parse_csv_tokens(project_ids)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if requested_projects:
+                cur.execute(
+                    """
+                    SELECT project_id, id::text, enabled
+                    FROM gatekeeper_calibration_schedules
+                    WHERE project_id = ANY(%s)
+                    """,
+                    (requested_projects,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT project_id, id::text, enabled
+                    FROM gatekeeper_calibration_schedules
+                    """
+                )
+            schedule_rows = cur.fetchall()
+
+            if requested_projects:
+                cur.execute(
+                    """
+                    SELECT
+                      project_id,
+                      schedule_id::text,
+                      status,
+                      project_cycle_status,
+                      returncode,
+                      alerts,
+                      created_at
+                    FROM gatekeeper_calibration_run_projects
+                    WHERE created_at >= %s
+                      AND project_id = ANY(%s)
+                    ORDER BY created_at DESC
+                    LIMIT 100000
+                    """,
+                    (since, requested_projects),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      project_id,
+                      schedule_id::text,
+                      status,
+                      project_cycle_status,
+                      returncode,
+                      alerts,
+                      created_at
+                    FROM gatekeeper_calibration_run_projects
+                    WHERE created_at >= %s
+                    ORDER BY created_at DESC
+                    LIMIT 100000
+                    """,
+                    (since,),
+                )
+            run_rows = cur.fetchall()
+
+    project_stats: dict[str, dict[str, Any]] = {}
+    for row in schedule_rows:
+        project_id = str(row[0] or "")
+        if not project_id:
+            continue
+        item = project_stats.get(project_id)
+        if item is None:
+            item = {
+                "project_id": project_id,
+                "schedules_total": 0,
+                "enabled_schedules": 0,
+                "executed": 0,
+                "ok": 0,
+                "alert": 0,
+                "failed": 0,
+                "skipped": 0,
+                "preview": 0,
+                "unknown": 0,
+                "last_run_at": None,
+                "failure_classes": {},
+            }
+            project_stats[project_id] = item
+        item["schedules_total"] = int(item["schedules_total"]) + 1
+        if bool(row[2]):
+            item["enabled_schedules"] = int(item["enabled_schedules"]) + 1
+
+    for row in run_rows:
+        project_id = str(row[0] or "")
+        if not project_id:
+            continue
+        item = project_stats.get(project_id)
+        if item is None:
+            item = {
+                "project_id": project_id,
+                "schedules_total": 0,
+                "enabled_schedules": 0,
+                "executed": 0,
+                "ok": 0,
+                "alert": 0,
+                "failed": 0,
+                "skipped": 0,
+                "preview": 0,
+                "unknown": 0,
+                "last_run_at": None,
+                "failure_classes": {},
+            }
+            project_stats[project_id] = item
+
+        status = str(row[2] or "unknown")
+        cycle_status = str(row[3] or "unknown")
+        returncode = row[4] if isinstance(row[4], int) else None
+        alerts = row[5] if isinstance(row[5], list) else []
+        created_at = _parse_iso_datetime(row[6])
+        klass = _classify_schedule_run_status(status, cycle_status, len(alerts), returncode)
+        if status == "executed":
+            item["executed"] = int(item["executed"]) + 1
+        if klass in item:
+            item[klass] = int(item[klass]) + 1
+        else:
+            item["unknown"] = int(item["unknown"]) + 1
+
+        if klass in {"alert", "failed"}:
+            failure_classes = item["failure_classes"] if isinstance(item["failure_classes"], dict) else {}
+            if alerts:
+                for alert in alerts:
+                    if not isinstance(alert, dict):
+                        continue
+                    code = str(alert.get("code") or "").strip()
+                    if not code:
+                        continue
+                    failure_classes[code] = failure_classes.get(code, 0) + 1
+            else:
+                fallback_code = f"cycle_{cycle_status}" if cycle_status != "unknown" else f"status_{status}"
+                failure_classes[fallback_code] = failure_classes.get(fallback_code, 0) + 1
+            item["failure_classes"] = failure_classes
+
+        current_last = _parse_iso_datetime(item.get("last_run_at"))
+        if created_at is not None and (current_last is None or created_at >= current_last):
+            item["last_run_at"] = created_at.isoformat()
+
+    if requested_projects:
+        for project_id in requested_projects:
+            project_stats.setdefault(
+                project_id,
+                {
+                    "project_id": project_id,
+                    "schedules_total": 0,
+                    "enabled_schedules": 0,
+                    "executed": 0,
+                    "ok": 0,
+                    "alert": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "preview": 0,
+                    "unknown": 0,
+                    "last_run_at": None,
+                    "failure_classes": {},
+                },
+            )
+
+    projects_out: list[dict[str, Any]] = []
+    for item in project_stats.values():
+        executed = int(item["executed"])
+        ok_count = int(item["ok"])
+        alert_count = int(item["alert"])
+        failed_count = int(item["failed"])
+        success_rate = _safe_ratio(ok_count, max(1, executed))
+        alert_rate = _safe_ratio(alert_count, max(1, executed))
+        failure_rate = _safe_ratio(failed_count, max(1, executed))
+        health = "unknown"
+        if executed > 0:
+            if failed_count > 0 or success_rate < 0.8:
+                health = "critical"
+            elif alert_count > 0 or success_rate < 0.95:
+                health = "watch"
+            else:
+                health = "healthy"
+        drift_index = round((failure_rate * 100.0) + (alert_rate * 20.0), 2)
+        failure_classes = item["failure_classes"] if isinstance(item["failure_classes"], dict) else {}
+        top_failure_classes = [
+            {"code": code, "count": int(count)}
+            for code, count in sorted(failure_classes.items(), key=lambda pair: (-int(pair[1]), str(pair[0])))[:5]
+        ]
+        projects_out.append(
+            {
+                "project_id": item["project_id"],
+                "schedules_total": int(item["schedules_total"]),
+                "enabled_schedules": int(item["enabled_schedules"]),
+                "window": {
+                    "executed": executed,
+                    "ok": ok_count,
+                    "alert": alert_count,
+                    "failed": failed_count,
+                    "skipped": int(item["skipped"]),
+                    "preview": int(item["preview"]),
+                    "unknown": int(item["unknown"]),
+                },
+                "slo": {
+                    "health": health,
+                    "success_rate": success_rate,
+                    "alert_rate": alert_rate,
+                    "failure_rate": failure_rate,
+                    "drift_index": drift_index,
+                },
+                "last_run_at": item.get("last_run_at"),
+                "top_failure_classes": top_failure_classes,
+            }
+        )
+
+    projects_out.sort(
+        key=lambda item: (
+            0 if item["slo"]["health"] == "critical" else 1 if item["slo"]["health"] == "watch" else 2,
+            float(item["slo"]["success_rate"]),
+            -float(item["slo"]["drift_index"]),
+            str(item["project_id"]),
+        )
+    )
+    return {
+        "days": int(days),
+        "since": since.isoformat(),
+        "requested_projects": requested_projects,
+        "projects": projects_out[: max(1, int(limit))],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/observability/compare/drilldown")
+def get_gatekeeper_observability_compare_drilldown(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    include_neighbors: int = Query(default=2, ge=0, le=5),
+) -> dict[str, Any]:
+    compare_payload = get_gatekeeper_observability_compare(days=days, project_ids=None, limit=200)
+    projects = compare_payload.get("projects") if isinstance(compare_payload, dict) else []
+    if not isinstance(projects, list):
+        projects = []
+
+    selected_index: int | None = None
+    selected_project: dict[str, Any] | None = None
+    for idx, item in enumerate(projects):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("project_id") or "") == project_id:
+            selected_index = idx
+            selected_project = item
+            break
+
+    if selected_project is None:
+        fallback = get_gatekeeper_observability_compare(days=days, project_ids=project_id, limit=1)
+        fallback_projects = fallback.get("projects") if isinstance(fallback, dict) else []
+        if isinstance(fallback_projects, list) and fallback_projects and isinstance(fallback_projects[0], dict):
+            selected_project = fallback_projects[0]
+            projects.append(selected_project)
+            selected_index = len(projects) - 1
+        else:
+            selected_index = None
+
+    if selected_index is None:
+        selected_index = 0
+    left = max(0, selected_index - int(include_neighbors))
+    right = min(len(projects), selected_index + int(include_neighbors) + 1)
+    neighbors = [item for item in projects[left:right] if isinstance(item, dict)]
+
+    schedule_observability = get_gatekeeper_schedule_observability(project_id=project_id, days=days, limit=500)
+    return {
+        "project_id": project_id,
+        "days": int(days),
+        "since": compare_payload.get("since"),
+        "rank_position": selected_index + 1 if selected_project is not None else None,
+        "total_projects": len(projects),
+        "selected_project": selected_project,
+        "neighbors": neighbors,
+        "schedule_observability": schedule_observability,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.put("/v1/gatekeeper/calibration/schedules")
+def upsert_gatekeeper_calibration_schedule(payload: GatekeeperCalibrationScheduleUpsertRequest) -> dict[str, Any]:
+    weights = _normalize_threshold_list(payload.weights, field_name="weights")
+    confidences = _normalize_threshold_list(payload.confidences, field_name="confidences")
+    score_thresholds = _normalize_threshold_list(payload.score_thresholds, field_name="score_thresholds")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_schedules (
+                  id,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_hours,
+                  lookback_days,
+                  limit_rows,
+                  holdout_ratio,
+                  split_seed,
+                  weights,
+                  confidences,
+                  score_thresholds,
+                  top_k,
+                  allow_guardrail_fail,
+                  snapshot_note,
+                  updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, name) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    preset = EXCLUDED.preset,
+                    interval_hours = EXCLUDED.interval_hours,
+                    lookback_days = EXCLUDED.lookback_days,
+                    limit_rows = EXCLUDED.limit_rows,
+                    holdout_ratio = EXCLUDED.holdout_ratio,
+                    split_seed = EXCLUDED.split_seed,
+                    weights = EXCLUDED.weights,
+                    confidences = EXCLUDED.confidences,
+                    score_thresholds = EXCLUDED.score_thresholds,
+                    top_k = EXCLUDED.top_k,
+                    allow_guardrail_fail = EXCLUDED.allow_guardrail_fail,
+                    snapshot_note = EXCLUDED.snapshot_note,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  id::text,
+                  project_id,
+                  name,
+                  enabled,
+                  preset,
+                  interval_hours,
+                  lookback_days,
+                  limit_rows,
+                  holdout_ratio,
+                  split_seed,
+                  weights,
+                  confidences,
+                  score_thresholds,
+                  top_k,
+                  allow_guardrail_fail,
+                  snapshot_note,
+                  updated_by,
+                  last_run_at,
+                  last_status,
+                  last_run_summary,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    uuid4(),
+                    payload.project_id,
+                    payload.name,
+                    payload.enabled,
+                    payload.preset,
+                    payload.interval_hours,
+                    payload.lookback_days,
+                    payload.limit_rows,
+                    payload.holdout_ratio,
+                    payload.split_seed,
+                    Jsonb(weights),
+                    Jsonb(confidences),
+                    Jsonb(score_thresholds),
+                    payload.top_k,
+                    payload.allow_guardrail_fail,
+                    payload.snapshot_note,
+                    payload.updated_by,
+                ),
+            )
+            row = cur.fetchone()
+    return {"status": "ok", "schedule": _serialize_gatekeeper_calibration_schedule_row(row)}
+
+
+@app.delete("/v1/gatekeeper/calibration/schedules/{schedule_id}")
+def delete_gatekeeper_calibration_schedule(schedule_id: UUID, project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM gatekeeper_calibration_schedules
+                WHERE id = %s
+                  AND project_id = %s
+                RETURNING id::text
+                """,
+                (schedule_id, project_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="calibration_schedule_not_found")
+    return {"status": "ok", "deleted_schedule_id": row[0]}
+
+
+@app.get("/v1/gatekeeper/alerts/targets")
+def list_gatekeeper_alert_targets(
+    project_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  channel,
+                  target,
+                  enabled,
+                  config,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM gatekeeper_alert_targets
+                WHERE project_id = %s
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (project_id, limit),
+            )
+            rows = cur.fetchall()
+    targets = [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "channel": row[2],
+            "target": row[3],
+            "enabled": bool(row[4]),
+            "config": row[5] if isinstance(row[5], dict) else {},
+            "created_by": row[6],
+            "updated_by": row[7],
+            "created_at": row[8].isoformat(),
+            "updated_at": row[9].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"targets": targets}
+
+
+@app.put("/v1/gatekeeper/alerts/targets")
+def upsert_gatekeeper_alert_target(payload: GatekeeperAlertTargetUpsertRequest) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_alert_targets (
+                  id, project_id, channel, target, enabled, config, created_by, updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, channel, target) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    config = EXCLUDED.config,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  id::text,
+                  project_id,
+                  channel,
+                  target,
+                  enabled,
+                  config,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    uuid4(),
+                    payload.project_id,
+                    payload.channel,
+                    payload.target,
+                    payload.enabled,
+                    Jsonb(payload.config or {}),
+                    payload.updated_by,
+                    payload.updated_by,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "target": {
+            "id": row[0],
+            "project_id": row[1],
+            "channel": row[2],
+            "target": row[3],
+            "enabled": bool(row[4]),
+            "config": row[5] if isinstance(row[5], dict) else {},
+            "created_by": row[6],
+            "updated_by": row[7],
+            "created_at": row[8].isoformat(),
+            "updated_at": row[9].isoformat(),
+        },
+    }
+
+
+@app.delete("/v1/gatekeeper/alerts/targets/{target_id}")
+def delete_gatekeeper_alert_target(target_id: UUID, project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM gatekeeper_alert_targets
+                WHERE id = %s
+                  AND project_id = %s
+                RETURNING id::text
+                """,
+                (target_id, project_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="gatekeeper_alert_target_not_found")
+    return {"status": "ok", "deleted_target_id": row[0]}
+
+
+@app.post("/v1/gatekeeper/alerts/attempts")
+def create_gatekeeper_alert_attempt(payload: GatekeeperAlertAttemptCreateRequest) -> dict[str, Any]:
+    alert_codes = payload.alert_codes if isinstance(payload.alert_codes, list) else []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_alert_attempts (
+                  id,
+                  run_id,
+                  project_id,
+                  channel,
+                  target,
+                  status,
+                  alert_codes,
+                  error_message,
+                  response_payload
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id::text, attempted_at
+                """,
+                (
+                    uuid4(),
+                    payload.run_id,
+                    payload.project_id,
+                    payload.channel,
+                    payload.target,
+                    payload.status,
+                    Jsonb(alert_codes),
+                    payload.error_message,
+                    Jsonb(payload.response_payload or {}),
+                ),
+            )
+            row = cur.fetchone()
+    return {"status": "ok", "attempt": {"id": row[0], "attempted_at": row[1].isoformat()}}
+
+
+@app.get("/v1/gatekeeper/alerts/attempts")
+def list_gatekeeper_alert_attempts(
+    project_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  run_id,
+                  project_id,
+                  channel,
+                  target,
+                  status,
+                  alert_codes,
+                  error_message,
+                  response_payload,
+                  attempted_at
+                FROM gatekeeper_alert_attempts
+                WHERE project_id = %s
+                ORDER BY attempted_at DESC
+                LIMIT %s
+                """,
+                (project_id, limit),
+            )
+            rows = cur.fetchall()
+    attempts = [
+        {
+            "id": row[0],
+            "run_id": row[1],
+            "project_id": row[2],
+            "channel": row[3],
+            "target": row[4],
+            "status": row[5],
+            "alert_codes": row[6] if isinstance(row[6], list) else [],
+            "error_message": row[7],
+            "response_payload": row[8] if isinstance(row[8], dict) else {},
+            "attempted_at": row[9].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"attempts": attempts}
+
+
+@app.post("/v1/gatekeeper/calibration/runs")
+def upsert_gatekeeper_calibration_run(payload: GatekeeperCalibrationRunIn) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_calibration_runs (
+                  id,
+                  run_id,
+                  status,
+                  started_at,
+                  finished_at,
+                  total_schedules,
+                  executed_count,
+                  alerts_count,
+                  summary,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (run_id) DO UPDATE
+                SET status = EXCLUDED.status,
+                    started_at = EXCLUDED.started_at,
+                    finished_at = EXCLUDED.finished_at,
+                    total_schedules = EXCLUDED.total_schedules,
+                    executed_count = EXCLUDED.executed_count,
+                    alerts_count = EXCLUDED.alerts_count,
+                    summary = EXCLUDED.summary,
+                    updated_at = NOW()
+                RETURNING id::text, run_id, status, started_at, finished_at, total_schedules, executed_count, alerts_count, updated_at
+                """,
+                (
+                    uuid4(),
+                    payload.run_id,
+                    payload.status,
+                    payload.started_at,
+                    payload.finished_at,
+                    payload.total_schedules,
+                    payload.executed_count,
+                    payload.alerts_count,
+                    Jsonb(payload.summary or {}),
+                ),
+            )
+            run_row = cur.fetchone()
+            cur.execute("DELETE FROM gatekeeper_calibration_run_projects WHERE run_id = %s", (payload.run_id,))
+            inserted_projects = 0
+            for item in payload.projects:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_calibration_run_projects (
+                      id,
+                      run_id,
+                      project_id,
+                      schedule_id,
+                      schedule_name,
+                      status,
+                      project_cycle_status,
+                      returncode,
+                      alerts,
+                      result
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        uuid4(),
+                        payload.run_id,
+                        item.project_id,
+                        item.schedule_id,
+                        item.schedule_name,
+                        item.status,
+                        item.project_cycle_status,
+                        item.returncode,
+                        Jsonb(item.alerts or []),
+                        Jsonb(item.result or {}),
+                    ),
+                )
+                inserted_projects += 1
+    return {
+        "status": "ok",
+        "run": {
+            "id": run_row[0],
+            "run_id": run_row[1],
+            "status": run_row[2],
+            "started_at": run_row[3].isoformat(),
+            "finished_at": run_row[4].isoformat(),
+            "total_schedules": int(run_row[5]),
+            "executed_count": int(run_row[6]),
+            "alerts_count": int(run_row[7]),
+            "updated_at": run_row[8].isoformat(),
+            "projects_upserted": inserted_projects,
+        },
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/runs")
+def list_gatekeeper_calibration_runs(
+    project_id: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict[str, Any]:
+    filters: list[str] = []
+    params: list[Any] = []
+    if status is not None:
+        filters.append("r.status = %s")
+        params.append(status)
+    if project_id is not None:
+        filters.append("EXISTS (SELECT 1 FROM gatekeeper_calibration_run_projects rp WHERE rp.run_id = r.run_id AND rp.project_id = %s)")
+        params.append(project_id)
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  r.run_id,
+                  r.status,
+                  r.started_at,
+                  r.finished_at,
+                  r.total_schedules,
+                  r.executed_count,
+                  r.alerts_count,
+                  r.summary
+                FROM gatekeeper_calibration_runs r
+                {where_clause}
+                ORDER BY r.finished_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            run_rows = cur.fetchall()
+
+            runs: list[dict[str, Any]] = []
+            for row in run_rows:
+                run_id = str(row[0])
+                if project_id is not None:
+                    cur.execute(
+                        """
+                        SELECT
+                          project_id,
+                          schedule_id::text,
+                          schedule_name,
+                          status,
+                          project_cycle_status,
+                          returncode,
+                          alerts,
+                          result,
+                          created_at
+                        FROM gatekeeper_calibration_run_projects
+                        WHERE run_id = %s
+                          AND project_id = %s
+                        ORDER BY created_at DESC
+                        """,
+                        (run_id, project_id),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                          project_id,
+                          schedule_id::text,
+                          schedule_name,
+                          status,
+                          project_cycle_status,
+                          returncode,
+                          alerts,
+                          result,
+                          created_at
+                        FROM gatekeeper_calibration_run_projects
+                        WHERE run_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT 20
+                        """,
+                        (run_id,),
+                    )
+                project_rows = cur.fetchall()
+                runs.append(
+                    {
+                        "run_id": run_id,
+                        "status": row[1],
+                        "started_at": row[2].isoformat(),
+                        "finished_at": row[3].isoformat(),
+                        "total_schedules": int(row[4]),
+                        "executed_count": int(row[5]),
+                        "alerts_count": int(row[6]),
+                        "summary": row[7] if isinstance(row[7], dict) else {},
+                        "projects": [
+                            {
+                                "project_id": pr[0],
+                                "schedule_id": pr[1],
+                                "schedule_name": pr[2],
+                                "status": pr[3],
+                                "project_cycle_status": pr[4],
+                                "returncode": pr[5],
+                                "alerts": pr[6] if isinstance(pr[6], list) else [],
+                                "result": pr[7] if isinstance(pr[7], dict) else {},
+                                "created_at": pr[8].isoformat(),
+                            }
+                            for pr in project_rows
+                        ],
+                    }
+                )
+    return {"runs": runs}
+
+
+@app.get("/v1/gatekeeper/calibration/runs/trends")
+def get_gatekeeper_calibration_run_trends(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  DATE_TRUNC('day', created_at) AS day_bucket,
+                  status,
+                  COUNT(*)::int,
+                  SUM(COALESCE(jsonb_array_length(alerts), 0))::int
+                FROM gatekeeper_calibration_run_projects
+                WHERE project_id = %s
+                  AND created_at >= %s
+                GROUP BY day_bucket, status
+                ORDER BY day_bucket ASC
+                """,
+                (project_id, since),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT
+                  elem->>'code' AS code,
+                  COUNT(*)::int AS hits
+                FROM gatekeeper_calibration_run_projects rp,
+                     LATERAL jsonb_array_elements(rp.alerts) elem
+                WHERE rp.project_id = %s
+                  AND rp.created_at >= %s
+                GROUP BY code
+                ORDER BY hits DESC, code ASC
+                LIMIT 12
+                """,
+                (project_id, since),
+            )
+            alert_rows = cur.fetchall()
+
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        day_key = row[0].date().isoformat()
+        bucket = buckets.get(day_key)
+        if bucket is None:
+            bucket = {
+                "day": day_key,
+                "ok": 0,
+                "alert": 0,
+                "partial_failure": 0,
+                "executed": 0,
+                "alerts_total": 0,
+            }
+            buckets[day_key] = bucket
+        status_value = str(row[1] or "unknown")
+        count = int(row[2] or 0)
+        alert_count = int(row[3] or 0)
+        if status_value in {"ok", "alert", "partial_failure"}:
+            bucket[status_value] = bucket.get(status_value, 0) + count
+        bucket["executed"] += count
+        bucket["alerts_total"] += alert_count
+
+    timeline = [buckets[key] for key in sorted(buckets.keys())]
+    total_executed = sum(int(item["executed"]) for item in timeline)
+    total_alert = sum(int(item["alert"]) for item in timeline)
+    total_partial = sum(int(item["partial_failure"]) for item in timeline)
+    top_alert_codes = [{"code": row[0], "count": int(row[1])} for row in alert_rows if row[0]]
+
+    return {
+        "project_id": project_id,
+        "days": int(days),
+        "since": since.isoformat(),
+        "timeline": timeline,
+        "summary": {
+            "executed_total": total_executed,
+            "alert_total": total_alert,
+            "partial_failure_total": total_partial,
+            "alert_ratio": round((total_alert / total_executed), 4) if total_executed > 0 else 0.0,
+            "top_alert_codes": top_alert_codes,
+        },
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/preview")
+def preview_gatekeeper_calibration_operation(
+    project_id: str,
+    api_url: str | None = None,
+    database_url: str | None = None,
+    skip_due_check: bool = Query(default=False),
+    force_run: bool = Query(default=False),
+    timeout_sec: int = Query(default=1200, ge=30, le=7200),
+) -> dict[str, Any]:
+    operation = _run_gatekeeper_calibration_scheduler(
+        project_id=project_id,
+        api_url=api_url,
+        database_url=database_url,
+        dry_run=True,
+        force_run=force_run,
+        skip_due_check=skip_due_check,
+        fail_on_alert=False,
+        timeout_sec=timeout_sec,
+    )
+    return {
+        "status": "ok",
+        "operation": operation,
+        "safety": {
+            "required_confirmation_phrase": f"RUN {project_id}",
+            "lock_scope": f"project:{project_id}",
+            "idempotency_required_for_live_run": True,
+        },
+    }
+
+
+@app.post("/v1/gatekeeper/calibration/operations/run")
+def run_gatekeeper_calibration_operation(payload: GatekeeperCalibrationOperationRequest) -> dict[str, Any]:
+    _validate_live_operation_controls(
+        project_id=payload.project_id,
+        dry_run=payload.dry_run,
+        confirm=payload.confirm,
+        confirmation_phrase=payload.confirmation_phrase,
+        operation_token=payload.operation_token,
+    )
+
+    operation_record_id: str | None = None
+    operation_token = (payload.operation_token or "").strip() if payload.operation_token else None
+    if operation_token:
+        record_id, existing_status, existing_payload = _create_operation_run_record(
+            project_id=payload.project_id,
+            operation_token=operation_token,
+            requested_by=(payload.requested_by or "").strip() or None,
+            dry_run=payload.dry_run,
+            request_payload=payload.model_dump(mode="json"),
+            mode="sync",
+            status="running",
+        )
+        if existing_status == "succeeded":
+            return {
+                "status": "ok",
+                "operation": existing_payload,
+                "idempotent_replay": True,
+                "operation_record_id": record_id,
+            }
+        if existing_status == "failed":
+            return {
+                "status": "failed",
+                "operation": existing_payload,
+                "idempotent_replay": True,
+                "operation_record_id": record_id,
+            }
+        if existing_status == "canceled":
+            return {
+                "status": "canceled",
+                "operation": existing_payload,
+                "idempotent_replay": True,
+                "operation_record_id": record_id,
+            }
+        if existing_status in {"running", "queued", "cancel_requested"}:
+            raise HTTPException(status_code=409, detail="calibration_operation_token_in_progress")
+        operation_record_id = record_id
+        _append_operation_event(
+            run_id=record_id,
+            project_id=payload.project_id,
+            event_type="started",
+            phase="running",
+            progress_percent=8.0,
+            message="Synchronous calibration operation started.",
+            payload={"mode": "sync"},
+        )
+
+    try:
+        with _with_gatekeeper_operation_lock(payload.project_id):
+            operation = _run_gatekeeper_calibration_scheduler(
+                project_id=payload.project_id,
+                api_url=payload.api_url,
+                database_url=payload.database_url,
+                dry_run=payload.dry_run,
+                force_run=payload.force_run,
+                skip_due_check=payload.skip_due_check,
+                fail_on_alert=payload.fail_on_alert,
+                timeout_sec=payload.timeout_sec,
+            )
+    except HTTPException as exc:
+        if operation_record_id:
+            _update_operation_run_record(
+                operation_record_id,
+                status="failed",
+                result_payload={
+                    "status": "failed",
+                    "detail": exc.detail,
+                    "generated_at": datetime.now(UTC).isoformat(),
+                },
+                error_message=str(exc.detail)[:4000],
+                progress_percent=100.0,
+                progress_phase="failed",
+                set_finished_at=True,
+            )
+            _append_operation_event(
+                run_id=operation_record_id,
+                project_id=payload.project_id,
+                event_type="failed",
+                phase="failed",
+                progress_percent=100.0,
+                message="Synchronous calibration operation failed.",
+                payload={"detail": exc.detail},
+            )
+        raise
+
+    if operation_record_id:
+        _update_operation_run_record(
+            operation_record_id,
+            status="succeeded",
+            result_payload=operation,
+            progress_percent=100.0,
+            progress_phase="completed",
+            set_finished_at=True,
+        )
+        _append_operation_event(
+            run_id=operation_record_id,
+            project_id=payload.project_id,
+            event_type="completed",
+            phase="completed",
+            progress_percent=100.0,
+            message="Synchronous calibration operation completed.",
+            payload={"mode": "sync"},
+        )
+    return {"status": "ok", "operation": operation, "operation_record_id": operation_record_id}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/queue")
+def enqueue_gatekeeper_calibration_operation(
+    payload: GatekeeperCalibrationOperationQueueRequest,
+) -> dict[str, Any]:
+    operation_token = _normalize_operation_token(
+        project_id=payload.project_id,
+        dry_run=payload.dry_run,
+        raw_token=payload.operation_token,
+    )
+    _validate_live_operation_controls(
+        project_id=payload.project_id,
+        dry_run=payload.dry_run,
+        confirm=payload.confirm,
+        confirmation_phrase=payload.confirmation_phrase,
+        operation_token=operation_token,
+    )
+
+    request_payload = payload.model_dump(mode="json")
+    request_payload["operation_token"] = operation_token
+    requested_by = (payload.requested_by or "").strip() or "web_ui"
+    record_id, existing_status, _existing_payload = _create_operation_run_record(
+        project_id=payload.project_id,
+        operation_token=operation_token,
+        requested_by=requested_by,
+        dry_run=payload.dry_run,
+        request_payload=request_payload,
+        mode="async",
+        status="queued",
+        max_attempts=payload.max_attempts,
+    )
+    run = _fetch_operation_run(run_id=UUID(record_id), project_id=payload.project_id)
+    if run is None:
+        raise HTTPException(status_code=500, detail="calibration_operation_queue_enqueue_failed")
+    queue_control = _fetch_operation_queue_control(payload.project_id)
+    queue_paused = bool(queue_control.get("pause_active"))
+
+    if existing_status is not None:
+        if existing_status in {"queued", "running", "cancel_requested"}:
+            return {
+                "status": "queued",
+                "run": run,
+                "idempotent_replay": True,
+                "next_action": "queue_paused" if queue_paused else "worker_running_or_queue_pending",
+                "queue_paused": queue_paused,
+                "queue_resume_at": queue_control.get("paused_until"),
+            }
+        if existing_status == "succeeded":
+            return {
+                "status": "ok",
+                "run": run,
+                "idempotent_replay": True,
+                "queue_paused": queue_paused,
+                "queue_resume_at": queue_control.get("paused_until"),
+            }
+        if existing_status in {"failed", "canceled"}:
+            return {
+                "status": existing_status,
+                "run": run,
+                "idempotent_replay": True,
+                "next_action": "retry",
+                "queue_paused": queue_paused,
+                "queue_resume_at": queue_control.get("paused_until"),
+            }
+
+    _append_operation_event(
+        run_id=record_id,
+        project_id=payload.project_id,
+        event_type="queued",
+        phase="queued",
+        progress_percent=0.0,
+        message="Calibration operation queued for async worker execution.",
+        payload={"requested_by": requested_by},
+    )
+    refreshed = _fetch_operation_run(run_id=UUID(record_id), project_id=payload.project_id)
+    return {
+        "status": "queued",
+        "run": refreshed or run,
+        "next_action": "queue_paused" if queue_paused else "run_gatekeeper_calibration_operation_queue_worker",
+        "queue_paused": queue_paused,
+        "queue_resume_at": queue_control.get("paused_until"),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/throughput")
+def get_gatekeeper_calibration_operation_throughput(
+    project_id: str,
+    window_hours: int = Query(default=24, ge=1, le=168),
+) -> dict[str, Any]:
+    return _build_operation_queue_throughput(project_id=project_id, window_hours=window_hours)
+
+
+@app.get("/v1/gatekeeper/calibration/operations/throughput/compare")
+def get_gatekeeper_calibration_operation_throughput_compare(
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=12, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    return _build_operation_queue_throughput_compare_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+    )
+
+
+@app.get("/v1/gatekeeper/calibration/operations/throughput/owners")
+def get_gatekeeper_calibration_operation_throughput_owner_rollups(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    sla_hours: int = Query(default=24, ge=1, le=168),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    return _build_operation_queue_owner_rollups_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+        sla_hours=sla_hours,
+    )
+
+
+@app.get("/v1/gatekeeper/calibration/operations/governance/drift")
+def get_gatekeeper_calibration_operation_governance_drift(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    audit_days: int = Query(default=7, ge=1, le=365),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    return _build_operation_queue_governance_drift_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+        audit_days=audit_days,
+    )
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents/slo_board")
+def get_gatekeeper_calibration_operation_incident_slo_board(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    incident_window_days: int = Query(default=30, ge=1, le=180),
+    mttr_sla_hours: int = Query(default=24, ge=1, le=168),
+    mtta_proxy_sla_minutes: int = Query(default=15, ge=1, le=1440),
+    rotation_lag_sla_hours: int = Query(default=168, ge=1, le=2160),
+    secret_max_age_days: int = Query(default=30, ge=1, le=365),
+    top_n: int = Query(default=12, ge=1, le=50),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    return _build_operation_queue_incident_slo_board_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+        incident_window_days=incident_window_days,
+        mttr_sla_hours=mttr_sla_hours,
+        mtta_proxy_sla_minutes=mtta_proxy_sla_minutes,
+        rotation_lag_sla_hours=rotation_lag_sla_hours,
+        secret_max_age_days=secret_max_age_days,
+        top_n=top_n,
+    )
+
+
+@app.get("/v1/gatekeeper/calibration/operations/throughput/compare/export", response_model=None)
+def export_gatekeeper_calibration_operation_throughput_compare(
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    format: str = Query(default="csv", pattern="^(csv|json)$"),
+) -> Response | dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+    )
+    if format == "json":
+        return payload
+    csv_payload = _serialize_queue_throughput_compare_csv(payload)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return Response(
+        content=csv_payload,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="queue-command-center-{timestamp}.csv"'},
+    )
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/compare/export/webhook")
+def export_gatekeeper_calibration_operation_throughput_compare_webhook(
+    payload: GatekeeperCalibrationQueueWebhookExportRequest,
+) -> dict[str, Any]:
+    requested = payload.project_ids or []
+    compare_payload = _build_operation_queue_throughput_compare_payload(
+        requested=requested,
+        limit=payload.limit,
+        window_hours=payload.window_hours,
+    )
+    snapshot = {
+        "event": "gatekeeper_queue_governance_snapshot",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "requested_by": payload.requested_by,
+        "snapshot": compare_payload,
+    }
+    if payload.include_csv:
+        snapshot["snapshot_csv"] = _serialize_queue_throughput_compare_csv(compare_payload)
+
+    status_code, response_preview = _post_queue_governance_webhook(
+        webhook_url=payload.webhook_url,
+        payload=snapshot,
+        timeout_sec=payload.timeout_sec,
+    )
+    for row in compare_payload.get("projects", []):
+        if not isinstance(row, dict):
+            continue
+        project_id = str(row.get("project_id") or "").strip()
+        if not project_id:
+            continue
+        _append_operation_queue_control_event(
+            project_id=project_id,
+            action="export_snapshot",
+            actor=payload.requested_by,
+            reason=f"webhook:{payload.webhook_url[:180]}",
+            paused_until=None,
+            payload={
+                "channel": "webhook",
+                "window_hours": int(payload.window_hours),
+                "http_status": int(status_code),
+            },
+        )
+    return {
+        "status": "ok",
+        "channel": "webhook",
+        "webhook_url": payload.webhook_url,
+        "http_status": int(status_code),
+        "response_preview": response_preview[:500],
+        "projects_total": len(compare_payload.get("projects", [])),
+        "window_hours": int(payload.window_hours),
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/throughput/recommendations")
+def get_gatekeeper_calibration_operation_throughput_recommendations(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    history_hours: int = Query(default=72, ge=24, le=720),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    targets = _list_operation_queue_projects(limit=limit, requested=requested or None)
+    rows = [
+        _build_operation_queue_autoscaling_recommendation(
+            project_id=item,
+            window_hours=window_hours,
+            history_hours=history_hours,
+        )
+        for item in targets
+    ]
+    rows.sort(
+        key=lambda item: (
+            {"critical": 0, "watch": 1, "healthy": 2}.get(str(item.get("health") or "healthy"), 3),
+            -int((item.get("recommendation") or {}).get("worker_concurrency_delta") or 0),
+            -int((item.get("observed") or {}).get("queue_depth") or 0),
+            str(item.get("project_id") or ""),
+        )
+    )
+    return {
+        "window_hours": int(window_hours),
+        "history_hours": int(history_hours),
+        "requested_projects": requested,
+        "recommendations": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/recommendations/apply")
+def apply_gatekeeper_calibration_operation_throughput_recommendation(
+    payload: GatekeeperCalibrationQueueRecommendationApplyRequest,
+) -> dict[str, Any]:
+    recommendation = _build_operation_queue_autoscaling_recommendation(
+        project_id=payload.project_id,
+        window_hours=payload.window_hours,
+        history_hours=payload.history_hours,
+    )
+    recommendation_controls = recommendation.get("recommendation") if isinstance(recommendation.get("recommendation"), dict) else {}
+    existing = _fetch_operation_queue_control(payload.project_id)
+    target_worker_lag_sla = max(1, int(existing.get("worker_lag_sla_minutes") or 20))
+    target_queue_depth_warn = max(1, int(existing.get("queue_depth_warn") or 12))
+    if payload.apply_worker_lag_sla:
+        target_worker_lag_sla = max(1, int(recommendation_controls.get("worker_lag_sla_minutes") or target_worker_lag_sla))
+    if payload.apply_queue_depth_warn:
+        target_queue_depth_warn = max(1, int(recommendation_controls.get("queue_depth_warn") or target_queue_depth_warn))
+
+    control = _upsert_operation_queue_control(
+        project_id=payload.project_id,
+        worker_lag_sla_minutes=target_worker_lag_sla,
+        queue_depth_warn=target_queue_depth_warn,
+        incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+            existing.get("incident_preflight_enforcement_mode"),
+            default="off",
+        ),
+        incident_preflight_pause_hours=max(1, min(168, int(existing.get("incident_preflight_pause_hours") or 4))),
+        incident_preflight_critical_fail_threshold=max(
+            1,
+            min(100, int(existing.get("incident_preflight_critical_fail_threshold") or 1)),
+        ),
+        updated_by=payload.updated_by,
+        paused_until=_parse_iso_datetime(existing.get("paused_until")),
+        pause_reason=existing.get("pause_reason"),
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="apply_recommendation",
+        actor=payload.updated_by,
+        reason=(payload.reason or "").strip()[:2000] or "autoscaling_recommendation_apply",
+        paused_until=_parse_iso_datetime(control.get("paused_until")),
+        payload={
+            "window_hours": int(payload.window_hours),
+            "history_hours": int(payload.history_hours),
+            "apply_worker_lag_sla": bool(payload.apply_worker_lag_sla),
+            "apply_queue_depth_warn": bool(payload.apply_queue_depth_warn),
+            "recommended_worker_lag_sla_minutes": int(recommendation_controls.get("worker_lag_sla_minutes") or target_worker_lag_sla),
+            "recommended_queue_depth_warn": int(recommendation_controls.get("queue_depth_warn") or target_queue_depth_warn),
+            "applied_worker_lag_sla_minutes": int(control.get("worker_lag_sla_minutes") or target_worker_lag_sla),
+            "applied_queue_depth_warn": int(control.get("queue_depth_warn") or target_queue_depth_warn),
+            "recommended_worker_concurrency_target": int(recommendation_controls.get("worker_concurrency_target") or 0),
+            "recommended_worker_concurrency_delta": int(recommendation_controls.get("worker_concurrency_delta") or 0),
+        },
+    )
+    throughput = _build_operation_queue_throughput(project_id=payload.project_id, window_hours=payload.window_hours)
+    return {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "control": control,
+        "throughput": throughput,
+        "recommendation": recommendation,
+        "applied": {
+            "worker_lag_sla_minutes": int(control.get("worker_lag_sla_minutes") or target_worker_lag_sla),
+            "queue_depth_warn": int(control.get("queue_depth_warn") or target_queue_depth_warn),
+        },
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/ownership")
+def list_gatekeeper_calibration_operation_queue_ownership(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=200),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    ownership_map = _list_operation_queue_ownership(project_ids=requested or None, limit=limit)
+    rows = [ownership_map[key] for key in sorted(ownership_map.keys())]
+    return {
+        "requested_projects": requested,
+        "ownership": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.put("/v1/gatekeeper/calibration/operations/ownership")
+def upsert_gatekeeper_calibration_operation_queue_ownership(
+    payload: GatekeeperCalibrationQueueOwnershipUpsertRequest,
+) -> dict[str, Any]:
+    ownership = _upsert_operation_queue_ownership(
+        project_id=payload.project_id,
+        owner_name=payload.owner_name,
+        owner_contact=payload.owner_contact,
+        oncall_channel=payload.oncall_channel,
+        escalation_channel=payload.escalation_channel,
+        updated_by=payload.updated_by,
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="ownership_updated",
+        actor=payload.updated_by,
+        reason="queue_ownership_routing_update",
+        paused_until=None,
+        payload={
+            "owner_name": ownership.get("owner_name"),
+            "owner_contact": ownership.get("owner_contact"),
+            "oncall_channel": ownership.get("oncall_channel"),
+            "escalation_channel": ownership.get("escalation_channel"),
+        },
+    )
+    return {"status": "ok", "ownership": ownership}
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents/hooks")
+def list_gatekeeper_calibration_operation_queue_incident_hooks(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=200),
+    x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
+) -> dict[str, Any]:
+    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    hooks_map = _list_operation_queue_incident_hooks(
+        project_ids=requested or None,
+        actor_roles=actor_roles,
+        limit=limit,
+    )
+    rows = [hooks_map[key] for key in sorted(hooks_map.keys())]
+    return {
+        "requested_projects": requested,
+        "hooks": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents/policies")
+def list_gatekeeper_calibration_operation_queue_incident_policies(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=1000),
+    x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
+) -> dict[str, Any]:
+    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    rows = _list_operation_queue_incident_policies(
+        project_ids=requested or None,
+        actor_roles=actor_roles,
+        limit=limit,
+    )
+    return {
+        "requested_projects": requested,
+        "policies": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.put("/v1/gatekeeper/calibration/operations/incidents/policies")
+def upsert_gatekeeper_calibration_operation_queue_incident_policy(
+    payload: GatekeeperCalibrationQueueIncidentPolicyUpsertRequest,
+    x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
+) -> dict[str, Any]:
+    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    policy = _upsert_operation_queue_incident_policy(
+        project_id=payload.project_id,
+        alert_code=payload.alert_code,
+        enabled=payload.enabled,
+        priority=payload.priority,
+        provider_override=payload.provider_override,
+        open_webhook_url=payload.open_webhook_url,
+        resolve_webhook_url=payload.resolve_webhook_url,
+        provider_config_override=payload.provider_config_override,
+        severity_by_health=payload.severity_by_health,
+        open_on_health=payload.open_on_health,
+        secret_edit_roles=payload.secret_edit_roles,
+        actor_roles=actor_roles,
+        updated_by=payload.updated_by,
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="incident_policy_updated",
+        actor=payload.updated_by,
+        reason="queue_incident_policy_update",
+        paused_until=None,
+        payload={
+            "policy_id": policy.get("id"),
+            "alert_code": policy.get("alert_code"),
+            "enabled": bool(policy.get("enabled")),
+            "priority": int(policy.get("priority") or 100),
+            "provider_override": policy.get("provider_override"),
+            "open_on_health": policy.get("open_on_health"),
+            "severity_by_health": policy.get("severity_by_health"),
+            "secret_edit_roles": policy.get("secret_edit_roles"),
+        },
+    )
+    return {"status": "ok", "policy": policy}
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents/preflight/presets")
+def list_gatekeeper_calibration_operation_queue_incident_preflight_presets(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    include_disabled: bool = Query(default=True),
+    run_before_live_sync_only: bool = Query(default=False),
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    rows = _list_operation_queue_incident_preflight_presets(
+        project_ids=requested or None,
+        include_disabled=include_disabled,
+        include_run_before_live_sync_only=run_before_live_sync_only,
+        limit=limit,
+    )
+    return {
+        "requested_projects": requested,
+        "include_disabled": bool(include_disabled),
+        "run_before_live_sync_only": bool(run_before_live_sync_only),
+        "presets": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.put("/v1/gatekeeper/calibration/operations/incidents/preflight/presets")
+def upsert_gatekeeper_calibration_operation_queue_incident_preflight_preset(
+    payload: GatekeeperCalibrationQueueIncidentPreflightPresetUpsertRequest,
+) -> dict[str, Any]:
+    preset = _upsert_operation_queue_incident_preflight_preset(
+        project_id=payload.project_id,
+        preset_key=payload.preset_key,
+        name=payload.name,
+        enabled=payload.enabled,
+        alert_code=payload.alert_code,
+        health=payload.health,
+        additional_alert_codes=payload.additional_alert_codes,
+        expected_decision=payload.expected_decision,
+        required_provider=payload.required_provider,
+        run_before_live_sync=payload.run_before_live_sync,
+        severity=payload.severity,
+        strict_mode=payload.strict_mode,
+        metadata=payload.metadata,
+        updated_by=payload.updated_by,
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="incident_preflight_preset_updated",
+        actor=payload.updated_by,
+        reason="queue_incident_preflight_preset_update",
+        paused_until=None,
+        payload={
+            "preset_id": preset.get("id"),
+            "preset_key": preset.get("preset_key"),
+            "name": preset.get("name"),
+            "enabled": bool(preset.get("enabled")),
+            "alert_code": preset.get("alert_code"),
+            "health": preset.get("health"),
+            "expected_decision": preset.get("expected_decision"),
+            "required_provider": preset.get("required_provider"),
+            "run_before_live_sync": bool(preset.get("run_before_live_sync")),
+            "severity": preset.get("severity"),
+            "strict_mode": bool(preset.get("strict_mode")),
+        },
+    )
+    return {"status": "ok", "preset": preset}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/incidents/preflight/run")
+def run_gatekeeper_calibration_operation_queue_incident_preflight(
+    payload: GatekeeperCalibrationQueueIncidentPreflightRunRequest,
+    x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
+) -> dict[str, Any]:
+    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    requested = payload.project_ids or []
+    if payload.project_id is not None and payload.project_id.strip():
+        requested = [payload.project_id.strip(), *requested]
+    return _run_operation_queue_incident_preflight(
+        project_ids=requested or None,
+        preset_ids=payload.preset_ids,
+        include_disabled=payload.include_disabled,
+        include_run_before_live_sync_only=payload.include_run_before_live_sync_only,
+        actor=payload.actor,
+        actor_roles=actor_roles,
+        record_audit=payload.record_audit,
+        limit=payload.limit,
+    )
+
+
+@app.post("/v1/gatekeeper/calibration/operations/incidents/policies/simulate")
+def simulate_gatekeeper_calibration_operation_queue_incident_policy(
+    payload: GatekeeperCalibrationQueueIncidentPolicySimulationRequest,
+    x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
+) -> dict[str, Any]:
+    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    return _simulate_operation_queue_incident_policy_route(
+        project_id=payload.project_id,
+        alert_code=payload.alert_code,
+        health=payload.health,
+        additional_alert_codes=payload.additional_alert_codes,
+        include_secrets=payload.include_secrets,
+        actor=payload.actor,
+        actor_roles=actor_roles,
+    )
+
+
+@app.put("/v1/gatekeeper/calibration/operations/incidents/hooks")
+def upsert_gatekeeper_calibration_operation_queue_incident_hook(
+    payload: GatekeeperCalibrationQueueIncidentHookUpsertRequest,
+    x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
+) -> dict[str, Any]:
+    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    hook = _upsert_operation_queue_incident_hook(
+        project_id=payload.project_id,
+        enabled=payload.enabled,
+        provider=payload.provider,
+        open_webhook_url=payload.open_webhook_url,
+        resolve_webhook_url=payload.resolve_webhook_url,
+        provider_config=payload.provider_config,
+        open_on_health=payload.open_on_health,
+        auto_resolve=payload.auto_resolve,
+        cooldown_minutes=payload.cooldown_minutes,
+        timeout_sec=payload.timeout_sec,
+        secret_edit_roles=payload.secret_edit_roles,
+        actor_roles=actor_roles,
+        updated_by=payload.updated_by,
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="incident_hook_updated",
+        actor=payload.updated_by,
+        reason="queue_incident_hook_update",
+        paused_until=None,
+        payload={
+            "enabled": bool(hook.get("enabled")),
+            "provider": hook.get("provider"),
+            "open_on_health": hook.get("open_on_health"),
+            "auto_resolve": bool(hook.get("auto_resolve")),
+            "cooldown_minutes": int(hook.get("cooldown_minutes") or 30),
+            "timeout_sec": int(hook.get("timeout_sec") or 10),
+            "secret_edit_roles": hook.get("secret_edit_roles"),
+            "has_open_webhook_url": bool(hook.get("open_webhook_url")),
+            "has_resolve_webhook_url": bool(hook.get("resolve_webhook_url")),
+            "provider_config_keys": sorted(
+                [str(key) for key in (hook.get("provider_config") or {}).keys()]
+            )
+            if isinstance(hook.get("provider_config"), dict)
+            else [],
+        },
+    )
+    return {"status": "ok", "hook": hook}
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents")
+def list_gatekeeper_calibration_operation_queue_incidents(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(open|resolved)$"),
+    limit: int = Query(default=120, ge=1, le=500),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    rows = _list_operation_queue_incidents(project_ids=requested or None, status=status, limit=limit)
+    return {
+        "requested_projects": requested,
+        "status_filter": status,
+        "incidents": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents/sync/schedules")
+def list_gatekeeper_calibration_operation_queue_incident_sync_schedules(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    schedule_ids: str | None = Query(default=None),
+    enabled: bool | None = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(ok|partial_failure|failed|skipped|never)$"),
+    project_contains: str | None = Query(default=None, max_length=256),
+    name_contains: str | None = Query(default=None, max_length=256),
+    due_only: bool = Query(default=False),
+    sort_by: str = Query(default="next_run_at"),
+    sort_dir: str = Query(default="asc", pattern="^(asc|desc)$"),
+    offset: int = Query(default=0, ge=0),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> dict[str, Any]:
+    requested_projects = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested_projects = [project_id.strip(), *requested_projects]
+    dedup_projects: list[str] = []
+    seen_projects: set[str] = set()
+    for item in requested_projects:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen_projects:
+            continue
+        seen_projects.add(normalized)
+        dedup_projects.append(normalized)
+
+    requested_schedule_ids = _parse_csv_tokens(schedule_ids)
+    due_before = datetime.now(UTC) if due_only else None
+    effective_enabled = True if due_only and enabled is None else enabled
+    cursor_offset = _decode_operation_queue_incident_sync_schedule_cursor(cursor)
+    resolved_offset = cursor_offset if cursor_offset is not None else max(0, int(offset))
+    rows = _list_operation_queue_incident_sync_schedules(
+        project_ids=dedup_projects or None,
+        schedule_ids=requested_schedule_ids or None,
+        enabled=effective_enabled,
+        due_before=due_before,
+        project_contains=project_contains,
+        name_contains=name_contains,
+        status=status,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        offset=resolved_offset,
+        limit=limit,
+    )
+    total = _count_operation_queue_incident_sync_schedules(
+        project_ids=dedup_projects or None,
+        schedule_ids=requested_schedule_ids or None,
+        enabled=effective_enabled,
+        due_before=due_before,
+        project_contains=project_contains,
+        name_contains=name_contains,
+        status=status,
+    )
+    has_more = resolved_offset + len(rows) < total
+    next_cursor = (
+        _encode_operation_queue_incident_sync_schedule_cursor(resolved_offset + len(rows))
+        if has_more
+        else None
+    )
+    return {
+        "requested_projects": dedup_projects,
+        "requested_schedule_ids": requested_schedule_ids,
+        "enabled_filter": effective_enabled,
+        "status_filter": status,
+        "project_contains_filter": project_contains,
+        "name_contains_filter": name_contains,
+        "due_only": bool(due_only),
+        "sort_by": sort_by,
+        "sort_dir": sort_dir,
+        "paging": {
+            "limit": int(limit),
+            "offset": int(resolved_offset),
+            "cursor": cursor,
+            "next_cursor": next_cursor,
+            "has_more": bool(has_more),
+            "total": int(total),
+        },
+        "schedules": rows,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/incidents/sync/schedules/{schedule_id}/timeline")
+def get_gatekeeper_calibration_operation_queue_incident_sync_schedule_timeline(
+    schedule_id: UUID,
+    project_id: str | None = Query(default=None),
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=120, ge=1, le=500),
+) -> dict[str, Any]:
+    return _build_operation_queue_incident_sync_schedule_timeline(
+        schedule_id=str(schedule_id),
+        project_id=project_id,
+        days=days,
+        limit=limit,
+    )
+
+
+@app.put("/v1/gatekeeper/calibration/operations/incidents/sync/schedules")
+def upsert_gatekeeper_calibration_operation_queue_incident_sync_schedule(
+    payload: GatekeeperCalibrationQueueIncidentSyncScheduleUpsertRequest,
+) -> dict[str, Any]:
+    schedule = _upsert_operation_queue_incident_sync_schedule(
+        project_id=payload.project_id,
+        name=payload.name,
+        enabled=payload.enabled,
+        preset=payload.preset,
+        interval_minutes=payload.interval_minutes,
+        window_hours=payload.window_hours,
+        batch_size=payload.batch_size,
+        sync_limit=payload.sync_limit,
+        dry_run=payload.dry_run,
+        force_resolve=payload.force_resolve,
+        preflight_enforcement_mode=payload.preflight_enforcement_mode,
+        preflight_pause_hours=payload.preflight_pause_hours,
+        preflight_critical_fail_threshold=payload.preflight_critical_fail_threshold,
+        preflight_include_run_before_live_sync_only=payload.preflight_include_run_before_live_sync_only,
+        preflight_record_audit=payload.preflight_record_audit,
+        requested_by=payload.requested_by,
+        next_run_at=payload.next_run_at,
+        updated_by=payload.updated_by,
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="incident_sync_schedule_updated",
+        actor=payload.updated_by,
+        reason=f"schedule:{schedule.get('name')}"[:2000],
+        paused_until=None,
+        payload={
+            "schedule_id": schedule.get("id"),
+            "enabled": bool(schedule.get("enabled")),
+            "preset": schedule.get("preset"),
+            "interval_minutes": int(schedule.get("interval_minutes") or 60),
+            "window_hours": int(schedule.get("window_hours") or 24),
+            "batch_size": int(schedule.get("batch_size") or 50),
+            "sync_limit": int(schedule.get("sync_limit") or 200),
+            "dry_run": bool(schedule.get("dry_run")),
+            "force_resolve": bool(schedule.get("force_resolve")),
+            "preflight_enforcement_mode": schedule.get("preflight_enforcement_mode"),
+            "preflight_pause_hours": schedule.get("preflight_pause_hours"),
+            "preflight_critical_fail_threshold": schedule.get("preflight_critical_fail_threshold"),
+            "preflight_include_run_before_live_sync_only": bool(
+                schedule.get("preflight_include_run_before_live_sync_only")
+            ),
+            "preflight_record_audit": bool(schedule.get("preflight_record_audit")),
+            "requested_by": schedule.get("requested_by"),
+            "next_run_at": schedule.get("next_run_at"),
+        },
+    )
+    return {"status": "ok", "schedule": schedule}
+
+
+@app.delete("/v1/gatekeeper/calibration/operations/incidents/sync/schedules/{schedule_id}")
+def delete_gatekeeper_calibration_operation_queue_incident_sync_schedule(
+    schedule_id: UUID,
+    project_id: str,
+    updated_by: str = Query(default="web_ui", min_length=1, max_length=256),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM gatekeeper_calibration_queue_incident_sync_schedules
+                WHERE id = %s
+                  AND project_id = %s
+                RETURNING id::text, project_id, name
+                """,
+                (schedule_id, project_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="incident_sync_schedule_not_found")
+    _append_operation_queue_control_event(
+        project_id=project_id,
+        action="incident_sync_schedule_deleted",
+        actor=(updated_by or "web_ui").strip()[:256] or "web_ui",
+        reason=f"schedule:{str(row[2] or row[0])}"[:2000],
+        paused_until=None,
+        payload={
+            "schedule_id": str(row[0]),
+            "schedule_name": str(row[2] or row[0]),
+        },
+    )
+    return {"status": "ok", "deleted_schedule_id": str(row[0])}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/incidents/sync/schedules/run")
+def run_gatekeeper_calibration_operation_queue_incident_sync_schedules(
+    payload: GatekeeperCalibrationQueueIncidentSyncScheduleRunRequest,
+) -> dict[str, Any]:
+    requested_projects = payload.project_ids or []
+    if payload.project_id is not None and payload.project_id.strip():
+        requested_projects = [payload.project_id.strip(), *requested_projects]
+    dedup_projects: list[str] = []
+    seen_projects: set[str] = set()
+    for item in requested_projects:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen_projects:
+            continue
+        seen_projects.add(normalized)
+        dedup_projects.append(normalized)
+    dedup_schedule_ids: list[str] = []
+    seen_schedule_ids: set[str] = set()
+    for item in payload.schedule_ids or []:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen_schedule_ids:
+            continue
+        seen_schedule_ids.add(normalized)
+        dedup_schedule_ids.append(normalized)
+    return _run_operation_queue_incident_sync_schedules(
+        project_ids=dedup_projects or None,
+        schedule_ids=dedup_schedule_ids or None,
+        actor=payload.actor,
+        force_run=payload.force_run,
+        skip_due_check=payload.skip_due_check,
+        limit=payload.limit,
+    )
+
+
+@app.post("/v1/gatekeeper/calibration/operations/incidents/sync")
+def sync_gatekeeper_calibration_operation_queue_incidents(
+    payload: GatekeeperCalibrationQueueIncidentSyncRequest,
+) -> dict[str, Any]:
+    requested = payload.project_ids or []
+    if payload.project_id is not None and payload.project_id.strip():
+        requested = [payload.project_id.strip(), *requested]
+    return _sync_operation_queue_incident_hooks(
+        project_ids=requested or None,
+        actor=payload.actor,
+        window_hours=payload.window_hours,
+        dry_run=payload.dry_run,
+        force_resolve=payload.force_resolve,
+        preflight_enforcement_mode=payload.preflight_enforcement_mode,
+        preflight_pause_hours=payload.preflight_pause_hours,
+        preflight_critical_fail_threshold=payload.preflight_critical_fail_threshold,
+        preflight_include_run_before_live_sync_only=payload.preflight_include_run_before_live_sync_only,
+        preflight_record_audit=payload.preflight_record_audit,
+        limit=payload.limit,
+    )
+
+
+@app.put("/v1/gatekeeper/calibration/operations/incidents/sync/enforcement")
+def upsert_gatekeeper_calibration_operation_queue_incident_sync_enforcement(
+    payload: GatekeeperCalibrationQueueIncidentSyncEnforcementUpsertRequest,
+) -> dict[str, Any]:
+    existing = _fetch_operation_queue_control(payload.project_id)
+    control = _upsert_operation_queue_control(
+        project_id=payload.project_id,
+        worker_lag_sla_minutes=max(1, int(existing.get("worker_lag_sla_minutes") or 20)),
+        queue_depth_warn=max(1, int(existing.get("queue_depth_warn") or 12)),
+        incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+            payload.incident_preflight_enforcement_mode,
+            default="off",
+        ),
+        incident_preflight_pause_hours=max(1, min(168, int(payload.incident_preflight_pause_hours))),
+        incident_preflight_critical_fail_threshold=max(
+            1,
+            min(100, int(payload.incident_preflight_critical_fail_threshold)),
+        ),
+        updated_by=payload.updated_by,
+        paused_until=_parse_iso_datetime(existing.get("paused_until")),
+        pause_reason=existing.get("pause_reason"),
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="incident_sync_enforcement_updated",
+        actor=payload.updated_by,
+        reason="queue_incident_sync_enforcement_update",
+        paused_until=_parse_iso_datetime(control.get("paused_until")),
+        payload={
+            "incident_preflight_enforcement_mode": control.get("incident_preflight_enforcement_mode"),
+            "incident_preflight_pause_hours": int(control.get("incident_preflight_pause_hours") or 4),
+            "incident_preflight_critical_fail_threshold": int(
+                control.get("incident_preflight_critical_fail_threshold") or 1
+            ),
+        },
+    )
+    throughput = _build_operation_queue_throughput(project_id=payload.project_id, window_hours=24)
+    return {"status": "ok", "control": control, "throughput": throughput}
+
+
+@app.put("/v1/gatekeeper/calibration/operations/throughput/control")
+def upsert_gatekeeper_calibration_operation_throughput_control(
+    payload: GatekeeperCalibrationQueueControlUpsertRequest,
+) -> dict[str, Any]:
+    existing = _fetch_operation_queue_control(payload.project_id)
+    control = _upsert_operation_queue_control(
+        project_id=payload.project_id,
+        worker_lag_sla_minutes=payload.worker_lag_sla_minutes,
+        queue_depth_warn=payload.queue_depth_warn,
+        incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+            existing.get("incident_preflight_enforcement_mode"),
+            default="off",
+        ),
+        incident_preflight_pause_hours=max(1, min(168, int(existing.get("incident_preflight_pause_hours") or 4))),
+        incident_preflight_critical_fail_threshold=max(
+            1,
+            min(100, int(existing.get("incident_preflight_critical_fail_threshold") or 1)),
+        ),
+        updated_by=payload.updated_by,
+        paused_until=_parse_iso_datetime(existing.get("paused_until")),
+        pause_reason=existing.get("pause_reason"),
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="control_updated",
+        actor=payload.updated_by,
+        reason=None,
+        paused_until=_parse_iso_datetime(control.get("paused_until")),
+        payload={
+            "worker_lag_sla_minutes": int(control.get("worker_lag_sla_minutes") or 20),
+            "queue_depth_warn": int(control.get("queue_depth_warn") or 12),
+        },
+    )
+    throughput = _build_operation_queue_throughput(project_id=payload.project_id, window_hours=24)
+    return {"status": "ok", "control": control, "throughput": throughput}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/pause")
+def pause_gatekeeper_calibration_operation_queue(
+    payload: GatekeeperCalibrationQueuePauseRequest,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    resolved_until = _parse_iso_datetime(payload.paused_until)
+    if resolved_until is None:
+        pause_hours = max(1, int(payload.pause_hours or 1))
+        resolved_until = now + timedelta(hours=pause_hours)
+    if resolved_until <= now:
+        raise HTTPException(status_code=422, detail="queue_pause_window_must_be_future")
+    existing = _fetch_operation_queue_control(payload.project_id)
+    control = _upsert_operation_queue_control(
+        project_id=payload.project_id,
+        worker_lag_sla_minutes=max(1, int(existing.get("worker_lag_sla_minutes") or 20)),
+        queue_depth_warn=max(1, int(existing.get("queue_depth_warn") or 12)),
+        incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+            existing.get("incident_preflight_enforcement_mode"),
+            default="off",
+        ),
+        incident_preflight_pause_hours=max(1, min(168, int(existing.get("incident_preflight_pause_hours") or 4))),
+        incident_preflight_critical_fail_threshold=max(
+            1,
+            min(100, int(existing.get("incident_preflight_critical_fail_threshold") or 1)),
+        ),
+        updated_by=payload.updated_by,
+        paused_until=resolved_until,
+        pause_reason=(payload.reason or "").strip()[:2000] or existing.get("pause_reason"),
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="pause",
+        actor=payload.updated_by,
+        reason=(payload.reason or "").strip()[:2000] if payload.reason is not None else None,
+        paused_until=resolved_until,
+        payload={"pause_hours": int(payload.pause_hours or 1)},
+    )
+    throughput = _build_operation_queue_throughput(project_id=payload.project_id, window_hours=24)
+    return {"status": "ok", "control": control, "throughput": throughput}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/resume")
+def resume_gatekeeper_calibration_operation_queue(
+    payload: GatekeeperCalibrationQueueResumeRequest,
+) -> dict[str, Any]:
+    existing = _fetch_operation_queue_control(payload.project_id)
+    resume_reason = (payload.reason or "").strip()[:2000] if payload.reason is not None else None
+    control = _upsert_operation_queue_control(
+        project_id=payload.project_id,
+        worker_lag_sla_minutes=max(1, int(existing.get("worker_lag_sla_minutes") or 20)),
+        queue_depth_warn=max(1, int(existing.get("queue_depth_warn") or 12)),
+        incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+            existing.get("incident_preflight_enforcement_mode"),
+            default="off",
+        ),
+        incident_preflight_pause_hours=max(1, min(168, int(existing.get("incident_preflight_pause_hours") or 4))),
+        incident_preflight_critical_fail_threshold=max(
+            1,
+            min(100, int(existing.get("incident_preflight_critical_fail_threshold") or 1)),
+        ),
+        updated_by=payload.updated_by,
+        paused_until=None,
+        pause_reason=resume_reason,
+    )
+    _append_operation_queue_control_event(
+        project_id=payload.project_id,
+        action="resume",
+        actor=payload.updated_by,
+        reason=(payload.reason or "").strip()[:2000] if payload.reason is not None else None,
+        paused_until=None,
+        payload={},
+    )
+    throughput = _build_operation_queue_throughput(project_id=payload.project_id, window_hours=24)
+    return {"status": "ok", "control": control, "throughput": throughput}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/bulk_pause")
+def bulk_pause_gatekeeper_calibration_operation_queue(
+    payload: GatekeeperCalibrationQueueBulkPauseRequest,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    resolved_until = _parse_iso_datetime(payload.paused_until)
+    if resolved_until is None:
+        pause_hours = max(1, int(payload.pause_hours or 1))
+        resolved_until = now + timedelta(hours=pause_hours)
+    if resolved_until <= now:
+        raise HTTPException(status_code=422, detail="queue_pause_window_must_be_future")
+
+    targets = _list_operation_queue_projects(limit=100, requested=payload.project_ids)
+    results: list[dict[str, Any]] = []
+    for project_id in targets:
+        existing = _fetch_operation_queue_control(project_id)
+        control = _upsert_operation_queue_control(
+            project_id=project_id,
+            worker_lag_sla_minutes=max(1, int(existing.get("worker_lag_sla_minutes") or 20)),
+            queue_depth_warn=max(1, int(existing.get("queue_depth_warn") or 12)),
+            incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+                existing.get("incident_preflight_enforcement_mode"),
+                default="off",
+            ),
+            incident_preflight_pause_hours=max(1, min(168, int(existing.get("incident_preflight_pause_hours") or 4))),
+            incident_preflight_critical_fail_threshold=max(
+                1,
+                min(100, int(existing.get("incident_preflight_critical_fail_threshold") or 1)),
+            ),
+            updated_by=payload.updated_by,
+            paused_until=resolved_until,
+            pause_reason=(payload.reason or "").strip()[:2000] or existing.get("pause_reason"),
+        )
+        _append_operation_queue_control_event(
+            project_id=project_id,
+            action="bulk_pause",
+            actor=payload.updated_by,
+            reason=(payload.reason or "").strip()[:2000] if payload.reason is not None else None,
+            paused_until=resolved_until,
+            payload={"pause_hours": int(payload.pause_hours or 1), "bulk_size": len(targets)},
+        )
+        results.append(
+            {
+                "project_id": project_id,
+                "status": "ok",
+                "control": control,
+            }
+        )
+    return {
+        "status": "ok",
+        "paused_until": resolved_until.isoformat(),
+        "projects_total": len(results),
+        "results": results,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/bulk_resume")
+def bulk_resume_gatekeeper_calibration_operation_queue(
+    payload: GatekeeperCalibrationQueueBulkResumeRequest,
+) -> dict[str, Any]:
+    targets = _list_operation_queue_projects(limit=100, requested=payload.project_ids)
+    results: list[dict[str, Any]] = []
+    for project_id in targets:
+        existing = _fetch_operation_queue_control(project_id)
+        control = _upsert_operation_queue_control(
+            project_id=project_id,
+            worker_lag_sla_minutes=max(1, int(existing.get("worker_lag_sla_minutes") or 20)),
+            queue_depth_warn=max(1, int(existing.get("queue_depth_warn") or 12)),
+            incident_preflight_enforcement_mode=_normalize_incident_sync_preflight_enforcement_mode(
+                existing.get("incident_preflight_enforcement_mode"),
+                default="off",
+            ),
+            incident_preflight_pause_hours=max(1, min(168, int(existing.get("incident_preflight_pause_hours") or 4))),
+            incident_preflight_critical_fail_threshold=max(
+                1,
+                min(100, int(existing.get("incident_preflight_critical_fail_threshold") or 1)),
+            ),
+            updated_by=payload.updated_by,
+            paused_until=None,
+            pause_reason=(payload.reason or "").strip()[:2000] if payload.reason is not None else existing.get("pause_reason"),
+        )
+        _append_operation_queue_control_event(
+            project_id=project_id,
+            action="bulk_resume",
+            actor=payload.updated_by,
+            reason=(payload.reason or "").strip()[:2000] if payload.reason is not None else None,
+            paused_until=None,
+            payload={"bulk_size": len(targets)},
+        )
+        results.append(
+            {
+                "project_id": project_id,
+                "status": "ok",
+                "control": control,
+            }
+        )
+    return {
+        "status": "ok",
+        "projects_total": len(results),
+        "results": results,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/throughput/audit")
+def list_gatekeeper_calibration_operation_queue_audit(
+    project_id: str | None = None,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=120, ge=1, le=1000),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    params: list[Any] = [since]
+    where = ["created_at >= %s"]
+    if project_id is not None and project_id.strip():
+        where.append("project_id = %s")
+        params.append(project_id.strip())
+    params.append(max(1, min(1000, int(limit))))
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id,
+                  project_id,
+                  action,
+                  actor,
+                  reason,
+                  paused_until,
+                  payload,
+                  created_at,
+                  ann.id::text AS annotation_id,
+                  ann.status AS annotation_status,
+                  ann.note AS annotation_note,
+                  ann.follow_up_owner AS annotation_follow_up_owner,
+                  ann.created_by AS annotation_created_by,
+                  ann.created_at AS annotation_created_at
+                FROM gatekeeper_calibration_queue_control_events
+                LEFT JOIN LATERAL (
+                  SELECT
+                    a.id,
+                    a.status,
+                    a.note,
+                    a.follow_up_owner,
+                    a.created_by,
+                    a.created_at
+                  FROM gatekeeper_calibration_queue_audit_annotations a
+                  WHERE a.event_id = gatekeeper_calibration_queue_control_events.id
+                  ORDER BY a.created_at DESC, a.id DESC
+                  LIMIT 1
+                ) ann ON TRUE
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+
+    events = [
+        {
+            "id": int(row[0]),
+            "project_id": str(row[1]),
+            "action": str(row[2]),
+            "actor": str(row[3]),
+            "reason": row[4] if isinstance(row[4], str) else None,
+            "paused_until": None if row[5] is None else row[5].isoformat(),
+            "payload": row[6] if isinstance(row[6], dict) else {},
+            "created_at": row[7].isoformat(),
+            "annotation": None
+            if row[8] is None
+            else {
+                "id": str(row[8]),
+                "status": str(row[9]),
+                "note": row[10] if isinstance(row[10], str) else None,
+                "follow_up_owner": row[11] if isinstance(row[11], str) else None,
+                "created_by": str(row[12]) if row[12] is not None else None,
+                "created_at": row[13].isoformat() if row[13] is not None else None,
+            },
+        }
+        for row in rows
+    ]
+    return {
+        "project_id": project_id,
+        "days": int(days),
+        "since": since.isoformat(),
+        "events": events,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/audit/{event_id}/acknowledge")
+def acknowledge_gatekeeper_calibration_operation_queue_audit_event(
+    event_id: int,
+    payload: GatekeeperCalibrationQueueAuditAnnotationRequest,
+) -> dict[str, Any]:
+    event = _fetch_operation_queue_control_event(event_id=event_id, project_id=payload.project_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="queue_audit_event_not_found")
+    annotation = _append_operation_queue_audit_annotation(
+        event_id=event_id,
+        project_id=payload.project_id,
+        status="acknowledged",
+        created_by=payload.created_by,
+        note=payload.note,
+        follow_up_owner=payload.follow_up_owner,
+    )
+    return {"status": "ok", "event": event, "annotation": annotation}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/throughput/audit/{event_id}/resolve")
+def resolve_gatekeeper_calibration_operation_queue_audit_event(
+    event_id: int,
+    payload: GatekeeperCalibrationQueueAuditAnnotationRequest,
+) -> dict[str, Any]:
+    event = _fetch_operation_queue_control_event(event_id=event_id, project_id=payload.project_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="queue_audit_event_not_found")
+    annotation = _append_operation_queue_audit_annotation(
+        event_id=event_id,
+        project_id=payload.project_id,
+        status="resolved",
+        created_by=payload.created_by,
+        note=payload.note,
+        follow_up_owner=payload.follow_up_owner,
+    )
+    return {"status": "ok", "event": event, "annotation": annotation}
+
+
+@app.get("/v1/gatekeeper/calibration/operations/runs")
+def list_gatekeeper_calibration_operation_runs(
+    project_id: str,
+    status: str | None = Query(default=None, pattern="^(queued|running|cancel_requested|succeeded|failed|canceled)$"),
+    mode: str | None = Query(default=None, pattern="^(sync|async)$"),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict[str, Any]:
+    filters = ["r.project_id = %s"]
+    params: list[Any] = [project_id]
+    if status is not None:
+        filters.append("r.status = %s")
+        params.append(status)
+    if mode is not None:
+        filters.append("r.mode = %s")
+        params.append(mode)
+    params.append(limit)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  r.id::text,
+                  r.project_id,
+                  r.operation_token,
+                  r.requested_by,
+                  r.dry_run,
+                  r.status,
+                  r.mode,
+                  r.progress_percent,
+                  r.progress_phase,
+                  r.attempt_no,
+                  r.max_attempts,
+                  r.retry_of::text,
+                  r.cancel_requested,
+                  r.cancel_requested_by,
+                  r.cancel_requested_at,
+                  r.started_at,
+                  r.finished_at,
+                  r.heartbeat_at,
+                  r.worker_id,
+                  r.error_message,
+                  r.request_payload,
+                  r.result_payload,
+                  r.created_at,
+                  r.updated_at,
+                  COALESCE(ev.events_count, 0) AS events_count,
+                  ev.last_event_id
+                FROM gatekeeper_calibration_operation_runs r
+                LEFT JOIN LATERAL (
+                  SELECT COUNT(*)::int AS events_count, MAX(id)::bigint AS last_event_id
+                  FROM gatekeeper_calibration_operation_events
+                  WHERE operation_run_id = r.id
+                ) ev ON TRUE
+                WHERE {' AND '.join(filters)}
+                ORDER BY r.created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    runs = [_serialize_operation_run_row(row) for row in rows]
+    return {"project_id": project_id, "runs": runs}
+
+
+@app.get("/v1/gatekeeper/calibration/operations/runs/{run_id}")
+def get_gatekeeper_calibration_operation_run(
+    run_id: UUID,
+    project_id: str,
+    event_limit: int = Query(default=100, ge=0, le=1000),
+) -> Any:
+    run = _fetch_operation_run(run_id=run_id, project_id=project_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"error": "calibration_operation_run_not_found"})
+    events = _fetch_operation_events(run_id=run_id, after_event_id=0, limit=event_limit)
+    return {
+        "run": run,
+        "events": events,
+        "terminal": _operation_terminal(run.get("status")),
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/runs/{run_id}/events")
+def list_gatekeeper_calibration_operation_events(
+    run_id: UUID,
+    project_id: str,
+    after_event_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> Any:
+    run = _fetch_operation_run(run_id=run_id, project_id=project_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"error": "calibration_operation_run_not_found"})
+    events = _fetch_operation_events(run_id=run_id, after_event_id=after_event_id, limit=limit)
+    next_event_id = int(events[-1]["id"]) if events else int(after_event_id)
+    return {
+        "run_id": str(run_id),
+        "project_id": project_id,
+        "events": events,
+        "next_event_id": next_event_id,
+        "terminal": _operation_terminal(run.get("status")),
+        "run": run,
+    }
+
+
+@app.get("/v1/gatekeeper/calibration/operations/runs/{run_id}/stream")
+def stream_gatekeeper_calibration_operation_events(
+    run_id: UUID,
+    project_id: str,
+    after_event_id: int = Query(default=0, ge=0),
+    timeout_sec: int = Query(default=30, ge=5, le=120),
+    poll_interval_ms: int = Query(default=1000, ge=250, le=5000),
+) -> StreamingResponse:
+    initial_run = _fetch_operation_run(run_id=run_id, project_id=project_id)
+    if initial_run is None:
+        raise HTTPException(status_code=404, detail="calibration_operation_run_not_found")
+
+    def iter_stream():
+        cursor = int(after_event_id)
+        deadline = time.monotonic() + float(timeout_sec)
+        while True:
+            run = _fetch_operation_run(run_id=run_id, project_id=project_id)
+            if run is None:
+                yield "event: gone\ndata: {}\n\n"
+                break
+            events = _fetch_operation_events(run_id=run_id, after_event_id=cursor, limit=500)
+            for item in events:
+                cursor = int(item["id"])
+                yield f"event: progress\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+            status_payload = {
+                "run_id": str(run_id),
+                "project_id": project_id,
+                "status": run.get("status"),
+                "progress_percent": run.get("progress_percent"),
+                "progress_phase": run.get("progress_phase"),
+                "terminal": _operation_terminal(run.get("status")),
+                "cursor": cursor,
+                "updated_at": run.get("updated_at"),
+            }
+            yield f"event: status\ndata: {json.dumps(status_payload, ensure_ascii=False)}\n\n"
+            if status_payload["terminal"]:
+                yield f"event: done\ndata: {json.dumps(status_payload, ensure_ascii=False)}\n\n"
+                break
+            if time.monotonic() >= deadline:
+                yield f"event: timeout\ndata: {json.dumps(status_payload, ensure_ascii=False)}\n\n"
+                break
+            time.sleep(float(poll_interval_ms) / 1000.0)
+
+    return StreamingResponse(
+        iter_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@app.post("/v1/gatekeeper/calibration/operations/runs/{run_id}/cancel")
+def cancel_gatekeeper_calibration_operation_run(
+    run_id: UUID,
+    payload: GatekeeperCalibrationOperationCancelRequest,
+) -> Any:
+    run = _fetch_operation_run(run_id=run_id, project_id=payload.project_id)
+    if run is None:
+        return JSONResponse(status_code=404, content={"error": "calibration_operation_run_not_found"})
+
+    status_value = str(run.get("status") or "")
+    actor = payload.requested_by.strip() or "web_ui"
+    reason = (payload.reason or "").strip()
+    if _operation_terminal(status_value):
+        return {"status": "already_terminal", "run": run}
+
+    if status_value == "queued":
+        _update_operation_run_record(
+            str(run_id),
+            status="canceled",
+            cancel_requested=True,
+            cancel_requested_by=actor,
+            error_message=reason or "canceled_before_start",
+            progress_percent=100.0,
+            progress_phase="canceled",
+            set_finished_at=True,
+        )
+        _append_operation_event(
+            run_id=str(run_id),
+            project_id=payload.project_id,
+            event_type="canceled",
+            phase="canceled",
+            progress_percent=100.0,
+            message="Operation canceled before worker started.",
+            payload={"requested_by": actor, "reason": reason or None},
+        )
+    else:
+        _update_operation_run_record(
+            str(run_id),
+            status="cancel_requested",
+            cancel_requested=True,
+            cancel_requested_by=actor,
+            error_message=reason or None,
+            progress_phase="cancel_requested",
+            progress_percent=float(run.get("progress_percent") or 0.0),
+        )
+        _append_operation_event(
+            run_id=str(run_id),
+            project_id=payload.project_id,
+            event_type="cancel_requested",
+            phase="cancel_requested",
+            progress_percent=float(run.get("progress_percent") or 0.0),
+            message="Cancel requested. Worker will stop at nearest safe checkpoint.",
+            payload={"requested_by": actor, "reason": reason or None},
+        )
+
+    refreshed = _fetch_operation_run(run_id=run_id, project_id=payload.project_id)
+    return {"status": "ok", "run": refreshed}
+
+
+@app.post("/v1/gatekeeper/calibration/operations/runs/{run_id}/retry")
+def retry_gatekeeper_calibration_operation_run(
+    run_id: UUID,
+    payload: GatekeeperCalibrationOperationRetryRequest,
+) -> Any:
+    source_run = _fetch_operation_run(run_id=run_id, project_id=payload.project_id)
+    if source_run is None:
+        return JSONResponse(status_code=404, content={"error": "calibration_operation_run_not_found"})
+
+    source_status = str(source_run.get("status") or "")
+    if source_status == "succeeded":
+        raise HTTPException(status_code=409, detail="calibration_operation_retry_not_needed")
+    if source_status not in {"failed", "canceled"}:
+        raise HTTPException(status_code=409, detail=f"calibration_operation_retry_not_allowed:{source_status}")
+
+    attempt_no = int(source_run.get("attempt_no") or 1) + 1
+    max_attempts = int(source_run.get("max_attempts") or 1)
+    if attempt_no > max_attempts:
+        raise HTTPException(status_code=409, detail="calibration_operation_retry_attempts_exhausted")
+
+    request_payload = source_run.get("request_payload")
+    request_dict = dict(request_payload) if isinstance(request_payload, dict) else {}
+    dry_run = bool(source_run.get("dry_run"))
+    retry_token = (payload.operation_token or "").strip()
+    if not retry_token:
+        base = str(source_run.get("operation_token") or f"retry-{run_id}")
+        suffix = f"retry-{attempt_no}-{uuid4().hex[:8]}"
+        retry_token = f"{base}-{suffix}"[-256:]
+    _validate_live_operation_controls(
+        project_id=payload.project_id,
+        dry_run=dry_run,
+        confirm=payload.confirm,
+        confirmation_phrase=payload.confirmation_phrase,
+        operation_token=retry_token,
+    )
+
+    if payload.force_run is not None:
+        request_dict["force_run"] = bool(payload.force_run)
+    if payload.skip_due_check is not None:
+        request_dict["skip_due_check"] = bool(payload.skip_due_check)
+    if payload.fail_on_alert is not None:
+        request_dict["fail_on_alert"] = bool(payload.fail_on_alert)
+    if payload.timeout_sec is not None:
+        request_dict["timeout_sec"] = int(payload.timeout_sec)
+
+    requested_by = payload.requested_by.strip() or "web_ui"
+    request_dict["requested_by"] = requested_by
+    request_dict["operation_token"] = retry_token
+    request_dict["retry_parent_run_id"] = str(run_id)
+    request_dict["retry_attempt_no"] = attempt_no
+
+    record_id, existing_status, _existing_payload = _create_operation_run_record(
+        project_id=payload.project_id,
+        operation_token=retry_token,
+        requested_by=requested_by,
+        dry_run=dry_run,
+        request_payload=request_dict,
+        mode="async",
+        status="queued",
+        max_attempts=max_attempts,
+        retry_of=str(run_id),
+        attempt_no=attempt_no,
+    )
+    run = _fetch_operation_run(run_id=UUID(record_id), project_id=payload.project_id)
+    if run is None:
+        raise HTTPException(status_code=500, detail="calibration_operation_retry_enqueue_failed")
+
+    if existing_status is not None:
+        return {
+            "status": "queued" if existing_status in {"queued", "running", "cancel_requested"} else existing_status,
+            "run": run,
+            "idempotent_replay": True,
+        }
+
+    _append_operation_event(
+        run_id=record_id,
+        project_id=payload.project_id,
+        event_type="queued_retry",
+        phase="queued",
+        progress_percent=0.0,
+        message=f"Retry queued from run {run_id}.",
+        payload={"requested_by": requested_by, "attempt_no": attempt_no, "retry_of": str(run_id)},
+    )
+    refreshed = _fetch_operation_run(run_id=UUID(record_id), project_id=payload.project_id)
+    return {
+        "status": "queued",
+        "run": refreshed or run,
+        "next_action": "run_gatekeeper_calibration_operation_queue_worker",
+    }
+
+
+@app.post("/v1/gatekeeper/config/rollback")
+def rollback_gatekeeper_config(payload: GatekeeperConfigRollbackRequest) -> dict[str, Any]:
+    snapshot = _load_gatekeeper_snapshot(payload.project_id, payload.snapshot_id)
+    return _apply_gatekeeper_rollback_from_snapshot(
+        project_id=payload.project_id,
+        snapshot=snapshot,
+        updated_by=payload.updated_by,
+        note=payload.note,
+    )
+
+
+@app.post("/v1/gatekeeper/config/rollback/preview")
+def preview_gatekeeper_rollback(payload: GatekeeperRollbackPreviewRequest) -> dict[str, Any]:
+    preview = _build_gatekeeper_rollback_preview(
+        project_id=payload.project_id,
+        snapshot_id=payload.snapshot_id,
+        lookback_days=payload.lookback_days,
+        limit=payload.limit,
+        sample_size=payload.sample_size,
+    )
+    return {"status": "ok", "preview": preview}
+
+
+@app.post("/v1/gatekeeper/config/rollback/requests")
+def create_gatekeeper_rollback_request(payload: GatekeeperRollbackRequestCreate) -> dict[str, Any]:
+    preview = _build_gatekeeper_rollback_preview(
+        project_id=payload.project_id,
+        snapshot_id=payload.snapshot_id,
+        lookback_days=payload.lookback_days,
+        limit=payload.limit,
+        sample_size=payload.sample_size,
+    )
+    approval_event = {
+        "actor": payload.requested_by,
+        "action": "request_created",
+        "note": payload.note,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    request_id = uuid4()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_config_rollback_requests (
+                  id,
+                  project_id,
+                  snapshot_id,
+                  status,
+                  requested_by,
+                  required_approvals,
+                  approvals,
+                  preview,
+                  note
+                )
+                VALUES (%s, %s, %s, 'pending_approval', %s, %s, %s, %s, %s)
+                RETURNING id::text, status, created_at, updated_at
+                """,
+                (
+                    request_id,
+                    payload.project_id,
+                    payload.snapshot_id,
+                    payload.requested_by,
+                    payload.required_approvals,
+                    Jsonb([approval_event]),
+                    Jsonb(preview),
+                    payload.note,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "request": {
+            "id": row[0],
+            "project_id": payload.project_id,
+            "snapshot_id": str(payload.snapshot_id),
+            "state": row[1],
+            "requested_by": payload.requested_by,
+            "required_approvals": payload.required_approvals,
+            "approval_events": [approval_event],
+            "preview": preview,
+            "created_at": row[2].isoformat(),
+            "updated_at": row[3].isoformat(),
+        },
+    }
+
+
+@app.get("/v1/gatekeeper/config/rollback/requests")
+def list_gatekeeper_rollback_requests(
+    project_id: str,
+    status: str | None = Query(default=None, pattern="^(pending_approval|applied|rejected|failed)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if status is not None:
+        filters.append("status = %s")
+        params.append(status)
+    params.append(limit)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  snapshot_id::text,
+                  status,
+                  requested_by,
+                  required_approvals,
+                  approvals,
+                  preview,
+                  note,
+                  rejection_reason,
+                  applied_by,
+                  applied_snapshot_id::text,
+                  error_message,
+                  created_at,
+                  updated_at,
+                  resolved_at
+                FROM gatekeeper_config_rollback_requests
+                WHERE {' AND '.join(filters)}
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    requests = [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "snapshot_id": row[2],
+            "status": row[3],
+            "requested_by": row[4],
+            "required_approvals": int(row[5]),
+            "approvals": row[6] if isinstance(row[6], list) else [],
+            "preview": row[7] if isinstance(row[7], dict) else {},
+            "note": row[8],
+            "rejection_reason": row[9],
+            "applied_by": row[10],
+            "applied_snapshot_id": row[11],
+            "error_message": row[12],
+            "created_at": row[13].isoformat(),
+            "updated_at": row[14].isoformat(),
+            "resolved_at": None if row[15] is None else row[15].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"requests": requests}
+
+
+@app.get("/v1/gatekeeper/config/rollback/metrics")
+def get_gatekeeper_rollback_metrics(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    sla_hours: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=5000, ge=100, le=20000),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  status,
+                  rejection_reason,
+                  preview,
+                  approvals,
+                  required_approvals,
+                  created_at,
+                  resolved_at
+                FROM gatekeeper_config_rollback_requests
+                WHERE project_id = %s
+                  AND created_at >= %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (project_id, since, max(100, int(limit))),
+            )
+            rows = cur.fetchall()
+
+    status_counts = {
+        "pending_approval": 0,
+        "applied": 0,
+        "rejected": 0,
+        "failed": 0,
+        "other": 0,
+    }
+    rejection_causes: dict[str, int] = {}
+    risk_levels: dict[str, int] = {}
+    risk_drivers: dict[str, int] = {}
+    transition_drivers: dict[str, int] = {}
+    first_approval_hours: list[float] = []
+    resolution_hours: list[float] = []
+    pending_sla_breaches: list[dict[str, Any]] = []
+
+    for row in rows:
+        request_id = str(row[0] or "")
+        status = str(row[1] or "other")
+        if status in status_counts:
+            status_counts[status] = int(status_counts[status]) + 1
+        else:
+            status_counts["other"] = int(status_counts["other"]) + 1
+
+        if status == "rejected":
+            reason = _normalize_rejection_reason(row[2] if isinstance(row[2], str) else None)
+            rejection_causes[reason] = rejection_causes.get(reason, 0) + 1
+
+        preview = row[3] if isinstance(row[3], dict) else {}
+        impact = preview.get("impact") if isinstance(preview, dict) else None
+        impact_obj = impact if isinstance(impact, dict) else {}
+        risk_level = str(impact_obj.get("risk_level") or "unknown")
+        risk_levels[risk_level] = risk_levels.get(risk_level, 0) + 1
+
+        config_diff = preview.get("config_diff") if isinstance(preview, dict) else None
+        if isinstance(config_diff, dict):
+            for key in config_diff.keys():
+                key_name = str(key or "").strip()
+                if key_name:
+                    risk_drivers[key_name] = risk_drivers.get(key_name, 0) + 1
+
+        transitions = impact_obj.get("transitions")
+        if isinstance(transitions, dict):
+            for key, value in transitions.items():
+                transition = str(key or "").strip()
+                if not transition:
+                    continue
+                count = max(0, _coerce_int(value, 0))
+                if count <= 0:
+                    continue
+                transition_drivers[transition] = transition_drivers.get(transition, 0) + count
+
+        approvals = row[4] if isinstance(row[4], list) else []
+        created_at = _parse_iso_datetime(row[6])
+        resolved_at = _parse_iso_datetime(row[7])
+        if created_at is None:
+            continue
+
+        approved_at_candidates: list[datetime] = []
+        for event in approvals:
+            if not isinstance(event, dict):
+                continue
+            action = str(event.get("action") or "")
+            if action != "approved":
+                continue
+            parsed = _parse_iso_datetime(event.get("created_at"))
+            if parsed is not None:
+                approved_at_candidates.append(parsed)
+
+        if approved_at_candidates:
+            first_approved_at = min(approved_at_candidates)
+            delta_hours = max(0.0, (first_approved_at - created_at).total_seconds() / 3600.0)
+            first_approval_hours.append(round(delta_hours, 4))
+
+        if resolved_at is not None:
+            delta_hours = max(0.0, (resolved_at - created_at).total_seconds() / 3600.0)
+            resolution_hours.append(round(delta_hours, 4))
+
+        if status == "pending_approval":
+            age_hours = max(0.0, (datetime.now(UTC) - created_at).total_seconds() / 3600.0)
+            if age_hours >= float(sla_hours):
+                pending_sla_breaches.append(
+                    {
+                        "request_id": request_id,
+                        "age_hours": round(age_hours, 3),
+                        "risk_level": risk_level,
+                        "created_at": created_at.isoformat(),
+                    }
+                )
+
+    total_requests = len(rows)
+    rejected_total = int(status_counts["rejected"])
+    applied_total = int(status_counts["applied"])
+    failed_total = int(status_counts["failed"])
+    resolved_total = applied_total + rejected_total + failed_total
+
+    rejection_total = sum(rejection_causes.values())
+    risk_total = sum(risk_levels.values())
+    risk_driver_total = sum(risk_drivers.values())
+    transition_total = sum(transition_drivers.values())
+    pending_sla_breaches.sort(key=lambda item: (-float(item.get("age_hours") or 0.0), str(item.get("request_id") or "")))
+    max_pending_age_hours = round(float(pending_sla_breaches[0]["age_hours"]), 3) if pending_sla_breaches else None
+
+    return {
+        "project_id": project_id,
+        "days": int(days),
+        "sla_hours": int(sla_hours),
+        "limit": int(limit),
+        "sampled_requests": total_requests,
+        "since": since.isoformat(),
+        "summary": {
+            "total_requests": total_requests,
+            "pending_approval": int(status_counts["pending_approval"]),
+            "applied": applied_total,
+            "rejected": rejected_total,
+            "failed": failed_total,
+            "other": int(status_counts["other"]),
+            "resolved_total": resolved_total,
+            "approval_rate": _safe_ratio(applied_total, total_requests),
+            "rejection_rate": _safe_ratio(rejected_total, total_requests),
+            "failure_rate": _safe_ratio(failed_total, total_requests),
+            "resolution_rate": _safe_ratio(resolved_total, total_requests),
+            "pending_sla_breaches": len(pending_sla_breaches),
+            "max_pending_age_hours": max_pending_age_hours,
+        },
+        "lead_time_hours": {
+            "first_approval": _latency_stats(first_approval_hours),
+            "resolution": _latency_stats(resolution_hours),
+        },
+        "rejection_causes": _counter_to_ranked_items(
+            rejection_causes,
+            item_key="reason",
+            total=max(1, rejection_total),
+            top=6,
+        ),
+        "risk_levels": _counter_to_ranked_items(
+            risk_levels,
+            item_key="risk_level",
+            total=max(1, risk_total),
+            top=6,
+        ),
+        "top_risk_drivers": _counter_to_ranked_items(
+            risk_drivers,
+            item_key="driver",
+            total=max(1, risk_driver_total),
+            top=8,
+        ),
+        "transition_drivers": _counter_to_ranked_items(
+            transition_drivers,
+            item_key="transition",
+            total=max(1, transition_total),
+            top=8,
+        ),
+        "pending_sla_breaches": pending_sla_breaches[:20],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/config/rollback/attribution")
+def get_gatekeeper_rollback_attribution(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    group_by: str = Query(default="cohort", pattern="^(cohort|actor)$"),
+    limit: int = Query(default=5000, ge=100, le=20000),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  status,
+                  approvals,
+                  created_at,
+                  resolved_at
+                FROM gatekeeper_config_rollback_requests
+                WHERE project_id = %s
+                  AND created_at >= %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (project_id, since, max(100, int(limit))),
+            )
+            rows = cur.fetchall()
+
+    cohort_stats: dict[str, dict[str, Any]] = {}
+    timeline: dict[str, dict[str, int]] = {}
+    for row in rows:
+        request_id = str(row[0] or "")
+        status = str(row[1] or "unknown")
+        approvals = row[2] if isinstance(row[2], list) else []
+        created_at = _parse_iso_datetime(row[3])
+        resolved_at = _parse_iso_datetime(row[4])
+        if created_at is None:
+            continue
+
+        approved_events: list[tuple[str, datetime]] = []
+        seen = set()
+        for event in approvals:
+            if not isinstance(event, dict):
+                continue
+            if str(event.get("action") or "") != "approved":
+                continue
+            actor = str(event.get("actor") or "").strip()
+            event_ts = _parse_iso_datetime(event.get("created_at"))
+            if not actor or event_ts is None:
+                continue
+            marker = (actor, event_ts.isoformat())
+            if marker in seen:
+                continue
+            seen.add(marker)
+            approved_events.append((actor, event_ts))
+
+        first_approved_at = min((item[1] for item in approved_events), default=None)
+        first_lead_hours = (
+            max(0.0, (first_approved_at - created_at).total_seconds() / 3600.0) if first_approved_at is not None else None
+        )
+
+        for actor, event_ts in approved_events:
+            key = _rollback_attribution_group_key(actor=actor, group_by=group_by)
+            item = cohort_stats.get(key)
+            if item is None:
+                item = {
+                    "cohort": key,
+                    "approvals": 0,
+                    "requests_involved": set(),
+                    "applied_involved": 0,
+                    "rejected_involved": 0,
+                    "failed_involved": 0,
+                    "first_approval_lead_hours": [],
+                    "latest_approval_at": None,
+                }
+                cohort_stats[key] = item
+
+            item["approvals"] = int(item["approvals"]) + 1
+            requests_involved = item["requests_involved"] if isinstance(item["requests_involved"], set) else set()
+            requests_involved.add(request_id)
+            item["requests_involved"] = requests_involved
+            if status == "applied":
+                item["applied_involved"] = int(item["applied_involved"]) + 1
+            elif status == "rejected":
+                item["rejected_involved"] = int(item["rejected_involved"]) + 1
+            elif status == "failed":
+                item["failed_involved"] = int(item["failed_involved"]) + 1
+            if first_lead_hours is not None and first_approved_at == event_ts:
+                leads = item["first_approval_lead_hours"] if isinstance(item["first_approval_lead_hours"], list) else []
+                leads.append(float(first_lead_hours))
+                item["first_approval_lead_hours"] = leads
+
+            latest_approval_at = _parse_iso_datetime(item.get("latest_approval_at"))
+            if latest_approval_at is None or event_ts >= latest_approval_at:
+                item["latest_approval_at"] = event_ts.isoformat()
+
+        if resolved_at is not None and status in {"applied", "rejected", "failed"}:
+            day_key = resolved_at.date().isoformat()
+            bucket = timeline.get(day_key)
+            if bucket is None:
+                bucket = {"applied": 0, "rejected": 0, "failed": 0, "resolved_total": 0}
+                timeline[day_key] = bucket
+            bucket[status] = int(bucket.get(status, 0)) + 1
+            bucket["resolved_total"] = int(bucket["resolved_total"]) + 1
+
+    cohorts: list[dict[str, Any]] = []
+    for key, item in cohort_stats.items():
+        requests_involved = item["requests_involved"] if isinstance(item.get("requests_involved"), set) else set()
+        first_leads = item["first_approval_lead_hours"] if isinstance(item.get("first_approval_lead_hours"), list) else []
+        total_decisions = int(item["applied_involved"]) + int(item["rejected_involved"]) + int(item["failed_involved"])
+        cohorts.append(
+            {
+                "cohort": key,
+                "approvals": int(item["approvals"]),
+                "requests_involved": len(requests_involved),
+                "applied_involved": int(item["applied_involved"]),
+                "rejected_involved": int(item["rejected_involved"]),
+                "failed_involved": int(item["failed_involved"]),
+                "applied_rate": _safe_ratio(int(item["applied_involved"]), max(1, total_decisions)),
+                "avg_first_approval_lead_hours": round(sum(first_leads) / len(first_leads), 3) if first_leads else None,
+                "p50_first_approval_lead_hours": _quantile(first_leads, 0.5),
+                "latest_approval_at": item.get("latest_approval_at"),
+            }
+        )
+    cohorts.sort(
+        key=lambda item: (
+            -int(item.get("approvals") or 0),
+            float(item.get("avg_first_approval_lead_hours") or 10_000.0),
+            str(item.get("cohort") or ""),
+        )
+    )
+
+    timeline_out = [
+        {
+            "day": day,
+            "applied": int(values.get("applied", 0)),
+            "rejected": int(values.get("rejected", 0)),
+            "failed": int(values.get("failed", 0)),
+            "resolved_total": int(values.get("resolved_total", 0)),
+        }
+        for day, values in sorted(timeline.items(), key=lambda pair: pair[0])
+    ]
+    total_resolved = sum(int(item["resolved_total"]) for item in timeline_out)
+    total_applied = sum(int(item["applied"]) for item in timeline_out)
+
+    return {
+        "project_id": project_id,
+        "days": int(days),
+        "group_by": group_by,
+        "sampled_requests": len(rows),
+        "since": since.isoformat(),
+        "cohorts": cohorts[:25],
+        "timeline": timeline_out,
+        "summary": {
+            "cohorts_total": len(cohorts),
+            "resolved_total": total_resolved,
+            "applied_total": total_applied,
+            "applied_rate": _safe_ratio(total_applied, max(1, total_resolved)),
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/gatekeeper/config/rollback/attribution/drilldown")
+def get_gatekeeper_rollback_attribution_drilldown(
+    project_id: str,
+    cohort: str = Query(min_length=1, max_length=120),
+    days: int = Query(default=30, ge=1, le=365),
+    group_by: str = Query(default="cohort", pattern="^(cohort|actor)$"),
+    limit: int = Query(default=120, ge=1, le=500),
+    sample_limit: int = Query(default=5000, ge=100, le=20000),
+) -> dict[str, Any]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    target = cohort.strip()
+    if not target:
+        raise HTTPException(status_code=422, detail="attribution_cohort_required")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  status,
+                  snapshot_id::text,
+                  requested_by,
+                  approvals,
+                  created_at,
+                  required_approvals,
+                  resolved_at,
+                  preview,
+                  rejection_reason,
+                  note,
+                  applied_by,
+                  error_message
+                FROM gatekeeper_config_rollback_requests
+                WHERE project_id = %s
+                  AND created_at >= %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (project_id, since, max(100, int(sample_limit))),
+            )
+            rows = cur.fetchall()
+
+    request_rows: list[dict[str, Any]] = []
+    timeline: dict[str, dict[str, int]] = {}
+    status_counts = {
+        "pending_approval": 0,
+        "applied": 0,
+        "rejected": 0,
+        "failed": 0,
+        "other": 0,
+    }
+    first_lead_hours: list[float] = []
+    resolution_lead_hours: list[float] = []
+    latest_approval_at: datetime | None = None
+    approvals_total = 0
+    request_ids: set[str] = set()
+
+    for row in rows:
+        request_id = str(row[0] or "")
+        status = str(row[1] or "other")
+        snapshot_id = str(row[2] or "")
+        requested_by = str(row[3] or "")
+        approvals_raw = row[4] if isinstance(row[4], list) else []
+        created_at = _parse_iso_datetime(row[5])
+        required_approvals = int(row[6] or 0)
+        resolved_at = _parse_iso_datetime(row[7])
+        preview = row[8] if isinstance(row[8], dict) else {}
+        rejection_reason = row[9] if isinstance(row[9], str) else None
+        request_note = row[10] if isinstance(row[10], str) else None
+        applied_by = row[11] if isinstance(row[11], str) else None
+        error_message = row[12] if isinstance(row[12], str) else None
+
+        if created_at is None:
+            continue
+
+        dedup_approved: set[tuple[str, str]] = set()
+        approved_events: list[tuple[str, datetime]] = []
+        all_events: list[dict[str, Any]] = []
+        rejected_actor: str | None = None
+        for raw_event in approvals_raw:
+            if not isinstance(raw_event, dict):
+                continue
+            action = str(raw_event.get("action") or "").strip() or "unknown"
+            actor = str(raw_event.get("actor") or "").strip() or None
+            note = raw_event.get("note")
+            note_text = str(note) if isinstance(note, str) else None
+            event_ts = _parse_iso_datetime(raw_event.get("created_at"))
+            if action == "approved" and actor and event_ts is not None:
+                marker = (actor, event_ts.isoformat())
+                if marker not in dedup_approved:
+                    dedup_approved.add(marker)
+                    approved_events.append((actor, event_ts))
+            if action == "rejected" and actor:
+                rejected_actor = actor
+            all_events.append(
+                {
+                    "event_type": action,
+                    "actor": actor,
+                    "created_at": event_ts.isoformat() if event_ts is not None else None,
+                    "note": note_text,
+                    "matched": action == "approved"
+                    and actor is not None
+                    and _rollback_attribution_group_key(actor=actor, group_by=group_by) == target,
+                }
+            )
+
+        approved_events.sort(key=lambda item: item[1])
+        matched_approved = [
+            item
+            for item in approved_events
+            if _rollback_attribution_group_key(actor=item[0], group_by=group_by) == target
+        ]
+        if not matched_approved:
+            continue
+
+        approvals_total += len(matched_approved)
+        request_ids.add(request_id)
+        if status in status_counts:
+            status_counts[status] = int(status_counts[status]) + 1
+        else:
+            status_counts["other"] = int(status_counts["other"]) + 1
+
+        for _, event_ts in matched_approved:
+            if latest_approval_at is None or event_ts >= latest_approval_at:
+                latest_approval_at = event_ts
+
+        first_approval_at = approved_events[0][1] if approved_events else None
+        first_approval_actor = approved_events[0][0] if approved_events else None
+        first_approval_lead: float | None = None
+        if first_approval_at is not None:
+            lead = max(0.0, (first_approval_at - created_at).total_seconds() / 3600.0)
+            first_approval_lead = round(lead, 4)
+            if first_approval_actor and _rollback_attribution_group_key(
+                actor=first_approval_actor, group_by=group_by
+            ) == target:
+                first_lead_hours.append(first_approval_lead)
+
+        resolution_lead: float | None = None
+        if resolved_at is not None:
+            resolution_lead = round(max(0.0, (resolved_at - created_at).total_seconds() / 3600.0), 4)
+            resolution_lead_hours.append(resolution_lead)
+        if resolved_at is not None and status in {"applied", "rejected", "failed"}:
+            day_key = resolved_at.date().isoformat()
+            bucket = timeline.get(day_key)
+            if bucket is None:
+                bucket = {"applied": 0, "rejected": 0, "failed": 0, "resolved_total": 0}
+                timeline[day_key] = bucket
+            bucket[status] = int(bucket.get(status, 0)) + 1
+            bucket["resolved_total"] = int(bucket["resolved_total"]) + 1
+
+        resolved_iso = resolved_at.isoformat() if resolved_at is not None else None
+        if resolved_iso is not None and status in {"applied", "rejected", "failed"}:
+            has_terminal_event = any(
+                str(event.get("event_type") or "") == status and str(event.get("created_at") or "") == resolved_iso
+                for event in all_events
+            )
+            if not has_terminal_event:
+                terminal_actor = applied_by if status == "applied" else rejected_actor
+                terminal_note = rejection_reason if status == "rejected" else error_message
+                all_events.append(
+                    {
+                        "event_type": status,
+                        "actor": terminal_actor,
+                        "created_at": resolved_iso,
+                        "note": terminal_note,
+                        "matched": False,
+                    }
+                )
+
+        all_events.sort(key=lambda event: str(event.get("created_at") or ""))
+        impact = preview.get("impact") if isinstance(preview, dict) else None
+        impact_obj = impact if isinstance(impact, dict) else {}
+        config_diff = preview.get("config_diff") if isinstance(preview, dict) else None
+        config_diff_obj = config_diff if isinstance(config_diff, dict) else {}
+        transitions = impact_obj.get("transitions")
+        transitions_obj = transitions if isinstance(transitions, dict) else {}
+        transitions_out = sorted(
+            (
+                {
+                    "transition": str(key),
+                    "count": max(0, _coerce_int(value, 0)),
+                }
+                for key, value in transitions_obj.items()
+            ),
+            key=lambda item: (-int(item["count"]), str(item["transition"])),
+        )
+        transitions_out = [item for item in transitions_out if int(item["count"]) > 0][:6]
+
+        request_rows.append(
+            {
+                "request_id": request_id,
+                "snapshot_id": snapshot_id,
+                "status": status,
+                "requested_by": requested_by,
+                "required_approvals": required_approvals,
+                "approval_count": len(approved_events),
+                "matched_approvals": len(matched_approved),
+                "matched_actors": sorted({actor for actor, _ in matched_approved}),
+                "approvers": sorted({actor for actor, _ in approved_events}),
+                "cohorts": sorted({_reviewer_cohort_key(actor) for actor, _ in approved_events}),
+                "created_at": created_at.isoformat(),
+                "resolved_at": resolved_iso,
+                "first_approval_at": None if first_approval_at is None else first_approval_at.isoformat(),
+                "first_approval_lead_hours": first_approval_lead,
+                "resolution_lead_hours": resolution_lead,
+                "risk_level": str(impact_obj.get("risk_level") or "unknown"),
+                "changed_ratio": float(impact_obj.get("changed_ratio") or 0.0),
+                "changed_total": max(0, _coerce_int(impact_obj.get("changed_total"), 0)),
+                "decisions_scanned": max(0, _coerce_int(impact_obj.get("decisions_scanned"), 0)),
+                "config_diff_keys": [str(key) for key in list(config_diff_obj.keys())[:8]],
+                "top_transitions": transitions_out,
+                "note": request_note,
+                "rejection_reason": rejection_reason,
+                "error_message": error_message,
+                "causal_trace": all_events[:30],
+            }
+        )
+
+    request_rows.sort(
+        key=lambda item: (
+            str(item.get("resolved_at") or item.get("created_at") or ""),
+            str(item.get("request_id") or ""),
+        ),
+        reverse=True,
+    )
+    timeline_out = [
+        {
+            "day": day,
+            "applied": int(values.get("applied", 0)),
+            "rejected": int(values.get("rejected", 0)),
+            "failed": int(values.get("failed", 0)),
+            "resolved_total": int(values.get("resolved_total", 0)),
+        }
+        for day, values in sorted(timeline.items(), key=lambda pair: pair[0])
+    ]
+    requests_total = len(request_rows)
+    applied_total = int(status_counts["applied"])
+    rejected_total = int(status_counts["rejected"])
+    failed_total = int(status_counts["failed"])
+    resolved_total = applied_total + rejected_total + failed_total
+
+    return {
+        "project_id": project_id,
+        "cohort": target,
+        "group_by": group_by,
+        "days": int(days),
+        "since": since.isoformat(),
+        "sample_limit": int(sample_limit),
+        "request_limit": int(limit),
+        "sampled_requests": len(rows),
+        "summary": {
+            "approvals": approvals_total,
+            "requests_involved": len(request_ids),
+            "pending_approval": int(status_counts["pending_approval"]),
+            "applied": applied_total,
+            "rejected": rejected_total,
+            "failed": failed_total,
+            "other": int(status_counts["other"]),
+            "resolved_total": resolved_total,
+            "applied_rate": _safe_ratio(applied_total, max(1, resolved_total)),
+            "resolution_rate": _safe_ratio(resolved_total, max(1, requests_total)),
+            "avg_first_approval_lead_hours": round(sum(first_lead_hours) / len(first_lead_hours), 3)
+            if first_lead_hours
+            else None,
+            "p50_first_approval_lead_hours": _quantile(first_lead_hours, 0.5),
+            "p90_first_approval_lead_hours": _quantile(first_lead_hours, 0.9),
+            "avg_resolution_lead_hours": round(sum(resolution_lead_hours) / len(resolution_lead_hours), 3)
+            if resolution_lead_hours
+            else None,
+            "p50_resolution_lead_hours": _quantile(resolution_lead_hours, 0.5),
+            "p90_resolution_lead_hours": _quantile(resolution_lead_hours, 0.9),
+            "latest_approval_at": latest_approval_at.isoformat() if latest_approval_at is not None else None,
+        },
+        "timeline": timeline_out,
+        "requests": request_rows[: max(1, int(limit))],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/v1/gatekeeper/config/rollback/requests/{request_id}/approve")
+def approve_gatekeeper_rollback_request(request_id: UUID, payload: GatekeeperRollbackApproveRequest) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  snapshot_id,
+                  status,
+                  required_approvals,
+                  approvals,
+                  note
+                FROM gatekeeper_config_rollback_requests
+                WHERE id = %s
+                  AND project_id = %s
+                FOR UPDATE
+                """,
+                (request_id, payload.project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="rollback_request_not_found")
+            request_status = str(row[3])
+            if request_status in {"applied", "rejected", "failed"}:
+                raise HTTPException(status_code=409, detail=f"rollback_request_not_actionable:{request_status}")
+
+            approvals = row[5] if isinstance(row[5], list) else []
+            actor = payload.approved_by
+            normalized_actors = {str(item.get("actor") or "").strip() for item in approvals if isinstance(item, dict)}
+            if actor in normalized_actors:
+                raise HTTPException(status_code=409, detail="approver_already_recorded")
+            approvals.append(
+                {
+                    "actor": actor,
+                    "action": "approved",
+                    "note": payload.note,
+                    "created_at": now.isoformat(),
+                }
+            )
+
+            required_approvals = int(row[4])
+            approval_count = len([item for item in approvals if isinstance(item, dict) and item.get("action") == "approved"])
+            if approval_count < required_approvals:
+                cur.execute(
+                    """
+                    UPDATE gatekeeper_config_rollback_requests
+                    SET approvals = %s, updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING updated_at
+                    """,
+                    (Jsonb(approvals), request_id),
+                )
+                updated_row = cur.fetchone()
+                return {
+                    "status": "ok",
+                    "request": {
+                        "id": row[0],
+                        "project_id": row[1],
+                        "snapshot_id": str(row[2]),
+                        "state": "pending_approval",
+                        "required_approvals": required_approvals,
+                        "approval_count": approval_count,
+                        "approvals": approvals,
+                        "updated_at": updated_row[0].isoformat(),
+                    },
+                }
+
+            snapshot = _load_gatekeeper_snapshot(payload.project_id, row[2])
+            try:
+                apply_result = _apply_gatekeeper_rollback_from_snapshot(
+                    project_id=payload.project_id,
+                    snapshot=snapshot,
+                    updated_by=payload.approved_by,
+                    note=row[6],
+                )
+                applied_snapshot = apply_result.get("snapshot") if isinstance(apply_result, dict) else None
+                applied_snapshot_id = applied_snapshot.get("id") if isinstance(applied_snapshot, dict) else None
+                cur.execute(
+                    """
+                    UPDATE gatekeeper_config_rollback_requests
+                    SET status = 'applied',
+                        approvals = %s,
+                        applied_by = %s,
+                        applied_snapshot_id = %s,
+                        error_message = NULL,
+                        updated_at = NOW(),
+                        resolved_at = NOW()
+                    WHERE id = %s
+                    RETURNING updated_at, resolved_at
+                    """,
+                    (Jsonb(approvals), payload.approved_by, applied_snapshot_id, request_id),
+                )
+                ts_row = cur.fetchone()
+            except Exception as exc:
+                cur.execute(
+                    """
+                    UPDATE gatekeeper_config_rollback_requests
+                    SET status = 'failed',
+                        approvals = %s,
+                        error_message = %s,
+                        updated_at = NOW(),
+                        resolved_at = NOW()
+                    WHERE id = %s
+                    RETURNING updated_at, resolved_at
+                    """,
+                    (Jsonb(approvals), str(exc), request_id),
+                )
+                ts_row = cur.fetchone()
+                raise HTTPException(status_code=500, detail=f"rollback_apply_failed:{exc}") from exc
+
+    return {
+        "status": "ok",
+        "request": {
+            "id": str(request_id),
+            "project_id": payload.project_id,
+            "state": "applied",
+            "approval_count": approval_count,
+            "required_approvals": required_approvals,
+            "approvals": approvals,
+            "updated_at": ts_row[0].isoformat(),
+            "resolved_at": ts_row[1].isoformat(),
+        },
+        "apply_result": apply_result,
+    }
+
+
+@app.post("/v1/gatekeeper/config/rollback/requests/{request_id}/reject")
+def reject_gatekeeper_rollback_request(request_id: UUID, payload: GatekeeperRollbackRejectRequest) -> dict[str, Any]:
+    event = {
+        "actor": payload.rejected_by,
+        "action": "rejected",
+        "note": payload.reason,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT approvals, status
+                FROM gatekeeper_config_rollback_requests
+                WHERE id = %s
+                  AND project_id = %s
+                FOR UPDATE
+                """,
+                (request_id, payload.project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="rollback_request_not_found")
+            current_status = str(row[1])
+            if current_status in {"applied", "rejected", "failed"}:
+                raise HTTPException(status_code=409, detail=f"rollback_request_not_actionable:{current_status}")
+            approvals = row[0] if isinstance(row[0], list) else []
+            approvals.append(event)
+            cur.execute(
+                """
+                UPDATE gatekeeper_config_rollback_requests
+                SET status = 'rejected',
+                    approvals = %s,
+                    rejection_reason = %s,
+                    updated_at = NOW(),
+                    resolved_at = NOW()
+                WHERE id = %s
+                RETURNING updated_at, resolved_at
+                """,
+                (Jsonb(approvals), payload.reason, request_id),
+            )
+            out = cur.fetchone()
+    return {
+        "status": "ok",
+        "request": {
+            "id": str(request_id),
+            "project_id": payload.project_id,
+            "state": "rejected",
+            "rejection_reason": payload.reason,
+            "approvals": approvals,
+            "updated_at": out[0].isoformat(),
+            "resolved_at": out[1].isoformat(),
+        },
+    }
+
+
+@app.get("/v1/intelligence/delivery/targets")
+def list_intelligence_delivery_targets(project_id: str, limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  channel,
+                  target,
+                  enabled,
+                  config,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM intelligence_delivery_targets
+                WHERE project_id = %s
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (project_id, limit),
+            )
+            rows = cur.fetchall()
+    targets = [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "channel": row[2],
+            "target": row[3],
+            "enabled": bool(row[4]),
+            "config": row[5],
+            "created_by": row[6],
+            "updated_by": row[7],
+            "created_at": row[8].isoformat(),
+            "updated_at": row[9].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"targets": targets}
+
+
+@app.put("/v1/intelligence/delivery/targets")
+def upsert_intelligence_delivery_target(payload: IntelligenceDeliveryTargetUpsertRequest) -> dict[str, Any]:
+    normalized_config = _normalize_intelligence_delivery_target_config(payload.channel, payload.config or {})
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO intelligence_delivery_targets (
+                  id, project_id, channel, target, enabled, config, created_by, updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, channel, target) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    config = EXCLUDED.config,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  id::text, project_id, channel, target, enabled, config, created_by, updated_by, created_at, updated_at
+                """,
+                (
+                    uuid4(),
+                    payload.project_id,
+                    payload.channel,
+                    payload.target,
+                    payload.enabled,
+                    Jsonb(normalized_config),
+                    payload.updated_by,
+                    payload.updated_by,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "target": {
+            "id": row[0],
+            "project_id": row[1],
+            "channel": row[2],
+            "target": row[3],
+            "enabled": bool(row[4]),
+            "config": row[5],
+            "created_by": row[6],
+            "updated_by": row[7],
+            "created_at": row[8].isoformat(),
+            "updated_at": row[9].isoformat(),
+        },
+    }
+
+
+@app.get("/v1/intelligence/delivery/attempts")
+def list_intelligence_delivery_attempts(
+    project_id: str,
+    digest_id: UUID | None = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(sent|failed|skipped)$"),
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    normalized_kind = _normalize_intelligence_digest_kind(kind) if kind is not None else None
+    filters = ["a.project_id = %s"]
+    params: list[Any] = [project_id]
+    if digest_id is not None:
+        filters.append("a.digest_id = %s")
+        params.append(digest_id)
+    if status is not None:
+        filters.append("a.status = %s")
+        params.append(status)
+    if normalized_kind is not None:
+        filters.append("d.digest_kind = %s")
+        params.append(normalized_kind)
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  a.id::text,
+                  a.digest_id::text,
+                  a.project_id,
+                  d.digest_kind,
+                  a.channel,
+                  a.target,
+                  a.status,
+                  a.provider_message_id,
+                  a.error_message,
+                  a.response_payload,
+                  a.attempted_at
+                FROM intelligence_delivery_attempts a
+                LEFT JOIN intelligence_digests d
+                  ON d.id = a.digest_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY a.attempted_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    attempts = [
+        {
+            "id": row[0],
+            "digest_id": row[1],
+            "project_id": row[2],
+            "digest_kind": row[3],
+            "channel": row[4],
+            "target": row[5],
+            "status": row[6],
+            "provider_message_id": row[7],
+            "error_message": row[8],
+            "response_payload": row[9],
+            "attempted_at": row[10].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"attempts": attempts}
+
+
+@app.get("/v1/intelligence/metrics/daily")
+def list_daily_intelligence_metrics(
+    project_id: str,
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=365),
+) -> dict[str, Any]:
+    params: list[Any] = [project_id]
+    filters = ["project_id = %s"]
+    if from_date is not None:
+        filters.append("metric_date >= %s")
+        params.append(from_date)
+    if to_date is not None:
+        filters.append("metric_date <= %s")
+        params.append(to_date)
+    params.append(limit)
+
+    query = f"""
+        SELECT
+          metric_date,
+          claims_created,
+          drafts_created,
+          drafts_approved,
+          drafts_rejected,
+          statements_added,
+          conflicts_opened,
+          conflicts_resolved,
+          pending_drafts,
+          open_conflicts,
+          pages_touched,
+          knowledge_velocity,
+          computed_at
+        FROM knowledge_daily_metrics
+        WHERE {' AND '.join(filters)}
+        ORDER BY metric_date DESC
+        LIMIT %s
+    """
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+
+    metrics = [
+        {
+            "metric_date": row[0].isoformat(),
+            "claims_created": int(row[1]),
+            "drafts_created": int(row[2]),
+            "drafts_approved": int(row[3]),
+            "drafts_rejected": int(row[4]),
+            "statements_added": int(row[5]),
+            "conflicts_opened": int(row[6]),
+            "conflicts_resolved": int(row[7]),
+            "pending_drafts": int(row[8]),
+            "open_conflicts": int(row[9]),
+            "pages_touched": int(row[10]),
+            "knowledge_velocity": float(row[11]),
+            "computed_at": row[12].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"metrics": metrics}
+
+
+@app.get("/v1/intelligence/trends/weekly")
+def get_weekly_intelligence_trends(
+    project_id: str,
+    anchor_date: date | None = Query(default=None),
+    weeks: int = Query(default=8, ge=1, le=52),
+) -> dict[str, Any]:
+    if anchor_date is None:
+        anchor_date = datetime.now(UTC).date()
+    current_week_start = anchor_date - timedelta(days=anchor_date.weekday())
+    from_date = current_week_start - timedelta(days=7 * (weeks - 1))
+    to_date = current_week_start + timedelta(days=6)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  metric_date,
+                  claims_created,
+                  drafts_created,
+                  drafts_approved,
+                  drafts_rejected,
+                  statements_added,
+                  conflicts_opened,
+                  conflicts_resolved,
+                  pending_drafts,
+                  open_conflicts,
+                  pages_touched,
+                  knowledge_velocity
+                FROM knowledge_daily_metrics
+                WHERE project_id = %s
+                  AND metric_date >= %s
+                  AND metric_date <= %s
+                ORDER BY metric_date ASC
+                """,
+                (project_id, from_date, to_date),
+            )
+            rows = cur.fetchall()
+
+    weekly_map: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        metric_day: date = row[0]
+        week_start = metric_day - timedelta(days=metric_day.weekday())
+        week_key = week_start.isoformat()
+        item = weekly_map.get(week_key)
+        if item is None:
+            item = {
+                "week_start": week_key,
+                "week_end": (week_start + timedelta(days=6)).isoformat(),
+                "days_covered": 0,
+                "claims_created": 0,
+                "drafts_created": 0,
+                "drafts_approved": 0,
+                "drafts_rejected": 0,
+                "statements_added": 0,
+                "conflicts_opened": 0,
+                "conflicts_resolved": 0,
+                "pages_touched": 0,
+                "pending_drafts_end": 0,
+                "open_conflicts_end": 0,
+                "knowledge_velocity_sum": 0.0,
+                "knowledge_velocity_avg": 0.0,
+                "_latest_metric_date": "",
+            }
+        item["days_covered"] += 1
+        item["claims_created"] += int(row[1])
+        item["drafts_created"] += int(row[2])
+        item["drafts_approved"] += int(row[3])
+        item["drafts_rejected"] += int(row[4])
+        item["statements_added"] += int(row[5])
+        item["conflicts_opened"] += int(row[6])
+        item["conflicts_resolved"] += int(row[7])
+        item["pages_touched"] += int(row[10])
+        item["knowledge_velocity_sum"] = round(float(item["knowledge_velocity_sum"]) + float(row[11]), 3)
+        metric_day_iso = metric_day.isoformat()
+        if metric_day_iso >= item["_latest_metric_date"]:
+            item["_latest_metric_date"] = metric_day_iso
+            item["pending_drafts_end"] = int(row[8])
+            item["open_conflicts_end"] = int(row[9])
+        weekly_map[week_key] = item
+
+    weekly = [weekly_map[key] for key in sorted(weekly_map.keys())]
+    for item in weekly:
+        days_covered = int(item["days_covered"])
+        item["knowledge_velocity_avg"] = round(float(item["knowledge_velocity_sum"]) / max(days_covered, 1), 3)
+        item.pop("_latest_metric_date", None)
+
+    wow: dict[str, Any] | None = None
+    if len(weekly) >= 2:
+        current = weekly[-1]
+        previous = weekly[-2]
+
+        def _delta(key: str) -> dict[str, float]:
+            cur = float(current.get(key, 0.0))
+            prev = float(previous.get(key, 0.0))
+            delta_abs = cur - prev
+            delta_pct = 100.0 if prev == 0.0 and cur > 0 else 0.0 if prev == 0.0 else (delta_abs / prev) * 100.0
+            return {
+                "current": round(cur, 3),
+                "previous": round(prev, 3),
+                "delta_abs": round(delta_abs, 3),
+                "delta_pct": round(delta_pct, 2),
+            }
+
+        wow = {
+            "week_start": current["week_start"],
+            "comparisons": {
+                "drafts_approved": _delta("drafts_approved"),
+                "statements_added": _delta("statements_added"),
+                "conflicts_opened": _delta("conflicts_opened"),
+                "open_conflicts_end": _delta("open_conflicts_end"),
+                "knowledge_velocity_avg": _delta("knowledge_velocity_avg"),
+            },
+        }
+
+    return {
+        "project_id": project_id,
+        "anchor_date": anchor_date.isoformat(),
+        "weeks": weekly,
+        "wow": wow,
+    }
+
+
+@app.get("/v1/intelligence/queue/governance_digest")
+def get_intelligence_queue_governance_digest(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    audit_days: int = Query(default=7, ge=1, le=365),
+    top_n: int = Query(default=5, ge=1, le=20),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    return _build_queue_governance_digest_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+        audit_days=audit_days,
+        top_n=top_n,
+    )
+
+
+@app.get("/v1/intelligence/queue/incident_escalation_digest")
+def get_intelligence_queue_incident_escalation_digest(
+    project_id: str | None = Query(default=None),
+    project_ids: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=200),
+    window_hours: int = Query(default=24, ge=1, le=168),
+    incident_sla_hours: int = Query(default=24, ge=1, le=168),
+    top_n: int = Query(default=10, ge=1, le=50),
+) -> dict[str, Any]:
+    requested = _parse_csv_tokens(project_ids)
+    if project_id is not None and project_id.strip():
+        requested = [project_id.strip(), *requested]
+    return _build_queue_incident_escalation_digest_payload(
+        requested=requested,
+        limit=limit,
+        window_hours=window_hours,
+        incident_sla_hours=incident_sla_hours,
+        top_n=top_n,
+    )
+
+
+@app.get("/v1/intelligence/conflicts/drilldown")
+def get_intelligence_conflict_drilldown(
+    project_id: str,
+    anchor_date: date | None = Query(default=None),
+    weeks: int = Query(default=8, ge=1, le=52),
+    type_limit: int = Query(default=6, ge=1, le=20),
+) -> dict[str, Any]:
+    if anchor_date is None:
+        anchor_date = datetime.now(UTC).date()
+    current_week_start = anchor_date - timedelta(days=anchor_date.weekday())
+    from_date = current_week_start - timedelta(days=7 * (weeks - 1))
+    to_date = current_week_start + timedelta(days=6)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  DATE_TRUNC('week', created_at)::date AS week_start,
+                  conflict_type,
+                  COUNT(*)::int AS opened_total,
+                  COUNT(*) FILTER (WHERE resolution_status = 'resolved')::int AS resolved_total,
+                  COUNT(*) FILTER (WHERE resolution_status = 'dismissed')::int AS dismissed_total,
+                  COUNT(*) FILTER (WHERE resolution_status = 'open')::int AS open_total,
+                  AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0)
+                    FILTER (WHERE resolution_status = 'resolved' AND resolved_at IS NOT NULL) AS mttr_hours_avg
+                FROM wiki_conflicts
+                WHERE project_id = %s
+                  AND created_at::date >= %s
+                  AND created_at::date <= %s
+                GROUP BY DATE_TRUNC('week', created_at)::date, conflict_type
+                ORDER BY week_start ASC, opened_total DESC, conflict_type ASC
+                """,
+                (project_id, from_date, to_date),
+            )
+            class_rows = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                  conflict_type,
+                  COUNT(*)::int AS opened_total,
+                  COUNT(*) FILTER (WHERE resolution_status = 'resolved')::int AS resolved_total,
+                  AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0)
+                    FILTER (WHERE resolution_status = 'resolved' AND resolved_at IS NOT NULL) AS mttr_hours_avg
+                FROM wiki_conflicts
+                WHERE project_id = %s
+                  AND created_at::date >= %s
+                  AND created_at::date <= %s
+                GROUP BY conflict_type
+                ORDER BY opened_total DESC, conflict_type ASC
+                LIMIT %s
+                """,
+                (project_id, from_date, to_date, type_limit),
+            )
+            top_rows = cur.fetchall()
+
+    weekly_map: dict[str, dict[str, Any]] = {}
+    for offset in range(weeks):
+        week_start = from_date + timedelta(days=7 * offset)
+        week_key = week_start.isoformat()
+        weekly_map[week_key] = {
+            "week_start": week_key,
+            "week_end": (week_start + timedelta(days=6)).isoformat(),
+            "opened_total": 0,
+            "resolved_total": 0,
+            "dismissed_total": 0,
+            "open_total": 0,
+            "mttr_hours_avg": None,
+            "conflict_classes": [],
+        }
+
+    for row in class_rows:
+        week_start_key = row[0].isoformat()
+        week_item = weekly_map.get(week_start_key)
+        if week_item is None:
+            continue
+        opened_total = int(row[2] or 0)
+        resolved_total = int(row[3] or 0)
+        dismissed_total = int(row[4] or 0)
+        open_total = int(row[5] or 0)
+        class_mttr = None if row[6] is None else round(float(row[6]), 2)
+        week_item["conflict_classes"].append(
+            {
+                "conflict_type": row[1],
+                "opened_total": opened_total,
+                "resolved_total": resolved_total,
+                "dismissed_total": dismissed_total,
+                "open_total": open_total,
+                "mttr_hours_avg": class_mttr,
+            }
+        )
+        week_item["opened_total"] += opened_total
+        week_item["resolved_total"] += resolved_total
+        week_item["dismissed_total"] += dismissed_total
+        week_item["open_total"] += open_total
+
+    for week_item in weekly_map.values():
+        mttr_values = [
+            float(item["mttr_hours_avg"])
+            for item in week_item["conflict_classes"]
+            if item.get("mttr_hours_avg") is not None
+        ]
+        week_item["mttr_hours_avg"] = None if not mttr_values else round(sum(mttr_values) / len(mttr_values), 2)
+
+    weekly = [weekly_map[key] for key in sorted(weekly_map.keys())]
+
+    opened_total = sum(int(item["opened_total"]) for item in weekly)
+    resolved_total = sum(int(item["resolved_total"]) for item in weekly)
+    dismissed_total = sum(int(item["dismissed_total"]) for item in weekly)
+    open_total = sum(int(item["open_total"]) for item in weekly)
+    mttr_values = [float(item["mttr_hours_avg"]) for item in weekly if item.get("mttr_hours_avg") is not None]
+
+    top_conflict_types = []
+    for row in top_rows:
+        opened = int(row[1] or 0)
+        resolved = int(row[2] or 0)
+        top_conflict_types.append(
+            {
+                "conflict_type": row[0],
+                "opened_total": opened,
+                "resolved_total": resolved,
+                "resolution_rate_pct": round((resolved / opened) * 100.0, 2) if opened > 0 else 0.0,
+                "mttr_hours_avg": None if row[3] is None else round(float(row[3]), 2),
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "anchor_date": anchor_date.isoformat(),
+        "weeks": weekly,
+        "top_conflict_types": top_conflict_types,
+        "overall": {
+            "opened_total": opened_total,
+            "resolved_total": resolved_total,
+            "dismissed_total": dismissed_total,
+            "open_total": open_total,
+            "mttr_hours_avg": None if not mttr_values else round(sum(mttr_values) / len(mttr_values), 2),
+        },
+    }
+
+
+@app.get("/v1/intelligence/digests")
+def list_intelligence_digests(
+    project_id: str,
+    kind: str = Query(default=_INTELLIGENCE_DIGEST_KIND_DAILY),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    normalized_kind = _normalize_intelligence_digest_kind(kind)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  digest_kind,
+                  digest_date,
+                  period_start,
+                  period_end,
+                  status,
+                  headline,
+                  summary_markdown,
+                  payload,
+                  generated_by,
+                  generated_at,
+                  sent_at
+                FROM intelligence_digests
+                WHERE project_id = %s
+                  AND digest_kind = %s
+                ORDER BY digest_date DESC, generated_at DESC
+                LIMIT %s
+                """,
+                (project_id, normalized_kind, limit),
+            )
+            rows = cur.fetchall()
+    digests = [
+        {
+            "id": row[0],
+            "digest_kind": row[1],
+            "digest_date": row[2].isoformat(),
+            "period_start": row[3].isoformat(),
+            "period_end": row[4].isoformat(),
+            "status": row[5],
+            "headline": row[6],
+            "summary_markdown": row[7],
+            "payload": row[8],
+            "generated_by": row[9],
+            "generated_at": row[10].isoformat(),
+            "sent_at": None if row[11] is None else row[11].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"digests": digests}
+
+
+@app.get("/v1/intelligence/digests/latest")
+def get_latest_intelligence_digest(
+    project_id: str,
+    kind: str = Query(default=_INTELLIGENCE_DIGEST_KIND_DAILY),
+) -> Any:
+    normalized_kind = _normalize_intelligence_digest_kind(kind)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  digest_kind,
+                  digest_date,
+                  period_start,
+                  period_end,
+                  status,
+                  headline,
+                  summary_markdown,
+                  payload,
+                  generated_by,
+                  generated_at,
+                  sent_at
+                FROM intelligence_digests
+                WHERE project_id = %s
+                  AND digest_kind = %s
+                ORDER BY digest_date DESC, generated_at DESC
+                LIMIT 1
+                """,
+                (project_id, normalized_kind),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return JSONResponse(status_code=404, content={"error": "digest_not_found"})
+    return {
+        "digest": {
+            "id": row[0],
+            "digest_kind": row[1],
+            "digest_date": row[2].isoformat(),
+            "period_start": row[3].isoformat(),
+            "period_end": row[4].isoformat(),
+            "status": row[5],
+            "headline": row[6],
+            "summary_markdown": row[7],
+            "payload": row[8],
+            "generated_by": row[9],
+            "generated_at": row[10].isoformat(),
+            "sent_at": None if row[11] is None else row[11].isoformat(),
+        }
+    }
+
+
+@app.get("/v1/tasks")
+def list_tasks(
+    project_id: str,
+    status: str | None = Query(default=None, pattern="^(todo|in_progress|blocked|done|canceled)$"),
+    assignee: str | None = Query(default=None),
+    entity_key: str | None = Query(default=None),
+    include_closed: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if status is not None:
+        filters.append("status = %s")
+        params.append(status)
+    elif not include_closed:
+        filters.append("status = ANY(%s)")
+        params.append(list(_TASK_ACTIVE_STATUSES))
+
+    normalized_assignee = assignee.strip() if isinstance(assignee, str) else ""
+    if normalized_assignee:
+        filters.append("assignee = %s")
+        params.append(normalized_assignee)
+
+    normalized_entity = entity_key.strip().lower() if isinstance(entity_key, str) else ""
+    if normalized_entity:
+        filters.append("lower(COALESCE(entity_key, '')) = %s")
+        params.append(normalized_entity)
+
+    params.append(limit)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  title,
+                  description,
+                  status,
+                  priority,
+                  source,
+                  assignee,
+                  entity_key,
+                  category,
+                  due_at,
+                  created_by,
+                  metadata,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM synapse_tasks
+                WHERE {' AND '.join(filters)}
+                ORDER BY
+                  CASE status
+                    WHEN 'in_progress' THEN 0
+                    WHEN 'blocked' THEN 1
+                    WHEN 'todo' THEN 2
+                    WHEN 'done' THEN 3
+                    ELSE 4
+                  END,
+                  CASE priority
+                    WHEN 'critical' THEN 0
+                    WHEN 'high' THEN 1
+                    WHEN 'normal' THEN 2
+                    ELSE 3
+                  END,
+                  updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    return {"tasks": [_serialize_task_row(row) for row in rows]}
+
+
+@app.get("/v1/tasks/{task_id}")
+def get_task(
+    task_id: UUID,
+    project_id: str,
+    events_limit: int = Query(default=100, ge=0, le=500),
+    links_limit: int = Query(default=100, ge=0, le=500),
+) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  title,
+                  description,
+                  status,
+                  priority,
+                  source,
+                  assignee,
+                  entity_key,
+                  category,
+                  due_at,
+                  created_by,
+                  metadata,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM synapse_tasks
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (task_id, project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return JSONResponse(status_code=404, content={"error": "task_not_found"})
+
+            events: list[dict[str, Any]] = []
+            if events_limit > 0:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      task_id::text,
+                      project_id,
+                      event_type,
+                      actor,
+                      payload,
+                      created_at
+                    FROM synapse_task_events
+                    WHERE task_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (task_id, events_limit),
+                )
+                events = [_serialize_task_event_row(item) for item in cur.fetchall()]
+
+            links: list[dict[str, Any]] = []
+            if links_limit > 0:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      task_id::text,
+                      project_id,
+                      link_type,
+                      link_ref,
+                      note,
+                      metadata,
+                      created_by,
+                      created_at
+                    FROM synapse_task_links
+                    WHERE task_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (task_id, links_limit),
+                )
+                links = [_serialize_task_link_row(item) for item in cur.fetchall()]
+
+    return {"task": _serialize_task_row(row), "events": events, "links": links}
+
+
+@app.post("/v1/tasks", response_model=None)
+def upsert_task(
+    payload: TaskUpsertRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/tasks"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                resolved_task_id = payload.task_id or uuid4()
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      project_id,
+                      title,
+                      description,
+                      status,
+                      priority,
+                      source,
+                      assignee,
+                      entity_key,
+                      category,
+                      due_at,
+                      created_by,
+                      metadata,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM synapse_tasks
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (resolved_task_id, payload.project_id),
+                )
+                existing = cur.fetchone()
+
+                description = payload.description.strip() if isinstance(payload.description, str) else None
+                assignee = payload.assignee.strip() if isinstance(payload.assignee, str) else None
+                entity_key = payload.entity_key.strip() if isinstance(payload.entity_key, str) else None
+                category = payload.category.strip() if isinstance(payload.category, str) else None
+                updated_by = payload.updated_by or payload.created_by
+                metadata = payload.metadata or {}
+                operation = "created"
+
+                if existing is None:
+                    cur.execute(
+                        """
+                        INSERT INTO synapse_tasks (
+                          id,
+                          project_id,
+                          title,
+                          description,
+                          status,
+                          priority,
+                          source,
+                          assignee,
+                          entity_key,
+                          category,
+                          due_at,
+                          metadata,
+                          created_by,
+                          updated_by,
+                          created_at,
+                          updated_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                        """,
+                        (
+                            resolved_task_id,
+                            payload.project_id,
+                            payload.title.strip(),
+                            description,
+                            payload.status,
+                            payload.priority,
+                            payload.source,
+                            assignee,
+                            entity_key,
+                            category,
+                            payload.due_at,
+                            Jsonb(metadata),
+                            payload.created_by,
+                            updated_by,
+                        ),
+                    )
+                else:
+                    operation = "updated"
+                    cur.execute(
+                        """
+                        UPDATE synapse_tasks
+                        SET title = %s,
+                            description = %s,
+                            status = %s,
+                            priority = %s,
+                            source = %s,
+                            assignee = %s,
+                            entity_key = %s,
+                            category = %s,
+                            due_at = %s,
+                            metadata = %s,
+                            updated_by = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                          AND project_id = %s
+                        """,
+                        (
+                            payload.title.strip(),
+                            description,
+                            payload.status,
+                            payload.priority,
+                            payload.source,
+                            assignee,
+                            entity_key,
+                            category,
+                            payload.due_at,
+                            Jsonb(metadata),
+                            updated_by,
+                            resolved_task_id,
+                            payload.project_id,
+                        ),
+                    )
+
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      project_id,
+                      title,
+                      description,
+                      status,
+                      priority,
+                      source,
+                      assignee,
+                      entity_key,
+                      category,
+                      due_at,
+                      created_by,
+                      metadata,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM synapse_tasks
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (resolved_task_id, payload.project_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=500, detail="task_upsert_failed")
+                serialized_task = _serialize_task_row(row)
+
+                if existing is None:
+                    _insert_task_event(
+                        cur,
+                        task_id=resolved_task_id,
+                        project_id=payload.project_id,
+                        event_type="created",
+                        actor=payload.created_by,
+                        payload={"task": serialized_task},
+                    )
+                else:
+                    existing_task = _serialize_task_row(existing)
+                    changed: dict[str, Any] = {}
+                    for key in [
+                        "title",
+                        "description",
+                        "status",
+                        "priority",
+                        "source",
+                        "assignee",
+                        "entity_key",
+                        "category",
+                        "due_at",
+                        "metadata",
+                    ]:
+                        if existing_task.get(key) != serialized_task.get(key):
+                            changed[key] = {"from": existing_task.get(key), "to": serialized_task.get(key)}
+
+                    if changed:
+                        _insert_task_event(
+                            cur,
+                            task_id=resolved_task_id,
+                            project_id=payload.project_id,
+                            event_type="updated",
+                            actor=updated_by,
+                            payload={"changes": changed},
+                        )
+                    if existing_task.get("status") != serialized_task.get("status"):
+                        _insert_task_event(
+                            cur,
+                            task_id=resolved_task_id,
+                            project_id=payload.project_id,
+                            event_type="status_changed",
+                            actor=updated_by,
+                            payload={"from": existing_task.get("status"), "to": serialized_task.get("status")},
+                        )
+                    if not changed:
+                        operation = "noop"
+
+                response = {"status": operation, "task": serialized_task}
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.post("/v1/tasks/{task_id}/status", response_model=None)
+def update_task_status(
+    task_id: UUID,
+    payload: TaskStatusUpdateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = f"/v1/tasks/{task_id}/status"
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT status
+                    FROM synapse_tasks
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (task_id, payload.project_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    response = {"error": "task_not_found"}
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=404,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=404, content=response)
+                previous_status = str(row[0])
+
+                cur.execute(
+                    """
+                    UPDATE synapse_tasks
+                    SET status = %s,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND project_id = %s
+                    """,
+                    (payload.status, payload.updated_by, task_id, payload.project_id),
+                )
+
+                _insert_task_event(
+                    cur,
+                    task_id=task_id,
+                    project_id=payload.project_id,
+                    event_type="status_changed",
+                    actor=payload.updated_by,
+                    payload={
+                        "from": previous_status,
+                        "to": payload.status,
+                        "note": payload.note.strip() if isinstance(payload.note, str) else None,
+                    },
+                )
+
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      project_id,
+                      title,
+                      description,
+                      status,
+                      priority,
+                      source,
+                      assignee,
+                      entity_key,
+                      category,
+                      due_at,
+                      created_by,
+                      metadata,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM synapse_tasks
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (task_id, payload.project_id),
+                )
+                task_row = cur.fetchone()
+                response = {
+                    "status": "ok",
+                    "changed": previous_status != payload.status,
+                    "task": _serialize_task_row(task_row),
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.post("/v1/tasks/{task_id}/comments", response_model=None)
+def add_task_comment(
+    task_id: UUID,
+    payload: TaskCommentCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = f"/v1/tasks/{task_id}/comments"
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM synapse_tasks
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (task_id, payload.project_id),
+                )
+                if cur.fetchone() is None:
+                    response = {"error": "task_not_found"}
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=404,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=404, content=response)
+
+                event_id = _insert_task_event(
+                    cur,
+                    task_id=task_id,
+                    project_id=payload.project_id,
+                    event_type="comment",
+                    actor=payload.created_by,
+                    payload={
+                        "comment": payload.comment.strip(),
+                        "metadata": payload.metadata or {},
+                    },
+                )
+                cur.execute(
+                    """
+                    UPDATE synapse_tasks
+                    SET updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND project_id = %s
+                    """,
+                    (payload.created_by, task_id, payload.project_id),
+                )
+                response = {"status": "ok", "event_id": str(event_id)}
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.post("/v1/tasks/{task_id}/links", response_model=None)
+def add_task_link(
+    task_id: UUID,
+    payload: TaskLinkCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = f"/v1/tasks/{task_id}/links"
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM synapse_tasks
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (task_id, payload.project_id),
+                )
+                if cur.fetchone() is None:
+                    response = {"error": "task_not_found"}
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=404,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=404, content=response)
+
+                link_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO synapse_task_links (
+                      id,
+                      task_id,
+                      project_id,
+                      link_type,
+                      link_ref,
+                      note,
+                      metadata,
+                      created_by,
+                      created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (task_id, link_type, link_ref) DO UPDATE
+                    SET note = EXCLUDED.note,
+                        metadata = EXCLUDED.metadata,
+                        created_by = EXCLUDED.created_by
+                    RETURNING
+                      id::text,
+                      task_id::text,
+                      project_id,
+                      link_type,
+                      link_ref,
+                      note,
+                      metadata,
+                      created_by,
+                      created_at
+                    """,
+                    (
+                        link_id,
+                        task_id,
+                        payload.project_id,
+                        payload.link_type,
+                        payload.link_ref.strip(),
+                        payload.note.strip() if isinstance(payload.note, str) else None,
+                        Jsonb(payload.metadata or {}),
+                        payload.created_by,
+                    ),
+                )
+                link_row = cur.fetchone()
+                link = _serialize_task_link_row(link_row)
+
+                _insert_task_event(
+                    cur,
+                    task_id=task_id,
+                    project_id=payload.project_id,
+                    event_type="link_added",
+                    actor=payload.created_by,
+                    payload={
+                        "link_type": link["link_type"],
+                        "link_ref": link["link_ref"],
+                        "note": link["note"],
+                    },
+                )
+
+                cur.execute(
+                    """
+                    UPDATE synapse_tasks
+                    SET updated_by = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND project_id = %s
+                    """,
+                    (payload.created_by, task_id, payload.project_id),
+                )
+                response = {"status": "ok", "link": link}
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/legacy-import/sources")
+def list_legacy_import_sources(
+    project_id: str,
+    enabled: bool | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if enabled is not None:
+        filters.append("enabled = %s")
+        params.append(enabled)
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  source_type,
+                  source_ref,
+                  enabled,
+                  sync_interval_minutes,
+                  next_run_at,
+                  last_run_at,
+                  last_success_at,
+                  config,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM legacy_import_sources
+                WHERE {' AND '.join(filters)}
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+
+    sources = [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "source_type": row[2],
+            "source_ref": row[3],
+            "enabled": bool(row[4]),
+            "sync_interval_minutes": int(row[5]),
+            "next_run_at": row[6].isoformat(),
+            "last_run_at": None if row[7] is None else row[7].isoformat(),
+            "last_success_at": None if row[8] is None else row[8].isoformat(),
+            "config": row[9] if isinstance(row[9], dict) else {},
+            "created_by": row[10],
+            "updated_by": row[11],
+            "created_at": row[12].isoformat(),
+            "updated_at": row[13].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"sources": sources}
+
+
+@app.put("/v1/legacy-import/sources")
+def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO legacy_import_sources (
+                  id,
+                  project_id,
+                  source_type,
+                  source_ref,
+                  enabled,
+                  sync_interval_minutes,
+                  next_run_at,
+                  config,
+                  created_by,
+                  updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s, %s, %s)
+                ON CONFLICT (project_id, source_type, source_ref) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    sync_interval_minutes = EXCLUDED.sync_interval_minutes,
+                    next_run_at = COALESCE(EXCLUDED.next_run_at, legacy_import_sources.next_run_at),
+                    config = EXCLUDED.config,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING
+                  id::text,
+                  project_id,
+                  source_type,
+                  source_ref,
+                  enabled,
+                  sync_interval_minutes,
+                  next_run_at,
+                  last_run_at,
+                  last_success_at,
+                  config,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    uuid4(),
+                    payload.project_id,
+                    payload.source_type,
+                    payload.source_ref,
+                    payload.enabled,
+                    payload.sync_interval_minutes,
+                    payload.next_run_at,
+                    Jsonb(payload.config or {}),
+                    payload.updated_by,
+                    payload.updated_by,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "source": {
+            "id": row[0],
+            "project_id": row[1],
+            "source_type": row[2],
+            "source_ref": row[3],
+            "enabled": bool(row[4]),
+            "sync_interval_minutes": int(row[5]),
+            "next_run_at": row[6].isoformat(),
+            "last_run_at": None if row[7] is None else row[7].isoformat(),
+            "last_success_at": None if row[8] is None else row[8].isoformat(),
+            "config": row[9] if isinstance(row[9], dict) else {},
+            "created_by": row[10],
+            "updated_by": row[11],
+            "created_at": row[12].isoformat(),
+            "updated_at": row[13].isoformat(),
+        },
+    }
+
+
+@app.post("/v1/legacy-import/sources/{source_id}/sync")
+def queue_legacy_import_source_sync(source_id: UUID, payload: LegacyImportSourceManualSyncRequest) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, project_id, source_type, source_ref
+                FROM legacy_import_sources
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (source_id, payload.project_id),
+            )
+            source_row = cur.fetchone()
+            if source_row is None:
+                return JSONResponse(status_code=404, content={"error": "legacy_import_source_not_found"})
+
+            cur.execute(
+                """
+                SELECT id::text, status, trigger_mode, requested_by, created_at
+                FROM legacy_import_sync_runs
+                WHERE source_id = %s
+                  AND status IN ('queued', 'running')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (source_id,),
+            )
+            existing = cur.fetchone()
+            if existing is not None:
+                return {
+                    "status": "already_queued",
+                    "run": {
+                        "id": existing[0],
+                        "status": existing[1],
+                        "trigger_mode": existing[2],
+                        "requested_by": existing[3],
+                        "created_at": existing[4].isoformat(),
+                    },
+                }
+
+            run_id = uuid4()
+            cur.execute(
+                """
+                INSERT INTO legacy_import_sync_runs (
+                  id,
+                  source_id,
+                  project_id,
+                  status,
+                  trigger_mode,
+                  requested_by,
+                  summary,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, 'queued', 'manual', %s, '{}'::jsonb, NOW(), NOW())
+                """,
+                (run_id, source_id, payload.project_id, payload.requested_by),
+            )
+
+    return {
+        "status": "queued",
+        "run": {
+            "id": str(run_id),
+            "source_id": str(source_id),
+            "project_id": payload.project_id,
+            "trigger_mode": "manual",
+            "requested_by": payload.requested_by,
+        },
+        "next_action": "run_legacy_sync_scheduler",
+    }
+
+
+@app.get("/v1/legacy-import/runs")
+def list_legacy_import_sync_runs(
+    project_id: str,
+    source_id: UUID | None = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(queued|running|completed|failed|skipped)$"),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    filters = ["r.project_id = %s"]
+    params: list[Any] = [project_id]
+    if source_id is not None:
+        filters.append("r.source_id = %s")
+        params.append(source_id)
+    if status is not None:
+        filters.append("r.status = %s")
+        params.append(status)
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  r.id::text,
+                  r.source_id::text,
+                  r.project_id,
+                  r.status,
+                  r.trigger_mode,
+                  r.requested_by,
+                  r.records_collected,
+                  r.records_uploaded,
+                  r.skipped_files_count,
+                  r.warnings_count,
+                  r.batch_id::text,
+                  r.error_message,
+                  r.summary,
+                  r.started_at,
+                  r.finished_at,
+                  r.created_at,
+                  r.updated_at,
+                  s.source_type,
+                  s.source_ref
+                FROM legacy_import_sync_runs r
+                JOIN legacy_import_sources s ON s.id = r.source_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY r.created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+    runs = [
+        {
+            "id": row[0],
+            "source_id": row[1],
+            "project_id": row[2],
+            "status": row[3],
+            "trigger_mode": row[4],
+            "requested_by": row[5],
+            "records_collected": int(row[6]),
+            "records_uploaded": int(row[7]),
+            "skipped_files_count": int(row[8]),
+            "warnings_count": int(row[9]),
+            "batch_id": row[10],
+            "error_message": row[11],
+            "summary": row[12] if isinstance(row[12], dict) else {},
+            "started_at": None if row[13] is None else row[13].isoformat(),
+            "finished_at": None if row[14] is None else row[14].isoformat(),
+            "created_at": row[15].isoformat(),
+            "updated_at": row[16].isoformat(),
+            "source_type": row[17],
+            "source_ref": row[18],
+        }
+        for row in rows
+    ]
+    return {"runs": runs}
+
+
+@app.post("/v1/simulator/runs", response_model=None)
+def enqueue_simulator_run(
+    payload: SimulatorRunCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/simulator/runs"
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        with conn.cursor() as cur:
+            try:
+                run_id = uuid4()
+                config_payload = {
+                    "lookback_days": int(payload.lookback_days),
+                    "max_sessions": int(payload.max_sessions),
+                    "events_per_session": int(payload.events_per_session),
+                    "relevance_floor": float(payload.relevance_floor),
+                    "max_findings": int(payload.max_findings),
+                    "policy_changes": [item.model_dump(mode="json") for item in payload.policy_changes],
+                    "metadata": payload.metadata or {},
+                    "requested_via": "api",
+                }
+                cur.execute(
+                    """
+                    INSERT INTO agent_simulator_runs (
+                      id,
+                      project_id,
+                      status,
+                      mode,
+                      created_by,
+                      config,
+                      result,
+                      sessions_scanned,
+                      findings_total,
+                      started_at
+                    )
+                    VALUES (
+                      %s, %s, 'queued', %s, %s, %s, '{}'::jsonb, 0, 0, NOW()
+                    )
+                    """,
+                    (
+                        run_id,
+                        payload.project_id,
+                        payload.mode,
+                        payload.created_by,
+                        Jsonb(config_payload),
+                    ),
+                )
+                response = {
+                    "status": "queued",
+                    "run": {
+                        "id": str(run_id),
+                        "project_id": payload.project_id,
+                        "mode": payload.mode,
+                        "created_by": payload.created_by,
+                        "config": config_payload,
+                        "queued_at": datetime.now(UTC).isoformat(),
+                    },
+                    "next_action": "run_agent_simulator_queue_worker",
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/simulator/runs")
+def list_simulator_runs(
+    project_id: str,
+    status: str | None = Query(default=None, pattern="^(queued|running|completed|failed)$"),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> dict[str, Any]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if status is not None:
+        filters.append("status = %s")
+        params.append(status)
+    params.append(limit)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  project_id,
+                  status,
+                  mode,
+                  created_by,
+                  config,
+                  result,
+                  sessions_scanned,
+                  findings_total,
+                  error_message,
+                  started_at,
+                  finished_at,
+                  created_at,
+                  updated_at
+                FROM agent_simulator_runs
+                WHERE {' AND '.join(filters)}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+
+    runs = [
+        {
+            "id": row[0],
+            "project_id": row[1],
+            "status": row[2],
+            "mode": row[3],
+            "created_by": row[4],
+            "config": row[5],
+            "result": row[6],
+            "sessions_scanned": int(row[7]),
+            "findings_total": int(row[8]),
+            "error_message": row[9],
+            "started_at": row[10].isoformat(),
+            "finished_at": None if row[11] is None else row[11].isoformat(),
+            "created_at": row[12].isoformat(),
+            "updated_at": row[13].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"runs": runs}
+
+
+@app.get("/v1/simulator/runs/{run_id}")
+def get_simulator_run(
+    run_id: UUID,
+    project_id: str,
+    findings_limit: int = Query(default=50, ge=0, le=1000),
+) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  project_id,
+                  status,
+                  mode,
+                  created_by,
+                  config,
+                  result,
+                  sessions_scanned,
+                  findings_total,
+                  error_message,
+                  started_at,
+                  finished_at,
+                  created_at,
+                  updated_at
+                FROM agent_simulator_runs
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (run_id, project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return JSONResponse(status_code=404, content={"error": "simulator_run_not_found"})
+
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  session_id,
+                  policy_id,
+                  entity_key,
+                  category,
+                  impact_kind,
+                  severity,
+                  impact_score,
+                  rationale,
+                  evidence_excerpt,
+                  session_first_seen,
+                  session_last_seen,
+                  session_event_count,
+                  metadata,
+                  created_at
+                FROM agent_simulator_findings
+                WHERE run_id = %s
+                ORDER BY impact_score DESC, created_at DESC
+                LIMIT %s
+                """,
+                (run_id, findings_limit),
+            )
+            finding_rows = cur.fetchall()
+
+    findings = [
+        {
+            "id": item[0],
+            "session_id": item[1],
+            "policy_id": item[2],
+            "entity_key": item[3],
+            "category": item[4],
+            "impact_kind": item[5],
+            "severity": item[6],
+            "impact_score": float(item[7]),
+            "rationale": item[8],
+            "evidence_excerpt": item[9],
+            "session_first_seen": None if item[10] is None else item[10].isoformat(),
+            "session_last_seen": None if item[11] is None else item[11].isoformat(),
+            "session_event_count": int(item[12]),
+            "metadata": item[13],
+            "created_at": item[14].isoformat(),
+        }
+        for item in finding_rows
+    ]
+    return {
+        "run": {
+            "id": row[0],
+            "project_id": row[1],
+            "status": row[2],
+            "mode": row[3],
+            "created_by": row[4],
+            "config": row[5],
+            "result": row[6],
+            "sessions_scanned": int(row[7]),
+            "findings_total": int(row[8]),
+            "error_message": row[9],
+            "started_at": row[10].isoformat(),
+            "finished_at": None if row[11] is None else row[11].isoformat(),
+            "created_at": row[12].isoformat(),
+            "updated_at": row[13].isoformat(),
+        },
+        "findings": findings,
+    }

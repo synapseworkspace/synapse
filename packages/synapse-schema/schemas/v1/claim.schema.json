@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.dev/schema/v1/claim.schema.json",
+  "title": "Claim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "project_id", "entity_key", "category", "claim_text", "status", "evidence"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "schema_version": { "type": "string", "const": "v1" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "entity_key": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "minLength": 1 },
+    "claim_text": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "approved", "rejected", "expired"]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "valid_from": { "type": "string", "format": "date-time" },
+    "valid_to": { "type": "string", "format": "date-time" },
+    "metadata": { "type": "object", "additionalProperties": true },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "./evidence_ref.schema.json" }
+    }
+  }
+}

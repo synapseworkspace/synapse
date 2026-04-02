@@ -1,0 +1,491 @@
+{
+  "cases": [
+    {
+      "id": "local_default_category_entity",
+      "source_type": "local_dir",
+      "source_ref": "/tmp/legacy-import",
+      "records": [
+        {
+          "source_id": "file-access-1",
+          "content": "BC Omega gate requires a physical key-card after 10:00.",
+          "metadata": {
+            "file_path": "ops/access_rules.md"
+          }
+        },
+        {
+          "source_id": "file-access-2",
+          "content": "Keep two spare access cards in dispatch office.",
+          "metadata": {
+            "file_path": "ops/access_rules.md"
+          }
+        },
+        {
+          "source_id": "file-support-1",
+          "content": "Escalate refunds if delivery delay exceeds 60 minutes.",
+          "metadata": {
+            "file_path": "support/ticket_updates.csv"
+          }
+        }
+      ],
+      "expected": {
+        "summary": {
+          "seed_records": 3,
+          "seed_pages": 2,
+          "group_mode": "category_entity",
+          "page_prefix": "legacy"
+        },
+        "by_source_id": {
+          "file-access-1": {
+            "entity_key": "access_rules",
+            "category": "access_policy",
+            "space_key": "files",
+            "page_slug": "legacy/files/access_policy_access_rules",
+            "section_key": "policies",
+            "section_heading": "Access Policy",
+            "group_mode": "category_entity"
+          },
+          "file-access-2": {
+            "entity_key": "access_rules",
+            "category": "access_policy",
+            "space_key": "files",
+            "page_slug": "legacy/files/access_policy_access_rules",
+            "section_key": "policies",
+            "section_heading": "Access Policy",
+            "group_mode": "category_entity"
+          },
+          "file-support-1": {
+            "entity_key": "ticket_updates",
+            "category": "support_policy",
+            "space_key": "files",
+            "page_slug": "legacy/files/support_policy_ticket_updates",
+            "section_key": "support",
+            "section_heading": "Support Rules",
+            "group_mode": "category_entity"
+          }
+        },
+        "top_pages": [
+          {
+            "page_slug": "legacy/files/access_policy_access_rules",
+            "records": 2,
+            "categories": [
+              "access_policy"
+            ],
+            "section_keys": [
+              "policies"
+            ]
+          },
+          {
+            "page_slug": "legacy/files/support_policy_ticket_updates",
+            "records": 1,
+            "categories": [
+              "support_policy"
+            ],
+            "section_keys": [
+              "support"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "notion_entity_group_with_overrides",
+      "source_type": "notion_database",
+      "source_ref": "db_omega",
+      "config": {
+        "seed_page_prefix": "playbook",
+        "seed_space_key": "knowledge_hub",
+        "seed_group_mode": "entity",
+        "seed_section_overrides": {
+          "operations": {
+            "section_key": "runbook",
+            "section_heading": "Runbook Notes"
+          }
+        }
+      },
+      "records": [
+        {
+          "source_id": "notion-alpha-1",
+          "content": "Driver Petrov does not accept calls after 17:00.",
+          "category": "ops",
+          "metadata": {
+            "source_connector": "notion",
+            "notion_title": "Driver Petrov"
+          }
+        },
+        {
+          "source_id": "notion-alpha-2",
+          "content": "Send SMS fallback if call attempt fails for Driver Petrov.",
+          "category": "operations",
+          "metadata": {
+            "source_connector": "notion",
+            "notion_title": "Driver Petrov"
+          }
+        }
+      ],
+      "expected": {
+        "summary": {
+          "seed_records": 2,
+          "seed_pages": 1,
+          "group_mode": "entity",
+          "page_prefix": "playbook"
+        },
+        "by_source_id": {
+          "notion-alpha-1": {
+            "entity_key": "driver_petrov",
+            "category": "operations",
+            "space_key": "knowledge_hub",
+            "page_slug": "playbook/knowledge_hub/driver_petrov",
+            "section_key": "runbook",
+            "section_heading": "Runbook Notes",
+            "group_mode": "entity"
+          },
+          "notion-alpha-2": {
+            "entity_key": "driver_petrov",
+            "category": "operations",
+            "space_key": "knowledge_hub",
+            "page_slug": "playbook/knowledge_hub/driver_petrov",
+            "section_key": "runbook",
+            "section_heading": "Runbook Notes",
+            "group_mode": "entity"
+          }
+        },
+        "top_pages": [
+          {
+            "page_slug": "playbook/knowledge_hub/driver_petrov",
+            "records": 2,
+            "categories": [
+              "operations"
+            ],
+            "section_keys": [
+              "runbook"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "category_group_and_string_override",
+      "source_type": "local_dir",
+      "source_ref": "/tmp/legacy-import",
+      "config": {
+        "seed_group_mode": "category",
+        "seed_section_overrides": {
+          "access_policy": "Gate Constraints"
+        }
+      },
+      "records": [
+        {
+          "source_id": "local-access-1",
+          "content": "Access card is mandatory for BC Omega loading zone.",
+          "entity_key": "bc_omega",
+          "category": "access",
+          "metadata": {}
+        },
+        {
+          "source_id": "local-warehouse-1",
+          "content": "Warehouse #1 receives goods only between 09:00 and 18:00.",
+          "entity_key": "warehouse_1",
+          "category": "warehouse",
+          "metadata": {
+            "file_path": "warehouse/rules.md"
+          }
+        }
+      ],
+      "expected": {
+        "summary": {
+          "seed_records": 2,
+          "seed_pages": 2,
+          "group_mode": "category",
+          "page_prefix": "legacy"
+        },
+        "by_source_id": {
+          "local-access-1": {
+            "entity_key": "bc_omega",
+            "category": "access_policy",
+            "space_key": "files",
+            "page_slug": "legacy/files/access_policy",
+            "section_key": "gate_constraints",
+            "section_heading": "Gate Constraints",
+            "group_mode": "category"
+          },
+          "local-warehouse-1": {
+            "entity_key": "warehouse_1",
+            "category": "warehouse_policy",
+            "space_key": "files",
+            "page_slug": "legacy/files/warehouse_policy",
+            "section_key": "operations",
+            "section_heading": "Warehouse Operations",
+            "group_mode": "category"
+          }
+        },
+        "top_pages": [
+          {
+            "page_slug": "legacy/files/access_policy",
+            "records": 1,
+            "categories": [
+              "access_policy"
+            ],
+            "section_keys": [
+              "gate_constraints"
+            ]
+          },
+          {
+            "page_slug": "legacy/files/warehouse_policy",
+            "records": 1,
+            "categories": [
+              "warehouse_policy"
+            ],
+            "section_keys": [
+              "operations"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "notion_heavy_mixed_language_seeding",
+      "source_type": "notion_root_page",
+      "source_ref": "root_omega_playbook",
+      "config": {
+        "seed_page_prefix": "knowledge",
+        "seed_group_mode": "category_entity",
+        "seed_section_overrides": {
+          "Операции": "Execution Track",
+          "доступ": "Контроль доступа",
+          "support_policy": {
+            "section_key": "faq",
+            "section_heading": "FAQ and Escalation"
+          }
+        }
+      },
+      "records": [
+        {
+          "source_id": "notion-ops-1",
+          "content": "Склад №4 закрывается в 19:30.",
+          "category": "операции",
+          "metadata": {
+            "source_connector": "notion",
+            "notion_title": "Склад №4"
+          }
+        },
+        {
+          "source_id": "notion-ops-2",
+          "content": "Dispatch confirms last truck leaves at 19:15.",
+          "category": "ops",
+          "metadata": {
+            "source_connector": "notion",
+            "notion_title": "Склад №4"
+          }
+        },
+        {
+          "source_id": "notion-access-1",
+          "content": "Въезд в БЦ Омега через арку, нужна карта.",
+          "category": "доступ",
+          "metadata": {
+            "source_connector": "notion",
+            "notion_title": "БЦ Омега"
+          }
+        },
+        {
+          "source_id": "notion-support-1",
+          "content": "Escalate damaged package claims to tier-2 after photo check.",
+          "category": "support",
+          "metadata": {
+            "source_connector": "notion",
+            "notion_title": "Damage Escalation"
+          }
+        }
+      ],
+      "expected": {
+        "summary": {
+          "seed_records": 4,
+          "seed_pages": 3,
+          "group_mode": "category_entity",
+          "page_prefix": "knowledge"
+        },
+        "by_source_id": {
+          "notion-ops-1": {
+            "entity_key": "склад_4",
+            "category": "operations",
+            "space_key": "notion",
+            "page_slug": "knowledge/notion/operations_склад_4",
+            "section_key": "execution_track",
+            "section_heading": "Execution Track",
+            "group_mode": "category_entity"
+          },
+          "notion-ops-2": {
+            "entity_key": "склад_4",
+            "category": "operations",
+            "space_key": "notion",
+            "page_slug": "knowledge/notion/operations_склад_4",
+            "section_key": "execution_track",
+            "section_heading": "Execution Track",
+            "group_mode": "category_entity"
+          },
+          "notion-access-1": {
+            "entity_key": "бц_омега",
+            "category": "access_policy",
+            "space_key": "notion",
+            "page_slug": "knowledge/notion/access_policy_бц_омега",
+            "section_key": "контроль_доступа",
+            "section_heading": "Контроль доступа",
+            "group_mode": "category_entity"
+          },
+          "notion-support-1": {
+            "entity_key": "damage_escalation",
+            "category": "support_policy",
+            "space_key": "notion",
+            "page_slug": "knowledge/notion/support_policy_damage_escalation",
+            "section_key": "faq",
+            "section_heading": "FAQ and Escalation",
+            "group_mode": "category_entity"
+          }
+        },
+        "top_pages": [
+          {
+            "page_slug": "knowledge/notion/operations_склад_4",
+            "records": 2,
+            "categories": [
+              "operations"
+            ],
+            "section_keys": [
+              "execution_track"
+            ]
+          },
+          {
+            "page_slug": "knowledge/notion/access_policy_бц_омега",
+            "records": 1,
+            "categories": [
+              "access_policy"
+            ],
+            "section_keys": [
+              "контроль_доступа"
+            ]
+          },
+          {
+            "page_slug": "knowledge/notion/support_policy_damage_escalation",
+            "records": 1,
+            "categories": [
+              "support_policy"
+            ],
+            "section_keys": [
+              "faq"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "mixed_language_override_key_normalization",
+      "source_type": "local_dir",
+      "source_ref": "/mnt/company_legacy",
+      "config": {
+        "seed_page_prefix": "core",
+        "seed_space_key": "ops_ru",
+        "seed_group_mode": "category",
+        "seed_section_overrides": {
+          "OPS": {
+            "section_key": "оперативные_правила",
+            "section_heading": "Оперативные правила"
+          },
+          "доступ": "Правила доступа",
+          "SUPPORT_POLICY": {
+            "heading": "Support Escalation"
+          }
+        }
+      },
+      "records": [
+        {
+          "source_id": "ru-ops-1",
+          "content": "Оператор должен подтверждать отмену заказа голосом.",
+          "category": "операции",
+          "entity_key": "dispatcher_team",
+          "metadata": {}
+        },
+        {
+          "source_id": "ru-access-1",
+          "content": "Для БЦ Омега после 18:00 нужен физический пропуск.",
+          "category": "access_policy_rules",
+          "entity_key": "bc_omega",
+          "metadata": {}
+        },
+        {
+          "source_id": "ru-support-1",
+          "content": "Escalate repeat refund disputes to tier-2 within 30 minutes.",
+          "category": "support_policy",
+          "entity_key": "support_escalation",
+          "metadata": {}
+        }
+      ],
+      "expected": {
+        "summary": {
+          "seed_records": 3,
+          "seed_pages": 3,
+          "group_mode": "category",
+          "page_prefix": "core"
+        },
+        "by_source_id": {
+          "ru-ops-1": {
+            "entity_key": "dispatcher_team",
+            "category": "operations",
+            "space_key": "ops_ru",
+            "page_slug": "core/ops_ru/operations",
+            "section_key": "оперативные_правила",
+            "section_heading": "Оперативные правила",
+            "group_mode": "category"
+          },
+          "ru-access-1": {
+            "entity_key": "bc_omega",
+            "category": "access_policy",
+            "space_key": "ops_ru",
+            "page_slug": "core/ops_ru/access_policy",
+            "section_key": "правила_доступа",
+            "section_heading": "Правила доступа",
+            "group_mode": "category"
+          },
+          "ru-support-1": {
+            "entity_key": "support_escalation",
+            "category": "support_policy",
+            "space_key": "ops_ru",
+            "page_slug": "core/ops_ru/support_policy",
+            "section_key": "support",
+            "section_heading": "Support Escalation",
+            "group_mode": "category"
+          }
+        },
+        "top_pages": [
+          {
+            "page_slug": "core/ops_ru/access_policy",
+            "records": 1,
+            "categories": [
+              "access_policy"
+            ],
+            "section_keys": [
+              "правила_доступа"
+            ]
+          },
+          {
+            "page_slug": "core/ops_ru/operations",
+            "records": 1,
+            "categories": [
+              "operations"
+            ],
+            "section_keys": [
+              "оперативные_правила"
+            ]
+          },
+          {
+            "page_slug": "core/ops_ru/support_policy",
+            "records": 1,
+            "categories": [
+              "support_policy"
+            ],
+            "section_keys": [
+              "support"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.dev/schema/v1/draft_page.schema.json",
+  "title": "DraftPage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "project_id", "title", "path", "markdown", "claims"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "schema_version": { "type": "string", "const": "v1" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "path": { "type": "string", "minLength": 1 },
+    "markdown": { "type": "string", "minLength": 1 },
+    "claims": {
+      "type": "array",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "summary": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

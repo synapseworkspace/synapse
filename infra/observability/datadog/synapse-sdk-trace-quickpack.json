@@ -1,0 +1,121 @@
+{
+  "title": "Synapse SDK Trace Observability",
+  "description": "Starter Datadog dashboard for Synapse SDK OpenTelemetry bridge metrics.",
+  "layout_type": "ordered",
+  "is_read_only": false,
+  "template_variables": [
+    {
+      "name": "project",
+      "prefix": "synapse.project_id",
+      "default": "*"
+    },
+    {
+      "name": "integration",
+      "prefix": "synapse.integration",
+      "default": "*"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "title": "SDK Debug Events / sec by Event",
+        "type": "timeseries",
+        "requests": [
+          {
+            "q": "sum:synapse.debug.events_total{synapse.project_id:$project,synapse.integration:$integration} by {synapse.event}.as_rate()",
+            "display_type": "line"
+          }
+        ],
+        "show_legend": true,
+        "legend_layout": "horizontal",
+        "legend_columns": [
+          "avg",
+          "max",
+          "value"
+        ]
+      }
+    },
+    {
+      "definition": {
+        "title": "Knowledge Proposals / sec",
+        "type": "query_value",
+        "requests": [
+          {
+            "q": "sum:synapse.knowledge.proposals_total{synapse.project_id:$project,synapse.integration:$integration}.as_rate()"
+          }
+        ],
+        "autoscale": true,
+        "precision": 3
+      }
+    },
+    {
+      "definition": {
+        "title": "Transport Failures / sec",
+        "type": "query_value",
+        "requests": [
+          {
+            "q": "sum:synapse.transport.failures_total{synapse.project_id:$project,synapse.integration:$integration}.as_rate()"
+          }
+        ],
+        "autoscale": true,
+        "precision": 3
+      }
+    },
+    {
+      "definition": {
+        "title": "Failure Ratio (%)",
+        "type": "query_value",
+        "requests": [
+          {
+            "formulas": [
+              {
+                "formula": "(fail / max(events, 0.0001)) * 100"
+              }
+            ],
+            "queries": [
+              {
+                "name": "events",
+                "data_source": "metrics",
+                "query": "sum:synapse.debug.events_total{synapse.project_id:$project,synapse.integration:$integration}.as_rate()"
+              },
+              {
+                "name": "fail",
+                "data_source": "metrics",
+                "query": "sum:synapse.transport.failures_total{synapse.project_id:$project,synapse.integration:$integration}.as_rate()"
+              }
+            ],
+            "response_format": "scalar"
+          }
+        ],
+        "autoscale": false,
+        "precision": 2
+      }
+    },
+    {
+      "definition": {
+        "title": "Flush Batch Size (p95)",
+        "type": "timeseries",
+        "requests": [
+          {
+            "q": "p95:synapse.flush.batch_size{synapse.project_id:$project,synapse.integration:$integration}",
+            "display_type": "line"
+          }
+        ],
+        "show_legend": false
+      }
+    },
+    {
+      "definition": {
+        "title": "Queue Size (p95)",
+        "type": "timeseries",
+        "requests": [
+          {
+            "q": "p95:synapse.queue.size{synapse.project_id:$project,synapse.integration:$integration}",
+            "display_type": "line"
+          }
+        ],
+        "show_legend": false
+      }
+    }
+  ]
+}

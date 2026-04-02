@@ -1,0 +1,50 @@
+{
+  "name": "@synapse/sdk",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Synapse universal TypeScript SDK",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maksbdev/synapse.git"
+  },
+  "homepage": "https://github.com/maksbdev/synapse#readme",
+  "bugs": {
+    "url": "https://github.com/maksbdev/synapse/issues"
+  },
+  "keywords": ["ai", "agents", "mcp", "knowledge", "observability", "sdk"],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

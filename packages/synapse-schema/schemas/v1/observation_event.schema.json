@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.dev/schema/v1/observation_event.schema.json",
+  "title": "ObservationEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "project_id", "event_type", "payload", "observed_at"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "schema_version": { "type": "string", "const": "v1" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "agent_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "trace_id": { "type": "string", "format": "uuid" },
+    "span_id": { "type": "string", "format": "uuid" },
+    "parent_span_id": { "type": "string", "format": "uuid" },
+    "event_type": {
+      "type": "string",
+      "enum": ["tool_result", "agent_message", "user_message", "system_signal", "fact_proposed", "memory_backfill"]
+    },
+    "payload": {
+      "type": "object",
+      "description": "Arbitrary event payload captured by the SDK"
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "observed_at": { "type": "string", "format": "date-time" }
+  }
+}

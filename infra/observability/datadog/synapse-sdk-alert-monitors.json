@@ -1,0 +1,62 @@
+{
+  "description": "Datadog monitor quick pack for Synapse SDK baseline SLO alerts.",
+  "monitors": [
+    {
+      "name": "Synapse SDK Transport Failure Ratio > 5% (warning)",
+      "type": "query alert",
+      "query": "avg(last_10m): (sum:synapse.transport.failures_total{*}.as_rate() / (sum:synapse.debug.events_total{*}.as_rate() + 0.0001)) > 0.05",
+      "message": "Synapse SDK transport failure ratio is above 5% for 10m. Check API transport health, retry policy, and network path.",
+      "tags": [
+        "service:synapse",
+        "component:sdk",
+        "scope:observability",
+        "severity:warning"
+      ],
+      "options": {
+        "notify_no_data": false,
+        "require_full_window": true,
+        "thresholds": {
+          "critical": 0.05
+        }
+      }
+    },
+    {
+      "name": "Synapse SDK Queue Growth > 50% vs prior window",
+      "type": "query alert",
+      "query": "avg(last_15m):((avg:synapse.queue.size{*}) / (avg:synapse.queue.size{*}.rollup(avg, 1200) + 0.0001)) > 1.5",
+      "message": "Synapse SDK queue size increased >50% versus prior window. Investigate downstream API availability and flush pressure.",
+      "tags": [
+        "service:synapse",
+        "component:sdk",
+        "scope:observability",
+        "severity:warning"
+      ],
+      "options": {
+        "notify_no_data": false,
+        "require_full_window": true,
+        "thresholds": {
+          "critical": 1.5
+        }
+      }
+    },
+    {
+      "name": "Synapse SDK Proposal Drop (no proposals with active traffic)",
+      "type": "query alert",
+      "query": "avg(last_5m):sum:synapse.debug.events_total{*}.as_rate() > 0.5 && sum(last_30m):sum:synapse.knowledge.proposals_total{*}.as_count() < 1",
+      "message": "Synapse SDK has active event traffic but zero proposals in the last 30m. Check extractor/synthesizer path and moderation ingestion.",
+      "tags": [
+        "service:synapse",
+        "component:sdk",
+        "scope:observability",
+        "severity:warning"
+      ],
+      "options": {
+        "notify_no_data": false,
+        "require_full_window": true,
+        "thresholds": {
+          "critical": 1
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "version": "v1",
+  "schemas": {
+    "ObservationEvent": "./observation_event.schema.json",
+    "EvidenceRef": "./evidence_ref.schema.json",
+    "Claim": "./claim.schema.json",
+    "DraftPage": "./draft_page.schema.json"
+  }
+}

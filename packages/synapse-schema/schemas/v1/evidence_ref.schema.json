@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.dev/schema/v1/evidence_ref.schema.json",
+  "title": "EvidenceRef",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["source_type", "source_id"],
+  "properties": {
+    "source_type": {
+      "type": "string",
+      "enum": ["dialog", "tool_output", "file", "human_note", "external_event"]
+    },
+    "source_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string" },
+    "tool_name": { "type": "string" },
+    "snippet": { "type": "string" },
+    "url": { "type": "string", "format": "uri" },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "provenance": { "type": "object", "additionalProperties": true }
+  }
+}

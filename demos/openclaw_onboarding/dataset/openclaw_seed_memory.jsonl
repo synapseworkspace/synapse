@@ -1,0 +1,6 @@
+{"kind":"memory","source_id":"legacy-omega-001","content":"BC Omega gate switched to card-only access after 10:00.","entity_key":"bc_omega","category":"access_policy","tags":["access","omega"]}
+{"kind":"memory","source_id":"legacy-omega-002","content":"Dispatch should remind drivers to carry access cards before departure.","entity_key":"dispatch_team","category":"dispatch_rules","tags":["dispatch","policy"]}
+{"kind":"memory","source_id":"legacy-wh-001","content":"Warehouse #1 quarantine window: closed until 2026-04-05.","entity_key":"warehouse_1","category":"warehouse_status","tags":["warehouse","quarantine"]}
+{"kind":"event","event_name":"tool:result","payload":{"sessionKey":"oc-session-1001","tool":"route_check","result":"Driver confirms BC Omega gate denied entry without access card after 10:00."}}
+{"kind":"event","event_name":"message:received","payload":{"sessionKey":"oc-session-1001","from":"driver_petrov","text":"Please include gate-card reminder in all BC Omega jobs."}}
+{"kind":"event","event_name":"agent:completed","payload":{"sessionKey":"oc-session-1001","summary":"Dispatch playbook updated with gate-card reminder."}}

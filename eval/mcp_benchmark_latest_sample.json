@@ -1,0 +1,35 @@
+{
+  "status": "ok",
+  "timestamp": "2026-03-31T17:45:00+00:00",
+  "project_id": "mcp_bench",
+  "config": {
+    "warmup": 20,
+    "iterations": 200,
+    "limit": 10,
+    "max_graph_hops": 3,
+    "graph_boost_hop1": 0.2,
+    "graph_boost_hop2": 0.12,
+    "graph_boost_hop3": 0.06,
+    "graph_boost_other": 0.03
+  },
+  "summary": {
+    "average_case_p95_ms": 43.1,
+    "average_quality_top1_accuracy": 1.0
+  },
+  "cases": [
+    {
+      "id": "graph_hint_one_hop_access",
+      "quality_top1_accuracy": 1.0,
+      "latency_ms": {
+        "p95": 41.3
+      }
+    },
+    {
+      "id": "graph_hint_two_hop_ops",
+      "quality_top1_accuracy": 1.0,
+      "latency_ms": {
+        "p95": 44.2
+      }
+    }
+  ]
+}

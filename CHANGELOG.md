@@ -1,0 +1,158 @@
+# Changelog
+
+All notable changes to this project should be documented in this file.
+
+The format is inspired by Keep a Changelog and Semantic Versioning.
+
+## [Unreleased]
+
+### Added
+
+- `synapse-cli verify core-loop` command for one-command end-to-end acceptance (`ingest -> draft -> approve -> MCP retrieval`) with script auto-discovery, dry-run preview, JSON reporting, and offline CI smoke coverage.
+- `synapse-cli quickstart` command as one-command onboarding orchestrator (`init -> doctor -> connect`, optional `verify core-loop`) with JSON step report and offline CI smoke coverage.
+- OSS governance docs baseline: added `MAINTAINERS.md`, `SUPPORT.md`, and `DEPRECATION_POLICY.md` with contributor ownership/support/deprecation contracts.
+- Compatibility matrix CI workflow (`.github/workflows/compat-matrix.yml`) with Python SDK matrix (`3.10/3.11/3.12/3.13`) and Node SDK/plugin matrix (`18/20/22`) smoke checks.
+- Generated SDK API reference baseline in `docs/reference/*` (`python-sdk-api.md`, `typescript-sdk-api.md`) plus generator/check script (`scripts/generate_sdk_api_reference.py`) and CI freshness gate in `scripts/ci_checks.sh`.
+- OSS repo hardening baseline: added `.github/CODEOWNERS`, `.github/dependabot.yml`, CodeQL workflow (`.github/workflows/codeql.yml`), and secret scanning workflow (`.github/workflows/secret-scan.yml`).
+- Added repository hygiene checker (`scripts/check_repo_hygiene.py`) and CI gate to block tracked local artifacts (`.venv`, `node_modules`, `.env*`).
+- Personalized OSS metadata for launch target `maksbdev/synapse`: updated package repository/homepage/issues URLs, web docs base URL, CODEOWNERS handle, and publish hygiene expectations (with override env vars `SYNAPSE_EXPECTED_REPO` / `SYNAPSE_EXPECTED_ISSUES`).
+- TypeScript OpenClaw bootstrap parity surface in `@synapse/sdk`: `openclawBootstrapPreset` attach option plus helper exports (`buildOpenClawBootstrapOptions`, `collectOpenClawBootstrapRecords`, `listOpenClawBootstrapPresets`) for one-line day-0 memory backfill.
+- MCP retrieval trend monitor now emits `recommended_context_policy_profile` (`profile`, `reason`, threshold payload, SDK default hints) alongside graph-profile recommendations for ops-safe context-policy tuning.
+- Performance tuning advisor output/report now includes MCP context-policy recommendations and generated apply command (`set_mcp_context_policy`) in addition to graph knobs.
+- `synapse-cli connect openclaw` command for env-aware OpenClaw integration snippet generation (attach + MCP callback profile defaults + bootstrap preset defaults).
+- `synapse-cli init` command for onboarding scaffolding: generates project-local env config with API/project defaults, MCP context policy profile, OpenClaw bootstrap preset hints, and quickstart command output.
+- `synapse-cli doctor` command for local readiness diagnostics (`/health`, `/v1/tasks`, `/v1/wiki/drafts`, `/v1/mcp/retrieval/explain`) with strict mode, JSON output, and remediation hints.
+- MCP context-policy profile presets in Python/TypeScript SDK helpers (`off`, `advisory`, `enforced`, `strict_enforced`) plus profile listing helpers (`list_context_policy_profiles`, `listContextPolicyProfiles`).
+- Legacy seed-planning regression evaluator (`scripts/eval_legacy_seed_regression.py`) with golden fixtures (`eval/legacy_seed_cases.json`) validating grouping mode resolution, section overrides, and deterministic wiki page targeting.
+- OpenClaw bootstrap preset helpers exported in Python SDK public API: `OPENCLAW_BOOTSTRAP_PRESETS`, `build_openclaw_bootstrap_options(...)`, and `list_openclaw_bootstrap_presets()`.
+- Shared retrieval context-policy contract in `services/shared/retrieval.py`: `RetrievalContextPolicyConfig`, env loader, policy/header serialization, and per-result confidence/eligibility enrichment (`retrieval_confidence`, `confidence_breakdown`, `context_policy`).
+- MCP/API retrieval policy headers (`X-Synapse-Retrieval-Context-*`) and diagnostics payload fields (`context_policy`, `policy_filtered_out`) for operator-visible context-injection controls.
+- SDK MCP helper policy controls in Python/TypeScript (`context_policy_mode`, `min_retrieval_confidence`, score floors) with local fallback filtering for enforced context injection.
+- Legacy seed-orchestration layer for cold-start imports: new `LegacySeedOrchestrator` enriches imported records with deterministic wiki targeting hints (`metadata.synapse_seed_plan`) and traceable provenance payload (`metadata.synapse_source_provenance`) before backfill ingestion.
+- Core-mode walkthrough telemetry panel with first-completion step timers and onboarding action counters for first-run UX quality tracking.
+- Core-mode `Intent Signals (Session)` analytics card for moderation behavior (triage opens, unique triage drafts, quick moderation counts by source, action velocity, and last-action trace).
+- Triage-lane queue explainability badges with human-readable priority reasons (`blocked conflict`, `sla breach`, `high confidence`) and per-draft priority score chips.
+- Inline docs affordance for core walkthrough links: hover previews with guide summaries/highlights before navigating to external docs.
+- Python SDK attach-time memory bootstrap contract (`BootstrapMemoryOptions`) with typed provider-or-record backfill ingestion (`bootstrap_memory=` on `Synapse.attach`).
+- TypeScript SDK attach-time memory bootstrap contract (`bootstrapMemory` on `attach(...)`) with normalized `string|dict|record` ingestion and attach lifecycle debug traces.
+- Attach bootstrap smoke coverage in contributor CI (`scripts/ci_checks.sh`) to validate day-0 memory import path under offline transport.
+- Compact evaluator output mode (`--summary-only`) for synthesis, gatekeeper, and MCP retrieval regression scripts to reduce CI/stdout noise while preserving status/metrics.
+- Risk-guarded moderation UX for high-impact actions: 6-second double-confirm flow for force-approve and reject-dismiss operations (conflict quick actions, approve/reject forms, and bulk moderation).
+- Accessibility baseline in web moderation UI: high-contrast keyboard `focus-visible` ring styling and explicit aria labels for icon-only critical actions.
+- Core-mode first-run operator walkthrough panel with 3-step guided flow (`connect workspace -> load inbox -> select draft`), one-click starter actions, and direct docs links.
+- MCP retrieval diagnostics contract now includes runtime graph tuning snapshot (`graph_config`) and response headers (`X-Synapse-Retrieval-Graph-*`) on `GET /v1/mcp/retrieval/explain`.
+- Advanced-mode diagnostics UI now renders runtime graph tuning chips (`max hops`, hop boosts) ahead of result reason cards.
+- Core-mode expert-controls toggle in moderation workspace (`Enable Expert Controls`) with simplified-first default flow for non-technical operators.
+- Core-first UI mode switch (`Core Mode` default, `Advanced Mode` opt-in) in web console.
+- Task lifecycle web e2e coverage (create/status/comment/link) with production-like task mock API parity.
+- OSS contributor docs: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`.
+- Tutorial docs for core loop, OpenClaw quickstart, and MCP context injection.
+- OSS readiness checklist and core scope definitions.
+- GitHub issue templates and PR template.
+- Core acceptance scenario script `scripts/integration_core_loop.py` covering `ingest -> draft -> approve -> MCP retrieval`.
+- Project license file `LICENSE` (Apache-2.0).
+- Core wiki IA v2 in web UI: `Space -> Page` tree navigation, collapsible space groups, recent pages strip, open-only page filter, and draft inbox text filtering.
+- Core wiki IA v3 in web UI: Section TOC navigation with section preview and quick form mapping, page-template presets for moderation edits, and cross-page jump controls/hotkeys (`Shift+J/K/C`).
+- Core wiki IA v4 in web UI: saved views, pinned pages, and bulk draft moderation controls with keyboard shortcuts (`Ctrl|Cmd+Shift+Enter`, `Ctrl|Cmd+Shift+Backspace`).
+- OSS compatibility matrix doc (`docs/compatibility-matrix.md`) and release runbook (`docs/release-workflow.md`).
+- Signed/provenance package release workflow (`.github/workflows/release-packages.yml`) for PyPI + npm.
+- Cross-package release version validator (`scripts/check_release_versions.py`) with CI enforcement.
+- Self-hosted deployment kit: `infra/docker-compose.selfhost.yml`, service Dockerfiles, `.env.selfhost.example`, and worker process loop script (`run_worker_loop.py`).
+- Self-hosted production runbook (`docs/self-hosted-deployment.md`).
+- Core wiki IA v5 in web UI: guided page builder (autofill from draft, slug normalization, duplicate page hints, create/open flow) and page-history compare tab with version diff + restore into approve form.
+- Wiki page management API endpoints: `POST /v1/wiki/pages` and `GET /v1/wiki/pages/{slug}/history`.
+- OpenClaw onboarding kit: runtime template + seed memory dataset + runnable 5-minute scenario (`demos/openclaw_onboarding/*`) with dedicated tutorial (`docs/tutorials/04-openclaw-onboarding-kit.md`).
+- SDK observability starter pack: local OTel stack (`infra/observability/*`), prebuilt Grafana dashboard, Datadog dashboard quick pack, and runnable telemetry smoke script (`scripts/run_sdk_otel_smoke.py`).
+- Core wiki IA v6 in web UI: review queue presets, moderation SLA threshold selector, and queue health widgets (open/breach/conflict/high-confidence/age metrics).
+- New npm package `@synapse/openclaw-plugin` (`packages/synapse-openclaw-plugin`) with OpenClaw hook/tool bridge (`search_wiki`, `propose_to_wiki`, task tools) and runtime fixture tests.
+- SDK observability alert packs: Prometheus rules (`infra/observability/prometheus-rules-sdk-alerts.yaml`) and Datadog monitor quick pack (`infra/observability/datadog/synapse-sdk-alert-monitors.json`) for transport failures, queue growth, and proposal drop.
+- Publish hygiene validator script (`scripts/check_publish_hygiene.py`) to enforce OSS package metadata and release-doc consistency before release.
+- Troubleshooting and hardening docs pack: `docs/troubleshooting.md`, `docs/production-hardening.md`, and `docs/observability-incident-playbooks.md`.
+- OpenClaw runtime contract matrix integration check: `scripts/integration_openclaw_runtime_contract.py`.
+- Self-hosted clean compose acceptance runner: `scripts/run_selfhost_core_acceptance.sh`.
+- Performance tuning advisor script: `scripts/run_performance_tuning_advisor.py` (queue profile selection, worker sizing heuristics, MCP graph knob recommendations, and apply-command generation).
+- Performance tuning runbook: `docs/performance-tuning.md`.
+- OpenClaw signed provenance support for claim evidence chain (`evidence[].provenance` and `metadata.synapse_provenance`) across Python SDK connector and `@synapse/openclaw-plugin`.
+- Self-hosted backup/restore drill automation script: `scripts/run_selfhost_backup_restore_drill.sh`.
+- Backup/restore drill runbook: `docs/backup-restore-drill.md`.
+- Self-hosted DR acceptance runner: `scripts/run_selfhost_dr_ci_acceptance.sh` (clean compose boot + seed + backup/restore drill + JSON report).
+- OpenClaw provenance verification smoke harness: `scripts/smoke_openclaw_provenance_verification.py`.
+- Core-mode wiki UI triage lane with prioritized open drafts and one-click quick moderation actions from inbox cards.
+- Draft Detail header quick actions (`Quick Approve` / `Quick Reject`) for reduced moderation round-trips.
+- First-run onboarding guide with path-based setup (`docs/getting-started.md`).
+- OSS publish walkthrough checklist (`docs/oss-publish-checklist.md`).
+- MCP retrieval explainability payload in runtime search results (`retrieval_reason` + `score_breakdown` with lexical/graph components).
+- API endpoint `GET /v1/mcp/retrieval/explain` for MCP-compatible retrieval diagnostics (operator/UI-safe explain traces).
+- Advanced-mode web diagnostics panel ("MCP Retrieval Diagnostics") with live query explain, graph hint input, and ranked reason cards.
+- Core moderation analytics endpoint `GET /v1/wiki/moderation/throughput` with 24h throughput, backlog, latency percentiles, and reviewer activity summaries.
+- Core-mode Draft Inbox analytics card "Moderation throughput (24h)" with health badge, compact KPI tiles, alerts, and top reviewers.
+- Shared retrieval contract module (`services/shared/retrieval.py`) with graph-config env parsing, SQL search-plan builder, and unified explainability payload composer for MCP/API parity.
+- MCP/API retrieval parity smoke gate script (`scripts/check_mcp_api_retrieval_parity.py`) for offline SQL-plan and explainability-contract regression checks.
+- Contributor guardrails wrapper script (`scripts/run_contributor_guardrails.sh`) with `quick|full|release` profiles and optional self-hosted acceptance toggles.
+
+### Changed
+
+- CI guardrails now enforce MCP profile explicitness by asserting `strict`/`default` aliases fail in both TS and Python smoke paths (`scripts/ci_checks.sh`).
+- Archived legacy planning artifact `WORKPLAN.md` into `docs/archive/WORKPLAN-v0.1.md`; active planning source remains `ROADMAP.md`.
+- Python/TypeScript SDK compatibility cleanup:
+  - `init(...)` compatibility helper is now explicitly deprecated in docs (and runtime `DeprecationWarning` in Python),
+  - MCP context-policy profile aliases `strict`/`default` were removed; only explicit profile names are supported (`off`, `advisory`, `enforced`, `strict_enforced`).
+- Integration acceptance cleanup: removed pre-migration gatekeeper fallback branch from `scripts/integration_moderation_backfill.py` and now enforce modern config contract (`llm_assist_enabled=true`) directly.
+- Legacy seed orchestration now normalizes `seed_section_overrides` keys through the same category pipeline as records (case/alias/mixed-language handling), including multilingual aliases (`OPS`/`операции`/`доступ`/`SUPPORT_POLICY`).
+- Legacy seed regression dataset expanded with Notion-heavy and mixed-language edge fixtures (total cases: `5`) and CI now validates the stronger contract.
+- `scripts/ci_checks.sh` now includes `synapse-cli doctor`, `synapse-cli init`, and `synapse-cli connect openclaw` smoke coverage.
+- MCP/OpenClaw callback setup now supports profile-based retrieval defaults (single profile flag instead of manual threshold bundle), and docs/tutorials now show `enforced` profile onboarding path.
+- Getting Started now includes canonical 3-command CLI-first onboarding path: `init -> doctor -> connect`.
+- Contributor smoke script now runs legacy seed regression checks (`scripts/eval_legacy_seed_regression.py --summary-only`) and docs now include explicit command for cold-start seed QA.
+- Python `Synapse.attach(...)` now supports one-line OpenClaw day-0 bootstrap presets (`openclaw_bootstrap_preset=runtime_memory|event_log|hybrid`) with tunable limits/chunk/source metadata and falls back to explicit `bootstrap_memory` when provided.
+- MCP runtime `search_knowledge` now supports context-policy enforcement mode and score/confidence threshold overrides, and can filter low-confidence rows when `context_policy_mode=enforced`.
+- API endpoint `GET /v1/mcp/retrieval/explain` now accepts context-policy query controls and mirrors effective policy config in response body + headers.
+- Web diagnostics panel now includes context-policy controls and eligibility/confidence visualization for retrieval explain results.
+- `run_legacy_import.py` and scheduled `LegacySyncEngine` now apply seed orchestration before upload and include `seed_summary` (`seed_records`, `seed_pages`, `top_pages`) in run output for operator validation.
+- Legacy import docs/worker docs now define per-source seed controls (`seed_page_prefix`, `seed_space_key`, `seed_group_mode`, `seed_section_overrides`) and expected metadata contracts.
+- `scripts/ci_checks.sh` now runs regression evaluators in compact summary mode (`--summary-only`) for cleaner guardrails/release logs.
+- Core web e2e flow now verifies intent-signal visibility, triage interaction tracing, and docs hover preview affordance in simplified mode.
+- SDK docs now include one-line attach bootstrap examples for both Python and TypeScript (`attach + bootstrap memory`) in addition to manual `backfill` APIs.
+- High-impact moderation buttons now switch to inline confirmation labels (`Confirm ...`) after first click and execute only on second click within confirmation window.
+- Core-flow e2e now asserts accessible naming for top-level refresh icon action (`Refresh drafts`) and remains green with keyboard-first walkthrough/accessibility updates.
+- Updated web core-flow e2e assertions for the new walkthrough panel and docs links in simplified mode.
+- `apps/web` capabilities docs now explicitly include first-run operator walkthrough behavior in core mode.
+- API CORS middleware now exposes retrieval graph diagnostics headers for browser-based operator tooling.
+- Web e2e suite now includes retrieval diagnostics coverage for runtime graph config visibility.
+- Core-mode wiki moderation UI now defaults to an open-queue, first-action path: advanced queue presets, throughput panel, bulk moderation, tree power-tools, and heavy draft-detail tabs (`Wiki Page`, `History`, `Patch`, `Timeline`) are hidden until expert controls are enabled.
+- Task lifecycle web e2e now validates simplified core moderation defaults before enabling expert controls.
+- Updated roadmap priorities toward core scope and OSS publication readiness.
+- Updated root/web documentation to describe core-vs-advanced product behavior.
+- `scripts/ci_checks.sh` now includes opt-in core acceptance execution via `SYNAPSE_RUN_CORE_ACCEPTANCE=1`.
+- Contributor docs now define explicit versioning/release policy for pre-1.0 SemVer.
+- Fixed API startup failure on throughput CSV export route by disabling implicit response model generation for mixed `Response|dict` return path.
+- Fixed MCP `get_entity_facts` SQL filter typing to avoid PostgreSQL `IndeterminateDatatype` errors.
+- Extended core web e2e assertions to cover new wiki IA controls (`Space`, `Recent Pages`).
+- Extended core web e2e assertions to cover v3 cross-page moderation controls.
+- Enriched SDK/package metadata for PyPI/npm publication readiness (license/repository/engines/publish config).
+- Extended web e2e mock API with wiki page search/detail/history/create routes for production-like v5 flow coverage.
+- Extended web e2e coverage for review queue presets (`SLA breaches`, `Full timeline`) and moderation SLA controls.
+- Release and CI flows now include `@synapse/openclaw-plugin` (version alignment, package test, and artifact packing in release workflow).
+- Local observability stack now auto-loads Prometheus alert rules via compose mount + `rule_files` config.
+- Release workflow and CI now run publish-hygiene validation (`scripts/check_publish_hygiene.py`) as a required gate.
+- `@synapse/schema` package metadata baseline improved with explicit Node engine constraint and keyword set.
+- CI smoke path now validates OpenClaw connector compatibility across runtime API variants via `integration_openclaw_runtime_contract.py`.
+- `integration_core_loop.py` now supports external worker polling mode and container-based MCP probe mode for self-hosted acceptance.
+- CI workflow includes opt-in self-hosted acceptance job via `workflow_dispatch` input `run_selfhost_acceptance`.
+- `scripts/ci_checks.sh` includes optional self-hosted acceptance toggle: `SYNAPSE_RUN_SELFHOST_CORE_ACCEPTANCE=1`.
+- `scripts/ci_checks.sh` now validates performance tuning advisor (`py_compile` + `--help` smoke).
+- OpenClaw runtime contract matrix check now asserts signed provenance semantics (`signature_alg`, `key_id`, evidence/metadata signature match).
+- `EvidenceRef` contracts/schema now allow optional `provenance` payload (`packages/synapse-sdk-py`, `packages/synapse-sdk-ts`, `packages/synapse-schema`).
+- `scripts/ci_checks.sh` now includes backup/restore drill script smoke (`--help`) and shell syntax validation.
+- CI workflow now supports opt-in self-hosted DR drill job via `workflow_dispatch` input `run_selfhost_dr_drill` with uploaded report artifact.
+- `scripts/ci_checks.sh` now validates OpenClaw provenance verification logic (`smoke_openclaw_provenance_verification.py`) and supports local opt-in DR acceptance (`SYNAPSE_RUN_SELFHOST_DR_ACCEPTANCE=1`).
+- `scripts/run_oss_rc_dress_rehearsal.sh` now packs npm artifacts from explicit package paths (workspace-safe) and fixes final report generation for clean-room import checks.
+- Wiki page canvas rendering now uses article-style typography and displays read-time/word-count metadata for confluence-like readability.
+- Draft inbox cards now include SLA-aware wait badges and status-accent borders to improve scan speed in core moderation flow.
+- README/docs onboarding flow now starts from an explicit "Start Here" entrypoint and curated cookbook/tutorial links.
+- Web e2e mock API now includes `/v1/mcp/retrieval/explain` for retrieval-diagnostics flow parity.
+- Web e2e mock API now includes `/v1/wiki/moderation/throughput` and core e2e assertions cover moderation analytics visibility.
+- Fixed missing `unicodedata` import in API wiki slug normalization path.
+- MCP runtime store and API retrieval diagnostics endpoint now share one retrieval query plan + explainability contract implementation to reduce score/ordering drift risk.
+- API and MCP Docker images now include `services/shared` in runtime path (`PYTHONPATH=/app/services:...`) to support shared retrieval helpers in self-hosted mode.
+- `scripts/ci_checks.sh` now compiles `services/shared` and runs retrieval parity smoke (`scripts/check_mcp_api_retrieval_parity.py`) in offline checks.

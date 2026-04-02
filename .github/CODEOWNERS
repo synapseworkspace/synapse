@@ -1,0 +1,26 @@
+# Synapse CODEOWNERS
+# Update the owner handles before enabling required-review branch protection in production.
+
+* @maksbdev
+
+# SDKs
+/packages/synapse-sdk-py/ @maksbdev
+/packages/synapse-sdk-ts/ @maksbdev
+/packages/synapse-openclaw-plugin/ @maksbdev
+/packages/synapse-schema/ @maksbdev
+
+# Services
+/services/api/ @maksbdev
+/services/worker/ @maksbdev
+/services/mcp/ @maksbdev
+/services/shared/ @maksbdev
+
+# Product UI
+/apps/web/ @maksbdev
+
+# Governance and release
+/.github/ @maksbdev
+/docs/ @maksbdev
+/scripts/ @maksbdev
+/ROADMAP.md @maksbdev
+/CHANGELOG.md @maksbdev

@@ -1,0 +1,26 @@
+{
+  "name": "@synapse/schema",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Canonical JSON Schemas for Synapse contracts",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["ai", "agents", "schema", "contracts", "knowledge"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maksbdev/synapse.git"
+  },
+  "homepage": "https://github.com/maksbdev/synapse#readme",
+  "bugs": {
+    "url": "https://github.com/maksbdev/synapse/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "files": [
+    "schemas"
+  ]
+}

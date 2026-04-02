@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_selfhost_acceptance:
+        description: "Run clean self-hosted compose acceptance job"
+        required: false
+        default: false
+        type: boolean
+      run_selfhost_dr_drill:
+        description: "Run self-hosted backup/restore DR drill job"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Run CI checks
+        run: ./scripts/ci_checks.sh
+
+  selfhost-acceptance:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_selfhost_acceptance == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run clean self-hosted compose core acceptance
+        run: ./scripts/run_selfhost_core_acceptance.sh
+
+  selfhost-dr-drill:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_selfhost_dr_drill == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run self-hosted DR drill acceptance
+        run: ./scripts/run_selfhost_dr_ci_acceptance.sh --report-file artifacts/selfhost-dr/report.json
+
+      - name: Upload DR drill report
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-dr-report
+          path: artifacts/selfhost-dr/report.json
+          if-no-files-found: error

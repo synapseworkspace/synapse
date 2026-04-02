@@ -1,0 +1,71 @@
+groups:
+  - name: synapse_sdk_alert_baseline
+    interval: 30s
+    rules:
+      - record: synapse:sdk_event_rate_5m
+        expr: sum by (synapse_project_id, synapse_integration) (rate(synapse_debug_events_total[5m]))
+
+      - record: synapse:sdk_failure_rate_5m
+        expr: sum by (synapse_project_id, synapse_integration) (rate(synapse_transport_failures_total[5m]))
+
+      - record: synapse:sdk_failure_ratio_5m
+        expr: synapse:sdk_failure_rate_5m / clamp_min(synapse:sdk_event_rate_5m, 0.0001)
+
+      - record: synapse:sdk_queue_avg_10m
+        expr: |
+          sum by (synapse_project_id, synapse_integration) (rate(synapse_queue_size_events_sum[10m]))
+          /
+          clamp_min(sum by (synapse_project_id, synapse_integration) (rate(synapse_queue_size_events_count[10m])), 0.0001)
+
+      - record: synapse:sdk_queue_avg_prev_10m
+        expr: |
+          sum by (synapse_project_id, synapse_integration) (rate(synapse_queue_size_events_sum[10m] offset 20m))
+          /
+          clamp_min(sum by (synapse_project_id, synapse_integration) (rate(synapse_queue_size_events_count[10m] offset 20m)), 0.0001)
+
+      - record: synapse:sdk_proposals_30m
+        expr: sum by (synapse_project_id, synapse_integration) (increase(synapse_knowledge_proposals_total[30m]))
+
+      - alert: SynapseSDKTransportFailureRatioWarning
+        expr: synapse:sdk_event_rate_5m > 0.2 and synapse:sdk_failure_ratio_5m > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          scope: sdk
+        annotations:
+          summary: "Synapse SDK transport failure ratio is elevated"
+          description: "Failure ratio above 5% for 10m (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
+          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+
+      - alert: SynapseSDKTransportFailureRatioCritical
+        expr: synapse:sdk_event_rate_5m > 0.2 and synapse:sdk_failure_ratio_5m > 0.15
+        for: 5m
+        labels:
+          severity: critical
+          scope: sdk
+        annotations:
+          summary: "Synapse SDK transport failure ratio is critical"
+          description: "Failure ratio above 15% for 5m (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
+          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+
+      - alert: SynapseSDKQueueGrowthDetected
+        expr: synapse:sdk_queue_avg_10m > 20 and synapse:sdk_queue_avg_prev_10m > 0 and (synapse:sdk_queue_avg_10m / synapse:sdk_queue_avg_prev_10m) > 1.5
+        for: 15m
+        labels:
+          severity: warning
+          scope: sdk
+        annotations:
+          summary: "Synapse SDK in-memory queue growth detected"
+          description: "Average queue size grew by >50% versus prior window (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
+          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"
+
+      - alert: SynapseSDKProposalDropDetected
+        expr: synapse:sdk_event_rate_5m > 0.5 and synapse:sdk_proposals_30m < 1
+        for: 20m
+        labels:
+          severity: warning
+          scope: sdk
+        annotations:
+          summary: "Synapse SDK proposal throughput dropped"
+          description: "High SDK activity but no knowledge proposals in the last 30m (project={{ $labels.synapse_project_id }}, integration={{ $labels.synapse_integration }})."
+          runbook_url: "https://github.com/maksbdev/synapse/blob/main/docs/sdk-trace-observability.md"

@@ -1,0 +1,258 @@
+{
+  "meta": {
+    "name": "synapse_synthesis_regression",
+    "version": "v1"
+  },
+  "cases": [
+    {
+      "id": "conflict_temporal_non_overlap",
+      "kind": "conflict",
+      "incoming_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+      "incoming_valid_from": "2026-04-16T00:00:00+00:00",
+      "incoming_valid_to": null,
+      "existing_statements": [
+        {
+          "statement_text": "Warehouse 9 closed until 2026-04-15.",
+          "valid_from": "2026-03-30T08:00:00+00:00",
+          "valid_to": "2026-04-15T23:59:59+00:00"
+        }
+      ],
+      "expected": {
+        "has_conflict": false
+      }
+    },
+    {
+      "id": "conflict_temporal_overlap",
+      "kind": "conflict",
+      "incoming_text": "Warehouse 9 open now.",
+      "incoming_valid_from": "2026-04-10T10:00:00+00:00",
+      "incoming_valid_to": null,
+      "existing_statements": [
+        {
+          "statement_text": "Warehouse 9 closed until 2026-04-15.",
+          "valid_from": "2026-03-30T08:00:00+00:00",
+          "valid_to": "2026-04-15T23:59:59+00:00"
+        }
+      ],
+      "expected": {
+        "has_conflict": true,
+        "conflict_type": "predicate_polarity_mismatch"
+      }
+    },
+    {
+      "id": "dedup_fingerprint_reinforcement",
+      "kind": "dedup",
+      "incoming_text": "BC Sigma gate card-only after 09:00.",
+      "incoming_fingerprint": "fp_same",
+      "incoming_valid_from": "2026-03-30T09:00:00+00:00",
+      "incoming_valid_to": null,
+      "existing_statements": [
+        {
+          "statement_text": "BC Sigma gate card-only after 09:00.",
+          "claim_fingerprint": "fp_same",
+          "valid_from": "2026-03-30T09:00:00+00:00",
+          "valid_to": null
+        }
+      ],
+      "expected": {
+        "decision": "reinforcement"
+      }
+    },
+    {
+      "id": "dedup_non_overlap_is_new",
+      "kind": "dedup",
+      "incoming_text": "Warehouse 9 closed until 2026-05-01.",
+      "incoming_fingerprint": "fp_closed_may",
+      "incoming_valid_from": "2026-04-20T10:00:00+00:00",
+      "incoming_valid_to": "2026-05-01T23:59:59+00:00",
+      "existing_statements": [
+        {
+          "statement_text": "Warehouse 9 closed until 2026-04-15.",
+          "claim_fingerprint": "fp_closed_apr",
+          "valid_from": "2026-03-30T08:00:00+00:00",
+          "valid_to": "2026-04-15T23:59:59+00:00"
+        }
+      ],
+      "expected": {
+        "decision": "new_statement"
+      }
+    },
+    {
+      "id": "page_resolution_existing_high_confidence",
+      "kind": "page_resolution",
+      "claim": {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "project_id": "p",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15.",
+        "evidence": []
+      },
+      "candidates": [
+        {
+          "project_id": "p",
+          "page_type": "operations",
+          "title": "Warehouse 9",
+          "slug": "warehouse_9",
+          "entity_key": "warehouse_9",
+          "status": "published",
+          "aliases": []
+        }
+      ],
+      "expected": {
+        "mode": "existing"
+      }
+    },
+    {
+      "id": "page_resolution_new_page",
+      "kind": "page_resolution",
+      "claim": {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "project_id": "p",
+        "entity_key": "remote_depot_42",
+        "category": "operations",
+        "claim_text": "Remote depot 42 has new loading policy.",
+        "evidence": []
+      },
+      "candidates": [
+        {
+          "project_id": "p",
+          "page_type": "operations",
+          "title": "Warehouse 9",
+          "slug": "warehouse_9",
+          "entity_key": "warehouse_9",
+          "status": "published",
+          "aliases": []
+        }
+      ],
+      "expected": {
+        "mode": "new_page"
+      }
+    },
+    {
+      "id": "section_resolution_access_rules",
+      "kind": "section_resolution",
+      "page_type": "access",
+      "category": "access",
+      "claim_text": "Gate policy changed: card required after 09:00.",
+      "existing_sections": [
+        {
+          "section_key": "access_rules",
+          "heading": "Access Rules",
+          "order_index": 0
+        }
+      ],
+      "expected": {
+        "section_key": "access_rules",
+        "created_new": false
+      }
+    },
+    {
+      "id": "temporal_parse_until",
+      "kind": "temporal_parse",
+      "claim": {
+        "id": "33333333-3333-3333-3333-333333333333",
+        "project_id": "p",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15.",
+        "observed_at": "2026-03-30T08:00:00+00:00",
+        "evidence": []
+      },
+      "expected": {
+        "source": "text_until",
+        "valid_from_prefix": "2026-03-30T08:00:00",
+        "valid_to_prefix": "2026-04-15T23:59:59"
+      }
+    },
+    {
+      "id": "temporal_parse_from",
+      "kind": "temporal_parse",
+      "claim": {
+        "id": "44444444-4444-4444-4444-444444444444",
+        "project_id": "p",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open from 2026-04-16.",
+        "observed_at": "2026-03-30T08:00:00+00:00",
+        "evidence": []
+      },
+      "expected": {
+        "source": "text_from",
+        "valid_from_prefix": "2026-04-16T00:00:00",
+        "valid_to_prefix": null
+      }
+    },
+    {
+      "id": "temporal_parse_explicit_payload",
+      "kind": "temporal_parse",
+      "claim": {
+        "id": "55555555-5555-5555-5555-555555555555",
+        "project_id": "p",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse maintenance window.",
+        "observed_at": "2026-03-30T08:00:00+00:00",
+        "valid_from": "2026-06-01T00:00:00+00:00",
+        "valid_to": "2026-06-02T23:59:59+00:00",
+        "evidence": []
+      },
+      "expected": {
+        "source": "explicit_payload",
+        "valid_from_prefix": "2026-06-01T00:00:00",
+        "valid_to_prefix": "2026-06-02T23:59:59"
+      }
+    },
+    {
+      "id": "backfill_inference_warehouse_entity",
+      "kind": "backfill_inference",
+      "project_id": "p",
+      "observed_at": "2026-03-30T08:00:00+00:00",
+      "payload": {
+        "source_id": "mem-warehouse-12",
+        "content": "Warehouse 12 loading policy changed: pre-booking is required after 18:00."
+      },
+      "expected": {
+        "should_generate": true,
+        "entity_key": "warehouse_12",
+        "category": "operations",
+        "entity_inference_source": "inferred:latin_prefix_id",
+        "category_inference_source": "inferred:keyword_score"
+      }
+    },
+    {
+      "id": "backfill_inference_access_bc_named",
+      "kind": "backfill_inference",
+      "project_id": "p",
+      "observed_at": "2026-03-30T08:00:00+00:00",
+      "payload": {
+        "source_id": "mem-bc-omega",
+        "content": "BC Omega gate is card-only after 10:00."
+      },
+      "expected": {
+        "should_generate": true,
+        "entity_key": "bc_omega",
+        "category": "access",
+        "entity_inference_source": "inferred:latin_prefix_id",
+        "category_inference_source": "inferred:keyword_score"
+      }
+    },
+    {
+      "id": "backfill_inference_fallback_source_id",
+      "kind": "backfill_inference",
+      "project_id": "p",
+      "observed_at": "2026-03-30T08:00:00+00:00",
+      "payload": {
+        "source_id": "mem-raw-77",
+        "content": "Observed unusual sequence in evening run with no clear object name."
+      },
+      "expected": {
+        "should_generate": true,
+        "entity_key": "memory_mem-raw-77",
+        "category": "general",
+        "entity_inference_source": "fallback:source_id",
+        "category_inference_source": "fallback:general"
+      }
+    }
+  ]
+}

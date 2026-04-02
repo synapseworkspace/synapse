@@ -1,0 +1,1901 @@
+{
+  "meta": {
+    "name": "synapse_gatekeeper_db_holdout",
+    "version": "v1",
+    "generated_at": "2026-03-31T14:40:20.428748+00:00",
+    "source": "gatekeeper_decisions + claims + latest moderation_actions",
+    "lookback_days": 120,
+    "project_ids": [],
+    "holdout_ratio": 0.3,
+    "split_seed": "synapse-gatekeeper-prod-holdout-v1",
+    "raw_rows": 73,
+    "labeled_cases": 41,
+    "label_source_counts": {
+      "moderation_approve": 20,
+      "moderation_reject": 20,
+      "unlabeled": 32,
+      "gatekeeper_operational": 1
+    },
+    "expected_tier_counts": {
+      "golden_candidate": 20,
+      "insight_candidate": 20,
+      "operational_memory": 1
+    },
+    "train_cases": 25,
+    "holdout_cases": 16
+  },
+  "cases": [
+    {
+      "id": "014faee9-2840-5110-99a7-848b7b2036a5",
+      "claim": {
+        "id": "014faee9-2840-5110-99a7-848b7b2036a5",
+        "project_id": "integration_6a26f258",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T10:08:11.567166+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T10:08:11.645588+00:00"
+      }
+    },
+    {
+      "id": "d4168bd1-2b7b-587f-a8f7-1b1d8440c874",
+      "claim": {
+        "id": "d4168bd1-2b7b-587f-a8f7-1b1d8440c874",
+        "project_id": "integration_6a26f258",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T10:08:11.567166+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T10:08:11.667180+00:00"
+      }
+    },
+    {
+      "id": "ee203078-7072-5a91-a987-f8ad6ead98a7",
+      "claim": {
+        "id": "ee203078-7072-5a91-a987-f8ad6ead98a7",
+        "project_id": "integration_89c77b59",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T10:00:23.001489+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T10:00:23.101335+00:00"
+      }
+    },
+    {
+      "id": "ac3dd3a9-fed7-5914-ba6f-478b0367dc83",
+      "claim": {
+        "id": "ac3dd3a9-fed7-5914-ba6f-478b0367dc83",
+        "project_id": "integration_89c77b59",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T10:00:23.001489+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T10:00:23.080478+00:00"
+      }
+    },
+    {
+      "id": "39213335-b1bf-5e41-a0c5-1bbbad0be789",
+      "claim": {
+        "id": "39213335-b1bf-5e41-a0c5-1bbbad0be789",
+        "project_id": "integration_2ede52c2",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T09:35:48.197805+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T09:35:48.266749+00:00"
+      }
+    },
+    {
+      "id": "8c40bdc7-55d5-52ee-a81f-66d8914a3774",
+      "claim": {
+        "id": "8c40bdc7-55d5-52ee-a81f-66d8914a3774",
+        "project_id": "integration_2ede52c2",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T09:35:48.197805+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T09:35:48.284261+00:00"
+      }
+    },
+    {
+      "id": "8a68eff9-4ef8-509f-ba99-6ef84487291b",
+      "claim": {
+        "id": "8a68eff9-4ef8-509f-ba99-6ef84487291b",
+        "project_id": "integration_d2afbd7c",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T09:25:51.728829+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T09:25:51.797803+00:00"
+      }
+    },
+    {
+      "id": "b1164bdd-8b2b-59e7-8a43-b319b35dc97b",
+      "claim": {
+        "id": "b1164bdd-8b2b-59e7-8a43-b319b35dc97b",
+        "project_id": "integration_d2afbd7c",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T09:25:51.728829+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T09:25:51.815728+00:00"
+      }
+    },
+    {
+      "id": "19f0910b-b2e9-5801-9969-58f1c5823f84",
+      "claim": {
+        "id": "19f0910b-b2e9-5801-9969-58f1c5823f84",
+        "project_id": "integration_f8757a25",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T09:17:41.773630+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T09:17:41.872454+00:00"
+      }
+    },
+    {
+      "id": "c2dceda9-c602-540e-8ce5-eeb98b585a73",
+      "claim": {
+        "id": "c2dceda9-c602-540e-8ce5-eeb98b585a73",
+        "project_id": "integration_f8757a25",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T09:17:41.773630+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T09:17:41.894268+00:00"
+      }
+    },
+    {
+      "id": "109e6af0-e18f-5ddd-b36f-26736383e52a",
+      "claim": {
+        "id": "109e6af0-e18f-5ddd-b36f-26736383e52a",
+        "project_id": "integration_73902c4d",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T09:12:05.302210+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T09:12:05.391256+00:00"
+      }
+    },
+    {
+      "id": "e450cdf1-af62-5b8e-bea2-4d0e3be3dddb",
+      "claim": {
+        "id": "e450cdf1-af62-5b8e-bea2-4d0e3be3dddb",
+        "project_id": "integration_73902c4d",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T09:12:05.302210+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T09:12:05.371798+00:00"
+      }
+    },
+    {
+      "id": "1bd63298-8db4-528a-9f90-23ecffcf1d74",
+      "claim": {
+        "id": "1bd63298-8db4-528a-9f90-23ecffcf1d74",
+        "project_id": "integration_e53443ec",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 open for deliveries from 2026-04-16.",
+        "observed_at": "2026-03-31T09:02:16.826775+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-3"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-3"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T09:02:16.915068+00:00"
+      }
+    },
+    {
+      "id": "a9ffc007-7e51-57e9-aa75-afc4ed474369",
+      "claim": {
+        "id": "a9ffc007-7e51-57e9-aa75-afc4ed474369",
+        "project_id": "integration_e53443ec",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T09:02:16.826775+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T09:02:16.932776+00:00"
+      }
+    },
+    {
+      "id": "b5c9217d-2a25-58fc-99b0-47ad2c37210d",
+      "claim": {
+        "id": "b5c9217d-2a25-58fc-99b0-47ad2c37210d",
+        "project_id": "integration_67a04128",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T09:01:32.536352+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T09:01:32.603867+00:00"
+      }
+    },
+    {
+      "id": "440491c8-2804-54b0-af9e-ac5aadc04046",
+      "claim": {
+        "id": "440491c8-2804-54b0-af9e-ac5aadc04046",
+        "project_id": "integration_67a04128",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T09:01:32.536352+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4,
+          "llm_assist_enabled": false,
+          "llm_provider": "openai",
+          "llm_model": "gpt-4.1-mini",
+          "llm_score_weight": 0.35,
+          "llm_min_confidence": 0.65,
+          "llm_timeout_ms": 3500
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject",
+        "llm_applied": false
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T09:01:32.621322+00:00"
+      }
+    },
+    {
+      "id": "a8ed3e16-f2e9-5665-b383-2aeac78ef0af",
+      "claim": {
+        "id": "a8ed3e16-f2e9-5665-b383-2aeac78ef0af",
+        "project_id": "integration_f32b0414",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:49:42.607779+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:49:42.680071+00:00"
+      }
+    },
+    {
+      "id": "8d5b9b62-0b2d-559d-9066-979ebb2c2e19",
+      "claim": {
+        "id": "8d5b9b62-0b2d-559d-9066-979ebb2c2e19",
+        "project_id": "integration_f32b0414",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:49:42.607779+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:49:42.698916+00:00"
+      }
+    },
+    {
+      "id": "503a6df4-cdcb-5a13-902f-359394952b5b",
+      "claim": {
+        "id": "503a6df4-cdcb-5a13-902f-359394952b5b",
+        "project_id": "integration_4e13ad8a",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:44:44.823641+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:44:44.894570+00:00"
+      }
+    },
+    {
+      "id": "37c2d76f-f003-56a2-a210-4e2ce4a9ab6b",
+      "claim": {
+        "id": "37c2d76f-f003-56a2-a210-4e2ce4a9ab6b",
+        "project_id": "integration_4e13ad8a",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:44:44.823641+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:44:44.912552+00:00"
+      }
+    },
+    {
+      "id": "614ece6b-3c81-5a60-bf8c-8b2deb9ceeba",
+      "claim": {
+        "id": "614ece6b-3c81-5a60-bf8c-8b2deb9ceeba",
+        "project_id": "integration_663de482",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:41:07.570089+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:41:07.650306+00:00"
+      }
+    },
+    {
+      "id": "ddd014fc-cfec-5d1a-8db9-b9688aa226a9",
+      "claim": {
+        "id": "ddd014fc-cfec-5d1a-8db9-b9688aa226a9",
+        "project_id": "integration_663de482",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:41:07.570089+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:41:07.672898+00:00"
+      }
+    },
+    {
+      "id": "7b7a1fd0-b532-5e63-aa93-a9be31849fd6",
+      "claim": {
+        "id": "7b7a1fd0-b532-5e63-aa93-a9be31849fd6",
+        "project_id": "integration_7231497c",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:35:12.952768+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:35:13.035787+00:00"
+      }
+    },
+    {
+      "id": "704fcb7e-e66f-5784-a12e-2eaaedff3cb7",
+      "claim": {
+        "id": "704fcb7e-e66f-5784-a12e-2eaaedff3cb7",
+        "project_id": "integration_7231497c",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:35:12.952768+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:35:13.018868+00:00"
+      }
+    },
+    {
+      "id": "f67860fd-075e-5c11-a523-492dace07059",
+      "claim": {
+        "id": "f67860fd-075e-5c11-a523-492dace07059",
+        "project_id": "integration_06fdc9ec",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:27:03.971878+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:27:04.073462+00:00"
+      }
+    },
+    {
+      "id": "140850c6-55cf-5b97-a158-5b874b596048",
+      "claim": {
+        "id": "140850c6-55cf-5b97-a158-5b874b596048",
+        "project_id": "integration_06fdc9ec",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:27:03.971878+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:27:04.050212+00:00"
+      }
+    },
+    {
+      "id": "f8753cd5-27ed-5cfa-8141-20eb600853b3",
+      "claim": {
+        "id": "f8753cd5-27ed-5cfa-8141-20eb600853b3",
+        "project_id": "integration_b807902a",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:26:16.514382+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:26:16.615928+00:00"
+      }
+    },
+    {
+      "id": "47357c1e-0e5d-5201-9274-aef21a7b6310",
+      "claim": {
+        "id": "47357c1e-0e5d-5201-9274-aef21a7b6310",
+        "project_id": "integration_b807902a",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:26:16.514382+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:26:16.593565+00:00"
+      }
+    },
+    {
+      "id": "2b76e115-6ff6-5e69-b66f-e3c4bc65b66d",
+      "claim": {
+        "id": "2b76e115-6ff6-5e69-b66f-e3c4bc65b66d",
+        "project_id": "integration_2ac718de",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:15:24.529527+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:15:24.626951+00:00"
+      }
+    },
+    {
+      "id": "8c056804-b059-5f07-a25d-f09cc67fbb25",
+      "claim": {
+        "id": "8c056804-b059-5f07-a25d-f09cc67fbb25",
+        "project_id": "integration_2ac718de",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:15:24.529527+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:15:24.605108+00:00"
+      }
+    },
+    {
+      "id": "975c649f-0c0c-55a7-a5f4-32b9c0d58fa5",
+      "claim": {
+        "id": "975c649f-0c0c-55a7-a5f4-32b9c0d58fa5",
+        "project_id": "integration_f27ae0eb",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T08:14:06.316908+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T08:14:06.403572+00:00"
+      }
+    },
+    {
+      "id": "f59e5fb5-8b0a-54c4-90bc-1c2f8f032d77",
+      "claim": {
+        "id": "f59e5fb5-8b0a-54c4-90bc-1c2f8f032d77",
+        "project_id": "integration_f27ae0eb",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T08:14:06.316908+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T08:14:06.428143+00:00"
+      }
+    },
+    {
+      "id": "19a30367-71d9-5c58-a5a1-696801cc27d1",
+      "claim": {
+        "id": "19a30367-71d9-5c58-a5a1-696801cc27d1",
+        "project_id": "integration_a39467aa",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T00:29:06.624466+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T00:29:06.711744+00:00"
+      }
+    },
+    {
+      "id": "defe909b-c442-5a02-ae66-3897e7ec38b8",
+      "claim": {
+        "id": "defe909b-c442-5a02-ae66-3897e7ec38b8",
+        "project_id": "integration_a39467aa",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T00:29:06.624466+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T00:29:06.691004+00:00"
+      }
+    },
+    {
+      "id": "1a660161-1cf2-58c0-a39f-1a7b63bef293",
+      "claim": {
+        "id": "1a660161-1cf2-58c0-a39f-1a7b63bef293",
+        "project_id": "integration_d6bab414",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T00:23:12.874485+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T00:23:12.952838+00:00"
+      }
+    },
+    {
+      "id": "2a56f3fd-88ba-5400-9aa1-b20bd78984a3",
+      "claim": {
+        "id": "2a56f3fd-88ba-5400-9aa1-b20bd78984a3",
+        "project_id": "integration_d6bab414",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T00:23:12.874485+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T00:23:12.934656+00:00"
+      }
+    },
+    {
+      "id": "aa4e67ed-5bba-50c8-988a-a43c945c7db4",
+      "claim": {
+        "id": "aa4e67ed-5bba-50c8-988a-a43c945c7db4",
+        "project_id": "integration_cfe82354",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T00:13:22.926323+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T00:13:22.995041+00:00"
+      }
+    },
+    {
+      "id": "ce84b21d-bbc0-5c53-8e72-46e6df17069a",
+      "claim": {
+        "id": "ce84b21d-bbc0-5c53-8e72-46e6df17069a",
+        "project_id": "integration_cfe82354",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T00:13:22.926323+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T00:13:22.977665+00:00"
+      }
+    },
+    {
+      "id": "7e976736-a135-52d2-bbf7-7399589aff05",
+      "claim": {
+        "id": "7e976736-a135-52d2-bbf7-7399589aff05",
+        "project_id": "integration_3be1f46b",
+        "entity_key": "bc_sigma",
+        "category": "access",
+        "claim_text": "BC Sigma gate now card-only after 09:00. Drivers confirmed this twice.",
+        "observed_at": "2026-03-31T00:12:24.598153+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-2"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-2"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "insight_candidate",
+        "label_source": "moderation_reject"
+      },
+      "split": "holdout",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "reject",
+        "decision_score": 0.65,
+        "label_source": "moderation_reject",
+        "moderation_created_at": "2026-03-31T00:12:24.667981+00:00"
+      }
+    },
+    {
+      "id": "01763923-f6d4-549e-8c39-d344c3745717",
+      "claim": {
+        "id": "01763923-f6d4-549e-8c39-d344c3745717",
+        "project_id": "integration_3be1f46b",
+        "entity_key": "warehouse_9",
+        "category": "operations",
+        "claim_text": "Warehouse 9 closed until 2026-04-15. Entry only with permit.",
+        "observed_at": "2026-03-31T00:12:24.598153+00:00",
+        "evidence": [
+          {
+            "source_id": "mem-1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "mem-1"
+        ],
+        "config": {
+          "min_sources_for_golden": 2,
+          "conflict_free_days": 5,
+          "min_score_for_golden": 0.65,
+          "operational_short_text_len": 28,
+          "operational_short_token_len": 4
+        }
+      },
+      "expected": {
+        "tier": "golden_candidate",
+        "label_source": "moderation_approve"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "insight_candidate",
+        "moderation_action": "approve",
+        "decision_score": 0.65,
+        "label_source": "moderation_approve",
+        "moderation_created_at": "2026-03-31T00:12:24.651213+00:00"
+      }
+    },
+    {
+      "id": "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "claim": {
+        "id": "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "project_id": "gatekeeper_demo",
+        "entity_key": "ops_stream",
+        "category": "operations",
+        "claim_text": "I clicked send and done",
+        "observed_at": "2026-03-30T23:46:34.490896+00:00",
+        "evidence": [
+          {
+            "source_id": "g1"
+          }
+        ]
+      },
+      "inputs": {
+        "repeated_count": 0,
+        "historical_source_count": 0,
+        "has_recent_open_conflict": false,
+        "incoming_source_ids": [
+          "g1"
+        ],
+        "config": {
+          "min_sources_for_golden": 3,
+          "conflict_free_days": 7
+        }
+      },
+      "expected": {
+        "tier": "operational_memory",
+        "label_source": "gatekeeper_operational"
+      },
+      "split": "train",
+      "meta": {
+        "predicted_tier": "operational_memory",
+        "moderation_action": null,
+        "decision_score": 0.15,
+        "label_source": "gatekeeper_operational",
+        "moderation_created_at": null
+      }
+    }
+  ]
+}
