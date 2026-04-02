@@ -15,7 +15,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,16 +57,6 @@ jobs:
           npm pack --pack-destination dist/npm ./packages/synapse-sdk-ts
           npm pack --pack-destination dist/npm ./packages/synapse-schema
           npm pack --pack-destination dist/npm ./packages/synapse-openclaw-plugin
-
-      - name: Attest Python artifacts
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: "dist/python/*"
-
-      - name: Attest npm artifacts
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: "dist/npm/*"
 
       - name: Upload Python artifacts
         uses: actions/upload-artifact@v4
