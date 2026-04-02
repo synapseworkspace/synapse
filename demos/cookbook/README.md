@@ -1,12 +1,13 @@
 # Synapse Cookbook (Python)
 
-Three runnable cookbook scenarios for common adoption paths.
+Four runnable cookbook scenarios for common adoption paths.
 
 ## Which Example Should I Run?
 
 1. **OpenClaw operators / runtime integration:** `openclaw_playbook_sync.py`
-2. **Backend + SQL-heavy ops teams:** `sql_ops_guardrails.py`
-3. **Support/CRM workflow teams:** `support_ops_triage.py`
+2. **LangGraph teams / graph runtime integration:** `langgraph_playbook_sync.py`
+3. **Backend + SQL-heavy ops teams:** `sql_ops_guardrails.py`
+4. **Support/CRM workflow teams:** `support_ops_triage.py`
 
 Estimated time per example: 2-4 minutes.
 
@@ -38,7 +39,21 @@ Shows:
 - Backfill bootstrap from historical memory
 - Quick success signal: output includes proposed claim payload and backfill acceptance.
 
-## 2) Synapse + SQL
+## 2) Synapse + LangGraph
+
+```bash
+PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
+python3 /Users/maksimborisov/synapse/demos/cookbook/langgraph_playbook_sync.py
+```
+
+Shows:
+- LangGraph-style runtime attachment (`attach(..., integration="langgraph")`)
+- Observe phase: monitored `invoke/stream` execution captured as events
+- Synthesize phase: insight proposal generated via `collect_insight`
+- Execute phase preview: MCP context bundle generation from approved knowledge
+- Quick success signal: output includes `context_preview` and non-empty `debug_events_tail`.
+
+## 3) Synapse + SQL
 
 ```bash
 PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
@@ -51,7 +66,7 @@ Shows:
 - Claim proposal pipeline with typed evidence
 - Quick success signal: output includes extracted insight and proposal dispatch.
 
-## 3) Synapse + Support Ops
+## 4) Synapse + Support Ops
 
 ```bash
 PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \

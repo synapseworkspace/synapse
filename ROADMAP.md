@@ -305,10 +305,10 @@ Progress:
 
 ## Next Up (Execution Queue)
 
-1. Expand OpenClaw + LangGraph cookbook parity examples with the same Agentic Wiki narrative structure.
-2. Add lightweight wiki UI theming polish pass (Confluence-like information density, typography, and navigation affordances) without reintroducing advanced-mode clutter.
-3. Add a docs lint gate for canonical OpenClaw path references to prevent onboarding drift.
-4. Add zero-config TS OpenClaw parity path (`Synapse.attach` + runtime tool wiring) matching Python ergonomics.
+1. Add lightweight wiki UI theming polish pass (Confluence-like information density, typography, and navigation affordances) without reintroducing advanced-mode clutter.
+2. Add a docs lint gate for canonical OpenClaw path references to prevent onboarding drift.
+3. Add zero-config TS OpenClaw parity path (`Synapse.attach` + runtime tool wiring) matching Python ergonomics.
+4. Add cookbook scenario snapshots (golden outputs) for regression-friendly docs/examples stability.
 
 ## Risks to Watch
 
@@ -323,6 +323,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Completed cookbook parity pass for Agentic Wiki narrative: added runnable LangGraph scenario (`demos/cookbook/langgraph_playbook_sync.py`) with observe/synthesize/execute loop, updated cookbook guide and Getting Started scenario list, and validated the new script in a clean venv (`python3 -m venv /tmp/synapse-cookbook-check && ... && python demos/cookbook/langgraph_playbook_sync.py`).
 - 2026-04-02: Completed zero-config SDK attach pass: added `Synapse.from_env()` (Python) and `Synapse.fromEnv()`/`fromEnv()` (TypeScript), enabled OpenClaw auto-bootstrap default (`hybrid`) on attach, added SDK-level default retrieval-backed OpenClaw search fallback (Python connector + TS plugin fallback), introduced onboarding friction metrics APIs (`get_onboarding_metrics` / `getOnboardingMetrics`), refreshed README/OpenClaw quickstart docs, and validated end-to-end via `SYNAPSE_SKIP_WEB_E2E=1 ./scripts/ci_checks.sh`.
 - 2026-04-02: Collapsed OpenClaw onboarding doc drift into a single canonical path (`docs/openclaw-quickstart-5-min.md`): converted tutorial `02-openclaw-quickstart` into alias/redirect, updated tutorials index, integration deep-dive, OSS readiness references, and cookbook onboarding pointers.
 - 2026-04-02: Shifted product messaging to Agentic Wiki + OpenClaw-first narrative in root README, added dedicated OpenClaw quickstart/value block, updated hero brand assets, and introduced web core-only profile lock (`VITE_SYNAPSE_UI_PROFILE`) to keep first-run UX focused on core moderation loop.

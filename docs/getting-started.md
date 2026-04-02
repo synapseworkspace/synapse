@@ -95,6 +95,9 @@ Pick one scenario:
 ```bash
 PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
 python3 /Users/maksimborisov/synapse/demos/cookbook/openclaw_playbook_sync.py
+
+PYTHONPATH=/Users/maksimborisov/synapse/packages/synapse-sdk-py/src \
+python3 /Users/maksimborisov/synapse/demos/cookbook/langgraph_playbook_sync.py
 ```
 
 More options:
