@@ -305,8 +305,9 @@ Progress:
 
 ## Next Up (Execution Queue)
 
-1. Queue is clear for current track: M1-M10 + previous Next Up items are completed.
-2. Next planning cycle should be created from new product priorities (no carry-over blockers in this queue).
+1. Security follow-up (web toolchain major): migrate `apps/web` from `vite@5` to `vite@8` + compatible plugin stack, validate full web e2e/build on updated Node baseline for web workspace.
+2. Security follow-up (DoS advisory): migrate direct `diff` dependency to `8.x` and verify semantic-diff rendering behavior remains stable in moderation UI.
+3. Close remaining Dependabot npm alerts (target: 0 open alerts in `package-lock.json` and `apps/web/package-lock.json`) and document resulting web-runtime Node requirement in docs.
 
 ## Risks to Watch
 
@@ -321,6 +322,8 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Cut release candidate artifacts for OSS launch: added `v0.1.0` release notes draft (`docs/releases/v0.1.0.md`), pushed annotated tag `v0.1.0`, and created GitHub draft release (`v0.1.0`) for `synapseworkspace/synapse`.
+- 2026-04-03: Reduced open Dependabot security exposure from 8 to 4 alerts by applying non-breaking npm lockfile updates (upgraded vulnerable transitive `lodash` across root/apps lockfiles); remaining alerts require major upgrades (`vite`/`esbuild`, `diff`).
 - 2026-04-03: Closed remaining roadmap queue: shipped TypeScript OpenClaw `Synapse.attach(..., integration="openclaw")` runtime parity (auto hook wiring, runtime tools, SDK auto-search fallback, provenance on `propose_to_wiki`), added canonical OpenClaw docs lint gate (`scripts/check_openclaw_docs_canonical.py`) wired into CI, introduced cookbook golden snapshot regression guard (`scripts/check_cookbook_snapshots.py` + `demos/cookbook/snapshots/*`) with CI coverage, and delivered core wiki UI theming polish pass (Confluence-like panel density/navigation cues) plus hero Execute card overflow fix in `assets/synapse-hero.svg`.
 - 2026-04-03: Completed cookbook parity pass for Agentic Wiki narrative: added runnable LangGraph scenario (`demos/cookbook/langgraph_playbook_sync.py`) with observe/synthesize/execute loop, updated cookbook guide and Getting Started scenario list, and validated the new script in a clean venv (`python3 -m venv /tmp/synapse-cookbook-check && ... && python demos/cookbook/langgraph_playbook_sync.py`).
 - 2026-04-02: Completed zero-config SDK attach pass: added `Synapse.from_env()` (Python) and `Synapse.fromEnv()`/`fromEnv()` (TypeScript), enabled OpenClaw auto-bootstrap default (`hybrid`) on attach, added SDK-level default retrieval-backed OpenClaw search fallback (Python connector + TS plugin fallback), introduced onboarding friction metrics APIs (`get_onboarding_metrics` / `getOnboardingMetrics`), refreshed README/OpenClaw quickstart docs, and validated end-to-end via `SYNAPSE_SKIP_WEB_E2E=1 ./scripts/ci_checks.sh`.
