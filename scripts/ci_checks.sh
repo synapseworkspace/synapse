@@ -47,6 +47,8 @@ python3 -m py_compile scripts/check_mcp_api_retrieval_parity.py
 python3 -m py_compile scripts/eval_legacy_seed_regression.py
 python3 -m py_compile scripts/check_openclaw_docs_canonical.py
 python3 -m py_compile scripts/check_cookbook_snapshots.py
+python3 -m py_compile scripts/check_framework_adapter_contracts.py
+python3 -m py_compile scripts/check_core_slo_guardrails.py
 
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
@@ -176,6 +178,64 @@ assert.ok(debugNames.has("attach_completed"), debugNames);
 assert.ok(debugNames.has("attach_openclaw_search_auto_enabled"), debugNames);
 const onboardingMetrics = synapse.getOnboardingMetrics(200);
 assert.ok((onboardingMetrics.attachEventsTotal ?? 0) >= 1, onboardingMetrics);
+
+class LangGraphLikeRunner {
+  invoke(payload) {
+    return { framework: "langgraph", payload };
+  }
+  async ainvoke(payload) {
+    return { framework: "langgraph", payload, mode: "async" };
+  }
+  *stream(payload) {
+    yield { framework: "langgraph", payload, chunk: 1 };
+    yield { framework: "langgraph", payload, chunk: 2 };
+  }
+}
+
+class LangChainLikeRunner {
+  invoke(payload) {
+    return { framework: "langchain", payload };
+  }
+  call(payload) {
+    return { framework: "langchain", payload, via: "call" };
+  }
+}
+
+class CrewAiLikeRunner {
+  kickoff() {
+    return { framework: "crewai", status: "ok" };
+  }
+}
+
+const frameworkSynapse = new Synapse({ apiUrl: "http://localhost:8080", projectId: "framework_smoke" }, transport);
+frameworkSynapse.setDebugMode({ enabled: true, maxRecords: 500 });
+
+const lg = frameworkSynapse.attach(new LangGraphLikeRunner());
+lg.invoke({ question: "gate policy" });
+for (const _item of lg.stream({ question: "gate policy" })) {
+  // consume stream
+}
+await lg.ainvoke({ question: "gate policy" });
+
+const lc = frameworkSynapse.attach(new LangChainLikeRunner());
+lc.invoke({ question: "route update" });
+lc.call({ question: "route update" });
+
+const crewRunner = frameworkSynapse.attach(new CrewAiLikeRunner());
+crewRunner.kickoff();
+await frameworkSynapse.flush();
+
+const frameworkDebug = frameworkSynapse.getDebugRecords();
+const frameworkAttachIntegrations = new Set(
+  frameworkDebug
+    .filter((item) => item.event === "attach_started")
+    .map((item) => String(item.details?.integration || ""))
+    .filter(Boolean)
+);
+assert.ok(frameworkAttachIntegrations.has("langgraph"), frameworkAttachIntegrations);
+assert.ok(frameworkAttachIntegrations.has("langchain"), frameworkAttachIntegrations);
+assert.ok(frameworkAttachIntegrations.has("crewai"), frameworkAttachIntegrations);
+
 console.log("ts openclaw bootstrap preset smoke ok");
 JS
 npm --prefix packages/synapse-openclaw-plugin install --silent
@@ -701,6 +761,9 @@ assert dummy_meter.histograms["synapse.flush.batch_size"].values, "otel bridge s
 assert any(span.ended for span in dummy_tracer.spans), "otel bridge should end mapped spans"
 print('python smoke ok')
 PY
+
+echo "[5.05/6] Framework adapter contracts (offline)"
+PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python3 scripts/check_framework_adapter_contracts.py >/dev/null
 
 echo "[5.1/6] OpenClaw x MCP e2e (offline stdio)"
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python3 scripts/integration_openclaw_mcp_runtime.py --check
@@ -1455,6 +1518,21 @@ thresholds = recommendation.get("thresholds")
 assert isinstance(thresholds, dict), recommendation
 assert "context_policy_mode" in thresholds, recommendation
 print("mcp trend context-policy recommendation smoke ok")
+PY
+python3 scripts/check_core_slo_guardrails.py \
+  --benchmark-json eval/mcp_benchmark_latest_sample.json \
+  --max-average-p95-ms 120 \
+  --max-case-p95-ms 150 \
+  --min-top1-accuracy 0.95 \
+  --min-cases 2 >/tmp/synapse-core-slo-smoke.json
+python3 - <<'PY'
+import json
+from pathlib import Path
+payload = json.loads(Path("/tmp/synapse-core-slo-smoke.json").read_text())
+assert payload["status"] == "ok", payload
+assert payload["benchmark"]["average_case_p95_ms"] is not None, payload
+assert payload["benchmark"]["average_top1_accuracy"] is not None, payload
+print("core slo guardrails smoke ok")
 PY
 python3 scripts/run_performance_tuning_advisor.py --help >/dev/null
 python3 scripts/verify_openclaw_provenance.py --help >/dev/null

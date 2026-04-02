@@ -1,6 +1,7 @@
 from synapse_sdk.integrations.monitoring import (
     MonitorOptions,
     monitor_crewai,
+    monitor_langchain,
     monitor_langgraph,
     monitor_object,
     monitor_openclaw_runtime,
@@ -16,6 +17,7 @@ __all__ = [
     "MonitorOptions",
     "monitor_object",
     "monitor_langgraph",
+    "monitor_langchain",
     "monitor_crewai",
     "monitor_openclaw_runtime",
     "OpenClawConnector",

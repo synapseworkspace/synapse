@@ -64,7 +64,7 @@ export interface SynapseConfig {
 }
 
 export interface MonitorOptions {
-  integration?: "generic" | "langgraph" | "crewai" | "openclaw" | string;
+  integration?: "generic" | "langgraph" | "langchain" | "crewai" | "openclaw" | string;
   includeMethods?: string[];
   agentId?: string;
   sessionId?: string;

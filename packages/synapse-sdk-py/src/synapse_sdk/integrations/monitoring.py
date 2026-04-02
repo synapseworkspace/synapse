@@ -11,6 +11,7 @@ if False:  # pragma: no cover
 
 
 LANGGRAPH_DEFAULT_METHODS = ("invoke", "ainvoke", "stream", "astream", "batch", "abatch")
+LANGCHAIN_DEFAULT_METHODS = ("invoke", "ainvoke", "stream", "astream", "batch", "abatch", "call", "acall")
 CREWAI_DEFAULT_METHODS = ("kickoff", "kickoff_async", "run", "execute", "execute_async")
 OPENCLAW_DEFAULT_METHODS = ("run", "run_task", "execute_action", "invoke_tool", "dispatch")
 
@@ -348,6 +349,16 @@ def monitor_langgraph(client: "SynapseClient", graph: Any, **kwargs: Any) -> Any
     )
 
 
+def monitor_langchain(client: "SynapseClient", chain_or_runnable: Any, **kwargs: Any) -> Any:
+    return monitor_object(
+        client,
+        chain_or_runnable,
+        integration="langchain",
+        include_methods=kwargs.pop("include_methods", LANGCHAIN_DEFAULT_METHODS),
+        **kwargs,
+    )
+
+
 def monitor_crewai(client: "SynapseClient", crew_or_agent: Any, **kwargs: Any) -> Any:
     return monitor_object(
         client,
@@ -371,6 +382,8 @@ def monitor_openclaw_runtime(client: "SynapseClient", runtime: Any, **kwargs: An
 def _default_methods_for_integration(integration: str) -> tuple[str, ...]:
     if integration == "langgraph":
         return LANGGRAPH_DEFAULT_METHODS
+    if integration == "langchain":
+        return LANGCHAIN_DEFAULT_METHODS
     if integration == "crewai":
         return CREWAI_DEFAULT_METHODS
     if integration == "openclaw":

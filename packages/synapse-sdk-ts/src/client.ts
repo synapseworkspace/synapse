@@ -38,6 +38,7 @@ import type {
 const DEFAULT_METHODS: Record<string, string[]> = {
   generic: ["invoke", "run", "execute", "stream"],
   langgraph: ["invoke", "ainvoke", "stream", "astream", "batch", "abatch"],
+  langchain: ["invoke", "ainvoke", "stream", "astream", "batch", "abatch", "call", "acall"],
   crewai: ["kickoff", "kickoff_async", "run", "execute", "execute_async"],
   openclaw: ["run", "runTask", "executeAction", "invokeTool", "dispatch"]
 };
@@ -2677,7 +2678,43 @@ function detectIntegration(target: object): string {
   if (looksLikeOpenClawRuntime(maybeRuntime)) {
     return "openclaw";
   }
+  if (looksLikeCrewAiRuntime(target)) {
+    return "crewai";
+  }
+  if (looksLikeLangGraphRunnable(target)) {
+    return "langgraph";
+  }
+  if (looksLikeLangChainRunnable(target)) {
+    return "langchain";
+  }
   return "generic";
+}
+
+function looksLikeLangGraphRunnable(target: unknown): boolean {
+  const candidate = target as Record<string, unknown>;
+  return (
+    typeof candidate?.ainvoke === "function" ||
+    typeof candidate?.astream === "function" ||
+    typeof candidate?.abatch === "function"
+  );
+}
+
+function looksLikeLangChainRunnable(target: unknown): boolean {
+  const candidate = target as Record<string, unknown>;
+  if (typeof candidate?.invoke !== "function") {
+    return false;
+  }
+  return (
+    typeof candidate?.call === "function" ||
+    typeof candidate?.stream === "function" ||
+    typeof candidate?.batch === "function" ||
+    typeof candidate?.ainvoke === "function"
+  );
+}
+
+function looksLikeCrewAiRuntime(target: unknown): boolean {
+  const candidate = target as Record<string, unknown>;
+  return typeof candidate?.kickoff === "function" || typeof candidate?.kickoff_async === "function";
 }
 
 function looksLikeOpenClawRuntime(target: unknown): boolean {

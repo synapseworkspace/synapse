@@ -53,6 +53,7 @@ await monitored.invoke({ input: "hello" });
 
 The monitor wrapper emits lifecycle + result events to Synapse without changing your runner code.
 Nested monitored calls keep propagated `trace_id` / `span_id` for correlation.
+`attach(...)` can auto-detect common runtime shapes for `langgraph`, `langchain`, and `crewai`.
 
 Facade shortcut:
 

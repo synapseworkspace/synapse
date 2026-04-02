@@ -36,6 +36,8 @@ Owner: Core team
 9. Agentic Wiki product positioning and OpenClaw-first onboarding path.
 10. Core-only UX profile by default (advanced controls opt-in or env-locked).
 11. Enterprise foundation kickoff: tenancy model, SSO path, and unified RBAC design.
+12. Framework GTM integrations (LangGraph / LangChain / CrewAI) with contract-level CI checks.
+13. Reliability + SLO guardrails (latency, quality, observability, release gating).
 
 ## Milestones
 
@@ -326,11 +328,57 @@ Progress:
 - [ ] Add unified RBAC policy evaluator with deny-by-default mode.
 - [ ] Add governance export/runbook pack for enterprise operations.
 
+## M12: Framework Integrations (Weeks 27-29)
+
+Status: `in_progress`
+
+Scope:
+- Make LangGraph/LangChain/CrewAI integrations first-class alongside OpenClaw.
+- Provide deterministic adapter contracts with CI smoke enforcement.
+- Keep one-line attach DX with integration auto-detection and explicit override.
+- Publish clear framework integration matrix for users.
+
+Exit criteria:
+- Integration auto-detection is stable for LangGraph/LangChain/CrewAI-like runtimes.
+- CI fails on adapter contract regressions.
+- Docs include production-ready examples for each framework path.
+
+Progress:
+- [x] Added LangChain adapter support in Python/TypeScript monitor defaults and auto-detection.
+- [x] Added offline Python framework contract checker (`scripts/check_framework_adapter_contracts.py`) and wired it into CI.
+- [x] Extended TypeScript CI smoke to assert auto-detection for LangGraph/LangChain/CrewAI.
+- [x] Added framework integration status doc (`docs/framework-integrations.md`) and linked it from README.
+- [ ] Add dedicated LangChain + CrewAI cookbook demos with golden output snapshots.
+- [ ] Add integration-version compatibility table by framework major versions.
+
+## M13: Reliability & SLO Control (Weeks 30-33)
+
+Status: `in_progress`
+
+Scope:
+- Formalize runtime SLO budgets for latency and retrieval quality.
+- Enforce SLO thresholds in CI/release gate path.
+- Improve observability posture from "available" to "operationally actionable."
+- Publish reliability runbook and escalation policy.
+
+Exit criteria:
+- Core SLO checks run in CI with deterministic fail/pass behavior.
+- SLO definitions are explicit and documented for OSS operators.
+- Observability and incident runbooks cover SLO breach response.
+
+Progress:
+- [x] Added baseline reliability/SLO runbook (`docs/reliability-slo.md`) with explicit budgets.
+- [x] Added `scripts/check_core_slo_guardrails.py` (benchmark-based latency/quality gate).
+- [x] Wired SLO guardrail smoke checks into `scripts/ci_checks.sh`.
+- [ ] Add ingest latency SLO and moderation latency SLO checks from API snapshots.
+- [ ] Add rolling error-budget policy and release-blocking gate.
+- [ ] Add degraded-dependency/load-profile reliability drills.
+
 ## Next Up (Execution Queue)
 
-1. Implement M11/E1 tenancy foundation (tenant entities, tenant-to-project mapping, guarded API query path).
-2. Implement M11/E2 OIDC SSO baseline (token validation + role/tenant claim mapping for API/UI).
-3. Implement M11/E3 unified RBAC enforcement across moderation, tasks, gatekeeper, and incident controls.
+1. Implement M12 adapter depth: add LangChain/CrewAI cookbook demos + golden snapshot CI contract.
+2. Implement M13 SLO depth: add ingest/moderation latency guardrails and release gate policy checks.
+3. Continue M11/E1 tenancy foundation (tenant entities, tenant-to-project mapping, guarded API query path).
 
 ## Risks to Watch
 
@@ -345,6 +393,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Started framework + reliability execution track: added LangChain integration auto-detection/wrappers (Python+TypeScript), added offline framework contract checker (`scripts/check_framework_adapter_contracts.py`) and CI enforcement, added baseline SLO guardrail checker (`scripts/check_core_slo_guardrails.py`) with CI smoke, and published docs (`docs/framework-integrations.md`, `docs/reliability-slo.md`).
 - 2026-04-03: Added explicit enterprise capability status page (`docs/enterprise-readiness.md`) with factual coverage matrix (tenancy/SSO/RBAC/audit/secrets) and phased E1-E4 implementation plan.
 - 2026-04-03: Resolved package registry ambiguity for OSS publishing by moving npm package scope to `@synapseworkspace/*` and Python package name to `synapseworkspace-sdk`, updated release/docs/hygiene validators, and validated full `./scripts/ci_checks.sh`.
 - 2026-04-03: Closed all open Dependabot PR backlog after consolidated security updates (open security alerts: 0, open PRs: 0).

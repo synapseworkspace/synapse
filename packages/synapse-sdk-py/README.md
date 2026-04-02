@@ -44,6 +44,10 @@ synapse.flush()
 monitored_graph = synapse.monitor_langgraph(graph)
 result = monitored_graph.invoke({"input": "hello"})
 
+# LangChain-like runnable wrappers
+monitored_chain = synapse.monitor_langchain(chain)
+result = monitored_chain.invoke({"input": "hello"})
+
 # CrewAI wrappers
 monitored_crew = synapse.monitor_crewai(crew)
 result = monitored_crew.kickoff()

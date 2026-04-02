@@ -37,6 +37,7 @@ Canonical entrypoint: `from synapse_sdk import ...`
 | `MonitorOptions` | `synapse_sdk.integrations` |
 | `monitor_object` | `synapse_sdk.integrations` |
 | `monitor_langgraph` | `synapse_sdk.integrations` |
+| `monitor_langchain` | `synapse_sdk.integrations` |
 | `monitor_crewai` | `synapse_sdk.integrations` |
 | `monitor_openclaw_runtime` | `synapse_sdk.integrations` |
 | `OpenClawConnector` | `synapse_sdk.integrations` |

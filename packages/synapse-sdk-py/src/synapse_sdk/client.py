@@ -637,6 +637,11 @@ class SynapseClient:
 
         return monitor_langgraph(self, graph, **kwargs)
 
+    def monitor_langchain(self, chain_or_runnable: Any, **kwargs: Any) -> Any:
+        from synapse_sdk.integrations.monitoring import monitor_langchain
+
+        return monitor_langchain(self, chain_or_runnable, **kwargs)
+
     def monitor_crewai(self, crew_or_agent: Any, **kwargs: Any) -> Any:
         from synapse_sdk.integrations.monitoring import monitor_crewai
 
@@ -1670,6 +1675,12 @@ class Synapse(SynapseClient):
     def _detect_integration(self, target: Any) -> str:
         if self._looks_like_openclaw_runtime(target):
             return "openclaw"
+        if self._looks_like_crewai_runtime(target):
+            return "crewai"
+        if self._looks_like_langgraph_runnable(target):
+            return "langgraph"
+        if self._looks_like_langchain_runnable(target):
+            return "langchain"
         return "generic"
 
     def _looks_like_openclaw_runtime(self, target: Any) -> bool:
@@ -1678,6 +1689,30 @@ class Synapse(SynapseClient):
         )
         has_tool_api = hasattr(target, "register_tool") and callable(target.register_tool)
         return bool(has_hook_api and has_tool_api)
+
+    def _looks_like_langgraph_runnable(self, target: Any) -> bool:
+        for name in ("ainvoke", "astream", "abatch"):
+            value = getattr(target, name, None)
+            if callable(value):
+                return True
+        return False
+
+    def _looks_like_langchain_runnable(self, target: Any) -> bool:
+        invoke_fn = getattr(target, "invoke", None)
+        if not callable(invoke_fn):
+            return False
+        for name in ("call", "stream", "batch", "ainvoke"):
+            value = getattr(target, name, None)
+            if callable(value):
+                return True
+        return False
+
+    def _looks_like_crewai_runtime(self, target: Any) -> bool:
+        for name in ("kickoff", "kickoff_async"):
+            value = getattr(target, name, None)
+            if callable(value):
+                return True
+        return False
 
     def _run_attach_bootstrap(
         self,
