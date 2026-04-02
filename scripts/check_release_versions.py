@@ -38,10 +38,10 @@ def main() -> int:
     args = parser.parse_args()
 
     versions = {
-        "python:synapse-sdk": _read_python_sdk_version(),
-        "npm:@synapse/sdk": _read_npm_version("synapse-sdk-ts"),
-        "npm:@synapse/schema": _read_npm_version("synapse-schema"),
-        "npm:@synapse/openclaw-plugin": _read_npm_version("synapse-openclaw-plugin"),
+        "python:synapseworkspace-sdk": _read_python_sdk_version(),
+        "npm:@synapseworkspace/sdk": _read_npm_version("synapse-sdk-ts"),
+        "npm:@synapseworkspace/schema": _read_npm_version("synapse-schema"),
+        "npm:@synapseworkspace/openclaw-plugin": _read_npm_version("synapse-openclaw-plugin"),
     }
 
     distinct_versions = sorted(set(versions.values()))

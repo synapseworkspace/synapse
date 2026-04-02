@@ -183,8 +183,8 @@ JSON
     "$NPM_PACK_DIR/$OPENCLAW_TGZ"
 
   cat > "$NPM_APP_DIR/check.mjs" <<'JS'
-import { Synapse } from "@synapse/sdk";
-import { createSynapseOpenClawPlugin } from "@synapse/openclaw-plugin";
+import { Synapse } from "@synapseworkspace/sdk";
+import { createSynapseOpenClawPlugin } from "@synapseworkspace/openclaw-plugin";
 
 const client = new Synapse({ apiUrl: "http://localhost:8080", projectId: "rc_dress_rehearsal" });
 const plugin = createSynapseOpenClawPlugin(client);

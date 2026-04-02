@@ -54,7 +54,7 @@ Give OpenClaw agents a long-term collaborative brain.
 Install Python SDK:
 
 ```bash
-pip install synapse-sdk
+pip install synapseworkspace-sdk
 ```
 
 Connect Synapse to OpenClaw:
@@ -90,13 +90,13 @@ Canonical 5-minute path:
 TypeScript can use the same one-line attach flow:
 
 ```ts
-import { Synapse } from "@synapse/sdk";
+import { Synapse } from "@synapseworkspace/sdk";
 
 const synapse = Synapse.fromEnv();
 synapse.attach(openclawRuntime, { integration: "openclaw" });
 ```
 
-Optional advanced runtime-embedding package: `@synapse/openclaw-plugin`  
+Optional advanced runtime-embedding package: `@synapseworkspace/openclaw-plugin`  
 Source path: [packages/synapse-openclaw-plugin](packages/synapse-openclaw-plugin)
 
 ## Product Capabilities
@@ -167,6 +167,7 @@ export VITE_SYNAPSE_UI_PROFILE=core-only
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
 - MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
 - Core vs enterprise scope: [docs/core-vs-enterprise.md](docs/core-vs-enterprise.md)
+- Enterprise readiness status: [docs/enterprise-readiness.md](docs/enterprise-readiness.md)
 - Legacy import and sync: [docs/legacy-import.md](docs/legacy-import.md), [docs/legacy-sync-orchestration.md](docs/legacy-sync-orchestration.md)
 - Tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - SDK API reference: [docs/reference/README.md](docs/reference/README.md)

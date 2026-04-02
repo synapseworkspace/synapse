@@ -6,7 +6,7 @@ Use this checklist when cutting a new public release.
 
 ## A) Pre-Flight (Local)
 
-- [ ] Update package versions consistently (`synapse-sdk`, `@synapse/sdk`, `@synapse/schema`, `@synapse/openclaw-plugin`).
+- [ ] Update package versions consistently (`synapseworkspace-sdk`, `@synapseworkspace/sdk`, `@synapseworkspace/schema`, `@synapseworkspace/openclaw-plugin`).
 - [ ] Update `CHANGELOG.md`.
 - [ ] Run CI checks locally:
 
@@ -92,15 +92,15 @@ git push origin vX.Y.Z
 - [ ] Verify PyPI package resolves:
 
 ```bash
-python3 -m pip index versions synapse-sdk
+python3 -m pip index versions synapseworkspace-sdk
 ```
 
 - [ ] Verify npm packages resolve:
 
 ```bash
-npm view @synapse/sdk version
-npm view @synapse/schema version
-npm view @synapse/openclaw-plugin version
+npm view @synapseworkspace/sdk version
+npm view @synapseworkspace/schema version
+npm view @synapseworkspace/openclaw-plugin version
 ```
 
 - [ ] Publish GitHub Release notes referencing `CHANGELOG.md`.

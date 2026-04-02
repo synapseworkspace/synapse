@@ -1,5 +1,5 @@
 {
-  "name": "@synapse/openclaw-plugin",
+  "name": "@synapseworkspace/openclaw-plugin",
   "version": "0.1.0",
   "private": false,
   "description": "Synapse OpenClaw plugin runtime bridge",

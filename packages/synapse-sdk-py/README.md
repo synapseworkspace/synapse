@@ -1,4 +1,4 @@
-# synapse-sdk
+# synapseworkspace-sdk
 
 Universal Python SDK for Synapse.
 
@@ -138,7 +138,7 @@ Debug records are structured JSON-like entries (`event`, `trace_id`, `details`) 
 ```python
 from synapse_sdk import Synapse, SynapseConfig, build_opentelemetry_bridge
 
-# Optional dependency: pip install "synapse-sdk[otel]"
+# Optional dependency: pip install "synapseworkspace-sdk[otel]"
 from opentelemetry import metrics, trace
 
 synapse = Synapse(SynapseConfig(api_url="http://localhost:8080", project_id="water_delivery_logistics"))

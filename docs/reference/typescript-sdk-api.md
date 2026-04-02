@@ -1,6 +1,6 @@
 # TypeScript SDK API Reference
 
-Canonical entrypoint: `import { ... } from "@synapse/sdk"`
+Canonical entrypoint: `import { ... } from "@synapseworkspace/sdk"`
 
 ## Re-exported Modules (`src/index.ts`)
 

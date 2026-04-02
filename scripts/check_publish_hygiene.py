@@ -23,17 +23,17 @@ EXPECTED_ISSUES = str(os.getenv("SYNAPSE_EXPECTED_ISSUES", f"{EXPECTED_REPO}/iss
 
 NPM_PACKAGE_CONFIG = {
     "synapse-schema": {
-        "name": "@synapse/schema",
+        "name": "@synapseworkspace/schema",
         "required_files_entry": "schemas",
         "require_dist_entrypoints": False,
     },
     "synapse-sdk-ts": {
-        "name": "@synapse/sdk",
+        "name": "@synapseworkspace/sdk",
         "required_files_entry": "dist",
         "require_dist_entrypoints": True,
     },
     "synapse-openclaw-plugin": {
-        "name": "@synapse/openclaw-plugin",
+        "name": "@synapseworkspace/openclaw-plugin",
         "required_files_entry": "dist",
         "require_dist_entrypoints": True,
     },
@@ -111,7 +111,7 @@ def _validate_python_package(errors: list[str]) -> None:
     if not isinstance(project, dict):
         return
 
-    _assert(project.get("name") == "synapse-sdk", f"{prefix}: project.name must be synapse-sdk", errors)
+    _assert(project.get("name") == "synapseworkspace-sdk", f"{prefix}: project.name must be synapseworkspace-sdk", errors)
     _assert(project.get("license") == EXPECTED_LICENSE, f"{prefix}: project.license must be Apache-2.0", errors)
 
     urls = project.get("urls")
@@ -129,19 +129,19 @@ def _validate_docs_consistency(errors: list[str]) -> None:
     root_readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
 
     required_release_mentions = [
-        "synapse-sdk",
-        "@synapse/sdk",
-        "@synapse/schema",
-        "@synapse/openclaw-plugin",
+        "synapseworkspace-sdk",
+        "@synapseworkspace/sdk",
+        "@synapseworkspace/schema",
+        "@synapseworkspace/openclaw-plugin",
     ]
     for pkg in required_release_mentions:
         _assert(pkg in release_workflow, f"docs/release-workflow.md: missing package mention {pkg}", errors)
 
     required_compat_rows = [
-        "`synapse-sdk` (Python)",
-        "`@synapse/sdk` (TypeScript)",
-        "`@synapse/schema`",
-        "`@synapse/openclaw-plugin`",
+        "`synapseworkspace-sdk` (Python)",
+        "`@synapseworkspace/sdk` (TypeScript)",
+        "`@synapseworkspace/schema`",
+        "`@synapseworkspace/openclaw-plugin`",
     ]
     for marker in required_compat_rows:
         _assert(marker in compatibility, f"docs/compatibility-matrix.md: missing row {marker}", errors)
@@ -152,8 +152,8 @@ def _validate_docs_consistency(errors: list[str]) -> None:
         errors,
     )
     _assert(
-        "@synapse/openclaw-plugin" in root_readme,
-        "README.md: missing npm package mention for @synapse/openclaw-plugin",
+        "@synapseworkspace/openclaw-plugin" in root_readme,
+        "README.md: missing npm package mention for @synapseworkspace/openclaw-plugin",
         errors,
     )
 

@@ -13,7 +13,7 @@ Goal: connect OpenClaw runtime to Synapse and generate first wiki draft from rea
 ## 1. Install SDK
 
 ```bash
-pip install synapse-sdk
+pip install synapseworkspace-sdk
 ```
 
 Repo-local development mode:

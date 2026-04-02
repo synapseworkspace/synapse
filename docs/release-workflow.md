@@ -9,10 +9,10 @@ Practical step-by-step checklist:
 
 ## Published Packages
 
-- PyPI: `synapse-sdk`
-- npm: `@synapse/sdk`
-- npm: `@synapse/schema`
-- npm: `@synapse/openclaw-plugin`
+- PyPI: `synapseworkspace-sdk`
+- npm: `@synapseworkspace/sdk`
+- npm: `@synapseworkspace/schema`
+- npm: `@synapseworkspace/openclaw-plugin`
 
 All packages must share the same version (enforced by `scripts/check_release_versions.py`).
 

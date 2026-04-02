@@ -1,4 +1,4 @@
-# `@synapse/openclaw-plugin`
+# `@synapseworkspace/openclaw-plugin`
 
 Production-focused OpenClaw runtime bridge for Synapse.
 
@@ -7,14 +7,14 @@ It wires OpenClaw hooks and tools to Synapse so agent events become durable know
 ## Install
 
 ```bash
-npm install @synapse/openclaw-plugin @synapse/sdk
+npm install @synapseworkspace/openclaw-plugin @synapseworkspace/sdk
 ```
 
 ## Quick Start
 
 ```ts
-import { Synapse } from "@synapse/sdk";
-import { createSynapseOpenClawPlugin } from "@synapse/openclaw-plugin";
+import { Synapse } from "@synapseworkspace/sdk";
+import { createSynapseOpenClawPlugin } from "@synapseworkspace/openclaw-plugin";
 
 const synapse = new Synapse({
   apiUrl: "http://localhost:8080",
@@ -39,7 +39,7 @@ plugin.attach(openclawRuntime, {
 Before attaching plugin hooks/tools, you can import runtime memory with preset helper:
 
 ```ts
-import { Synapse, buildOpenClawBootstrapOptions } from "@synapse/sdk";
+import { Synapse, buildOpenClawBootstrapOptions } from "@synapseworkspace/sdk";
 
 const bootstrap = buildOpenClawBootstrapOptions({
   preset: "hybrid", // runtime_memory | event_log | hybrid

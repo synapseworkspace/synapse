@@ -1,5 +1,5 @@
 {
-  "name": "@synapse/schema",
+  "name": "@synapseworkspace/schema",
   "version": "0.1.0",
   "private": false,
   "description": "Canonical JSON Schemas for Synapse contracts",

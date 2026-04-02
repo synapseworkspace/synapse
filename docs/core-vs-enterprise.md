@@ -27,3 +27,6 @@ This page clarifies what is currently in open-source core vs what is typically p
 - Enterprise scope optimizes for governance, scale boundaries, and compliance operations.
 
 If your team only needs the Agentic Wiki loop (`observe -> synthesize -> curate -> execute`), OSS core is the intended starting point.
+
+Detailed implementation status and phased enterprise plan:
+- `/Users/maksimborisov/synapse/docs/enterprise-readiness.md`

@@ -35,6 +35,7 @@ Owner: Core team
 8. Agentic Task Core (todo tracker + agent/runtime integration).
 9. Agentic Wiki product positioning and OpenClaw-first onboarding path.
 10. Core-only UX profile by default (advanced controls opt-in or env-locked).
+11. Enterprise foundation kickoff: tenancy model, SSO path, and unified RBAC design.
 
 ## Milestones
 
@@ -303,11 +304,33 @@ Progress:
 - [x] Added OSS "Core vs Enterprise" scope matrix in docs (`docs/core-vs-enterprise.md`) and linked it from root README.
 - [x] Verified core-only UX behavior with focused e2e run under profile lock (`CI=1 VITE_SYNAPSE_UI_PROFILE=core-only npx playwright test --grep "task tracker lifecycle flow"`).
 
+## M11: Enterprise Foundation (Weeks 23-26)
+
+Status: `in_progress`
+
+Scope:
+- Introduce first-class tenancy model and migration path from project-only isolation.
+- Add SSO baseline (OIDC-first) for API/UI identity flows.
+- Promote RBAC from incident-secret-only checks to platform-wide policy enforcement.
+- Document enterprise hardening status and delivery plan for OSS adopters.
+
+Exit criteria:
+- Tenant-aware auth context exists across API/UI.
+- OIDC login can authenticate and map roles/tenant claims.
+- Privileged operations are consistently enforced by role policy checks.
+
+Progress:
+- [x] Added enterprise status baseline with explicit “implemented vs missing” matrix and phased delivery plan (`docs/enterprise-readiness.md`).
+- [ ] Add tenant entities and membership mapping in DB/API.
+- [ ] Implement OIDC auth mode for API + web session flow.
+- [ ] Add unified RBAC policy evaluator with deny-by-default mode.
+- [ ] Add governance export/runbook pack for enterprise operations.
+
 ## Next Up (Execution Queue)
 
-1. Security follow-up (web toolchain major): migrate `apps/web` from `vite@5` to `vite@8` + compatible plugin stack, validate full web e2e/build on updated Node baseline for web workspace.
-2. Security follow-up (DoS advisory): migrate direct `diff` dependency to `8.x` and verify semantic-diff rendering behavior remains stable in moderation UI.
-3. Close remaining Dependabot npm alerts (target: 0 open alerts in `package-lock.json` and `apps/web/package-lock.json`) and document resulting web-runtime Node requirement in docs.
+1. Implement M11/E1 tenancy foundation (tenant entities, tenant-to-project mapping, guarded API query path).
+2. Implement M11/E2 OIDC SSO baseline (token validation + role/tenant claim mapping for API/UI).
+3. Implement M11/E3 unified RBAC enforcement across moderation, tasks, gatekeeper, and incident controls.
 
 ## Risks to Watch
 
@@ -322,6 +345,9 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Added explicit enterprise capability status page (`docs/enterprise-readiness.md`) with factual coverage matrix (tenancy/SSO/RBAC/audit/secrets) and phased E1-E4 implementation plan.
+- 2026-04-03: Resolved package registry ambiguity for OSS publishing by moving npm package scope to `@synapseworkspace/*` and Python package name to `synapseworkspace-sdk`, updated release/docs/hygiene validators, and validated full `./scripts/ci_checks.sh`.
+- 2026-04-03: Closed all open Dependabot PR backlog after consolidated security updates (open security alerts: 0, open PRs: 0).
 - 2026-04-03: Cut release candidate artifacts for OSS launch: added `v0.1.0` release notes draft (`docs/releases/v0.1.0.md`), pushed annotated tag `v0.1.0`, and created GitHub draft release (`v0.1.0`) for `synapseworkspace/synapse`.
 - 2026-04-03: Reduced open Dependabot security exposure from 8 to 4 alerts by applying non-breaking npm lockfile updates (upgraded vulnerable transitive `lodash` across root/apps lockfiles); remaining alerts require major upgrades (`vite`/`esbuild`, `diff`).
 - 2026-04-03: Closed remaining roadmap queue: shipped TypeScript OpenClaw `Synapse.attach(..., integration="openclaw")` runtime parity (auto hook wiring, runtime tools, SDK auto-search fallback, provenance on `propose_to_wiki`), added canonical OpenClaw docs lint gate (`scripts/check_openclaw_docs_canonical.py`) wired into CI, introduced cookbook golden snapshot regression guard (`scripts/check_cookbook_snapshots.py` + `demos/cookbook/snapshots/*`) with CI coverage, and delivered core wiki UI theming polish pass (Confluence-like panel density/navigation cues) plus hero Execute card overflow fix in `assets/synapse-hero.svg`.

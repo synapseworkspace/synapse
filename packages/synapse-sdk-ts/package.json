@@ -1,5 +1,5 @@
 {
-  "name": "@synapse/sdk",
+  "name": "@synapseworkspace/sdk",
   "version": "0.1.0",
   "private": false,
   "description": "Synapse universal TypeScript SDK",

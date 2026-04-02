@@ -8,10 +8,10 @@ This matrix captures runtime support and current CI coverage for OSS packages.
 
 | Component | Version policy | CI-verified now |
 | --- | --- | --- |
-| `synapse-sdk` (Python) | Python `>=3.10` | Python `3.12` |
-| `@synapse/sdk` (TypeScript) | Node.js `>=18` | Node.js `22` |
-| `@synapse/schema` | Node.js `>=18` (for package tooling) | Node.js `22` |
-| `@synapse/openclaw-plugin` | Node.js `>=18` | Node.js `22` |
+| `synapseworkspace-sdk` (Python) | Python `>=3.10` | Python `3.12` |
+| `@synapseworkspace/sdk` (TypeScript) | Node.js `>=18` | Node.js `22` |
+| `@synapseworkspace/schema` | Node.js `>=18` (for package tooling) | Node.js `22` |
+| `@synapseworkspace/openclaw-plugin` | Node.js `>=18` | Node.js `22` |
 
 ## Core Services (Self-Hosted)
 
@@ -28,7 +28,7 @@ This matrix captures runtime support and current CI coverage for OSS packages.
 | Integration path | Status | Verification source |
 | --- | --- | --- |
 | Generic monitor wrapper (`monitor`) | Supported | SDK offline smoke in `scripts/ci_checks.sh` |
-| OpenClaw plugin package (`@synapse/openclaw-plugin`) | Supported | Runtime fixture tests + CI package test |
+| OpenClaw plugin package (`@synapseworkspace/openclaw-plugin`) | Supported | Runtime fixture tests + CI package test |
 | OpenClaw connector | Supported | `scripts/integration_openclaw_mcp_runtime.py`, `scripts/integration_openclaw_runtime_contract.py` |
 | MCP context injection helpers | Supported | SDK offline smoke + MCP integration script |
 | LangGraph / CrewAI wrappers | Supported (adapter level) | SDK compile + monitor smoke |

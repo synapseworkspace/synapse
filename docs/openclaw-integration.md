@@ -88,7 +88,7 @@ In TypeScript OSS packages:
     - `openclawToolPrefix`
   - signed provenance injection on `propose_to_wiki` (HMAC-SHA256 when secret configured, digest-only fallback).
 - Official plugin package (optional advanced embedding):
-  - `@synapse/openclaw-plugin`
+  - `@synapseworkspace/openclaw-plugin`
   - `createSynapseOpenClawPlugin(...)`
   - `SynapseOpenClawPlugin.attach(...)`
   - Signed provenance injection (HMAC-SHA256 when secret configured, digest-only fallback).

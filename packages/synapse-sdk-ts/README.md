@@ -1,4 +1,4 @@
-# @synapse/sdk
+# @synapseworkspace/sdk
 
 Universal TypeScript SDK for Synapse.
 
@@ -9,7 +9,7 @@ Compatibility note:
 ## Example
 
 ```ts
-import { Synapse } from "@synapse/sdk";
+import { Synapse } from "@synapseworkspace/sdk";
 
 const synapse = new Synapse({
   apiUrl: "http://localhost:8080",
@@ -112,7 +112,7 @@ synapse.attach(openclawRuntime, {
 Preset metadata/helpers:
 
 ```ts
-import { buildOpenClawBootstrapOptions, listOpenClawBootstrapPresets } from "@synapse/sdk";
+import { buildOpenClawBootstrapOptions, listOpenClawBootstrapPresets } from "@synapseworkspace/sdk";
 
 console.log(listOpenClawBootstrapPresets());
 const manual = buildOpenClawBootstrapOptions({ preset: "event_log", maxRecords: 500 });
@@ -135,7 +135,7 @@ checkGateAccess("bc_omega");
 ## MCP Context Injection Helper
 
 ```ts
-import { MCPContextHelper } from "@synapse/sdk";
+import { MCPContextHelper } from "@synapseworkspace/sdk";
 
 const helper = new MCPContextHelper(
   "water_delivery_logistics",
@@ -211,7 +211,7 @@ Debug records are machine-readable (`event`, `traceId`, `details`) and can be fo
 ## OpenTelemetry Bridge
 
 ```ts
-import { Synapse, createOpenTelemetryBridge } from "@synapse/sdk";
+import { Synapse, createOpenTelemetryBridge } from "@synapseworkspace/sdk";
 import { metrics, trace } from "@opentelemetry/api";
 
 const synapse = new Synapse({

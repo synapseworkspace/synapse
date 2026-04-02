@@ -1,4 +1,4 @@
-# @synapse/schema
+# @synapseworkspace/schema
 
 Canonical JSON Schemas for Synapse v1 contracts.
 

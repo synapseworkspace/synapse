@@ -49,7 +49,7 @@ synapse.set_telemetry_sink(bridge)
 TypeScript:
 
 ```ts
-import { Synapse, createOpenTelemetryBridge } from "@synapse/sdk";
+import { Synapse, createOpenTelemetryBridge } from "@synapseworkspace/sdk";
 import { metrics, trace } from "@opentelemetry/api";
 
 const synapse = new Synapse({
