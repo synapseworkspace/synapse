@@ -17,7 +17,7 @@
     "@mantine/notifications": "^8.0.0",
     "@mantine/tiptap": "^8.3.18",
     "@tabler/icons-react": "^3.30.0",
-    "@tiptap/extension-link": "^2.27.2",
+    "@tiptap/extension-link": "^3.22.1",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
     "diff": "^8.0.4",
