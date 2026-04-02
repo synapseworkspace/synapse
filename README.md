@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Synapse is the workspace and cognitive state layer for AI agents.</strong><br/>
-  Turn agent runtime signals into a human-curated wiki and feed it back via MCP.
+  <strong>Synapse: The Agentic Wiki and Cognitive State Layer for AI Agents.</strong><br/>
+  Convert ephemeral agent experience into a shared, human-curated source of truth.
 </p>
 
 <p align="center">
@@ -18,36 +18,91 @@
   <img src="assets/synapse-hero.svg" alt="Synapse core loop: Observe, Synthesize, Curate, Execute" width="980" />
 </p>
 
-## What Is Synapse?
+## The Problem: "Goldfish AI" In Operations
 
-Most agent stacks lose operational learning between sessions. Synapse solves that by creating a continuous knowledge loop:
+Most production agent stacks still have three failure modes:
 
-1. Observe runtime signals from agents and tools.
-2. Synthesize raw evidence into draft knowledge.
-3. Curate drafts in a wiki-like human review UI.
-4. Execute with MCP so every agent uses approved, current knowledge.
+1. **Memory leak**: useful runtime insights disappear after a session ends.
+2. **Static RAG drift**: agents rely on stale docs (PDF/Notion) while reality changes daily.
+3. **Black-box learning**: business teams cannot see or safely correct what agents "learned".
 
-In short: Synapse turns token spend into reusable company knowledge.
+## The Solution: Agentic Wiki
 
-## Why Teams Use It
+Synapse is middleware between your agent runtime (OpenClaw, LangGraph, CrewAI, custom stacks) and your operating knowledge.
 
-- Persistent memory across sessions and across agents.
-- Human-in-the-loop governance instead of hidden prompt drift.
-- Conflict-aware wiki updates instead of static RAG documents.
-- MCP-native retrieval for runtime context injection.
-- Day-0 onboarding from existing memory and legacy docs (cold start).
+### Core loop
 
-## Quickstart
+1. **Observe (SDK)**: capture insights and facts from tool outputs and dialogs.
+2. **Synthesize (Weaver)**: convert noisy signals into structured draft wiki updates.
+3. **Curate (UI)**: humans review, edit, approve, or reject drafts.
+4. **Execute (MCP)**: approved knowledge becomes live runtime context for all agents.
 
-### Fastest proof (recommended)
+This is your live **single source of truth** for agent behavior.
 
-Run one command to validate the full core loop (`ingest -> draft -> approve -> MCP retrieval`):
+## Synapse For OpenClaw Agents
+
+Give OpenClaw agents a long-term collaborative brain.
+
+### Why Synapse + OpenClaw
+
+- **Persistence**: agents remember facts across sessions.
+- **Shared intelligence**: what one agent learns, all agents can use.
+- **Human oversight**: operators approve/edit knowledge in a wiki workflow.
+
+### Quick Start (OpenClaw)
+
+Install Python SDK:
+
+```bash
+pip install synapse-sdk
+```
+
+Connect Synapse to OpenClaw:
+
+```python
+from synapse_sdk import Synapse, SynapseConfig
+from synapse_sdk.integrations.openclaw import OpenClawConnector
+
+synapse = Synapse(
+    SynapseConfig(
+        api_url="http://localhost:8080",
+        project_id="water_delivery_logistics",
+    )
+)
+
+connector = OpenClawConnector(
+    synapse,
+    search_knowledge=lambda query, limit, filters: my_knowledge_search(query, limit, filters),
+)
+connector.attach(openclaw_runtime)
+```
+
+Your runtime gets OpenClaw tools:
+- `synapse_search_wiki`
+- `synapse_propose_to_wiki`
+- `synapse_get_open_tasks`
+- `synapse_update_task_status`
+
+TypeScript OpenClaw plugin package: `@synapse/openclaw-plugin`  
+Source path: [packages/synapse-openclaw-plugin](packages/synapse-openclaw-plugin)
+
+## Product Capabilities
+
+- **Semantic Diff**: show how understanding changed before approval.
+- **Conflict Resolution**: detect and route contradictory claims.
+- **Agentic Onboarding**: bootstrap from existing runtime memory on day 0.
+- **No-code Knowledge Injection**: update wiki facts and change agent behavior without prompt redeploy.
+- **Task-aware execution**: link operational tasks to drafts, pages, and evidence.
+
+## 5-Minute Local Proof
+
+Run the full core loop (`ingest -> draft -> approve -> MCP retrieval`):
 
 ```bash
 ./scripts/run_selfhost_core_acceptance.sh
 ```
 
-### CLI onboarding (from this repo)
+Or use CLI onboarding:
 
 ```bash
 python3 -m venv .venv
@@ -56,7 +111,7 @@ pip install -e packages/synapse-sdk-py
 synapse-cli quickstart --dir . --project-id omega_demo --api-url http://localhost:8080 --doctor-strict --verify-core-loop
 ```
 
-### Local web workspace
+Run local workspace UI:
 
 ```bash
 cp .env.selfhost.example .env.selfhost
@@ -66,96 +121,44 @@ cd apps/web && npm install && npm run dev
 
 Open `http://localhost:5173`.
 
-## SDK Integration (2 Minutes)
+## Open-Core Stack
 
-### Python
+### Synapse Core (OSS)
 
-```python
-from synapse_sdk import Synapse, SynapseConfig
+- SDKs: [packages/synapse-sdk-py](packages/synapse-sdk-py), [packages/synapse-sdk-ts](packages/synapse-sdk-ts)
+- Knowledge engine + API: [services/api](services/api)
+- Synthesizer worker: [services/worker](services/worker)
+- MCP runtime: [services/mcp](services/mcp)
+- Local wiki workspace UI: [apps/web](apps/web)
+- Canonical schemas: [packages/synapse-schema](packages/synapse-schema)
 
-synapse = Synapse(
-    SynapseConfig(
-        api_url="http://localhost:8080",
-        project_id="water_delivery_logistics",
-    )
-)
+### Cloud / Enterprise Direction
 
-agent = synapse.attach(
-    my_openclaw_runtime,
-    integration="openclaw",
-    openclaw_bootstrap_preset="hybrid",
-    openclaw_bootstrap_max_records=2000,
-)
-```
+- Multi-tenancy and RBAC
+- Expert approval workflows and notifications
+- Advanced analytics and ROI reporting
+- Full audit trail and governance controls
 
-### TypeScript
+## Docs
 
-```ts
-import { Synapse } from "@synapse/sdk";
-
-const synapse = new Synapse({
-  apiUrl: "http://localhost:8080",
-  projectId: "water_delivery_logistics"
-});
-
-const runtime = synapse.attach(openclawRuntime, {
-  integration: "openclaw",
-  openclawBootstrapPreset: "hybrid",
-  openclawBootstrapMaxRecords: 2000
-});
-```
-
-## Core Product Surface
-
-Synapse core is focused on the essential workflow:
-
-- **SDK + Observer**: capture runtime events, claims, and provenance.
-- **Weaver (Synthesizer)**: convert noisy logs into structured draft knowledge.
-- **Wiki UI**: review, approve, edit, and trace knowledge lineage.
-- **Knowledge API (MCP)**: serve approved facts to all connected agents.
-- **Agentic Task Tracker**: task timeline linked to drafts, conflicts, and evidence.
-- **Legacy Import**: bootstrap from local docs and Notion sources.
-
-## OpenClaw-First Experience
-
-- Install plugin package: `npm install @synapse/openclaw-plugin`
-- OpenClaw integration overview: [docs/openclaw-integration.md](docs/openclaw-integration.md)
-- OpenClaw plugin package: [packages/synapse-openclaw-plugin/README.md](packages/synapse-openclaw-plugin/README.md)
-- Provenance verification: [docs/openclaw-provenance-verification.md](docs/openclaw-provenance-verification.md)
-- Onboarding demo kit: [demos/openclaw_onboarding/README.md](demos/openclaw_onboarding/README.md)
-
-## Architecture and Components
-
-- API service: [services/api/README.md](services/api/README.md)
-- Worker service: [services/worker/README.md](services/worker/README.md)
-- MCP runtime: [services/mcp/README.md](services/mcp/README.md)
-- Web app: [apps/web/README.md](apps/web/README.md)
-- Schema package: [packages/synapse-schema/README.md](packages/synapse-schema/README.md)
-- Python SDK: [packages/synapse-sdk-py/README.md](packages/synapse-sdk-py/README.md)
-- TypeScript SDK: [packages/synapse-sdk-ts/README.md](packages/synapse-sdk-ts/README.md)
-
-## Documentation
-
-- First 15 minutes: [docs/getting-started.md](docs/getting-started.md)
-- Core product scope: [docs/core-product-scope.md](docs/core-product-scope.md)
-- Wiki engine logic: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
-- MCP runtime and retrieval model: [docs/mcp-runtime.md](docs/mcp-runtime.md)
+- Getting started: [docs/getting-started.md](docs/getting-started.md)
+- OpenClaw integration: [docs/openclaw-integration.md](docs/openclaw-integration.md)
+- Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
+- MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
 - Legacy import and sync: [docs/legacy-import.md](docs/legacy-import.md), [docs/legacy-sync-orchestration.md](docs/legacy-sync-orchestration.md)
-- Agent simulator sandbox: [docs/agent-simulator.md](docs/agent-simulator.md)
 - Tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - SDK API reference: [docs/reference/README.md](docs/reference/README.md)
 
 ## Demos
 
-- Omega end-to-end scenario: [demos/omega_gate/README.md](demos/omega_gate/README.md)
-- Cookbook examples: [demos/cookbook/README.md](demos/cookbook/README.md)
 - OpenClaw onboarding kit: [demos/openclaw_onboarding/README.md](demos/openclaw_onboarding/README.md)
+- End-to-end Omega scenario: [demos/omega_gate/README.md](demos/omega_gate/README.md)
+- Cookbook examples: [demos/cookbook/README.md](demos/cookbook/README.md)
 
-## OSS and Release
+## OSS, Security, Release
 
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy: [SECURITY.md](SECURITY.md)
 - Release workflow: [docs/release-workflow.md](docs/release-workflow.md)
 - OSS publish checklist: [docs/oss-publish-checklist.md](docs/oss-publish-checklist.md)
-- OSS readiness checklist: [docs/oss-readiness.md](docs/oss-readiness.md)
-- Security policy: [SECURITY.md](SECURITY.md)
 - License: [LICENSE](LICENSE)

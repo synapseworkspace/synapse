@@ -68,14 +68,14 @@
     in the workspace UI.
   </text>
 
-  <text x="1098" y="266" fill="#0F172A" font-size="30" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
+  <text x="1098" y="266" fill="#0F172A" font-size="28" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-weight="700">
     4. Execute
   </text>
-  <text x="1098" y="302" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
-    MCP serves approved
+  <text x="1098" y="302" fill="#0F172A" font-size="20" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    MCP serves curated
   </text>
-  <text x="1098" y="330" fill="#0F172A" font-size="22" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
-    knowledge to agents.
+  <text x="1098" y="328" fill="#0F172A" font-size="20" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif">
+    context to agents.
   </text>
 
   <path d="M398 325H420" stroke="#0EA5A5" stroke-width="6" stroke-linecap="round"/>
