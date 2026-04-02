@@ -81,7 +81,7 @@ jobs:
       name: pypi
     steps:
       - name: Download Python artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-dist
           path: dist/python
@@ -108,7 +108,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Download npm artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: npm-dist
           path: dist/npm
