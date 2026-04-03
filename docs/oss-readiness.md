@@ -4,7 +4,7 @@ Last reviewed: 2026-04-02
 
 ## Summary
 
-Current state: **ready for OSS preview+** (core + publishing hygiene + release automation + onboarding polish + governance baseline).
+Current state: **ready for OSS preview+** (core + publishing hygiene + release automation + onboarding polish + governance baseline), with first public package publication still pending.
 
 Core runtime, SDKs, and CI/e2e flows are operational. Remaining work is focused on deployment hardening and docs expansion.
 
@@ -49,6 +49,7 @@ Core runtime, SDKs, and CI/e2e flows are operational. Remaining work is focused 
 - [x] Add multi-version compatibility workflow (`.github/workflows/compat-matrix.yml`).
 - [x] Add automated publish-hygiene validator (package metadata + docs consistency) in CI/release path.
 - [x] Add generated SDK API reference baseline (`docs/reference/*`) with freshness check in CI.
+- [ ] Complete first successful public publish to PyPI/npm and validate install commands from clean machines.
 
 ## Security Automation
 

@@ -12,14 +12,17 @@ Goal: connect OpenClaw runtime to Synapse and generate first wiki draft from rea
 
 ## 1. Install SDK
 
-```bash
-pip install synapseworkspace-sdk
-```
-
-Repo-local development mode:
+Current status (as of April 3, 2026): registry packages are not published yet.
+Use repo-local install path:
 
 ```bash
 pip install -e packages/synapse-sdk-py
+```
+
+After first public release, you can switch to:
+
+```bash
+pip install synapseworkspace-sdk
 ```
 
 ## 2. Attach Synapse To OpenClaw

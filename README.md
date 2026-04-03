@@ -43,6 +43,15 @@ This is your live **single source of truth** for agent behavior.
 
 Give OpenClaw agents a long-term collaborative brain.
 
+### Package Registry Status
+
+As of **April 3, 2026**:
+- PyPI package `synapseworkspace-sdk`: **not published yet**.
+- npm packages `@synapseworkspace/sdk`, `@synapseworkspace/schema`, `@synapseworkspace/openclaw-plugin`: **not published yet**.
+
+Until first public package release, use repo-local install paths shown below.
+Canonical package names are already fixed and are used consistently across release tooling/docs.
+
 ### Why Synapse + OpenClaw
 
 - **Persistence**: agents remember facts across sessions.
@@ -51,10 +60,10 @@ Give OpenClaw agents a long-term collaborative brain.
 
 ### Quick Start (OpenClaw)
 
-Install Python SDK:
+Install Python SDK (current preview path):
 
 ```bash
-pip install synapseworkspace-sdk
+pip install -e packages/synapse-sdk-py
 ```
 
 Connect Synapse to OpenClaw:
@@ -108,6 +117,10 @@ synapse.attach(openclawRuntime, { integration: "openclaw", adoptionMode: "observ
 
 Optional advanced runtime-embedding package: `@synapseworkspace/openclaw-plugin`  
 Source path: [packages/synapse-openclaw-plugin](packages/synapse-openclaw-plugin)
+
+After first registry publication, install commands will be:
+- `pip install synapseworkspace-sdk`
+- `npm install @synapseworkspace/sdk`
 
 ## Product Capabilities
 

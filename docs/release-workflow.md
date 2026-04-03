@@ -16,6 +16,15 @@ Practical step-by-step checklist:
 
 All packages must share the same version (enforced by `scripts/check_release_versions.py`).
 
+## Current Registry Status
+
+As of **April 3, 2026**:
+- PyPI: first publish pending.
+- npm: first publish pending.
+
+Before first public release, `pip index versions synapseworkspace-sdk` / `npm view @synapseworkspace/*` will return `not found`.
+This is expected until trusted publishing is enabled and first `v*` release publish run completes.
+
 ## CI/CD Workflow
 
 Workflow file: `.github/workflows/release-packages.yml`

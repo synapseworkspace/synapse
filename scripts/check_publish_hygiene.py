@@ -127,6 +127,7 @@ def _validate_docs_consistency(errors: list[str]) -> None:
     release_workflow = (ROOT_DIR / "docs" / "release-workflow.md").read_text(encoding="utf-8")
     compatibility = (ROOT_DIR / "docs" / "compatibility-matrix.md").read_text(encoding="utf-8")
     root_readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
+    quickstart_openclaw = (ROOT_DIR / "docs" / "openclaw-quickstart-5-min.md").read_text(encoding="utf-8")
 
     required_release_mentions = [
         "synapseworkspace-sdk",
@@ -154,6 +155,26 @@ def _validate_docs_consistency(errors: list[str]) -> None:
     _assert(
         "@synapseworkspace/openclaw-plugin" in root_readme,
         "README.md: missing npm package mention for @synapseworkspace/openclaw-plugin",
+        errors,
+    )
+    _assert(
+        "Package Registry Status" in root_readme,
+        "README.md: missing explicit package registry status section",
+        errors,
+    )
+    _assert(
+        "pip install -e packages/synapse-sdk-py" in root_readme,
+        "README.md: missing repo-local Python install path for preview period",
+        errors,
+    )
+    _assert(
+        "Current status (as of" in quickstart_openclaw,
+        "docs/openclaw-quickstart-5-min.md: missing explicit registry status note",
+        errors,
+    )
+    _assert(
+        "pip install -e packages/synapse-sdk-py" in quickstart_openclaw,
+        "docs/openclaw-quickstart-5-min.md: missing repo-local install command",
         errors,
     )
 
