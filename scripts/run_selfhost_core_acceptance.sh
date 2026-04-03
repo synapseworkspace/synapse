@@ -23,6 +23,7 @@ POSTGRES_PASSWORD="${SYNAPSE_SELFHOST_POSTGRES_PASSWORD:-synapse}"
 
 ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/synapse-selfhost-acceptance.XXXXXX.env")"
 cat >"$ENV_FILE" <<EOF
+SYNAPSE_BIND_HOST=127.0.0.1
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -48,7 +49,7 @@ SYNAPSE_WORKER_INTELLIGENCE_DELIVERY_LIMIT=200
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 
-SYNAPSE_MCP_TRANSPORT=http
+SYNAPSE_MCP_TRANSPORT=streamable-http
 SYNAPSE_MCP_PORT=${MCP_PORT}
 SYNAPSE_MCP_CACHE_TTL_SEC=5
 SYNAPSE_MCP_CACHE_MAX_ENTRIES=5000
@@ -86,6 +87,29 @@ for _ in $(seq 1 120); do
 done
 curl -fsS "${API_URL}/health" >/dev/null
 
+MCP_CONTAINER_ID="$("${COMPOSE[@]}" ps -q mcp)"
+if [[ -z "$MCP_CONTAINER_ID" ]]; then
+  echo "[selfhost-acceptance] mcp container id is empty" >&2
+  exit 1
+fi
+MCP_CONTAINER_NAME="$(docker inspect --format '{{.Name}}' "$MCP_CONTAINER_ID" | sed 's#^/##')"
+
+echo "[selfhost-acceptance] waiting for MCP container health"
+for _ in $(seq 1 120); do
+  MCP_STATE="$(docker inspect --format '{{.State.Status}}' "$MCP_CONTAINER_ID" 2>/dev/null || echo "unknown")"
+  MCP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$MCP_CONTAINER_ID" 2>/dev/null || echo "unknown")"
+  if [[ "$MCP_STATE" == "running" && ( "$MCP_HEALTH" == "healthy" || "$MCP_HEALTH" == "none" ) ]]; then
+    break
+  fi
+  sleep 1
+done
+MCP_RESTART_COUNT="$(docker inspect --format '{{.RestartCount}}' "$MCP_CONTAINER_ID" 2>/dev/null || echo "999")"
+if [[ "$MCP_RESTART_COUNT" != "0" ]]; then
+  echo "[selfhost-acceptance] mcp restart loop detected (restart_count=$MCP_RESTART_COUNT)" >&2
+  "${COMPOSE[@]}" logs --no-color mcp | tail -n 200 >&2 || true
+  exit 1
+fi
+
 echo "[selfhost-acceptance] running core loop acceptance against compose stack"
 python3 "$ROOT_DIR/scripts/integration_core_loop.py" \
   --api-url "$API_URL" \
@@ -94,7 +118,7 @@ python3 "$ROOT_DIR/scripts/integration_core_loop.py" \
   --worker-poll-interval 1.0 \
   --max-worker-cycles 60 \
   --mcp-probe-mode container \
-  --mcp-container-name synapse-mcp \
+  --mcp-container-name "$MCP_CONTAINER_NAME" \
   --mcp-host 127.0.0.1 \
   --mcp-port "$MCP_PORT" \
   --project-id "core_selfhost_$(date +%s)"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from .runtime import SynapseKnowledgeRuntime, build_runtime_from_env
@@ -145,15 +146,33 @@ def create_mcp_server(runtime: SynapseKnowledgeRuntime | None = None) -> Any:
 def run_mcp_server(*, transport: str | None = None) -> None:
     server = create_mcp_server()
     selected_transport = (transport or os.getenv("SYNAPSE_MCP_TRANSPORT", "stdio")).strip().lower()
+    host = os.getenv("SYNAPSE_MCP_HOST", "0.0.0.0")
+    port = int(os.getenv("SYNAPSE_MCP_PORT", "8091"))
+
+    def _warn(message: str) -> None:
+        print(f"[synapse-mcp] warning: {message}", file=sys.stderr)
+
+    network_candidates: list[str] = []
     if selected_transport in {"streamable-http", "http"}:
-        host = os.getenv("SYNAPSE_MCP_HOST", "0.0.0.0")
-        port = int(os.getenv("SYNAPSE_MCP_PORT", "8091"))
+        network_candidates = [selected_transport]
+        if selected_transport == "http":
+            network_candidates.append("streamable-http")
+    else:
+        if selected_transport not in {"stdio"}:
+            _warn(f"unsupported transport `{selected_transport}` requested; trying streamable-http then stdio fallback")
+        network_candidates = ["streamable-http"]
+
+    for candidate in network_candidates:
         try:
-            server.run(transport=selected_transport, host=host, port=port)
+            server.run(transport=candidate, host=host, port=port)
             return
-        except TypeError:
-            pass
-    try:
-        server.run(transport=selected_transport)
-    except TypeError:
-        server.run()
+        except (TypeError, ValueError) as exc:
+            _warn(f"transport `{candidate}` not accepted by runtime ({type(exc).__name__}: {exc}); falling back")
+
+    for candidate in (selected_transport, "stdio"):
+        try:
+            server.run(transport=candidate)
+            return
+        except (TypeError, ValueError):
+            continue
+    server.run()

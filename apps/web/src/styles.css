@@ -209,7 +209,19 @@ body {
   box-shadow: 0 6px 20px rgba(18, 45, 80, 0.05);
 }
 
+.wiki-command-bar {
+  border: 1px solid var(--synapse-border);
+  background: linear-gradient(180deg, rgba(252, 255, 255, 0.95), rgba(246, 251, 255, 0.93));
+}
+
+.operations-nav-card {
+  border: 1px solid var(--synapse-border);
+  background: linear-gradient(180deg, rgba(246, 252, 255, 0.9), rgba(255, 255, 255, 0.95));
+}
+
 .wiki-tree-panel,
+.wiki-page-preview-panel,
+.wiki-context-panel,
 .draft-inbox-panel,
 .draft-detail-panel {
   position: relative;
@@ -217,6 +229,8 @@ body {
 }
 
 .wiki-tree-panel::before,
+.wiki-page-preview-panel::before,
+.wiki-context-panel::before,
 .draft-inbox-panel::before,
 .draft-detail-panel::before {
   content: "";
@@ -231,6 +245,24 @@ body {
   background: linear-gradient(90deg, rgba(14, 116, 144, 0.6), rgba(56, 189, 248, 0.2));
 }
 
+.wiki-page-preview-panel::before {
+  background: linear-gradient(90deg, rgba(3, 105, 161, 0.55), rgba(56, 189, 248, 0.18));
+}
+
+.wiki-context-panel::before {
+  background: linear-gradient(90deg, rgba(67, 56, 202, 0.5), rgba(129, 140, 248, 0.16));
+}
+
+.wiki-page-header-card {
+  background: linear-gradient(180deg, rgba(241, 249, 255, 0.8), rgba(255, 255, 255, 0.96));
+  border-color: rgba(14, 116, 144, 0.22);
+}
+
+.wiki-page-edit-card {
+  background: linear-gradient(180deg, rgba(245, 251, 255, 0.86), rgba(255, 255, 255, 0.97));
+  border-color: rgba(37, 99, 235, 0.18);
+}
+
 .draft-inbox-panel::before {
   background: linear-gradient(90deg, rgba(15, 118, 110, 0.62), rgba(45, 212, 191, 0.2));
 }
@@ -240,6 +272,8 @@ body {
 }
 
 .wiki-tree-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root),
+.wiki-page-preview-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root),
+.wiki-context-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root),
 .draft-inbox-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root),
 .draft-detail-panel :is(.mantine-Title-root, .mantine-Text-root, .mantine-Code-root) {
   letter-spacing: 0.005em;
@@ -251,6 +285,7 @@ body {
 }
 
 .wiki-tree-panel .mantine-ScrollArea-root,
+.wiki-page-preview-panel .mantine-ScrollArea-root,
 .draft-inbox-panel .mantine-ScrollArea-root,
 .draft-detail-panel .mantine-ScrollArea-root {
   border-top: 1px solid rgba(25, 52, 80, 0.08);
@@ -291,6 +326,40 @@ body {
 .wiki-canvas-content .tiptap code {
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: 0.86em;
+}
+
+.wiki-canvas-content .tiptap table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.9em 0;
+  font-size: 0.93em;
+}
+
+.wiki-canvas-content .tiptap th,
+.wiki-canvas-content .tiptap td {
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  padding: 8px 10px;
+  vertical-align: top;
+}
+
+.wiki-canvas-content .tiptap th {
+  background: rgba(14, 116, 144, 0.08);
+  font-weight: 700;
+}
+
+.wiki-media-preview-card {
+  background: linear-gradient(180deg, rgba(244, 248, 255, 0.86), rgba(255, 255, 255, 0.97));
+  border-color: rgba(59, 130, 246, 0.16);
+}
+
+.wiki-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.wiki-media-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.95));
 }
 
 .intelligence-panel {

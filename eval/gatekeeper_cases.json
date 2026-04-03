@@ -44,7 +44,7 @@
         "has_recent_open_conflict": false
       },
       "expected": {
-        "tier": "insight_candidate"
+        "tier": "operational_memory"
       }
     },
     {
@@ -196,7 +196,7 @@
         "has_recent_open_conflict": false
       },
       "expected": {
-        "tier": "insight_candidate"
+        "tier": "operational_memory"
       }
     },
     {

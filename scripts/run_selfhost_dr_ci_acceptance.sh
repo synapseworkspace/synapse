@@ -74,6 +74,7 @@ DRILL_RESULT_FILE="$ARTIFACT_DIR/drill.json"
 REPORT_TMP_FILE="$ARTIFACT_DIR/report.json"
 
 cat >"$ENV_FILE" <<EOF
+SYNAPSE_BIND_HOST=127.0.0.1
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -99,7 +100,7 @@ SYNAPSE_WORKER_INTELLIGENCE_DELIVERY_LIMIT=200
 OPENAI_API_KEY=
 OPENAI_BASE_URL=
 
-SYNAPSE_MCP_TRANSPORT=http
+SYNAPSE_MCP_TRANSPORT=streamable-http
 SYNAPSE_MCP_PORT=${MCP_PORT}
 SYNAPSE_MCP_CACHE_TTL_SEC=5
 SYNAPSE_MCP_CACHE_MAX_ENTRIES=5000
@@ -136,6 +137,27 @@ for _ in $(seq 1 120); do
   sleep 1
 done
 curl -fsS "${API_URL}/health" >/dev/null
+
+MCP_CONTAINER_ID="$("${COMPOSE[@]}" ps -q mcp)"
+if [[ -z "$MCP_CONTAINER_ID" ]]; then
+  echo "[selfhost-dr-ci] mcp container id is empty" >&2
+  exit 1
+fi
+echo "[selfhost-dr-ci] waiting for MCP container health"
+for _ in $(seq 1 120); do
+  MCP_STATE="$(docker inspect --format '{{.State.Status}}' "$MCP_CONTAINER_ID" 2>/dev/null || echo "unknown")"
+  MCP_HEALTH="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$MCP_CONTAINER_ID" 2>/dev/null || echo "unknown")"
+  if [[ "$MCP_STATE" == "running" && ( "$MCP_HEALTH" == "healthy" || "$MCP_HEALTH" == "none" ) ]]; then
+    break
+  fi
+  sleep 1
+done
+MCP_RESTART_COUNT="$(docker inspect --format '{{.RestartCount}}' "$MCP_CONTAINER_ID" 2>/dev/null || echo "999")"
+if [[ "$MCP_RESTART_COUNT" != "0" ]]; then
+  echo "[selfhost-dr-ci] mcp restart loop detected (restart_count=$MCP_RESTART_COUNT)" >&2
+  "${COMPOSE[@]}" logs --no-color mcp | tail -n 200 >&2 || true
+  exit 1
+fi
 
 echo "[selfhost-dr-ci] seeding API with event + proposal"
 python3 - "$API_URL" "$PROJECT_ID" "$SEED_RESULT_FILE" <<'PY'
@@ -208,7 +230,7 @@ echo "[selfhost-dr-ci] running backup/restore drill"
 ./scripts/run_selfhost_backup_restore_drill.sh \
   --env-file "$ENV_FILE" \
   --compose-file "$COMPOSE_FILE" \
-  --source-container synapse-postgres \
+  --source-service postgres \
   --backup-file "$ARTIFACT_DIR/backup.sql" \
   --keep-artifacts > "$DRILL_RESULT_FILE"
 

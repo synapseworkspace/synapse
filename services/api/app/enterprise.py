@@ -25,6 +25,7 @@ _PUBLIC_PATH_PREFIXES = (
     "/redoc",
 )
 _AUTH_PATH_PREFIX = "/v1/auth/"
+_SCIM_PATH_PREFIX = "/scim/"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _OIDC_ALLOWED_ALGOS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 _DEFAULT_ADMIN_ROLES = {"admin", "tenant_admin"}
@@ -110,6 +111,25 @@ _ROUTE_POLICIES: list[RoutePolicy] = [
     RoutePolicy({"PUT"}, re.compile(r"^/v1/intelligence/delivery/targets$"), _ROLE_OPERATOR, "intelligence_delivery_mutation"),
     RoutePolicy({"PUT", "POST"}, re.compile(r"^/v1/legacy-import/"), _ROLE_OPERATOR, "legacy_import_mutation"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/simulator/runs$"), _ROLE_OPERATOR, "simulator_run"),
+    RoutePolicy({"GET"}, re.compile(r"^/v1/enterprise/rbac/decisions$"), _ROLE_OPERATOR, "rbac_decision_audit_read"),
+    RoutePolicy(
+        {"GET", "PUT"},
+        re.compile(r"^/v1/enterprise/idp/connections$"),
+        _ROLE_TENANT_ADMIN,
+        "enterprise_idp_connections",
+    ),
+    RoutePolicy(
+        {"GET"},
+        re.compile(r"^/v1/enterprise/idp/saml/metadata$"),
+        _ROLE_TENANT_ADMIN,
+        "enterprise_saml_metadata_read",
+    ),
+    RoutePolicy(
+        {"GET", "PUT", "DELETE"},
+        re.compile(r"^/v1/enterprise/scim/tokens(?:/[^/]+)?$"),
+        _ROLE_TENANT_ADMIN,
+        "enterprise_scim_token_admin",
+    ),
     RoutePolicy({"POST"}, re.compile(r"^/v1/tenants$"), _ROLE_TENANT_ADMIN, "tenant_create"),
     RoutePolicy({"PUT", "DELETE"}, re.compile(r"^/v1/tenants/"), _ROLE_TENANT_ADMIN, "tenant_admin"),
 ]
@@ -564,18 +584,38 @@ def revoke_session(conn: Connection[Any], token: str) -> bool:
 
 
 def _required_roles_for_request(method: str, path: str) -> set[str]:
+    return set(describe_route_policy(method, path).get("required_roles") or [])
+
+
+def describe_route_policy(method: str, path: str) -> dict[str, Any]:
     normalized_method = method.upper().strip()
     normalized_path = str(path or "").strip()
     for policy in _ROUTE_POLICIES:
         if normalized_method not in policy.methods:
             continue
         if policy.pattern.match(normalized_path):
-            return set(policy.allowed_roles)
+            return {
+                "required_roles": sorted(policy.allowed_roles),
+                "action": policy.action,
+                "source": "route_policy",
+            }
     if normalized_method in _SAFE_METHODS:
-        return set()
+        return {
+            "required_roles": [],
+            "action": "safe_read",
+            "source": "safe_method",
+        }
     if normalized_path.startswith(_AUTH_PATH_PREFIX):
-        return set()
-    return set(_DEFAULT_ADMIN_ROLES)
+        return {
+            "required_roles": [],
+            "action": "auth_path",
+            "source": "auth_path",
+        }
+    return {
+        "required_roles": sorted(_DEFAULT_ADMIN_ROLES),
+        "action": "admin_default",
+        "source": "default_admin",
+    }
 
 
 def enforce_rbac(settings: EnterpriseSettings, identity: AccessIdentity, *, method: str, path: str) -> None:
@@ -713,5 +753,7 @@ def should_skip_guard(path: str, method: str) -> bool:
     if _is_public_path(path):
         return True
     if path.startswith(_AUTH_PATH_PREFIX):
+        return True
+    if path.startswith(_SCIM_PATH_PREFIX):
         return True
     return False

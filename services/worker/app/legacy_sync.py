@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
+import json
 from pathlib import Path
 import os
+import re
 import sys
 from typing import Any
 from uuid import UUID, uuid4
@@ -17,11 +19,13 @@ except Exception:  # pragma: no cover - offline mode without psycopg runtime
             self.obj = obj
 
 from app.legacy_import import (
+    LegacyImportResult,
     LegacyImporter,
     LegacySeedOrchestrator,
     NotionApiClient,
     NotionImportConfig,
     NotionImporter,
+    SQLImporter,
     SUPPORTED_EXTENSIONS,
 )
 
@@ -53,7 +57,7 @@ class LegacySyncRunRecord:
 
 
 class LegacySyncEngine:
-    """Periodic orchestration for legacy import sources (local + Notion)."""
+    """Periodic orchestration for legacy import sources (local, Notion, SQL polling, SQL WAL/CDC)."""
 
     def __init__(
         self,
@@ -378,7 +382,7 @@ class LegacySyncEngine:
         chunk_size = max(1, int(config.get("chunk_size", 100)))
         created_by = run.requested_by or self.default_requested_by
 
-        collected = self._collect_records(source=source, max_records=max_records)
+        collected, source_state_patch = self._collect_records(source=source, max_records=max_records)
         records = list(collected.records)
         fingerprints_known = self._load_known_fingerprints(conn, source_id=source.id, records=records)
         delta = self.compute_record_delta(records, fingerprints_known)
@@ -402,6 +406,16 @@ class LegacySyncEngine:
             "source_type": source.source_type,
             "source_ref": source.source_ref,
         }
+        if source.source_type == "postgres_sql":
+            summary["sync_mode"] = str(config.get("sql_sync_mode") or "polling").strip().lower() or "polling"
+        if source_state_patch:
+            self._patch_source_config(
+                conn,
+                source_id=source.id,
+                config_patch=source_state_patch,
+                updated_by=created_by,
+            )
+            summary["source_state_patch"] = source_state_patch
 
         if not new_records:
             self._mark_run_skipped(
@@ -472,7 +486,12 @@ class LegacySyncEngine:
             "batch_id": batch_id,
         }
 
-    def _collect_records(self, *, source: LegacySourceRecord, max_records: int):
+    def _collect_records(
+        self,
+        *,
+        source: LegacySourceRecord,
+        max_records: int,
+    ) -> tuple[LegacyImportResult, dict[str, Any]]:
         config = source.config or {}
         max_chars = max(200, int(config.get("max_chars_per_record", 1800)))
         if source.source_type == "local_dir":
@@ -487,27 +506,50 @@ class LegacySyncEngine:
                 max_chars_per_record=max_chars,
                 include_extensions=include_ext,
             )
-            return importer.collect_records(max_records=max_records)
+            return importer.collect_records(max_records=max_records), {}
 
-        notion_token = self._resolve_notion_token(config)
-        if not notion_token:
-            raise RuntimeError("missing Notion token for source; set config.notion_token or config.notion_token_env")
-        notion_config = NotionImportConfig(
-            token=notion_token,
-            base_url=str(config.get("notion_base_url") or os.getenv("NOTION_BASE_URL") or "https://api.notion.com"),
-            notion_version=str(config.get("notion_version") or os.getenv("NOTION_VERSION") or "2022-06-28"),
-            timeout_sec=max(1, int(config.get("notion_timeout_sec", 20))),
-            max_retries=max(0, int(config.get("notion_max_retries", 3))),
-        )
-        notion_importer = NotionImporter(
-            client=NotionApiClient(notion_config),
-            max_chars_per_record=max_chars,
-            max_pages=max(1, int(config.get("notion_max_pages", 200))),
-        )
-        if source.source_type == "notion_root_page":
-            return notion_importer.collect_from_root_page(source.source_ref, max_records=max_records)
-        if source.source_type == "notion_database":
-            return notion_importer.collect_from_database(source.source_ref, max_records=max_records)
+        if source.source_type in {"notion_root_page", "notion_database"}:
+            notion_token = self._resolve_notion_token(config)
+            if not notion_token:
+                raise RuntimeError("missing Notion token for source; set config.notion_token or config.notion_token_env")
+            notion_config = NotionImportConfig(
+                token=notion_token,
+                base_url=str(config.get("notion_base_url") or os.getenv("NOTION_BASE_URL") or "https://api.notion.com"),
+                notion_version=str(config.get("notion_version") or os.getenv("NOTION_VERSION") or "2022-06-28"),
+                timeout_sec=max(1, int(config.get("notion_timeout_sec", 20))),
+                max_retries=max(0, int(config.get("notion_max_retries", 3))),
+            )
+            notion_importer = NotionImporter(
+                client=NotionApiClient(notion_config),
+                max_chars_per_record=max_chars,
+                max_pages=max(1, int(config.get("notion_max_pages", 200))),
+            )
+            if source.source_type == "notion_root_page":
+                return notion_importer.collect_from_root_page(source.source_ref, max_records=max_records), {}
+            return notion_importer.collect_from_database(source.source_ref, max_records=max_records), {}
+
+        if source.source_type == "postgres_sql":
+            dsn = self._resolve_sql_dsn(config)
+            sync_mode = str(config.get("sql_sync_mode") or "polling").strip().lower() or "polling"
+            if sync_mode in {"polling", "query"}:
+                return self._collect_postgres_sql_polling(
+                    dsn=dsn,
+                    config=config,
+                    max_records=max_records,
+                    max_chars=max_chars,
+                )
+            if sync_mode in {"wal", "wal_cdc", "cdc"}:
+                return self._collect_postgres_sql_wal_cdc(
+                    dsn=dsn,
+                    config=config,
+                    max_records=max_records,
+                    max_chars=max_chars,
+                    source_ref=source.source_ref,
+                )
+            raise RuntimeError(
+                f"unsupported sql_sync_mode for postgres_sql source: {sync_mode} (supported: polling|wal_cdc)"
+            )
+
         raise RuntimeError(f"unsupported source_type: {source.source_type}")
 
     def _resolve_notion_token(self, config: dict[str, Any]) -> str | None:
@@ -516,6 +558,373 @@ class LegacySyncEngine:
             return token
         env_name = str(config.get("notion_token_env") or "NOTION_TOKEN").strip()
         return str(os.getenv(env_name) or "").strip() or None
+
+    def _resolve_sql_dsn(self, config: dict[str, Any]) -> str:
+        dsn = str(config.get("sql_dsn") or "").strip()
+        if not dsn:
+            dsn_env = str(config.get("sql_dsn_env") or "LEGACY_SQL_DSN").strip() or "LEGACY_SQL_DSN"
+            dsn = str(os.getenv(dsn_env) or "").strip()
+        if not dsn:
+            raise RuntimeError("missing SQL DSN for postgres_sql source (config.sql_dsn or config.sql_dsn_env)")
+        return dsn
+
+    def _collect_postgres_sql_polling(
+        self,
+        *,
+        dsn: str,
+        config: dict[str, Any],
+        max_records: int,
+        max_chars: int,
+    ) -> tuple[LegacyImportResult, dict[str, Any]]:
+        query = str(config.get("sql_query") or "").strip()
+        query_file = str(config.get("sql_query_file") or "").strip()
+        if not query and query_file:
+            query_path = Path(query_file).expanduser().resolve()
+            if not query_path.exists() or not query_path.is_file():
+                raise RuntimeError(f"sql_query_file does not exist: {query_path}")
+            query = query_path.read_text(encoding="utf-8").strip()
+        if not query:
+            raise RuntimeError("missing SQL query for postgres_sql source (config.sql_query or config.sql_query_file)")
+
+        sql_mapping = config.get("sql_mapping") if isinstance(config.get("sql_mapping"), dict) else {}
+        sql_query_params = config.get("sql_query_params") if isinstance(config.get("sql_query_params"), dict) else {}
+        cursor_key = str(config.get("sql_cursor_state_key") or "sql_last_cursor").strip() or "sql_last_cursor"
+        cursor_start = str(config.get("sql_cursor_start") or "").strip()
+        cursor_value_raw = config.get(cursor_key)
+        cursor_value = str(cursor_value_raw).strip() if cursor_value_raw is not None else ""
+        if not cursor_value:
+            cursor_value = cursor_start
+        cursor_param = str(config.get("sql_cursor_param") or "cursor").strip() or "cursor"
+        cursor_column = str(config.get("sql_cursor_column") or "").strip() or None
+        importer = SQLImporter(
+            dsn=dsn,
+            query=query,
+            query_params=sql_query_params,
+            mapping=sql_mapping,
+            max_chars_per_record=max_chars,
+            source_connector=str(config.get("sql_source_connector") or "postgres_sql"),
+            source_id_prefix=str(config.get("sql_source_id_prefix") or ""),
+        )
+        sql_result = importer.collect_records(
+            max_records=max_records,
+            cursor=cursor_value or None,
+            cursor_param=cursor_param,
+            cursor_column=cursor_column,
+        )
+        state_patch: dict[str, Any] = {}
+        next_cursor = str(sql_result.next_cursor or "").strip()
+        if next_cursor and next_cursor != cursor_value:
+            state_patch[cursor_key] = next_cursor
+            state_patch["sql_last_synced_at"] = datetime.now(UTC).isoformat()
+        return (
+            LegacyImportResult(
+                records=list(sql_result.records),
+                skipped_files=[],
+                parser_warnings=list(sql_result.parser_warnings),
+            ),
+            state_patch,
+        )
+
+    def _collect_postgres_sql_wal_cdc(
+        self,
+        *,
+        dsn: str,
+        config: dict[str, Any],
+        max_records: int,
+        max_chars: int,
+        source_ref: str,
+    ) -> tuple[LegacyImportResult, dict[str, Any]]:
+        try:
+            import psycopg
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("psycopg runtime dependency is missing for postgres_sql wal_cdc mode") from exc
+
+        slot = str(config.get("wal_slot") or "").strip()
+        if not slot:
+            raise RuntimeError("missing wal_slot for postgres_sql wal_cdc mode")
+        plugin = str(config.get("wal_plugin") or "test_decoding").strip() or "test_decoding"
+        parser_mode = str(config.get("wal_parser_mode") or plugin).strip().lower() or "test_decoding"
+        if parser_mode not in {"test_decoding", "wal2json"}:
+            raise RuntimeError("wal_parser_mode must be test_decoding or wal2json")
+        allow_create_slot = bool(config.get("wal_create_slot_if_missing", False))
+        acknowledge = bool(config.get("wal_acknowledge", True))
+        read_limit = max(1, min(max_records, int(config.get("wal_max_changes", max_records))))
+        function_name = "pg_logical_slot_get_changes" if acknowledge else "pg_logical_slot_peek_changes"
+        cursor_key = str(config.get("wal_cursor_state_key") or "sql_last_lsn").strip() or "sql_last_lsn"
+
+        options_dict = config.get("wal_options") if isinstance(config.get("wal_options"), dict) else {}
+        option_pairs: list[str] = []
+        for key in sorted(options_dict.keys()):
+            norm_key = str(key).strip()
+            if not norm_key:
+                continue
+            value = str(options_dict[key]).strip()
+            if not value:
+                continue
+            option_pairs.extend([norm_key, value])
+
+        table_allowlist = self._normalize_string_set(config.get("wal_table_allowlist"))
+        operation_allowlist = self._normalize_string_set(config.get("wal_operation_allowlist"))
+        if not operation_allowlist:
+            operation_allowlist = {"insert", "update", "delete"}
+        content_fields = self._normalize_string_list(
+            config.get("wal_content_fields"),
+            default=["content", "note", "text", "message", "summary", "body", "payload"],
+        )
+        include_raw = bool(config.get("wal_include_raw", False))
+        source_id_field = str(config.get("wal_source_id_field") or "source_id").strip() or "source_id"
+        entity_key_field = str(config.get("wal_entity_key_field") or "entity_key").strip() or "entity_key"
+        category_field = str(config.get("wal_category_field") or "category").strip() or "category"
+        observed_at_field = str(config.get("wal_observed_at_field") or "observed_at").strip() or "observed_at"
+        source_id_prefix = str(config.get("wal_source_id_prefix") or config.get("sql_source_id_prefix") or source_ref).strip()
+        source_id_prefix = source_id_prefix or "wal"
+
+        warning_messages: list[str] = []
+        records: list[dict[str, Any]] = []
+        last_lsn = str(config.get(cursor_key) or config.get("sql_last_lsn") or config.get("wal_start_lsn") or "").strip()
+
+        with psycopg.connect(dsn, autocommit=True) as db_conn:
+            with db_conn.cursor() as cur:
+                cur.execute("SELECT slot_name, plugin FROM pg_replication_slots WHERE slot_name = %s LIMIT 1", (slot,))
+                slot_row = cur.fetchone()
+                if slot_row is None:
+                    if not allow_create_slot:
+                        raise RuntimeError(
+                            "replication slot not found for wal_cdc mode; set wal_create_slot_if_missing=true or create slot manually"
+                        )
+                    cur.execute("SELECT slot_name FROM pg_create_logical_replication_slot(%s, %s)", (slot, plugin))
+
+                placeholders = ["%s", "NULL", "%s"]
+                params: list[Any] = [slot, read_limit]
+                if option_pairs:
+                    placeholders.extend(["%s"] * len(option_pairs))
+                    params.extend(option_pairs)
+                sql = f"SELECT lsn::text, xid::text, data FROM {function_name}({', '.join(placeholders)})"
+                cur.execute(sql, tuple(params))
+                change_rows = cur.fetchall() or []
+
+        for row_index, row in enumerate(change_rows, start=1):
+            lsn_value = str(row[0] or "").strip()
+            xid_value = str(row[1] or "").strip() if row[1] is not None else ""
+            payload = str(row[2] or "")
+            if not lsn_value or not payload.strip():
+                continue
+            last_lsn = lsn_value
+            parsed = self._parse_wal_payload(payload, parser_mode=parser_mode, warning_messages=warning_messages)
+            for change_index, item in enumerate(parsed, start=1):
+                operation = str(item.get("operation") or "").strip().lower()
+                if operation_allowlist and operation not in operation_allowlist:
+                    continue
+                table = str(item.get("table") or "").strip().lower()
+                if table_allowlist and table and table not in table_allowlist:
+                    continue
+                fields = item.get("fields") if isinstance(item.get("fields"), dict) else {}
+                normalized_fields = {str(k).strip().lower(): v for k, v in fields.items() if str(k).strip()}
+
+                content = self._pick_first_non_empty_value(normalized_fields, content_fields)
+                if not content:
+                    continue
+                if len(content) > max_chars:
+                    content = f"{content[:max_chars]}...(truncated)"
+
+                source_id = self._pick_first_non_empty_value(normalized_fields, [source_id_field.lower()])
+                if not source_id:
+                    source_id = f"{source_id_prefix}:{lsn_value}:{row_index}:{change_index}"
+                entity_key = self._pick_first_non_empty_value(normalized_fields, [entity_key_field.lower(), "entity", "entityid"])
+                category = self._pick_first_non_empty_value(normalized_fields, [category_field.lower(), "type", "kind"])
+                observed_at = self._pick_first_non_empty_value(
+                    normalized_fields,
+                    [observed_at_field.lower(), "updated_at", "created_at", "timestamp", "ts"],
+                )
+
+                metadata: dict[str, Any] = {
+                    "wal_cdc": True,
+                    "wal_slot": slot,
+                    "wal_plugin": plugin,
+                    "wal_parser_mode": parser_mode,
+                    "wal_lsn": lsn_value,
+                    "wal_xid": xid_value,
+                    "wal_operation": operation,
+                    "wal_table": table,
+                }
+                if include_raw:
+                    metadata["wal_raw_payload"] = payload
+                metadata_fields = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                if metadata_fields:
+                    metadata["wal_metadata"] = metadata_fields
+
+                records.append(
+                    {
+                        "source_id": source_id,
+                        "content": content,
+                        "observed_at": observed_at or None,
+                        "entity_key": entity_key or None,
+                        "category": category or None,
+                        "metadata": metadata,
+                    }
+                )
+                if len(records) >= max_records:
+                    break
+            if len(records) >= max_records:
+                break
+
+        state_patch: dict[str, Any] = {}
+        if last_lsn:
+            previous_cursor = str(config.get(cursor_key) or "").strip()
+            if last_lsn != previous_cursor:
+                state_patch[cursor_key] = last_lsn
+                state_patch["sql_last_synced_at"] = datetime.now(UTC).isoformat()
+        return (
+            LegacyImportResult(
+                records=records,
+                skipped_files=[],
+                parser_warnings=warning_messages,
+            ),
+            state_patch,
+        )
+
+    @staticmethod
+    def _normalize_string_set(value: Any) -> set[str]:
+        if not isinstance(value, list):
+            return set()
+        return {
+            str(item).strip().lower()
+            for item in value
+            if str(item).strip()
+        }
+
+    @staticmethod
+    def _normalize_string_list(value: Any, *, default: list[str]) -> list[str]:
+        if isinstance(value, list):
+            parsed = [str(item).strip().lower() for item in value if str(item).strip()]
+            if parsed:
+                return parsed
+        return [item.strip().lower() for item in default if item.strip()]
+
+    @staticmethod
+    def _pick_first_non_empty_value(fields: dict[str, Any], keys: list[str]) -> str:
+        for key in keys:
+            lookup = str(key).strip().lower()
+            if not lookup:
+                continue
+            value = fields.get(lookup)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text.lower() != "null":
+                return text
+        return ""
+
+    def _parse_wal_payload(
+        self,
+        payload: str,
+        *,
+        parser_mode: str,
+        warning_messages: list[str],
+    ) -> list[dict[str, Any]]:
+        if parser_mode == "wal2json":
+            return self._parse_wal2json_payload(payload, warning_messages=warning_messages)
+        return self._parse_test_decoding_payload(payload, warning_messages=warning_messages)
+
+    def _parse_wal2json_payload(self, payload: str, *, warning_messages: list[str]) -> list[dict[str, Any]]:
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            warning_messages.append("wal2json payload parse failed (invalid JSON)")
+            return []
+        if not isinstance(parsed, dict):
+            warning_messages.append("wal2json payload parse failed (expected object)")
+            return []
+
+        changes = parsed.get("change")
+        if not isinstance(changes, list):
+            if all(key in parsed for key in ("kind", "table")):
+                changes = [parsed]
+            else:
+                return []
+
+        records: list[dict[str, Any]] = []
+        for item in changes:
+            if not isinstance(item, dict):
+                continue
+            schema = str(item.get("schema") or "").strip()
+            table_name = str(item.get("table") or "").strip()
+            table = ".".join(part for part in (schema, table_name) if part)
+            operation = str(item.get("kind") or item.get("action") or "").strip().lower()
+
+            fields: dict[str, Any] = {}
+            column_names = item.get("columnnames")
+            column_values = item.get("columnvalues")
+            if isinstance(column_names, list) and isinstance(column_values, list):
+                for index, column in enumerate(column_names):
+                    key = str(column).strip().lower()
+                    if not key:
+                        continue
+                    value = column_values[index] if index < len(column_values) else None
+                    fields[key] = value
+            old_keys = item.get("oldkeys")
+            if isinstance(old_keys, dict):
+                key_names = old_keys.get("keynames")
+                key_values = old_keys.get("keyvalues")
+                if isinstance(key_names, list) and isinstance(key_values, list):
+                    for index, column in enumerate(key_names):
+                        key = str(column).strip().lower()
+                        if not key:
+                            continue
+                        value = key_values[index] if index < len(key_values) else None
+                        fields.setdefault(key, value)
+
+            records.append(
+                {
+                    "operation": self._normalize_wal_operation(operation),
+                    "table": table.lower(),
+                    "fields": fields,
+                    "metadata": {},
+                }
+            )
+        return records
+
+    def _parse_test_decoding_payload(self, payload: str, *, warning_messages: list[str]) -> list[dict[str, Any]]:
+        pattern = re.compile(r"^table\s+([^.]+)\.([^:]+):\s+([A-Z]+):\s*(.*)$", re.IGNORECASE)
+        match = pattern.match(payload.strip())
+        if not match:
+            warning_messages.append("test_decoding payload parse failed (pattern mismatch)")
+            return []
+        schema = match.group(1).strip().lower()
+        table = match.group(2).strip().lower()
+        operation = self._normalize_wal_operation(match.group(3).strip().lower())
+        body = match.group(4)
+
+        fields: dict[str, Any] = {}
+        field_pattern = re.compile(r"([A-Za-z0-9_]+)\[[^\]]+\]:(?:'((?:''|[^'])*)'|(\S+))")
+        for raw_key, quoted, plain in field_pattern.findall(body):
+            key = str(raw_key).strip().lower()
+            if not key:
+                continue
+            if quoted != "":
+                value = quoted.replace("''", "'")
+            else:
+                text = str(plain).strip()
+                value = None if text.lower() in {"null", "<null>"} else text
+            fields[key] = value
+
+        return [
+            {
+                "operation": operation,
+                "table": f"{schema}.{table}",
+                "fields": fields,
+                "metadata": {},
+            }
+        ]
+
+    @staticmethod
+    def _normalize_wal_operation(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"insert", "update", "delete"}:
+            return normalized
+        if normalized in {"truncate"}:
+            return normalized
+        return "update"
 
     def _load_known_fingerprints(self, conn, *, source_id: UUID, records: list[dict[str, Any]]) -> set[str]:
         fingerprints = {
@@ -590,6 +999,7 @@ class LegacySyncEngine:
                 MemoryBackfillRecord(
                     source_id=str(item["source_id"]),
                     content=str(item["content"]),
+                    observed_at=item.get("observed_at"),
                     entity_key=item.get("entity_key"),
                     category=item.get("category"),
                     metadata=dict(item.get("metadata") or {}),
@@ -711,6 +1121,25 @@ class LegacySyncEngine:
                 (source_id,),
             )
 
+    def _patch_source_config(self, conn, *, source_id: UUID, config_patch: dict[str, Any], updated_by: str) -> None:
+        if not config_patch:
+            return
+        patch = {str(key): value for key, value in config_patch.items() if str(key).strip()}
+        if not patch:
+            return
+        actor = (updated_by or self.default_requested_by).strip() or self.default_requested_by
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE legacy_import_sources
+                SET config = COALESCE(config, '{}'::jsonb) || %s,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (Jsonb(patch), actor, source_id),
+            )
+
     def _source_from_row(self, row: tuple[Any, ...]) -> LegacySourceRecord:
         config = row[6] if isinstance(row[6], dict) else {}
         return LegacySourceRecord(
@@ -719,6 +1148,6 @@ class LegacySyncEngine:
             source_type=str(row[2]),
             source_ref=str(row[3]),
             enabled=bool(row[4]),
-            sync_interval_minutes=max(15, int(row[5] or 1440)),
+            sync_interval_minutes=max(1, int(row[5] or 1440)),
             config=config,
         )

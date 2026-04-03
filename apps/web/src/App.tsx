@@ -9,7 +9,6 @@ import {
   Code,
   Divider,
   Group,
-  HoverCard,
   Kbd,
   Loader,
   PasswordInput,
@@ -29,6 +28,7 @@ import {
 import { notifications } from "@mantine/notifications";
 import {
   IconArrowsShuffle,
+  IconBell,
   IconBookmark,
   IconBookmarkFilled,
   IconCheck,
@@ -37,7 +37,6 @@ import {
   IconCloudCog,
   IconDeviceFloppy,
   IconEditCircle,
-  IconExternalLink,
   IconExclamationCircle,
   IconFilePlus,
   IconHistory,
@@ -227,6 +226,177 @@ type WikiPageSearchResult = {
   score: number;
 };
 
+type WikiPageUpdateResponse = {
+  status: string;
+  page: {
+    id: string;
+    title: string;
+    slug: string;
+    entity_key: string | null;
+    page_type: string | null;
+    status: string;
+    current_version: number | null;
+  };
+  latest_version?: {
+    version: number;
+    markdown: string;
+    source: string | null;
+    created_by: string | null;
+    change_summary: string | null;
+  };
+  snapshot_id?: string;
+  inserted_statements?: number;
+  superseded_statements?: number;
+};
+
+type WikiPageMoveResponse = {
+  status: string;
+  page: {
+    id: string;
+    title: string;
+    slug: string;
+    entity_key: string | null;
+    page_type: string | null;
+    status: string;
+    current_version: number | null;
+  };
+  include_descendants: boolean;
+  moved_pages: Array<{
+    id: string;
+    old_slug: string;
+    new_slug: string;
+    old_title: string;
+    new_title: string;
+  }>;
+  snapshot_id?: string;
+};
+
+type WikiPageStatusTransitionResponse = {
+  status: string;
+  page: {
+    id: string;
+    title: string;
+    slug: string;
+    status: string;
+    current_version: number | null;
+  };
+  include_descendants: boolean;
+  changed_pages: Array<{
+    id: string;
+    title: string;
+    slug: string;
+    previous_status: string;
+    status: string;
+  }>;
+  snapshot_id?: string;
+};
+
+type WikiPageAliasItem = {
+  alias_text: string;
+  created_at: string | null;
+};
+
+type WikiPageCommentItem = {
+  id: string;
+  author: string;
+  body: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type WikiPageWatcherItem = {
+  watcher: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+};
+
+type WikiPageReviewAssignmentItem = {
+  id: string;
+  assignee: string;
+  role: string;
+  status: string;
+  note: string | null;
+  due_at: string | null;
+  created_by: string;
+  resolved_by: string | null;
+  resolution_note: string | null;
+  created_at: string | null;
+  resolved_at: string | null;
+};
+
+type WikiSpacePolicyPayload = {
+  project_id: string;
+  space_key: string;
+  policy: {
+    write_mode: "open" | "owners_only" | string;
+    comment_mode: "open" | "owners_only" | string;
+    review_assignment_required: boolean;
+    metadata: Record<string, unknown>;
+    exists: boolean;
+  };
+};
+
+type WikiSpaceOwnerItem = {
+  owner: string;
+  role: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+};
+
+type WikiPageOwnerItem = {
+  owner: string;
+  role: string;
+  metadata: Record<string, unknown>;
+  created_at: string | null;
+};
+
+type WikiNotificationItem = {
+  id: string;
+  recipient: string;
+  actor: string | null;
+  kind: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  metadata: Record<string, unknown>;
+  status: string;
+  created_at: string | null;
+  read_at: string | null;
+};
+
+type WikiUploadItem = {
+  id: string;
+  page_id: string | null;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number;
+  checksum_sha256: string;
+  created_by: string;
+  created_at: string | null;
+  content_url: string;
+  content_url_absolute?: string | null;
+};
+
+type WikiUploadCreatePayload = {
+  status: string;
+  upload: {
+    id: string;
+    project_id: string;
+    page_id: string | null;
+    page_slug: string | null;
+    filename: string;
+    content_type: string | null;
+    size_bytes: number;
+    checksum_sha256: string;
+    created_by: string;
+    created_at: string | null;
+    content_url: string;
+    content_url_absolute?: string | null;
+    markdown_snippet: string;
+  };
+};
+
 type RetrievalExplainResult = {
   statement_id: string;
   statement_text: string;
@@ -396,11 +566,65 @@ type AuthSessionPayload = {
   };
 };
 
+type BootstrapApproveRunPayload = {
+  status: string;
+  dry_run: boolean;
+  project_id: string;
+  reviewed_by: string;
+  source_system?: string;
+  selection: {
+    limit: number;
+    min_confidence: number;
+    require_conflict_free: boolean;
+    trusted_source_systems: string[];
+  };
+  summary: {
+    candidates: number;
+    sample_size?: number;
+    approved?: number;
+    failed?: number;
+    source_ownership_advisories?: number;
+  };
+  sample?: Array<{
+    draft_id: string;
+    confidence: number;
+    decision: string;
+  }>;
+  items?: Array<{
+    draft_id: string;
+    confidence: number;
+    outcome: string;
+    reason?: string;
+  }>;
+  generated_at?: string;
+};
+
 type WikiPageNode = {
+  id?: string;
   slug: string;
   title: string;
+  status?: string | null;
+  page_type?: string | null;
+  current_version?: number | null;
+  updated_at: string | null;
+  created_at?: string | null;
   draft_count: number;
   open_count: number;
+  latest_draft_at: string | null;
+};
+
+type WikiPageListItem = {
+  id: string;
+  title: string;
+  slug: string;
+  entity_key: string | null;
+  page_type: string | null;
+  status: string;
+  current_version: number | null;
+  created_at: string | null;
+  updated_at: string | null;
+  draft_count: number;
+  open_draft_count: number;
   latest_draft_at: string | null;
 };
 
@@ -410,6 +634,18 @@ type WikiSpaceNode = {
   page_count: number;
   open_count: number;
   latest_draft_at: string | null;
+};
+
+type WikiTreeNode = {
+  key: string;
+  label: string;
+  slug: string | null;
+  depth: number;
+  page: WikiPageNode | null;
+  page_count: number;
+  open_count: number;
+  latest_activity_at: string | null;
+  children: WikiTreeNode[];
 };
 
 type ApproveFormState = {
@@ -446,7 +682,7 @@ type GuidedPageFormState = {
   sectionHeading: string;
   sectionStatement: string;
   changeSummary: string;
-  status: "draft" | "published";
+  status: "draft" | "reviewed" | "published";
 };
 
 type DetailTab = "page" | "history" | "semantic" | "conflicts" | "patch" | "evidence" | "timeline";
@@ -457,6 +693,8 @@ type SavedView = {
   selectedSpaceKey: string | null;
   selectedPageSlug: string | null;
   status: string | null;
+  pageStatusFilter: string | null;
+  pageUpdatedByFilter: string;
   openPagesOnly: boolean;
   pageFilter: string;
   draftFilter: string;
@@ -568,37 +806,15 @@ const REVIEW_QUEUE_PRESETS: ReviewQueuePreset[] = [
   },
 ];
 
-const DOCS_BASE_URL = "https://github.com/synapseworkspace/synapse/blob/main";
-
-const CORE_WALKTHROUGH_DOC_LINKS = [
-  {
-    label: "Getting Started",
-    href: `${DOCS_BASE_URL}/docs/getting-started.md`,
-    preview: "Bootstrap Synapse API, SDK ingest, and local wiki moderation in a single first-run flow.",
-    highlights: ["Install + run local stack", "Ingest first insights", "Approve first wiki draft"],
-  },
-  {
-    label: "Core Scope",
-    href: `${DOCS_BASE_URL}/docs/core-product-scope.md`,
-    preview: "Defines what stays in OSS core: SDK observer, synthesizer loop, wiki moderation, MCP retrieval.",
-    highlights: ["Core loop boundaries", "Out-of-scope enterprise features", "Roadmap priorities"],
-  },
-  {
-    label: "Web Console Guide",
-    href: `${DOCS_BASE_URL}/apps/web/README.md`,
-    preview: "Operator-focused UI guide for inbox triage, conflict resolution, and quick moderation actions.",
-    highlights: ["Core vs advanced mode", "Draft inbox workflows", "Troubleshooting and e2e checks"],
-  },
-] as const;
-
 type UiMode = "core" | "advanced";
+type CoreWorkspaceTab = "wiki" | "drafts" | "tasks";
 
 const UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
   .trim()
   .toLowerCase();
-const CORE_ONLY_UI_PROFILES = new Set(["core", "core-only", "core_only", "wiki-core", "wiki_core"]);
-const IS_CORE_ONLY_PROFILE = CORE_ONLY_UI_PROFILES.has(UI_PROFILE);
-const CAN_ACCESS_ADVANCED_MODE = !IS_CORE_ONLY_PROFILE;
+const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
+const ADVANCED_UI_PROFILES = new Set(["advanced", "admin", "ops-admin", "ops_admin", "control-center", "control_center"]);
+const CAN_ACCESS_ADVANCED_MODE = ADVANCED_UI_PROFILES.has(UI_PROFILE);
 
 function fmtDate(value: string | null | undefined): string {
   if (!value) {
@@ -617,6 +833,18 @@ function safeJson(value: unknown): string {
 
 function randomKey(): string {
   return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function resolveWikiAssetUrl(apiUrl: string, url: string | null | undefined): string {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  const lowered = raw.toLowerCase();
+  if (lowered.startsWith("http://") || lowered.startsWith("https://") || lowered.startsWith("data:") || lowered.startsWith("blob:")) {
+    return raw;
+  }
+  const root = apiUrl.replace(/\/+$/, "");
+  if (raw.startsWith("/")) return `${root}${raw}`;
+  return raw;
 }
 
 function statusColor(status: string): string {
@@ -656,15 +884,6 @@ function formatMinutes(value: number | null): string {
 function formatPercent(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${(value * 100).toFixed(1)}%`;
-}
-
-function formatSeconds(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  if (value < 1) return "<1s";
-  if (value < 60) return `${Math.round(value)}s`;
-  const minutes = Math.floor(value / 60);
-  const seconds = Math.round(value % 60);
-  return `${minutes}m ${seconds}s`;
 }
 
 function moderationHealthColor(health: string | null | undefined): string {
@@ -773,6 +992,14 @@ function normalizeWikiSlug(rawSlug: string, fallbackTitle: string): string {
   return parts.join("/");
 }
 
+function normalizeSourceSystemCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
 function _sectionHeadingFromKeyForUi(sectionKey: string): string {
   return sectionKey
     .split("_")
@@ -785,6 +1012,97 @@ function pageGroupKey(slug: string | null | undefined): string {
   if (!value) return "Ungrouped";
   if (!value.includes("/")) return "General";
   return value.split("/")[0];
+}
+
+function activityTimestampMs(value: string | null | undefined): number {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function buildWikiTreeNodes(pages: WikiPageNode[]): WikiTreeNode[] {
+  type MutableNode = WikiTreeNode & { childMap: Map<string, MutableNode> };
+  const rootMap = new Map<string, MutableNode>();
+
+  const upsertNode = (
+    container: Map<string, MutableNode>,
+    key: string,
+    label: string,
+    depth: number,
+  ): MutableNode => {
+    const existing = container.get(key);
+    if (existing) return existing;
+    const created: MutableNode = {
+      key,
+      label,
+      slug: null,
+      depth,
+      page: null,
+      page_count: 0,
+      open_count: 0,
+      latest_activity_at: null,
+      children: [],
+      childMap: new Map<string, MutableNode>(),
+    };
+    container.set(key, created);
+    return created;
+  };
+
+  for (const page of pages) {
+    const normalizedSlug = String(page.slug || "").trim();
+    if (!normalizedSlug) continue;
+    const segments = normalizedSlug.split("/").map((segment) => segment.trim()).filter(Boolean);
+    if (segments.length === 0) continue;
+    let container = rootMap;
+    let currentPath = "";
+    let parentNode: MutableNode | null = null;
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      const node = upsertNode(container, currentPath, segment, index);
+      node.page_count += 1;
+      node.open_count += page.open_count;
+      const pageActivity = page.latest_draft_at || page.updated_at || page.created_at || null;
+      if (activityTimestampMs(pageActivity) > activityTimestampMs(node.latest_activity_at)) {
+        node.latest_activity_at = pageActivity;
+      }
+      if (parentNode && !parentNode.children.some((child) => child.key === node.key)) {
+        parentNode.children.push(node);
+      }
+      if (index === segments.length - 1) {
+        node.slug = normalizedSlug;
+        node.page = page;
+        node.label = page.title || segment;
+      }
+      parentNode = node;
+      container = node.childMap;
+    }
+  }
+
+  const sortTree = (nodes: MutableNode[]): WikiTreeNode[] =>
+    [...nodes]
+      .sort((a, b) => {
+        const aIsFolder = a.page == null;
+        const bIsFolder = b.page == null;
+        if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
+        if (a.open_count !== b.open_count) return b.open_count - a.open_count;
+        const activityDiff = activityTimestampMs(b.latest_activity_at) - activityTimestampMs(a.latest_activity_at);
+        if (activityDiff !== 0) return activityDiff;
+        return a.label.localeCompare(b.label);
+      })
+      .map((node) => ({
+        key: node.key,
+        label: node.label,
+        slug: node.slug,
+        depth: node.depth,
+        page: node.page,
+        page_count: node.page_count,
+        open_count: node.open_count,
+        latest_activity_at: node.latest_activity_at,
+        children: sortTree(node.children as MutableNode[]),
+      }));
+
+  return sortTree([...rootMap.values()]);
 }
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -804,6 +1122,7 @@ async function apiFetch<T>(
   options?: {
     method?: "GET" | "POST" | "PUT" | "DELETE";
     body?: Record<string, unknown>;
+    formData?: FormData;
     idempotencyKey?: string;
     extraHeaders?: Record<string, string>;
   },
@@ -822,15 +1141,16 @@ async function apiFetch<T>(
   } catch {
     sessionHeader = {};
   }
+  const usingFormData = Boolean(options?.formData);
   const response = await fetch(`${root}${path}`, {
     method: options?.method ?? "GET",
     headers: {
-      "Content-Type": "application/json",
+      ...(usingFormData ? {} : { "Content-Type": "application/json" }),
       ...(options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
       ...sessionHeader,
       ...(options?.extraHeaders || {}),
     },
-    body: options?.body ? JSON.stringify(options.body) : undefined,
+    body: usingFormData ? options?.formData : options?.body ? JSON.stringify(options.body) : undefined,
   });
   const raw = await response.text();
   const payload = raw ? (JSON.parse(raw) as T) : ({} as T);
@@ -892,7 +1212,7 @@ const LazyTaskTrackerPanel = lazy(() => import("./components/TaskTrackerPanel"))
 const LazyWikiPageCanvas = lazy(() => import("./components/WikiPageCanvas"));
 
 export default function App() {
-  const [apiUrl, setApiUrl] = useState("http://localhost:8080");
+  const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
   const [projectId, setProjectId] = useState("");
   const [reviewer, setReviewer] = useState("ops_manager");
   const [authMode, setAuthMode] = useState<AuthModePayload | null>(null);
@@ -900,17 +1220,22 @@ export default function App() {
   const [sessionToken, setSessionToken] = useState("");
   const [sessionSummary, setSessionSummary] = useState<AuthSessionPayload["session"] | null>(null);
   const [authActionLoading, setAuthActionLoading] = useState(false);
-  const [uiMode, setUiMode] = useState<UiMode>("core");
+  const [uiMode, setUiMode] = useState<UiMode>(CAN_ACCESS_ADVANCED_MODE ? "advanced" : "core");
   const [coreExpertControls, setCoreExpertControls] = useState(false);
+  const [coreWorkspaceTab, setCoreWorkspaceTab] = useState<CoreWorkspaceTab>("wiki");
+  const [showOperationsNav, setShowOperationsNav] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [pageStatusFilter, setPageStatusFilter] = useState<string | null>(null);
+  const [pageUpdatedByFilter, setPageUpdatedByFilter] = useState("");
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  const [wikiPages, setWikiPages] = useState<WikiPageListItem[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [selectedPageSlug, setSelectedPageSlug] = useState<string | null>(null);
   const [selectedSpaceKey, setSelectedSpaceKey] = useState<string | null>(null);
   const [pageFilter, setPageFilter] = useState("");
   const [draftFilter, setDraftFilter] = useState("");
   const [openPagesOnly, setOpenPagesOnly] = useState(false);
-  const [collapsedSpaces, setCollapsedSpaces] = useState<Record<string, boolean>>({});
+  const [collapsedTreeNodes, setCollapsedTreeNodes] = useState<Record<string, boolean>>({});
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [selectedViewId, setSelectedViewId] = useState<string | null>(null);
   const [savedViewName, setSavedViewName] = useState("");
@@ -921,12 +1246,76 @@ export default function App() {
   const [bulkForceApprove, setBulkForceApprove] = useState(false);
   const [bulkApproveNote, setBulkApproveNote] = useState("");
   const [bulkRejectReason, setBulkRejectReason] = useState("");
+  const [bootstrapTrustedSources, setBootstrapTrustedSources] = useState("legacy_import,postgres_sql");
+  const [bootstrapMinConfidence, setBootstrapMinConfidence] = useState("0.85");
+  const [bootstrapLimit, setBootstrapLimit] = useState("50");
+  const [bootstrapSampleSize, setBootstrapSampleSize] = useState("15");
+  const [bootstrapRequireConflictFree, setBootstrapRequireConflictFree] = useState(true);
+  const [showBootstrapTools, setShowBootstrapTools] = useState(false);
+  const [showMigrationMode, setShowMigrationMode] = useState(false);
+  const [showDraftOperationsTools, setShowDraftOperationsTools] = useState(false);
+  const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const [bootstrapResult, setBootstrapResult] = useState<BootstrapApproveRunPayload | null>(null);
   const [draftDetail, setDraftDetail] = useState<DraftDetailPayload | null>(null);
   const [selectedPageDetail, setSelectedPageDetail] = useState<WikiPageDetailPayload | null>(null);
   const [pageHistory, setPageHistory] = useState<WikiPageHistoryPayload | null>(null);
   const [loadingPageHistory, setLoadingPageHistory] = useState(false);
   const [historyBaseVersion, setHistoryBaseVersion] = useState<string | null>(null);
   const [historyTargetVersion, setHistoryTargetVersion] = useState<string | null>(null);
+  const [pageEditMode, setPageEditMode] = useState(false);
+  const [pageEditTitle, setPageEditTitle] = useState("");
+  const [pageEditStatus, setPageEditStatus] = useState<"draft" | "reviewed" | "published" | "archived">("published");
+  const [pageEditSummary, setPageEditSummary] = useState("Manual wiki page edit");
+  const [pageEditMarkdown, setPageEditMarkdown] = useState("");
+  const [savingPageEdit, setSavingPageEdit] = useState(false);
+  const [pageAssetFile, setPageAssetFile] = useState<File | null>(null);
+  const [uploadingPageAsset, setUploadingPageAsset] = useState(false);
+  const [pageMoveMode, setPageMoveMode] = useState(false);
+  const [pageMoveParentPath, setPageMoveParentPath] = useState("");
+  const [pageMoveSlugLeaf, setPageMoveSlugLeaf] = useState("");
+  const [pageMoveTitle, setPageMoveTitle] = useState("");
+  const [pageMoveSummary, setPageMoveSummary] = useState("Page move/rename");
+  const [pageMoveIncludeDescendants, setPageMoveIncludeDescendants] = useState(true);
+  const [movingPage, setMovingPage] = useState(false);
+  const [pageAliases, setPageAliases] = useState<WikiPageAliasItem[]>([]);
+  const [loadingPageAliases, setLoadingPageAliases] = useState(false);
+  const [newPageAlias, setNewPageAlias] = useState("");
+  const [savingPageAlias, setSavingPageAlias] = useState(false);
+  const [pageComments, setPageComments] = useState<WikiPageCommentItem[]>([]);
+  const [loadingPageComments, setLoadingPageComments] = useState(false);
+  const [newPageComment, setNewPageComment] = useState("");
+  const [savingPageComment, setSavingPageComment] = useState(false);
+  const [pageWatchers, setPageWatchers] = useState<WikiPageWatcherItem[]>([]);
+  const [loadingPageWatchers, setLoadingPageWatchers] = useState(false);
+  const [watcherInput, setWatcherInput] = useState("");
+  const [savingPageWatcher, setSavingPageWatcher] = useState(false);
+  const [pageReviewAssignments, setPageReviewAssignments] = useState<WikiPageReviewAssignmentItem[]>([]);
+  const [loadingPageReviewAssignments, setLoadingPageReviewAssignments] = useState(false);
+  const [assignmentAssigneeInput, setAssignmentAssigneeInput] = useState("");
+  const [assignmentNoteInput, setAssignmentNoteInput] = useState("");
+  const [savingPageAssignment, setSavingPageAssignment] = useState(false);
+  const [spacePolicy, setSpacePolicy] = useState<WikiSpacePolicyPayload["policy"] | null>(null);
+  const [loadingSpacePolicy, setLoadingSpacePolicy] = useState(false);
+  const [savingSpacePolicy, setSavingSpacePolicy] = useState(false);
+  const [spaceWriteMode, setSpaceWriteMode] = useState<"open" | "owners_only">("open");
+  const [spaceCommentMode, setSpaceCommentMode] = useState<"open" | "owners_only">("open");
+  const [spaceReviewRequired, setSpaceReviewRequired] = useState(false);
+  const [spaceOwners, setSpaceOwners] = useState<WikiSpaceOwnerItem[]>([]);
+  const [loadingSpaceOwners, setLoadingSpaceOwners] = useState(false);
+  const [savingSpaceOwner, setSavingSpaceOwner] = useState(false);
+  const [spaceOwnerInput, setSpaceOwnerInput] = useState("");
+  const [spaceOwnerRoleInput, setSpaceOwnerRoleInput] = useState("owner");
+  const [pageOwners, setPageOwners] = useState<WikiPageOwnerItem[]>([]);
+  const [loadingPageOwners, setLoadingPageOwners] = useState(false);
+  const [savingPageOwner, setSavingPageOwner] = useState(false);
+  const [pageOwnerInput, setPageOwnerInput] = useState("");
+  const [pageOwnerRoleInput, setPageOwnerRoleInput] = useState("editor");
+  const [pageUploads, setPageUploads] = useState<WikiUploadItem[]>([]);
+  const [loadingPageUploads, setLoadingPageUploads] = useState(false);
+  const [notificationsInbox, setNotificationsInbox] = useState<WikiNotificationItem[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [loadingNotificationsInbox, setLoadingNotificationsInbox] = useState(false);
+  const [savingNotificationState, setSavingNotificationState] = useState(false);
   const [guidedPageForm, setGuidedPageForm] = useState<GuidedPageFormState>(DEFAULT_GUIDED_PAGE_FORM);
   const [guidedPageMatches, setGuidedPageMatches] = useState<WikiPageSearchResult[]>([]);
   const [searchingGuidedMatches, setSearchingGuidedMatches] = useState(false);
@@ -947,19 +1336,6 @@ export default function App() {
     RetrievalExplainPayload["context_policy"] | null
   >(null);
   const [retrievalExplainPolicyFilteredOut, setRetrievalExplainPolicyFilteredOut] = useState(0);
-  const [walkthroughTelemetry, setWalkthroughTelemetry] = useState(() => ({
-    startedAtMs: Date.now(),
-    stepCompletedAtMs: {
-      workspace: null as number | null,
-      inbox: null as number | null,
-      firstReview: null as number | null,
-    },
-    actionCounts: {
-      useDemoValues: 0,
-      loadDraftQueue: 0,
-      selectDraft: 0,
-    },
-  }));
   const [coreIntentSignals, setCoreIntentSignals] = useState(() => ({
     startedAtMs: Date.now(),
     triageOpenCount: 0,
@@ -981,6 +1357,7 @@ export default function App() {
   const [creatingPage, setCreatingPage] = useState(false);
   const [conflictExplain, setConflictExplain] = useState<ConflictExplainPayload | null>(null);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
+  const [loadingPages, setLoadingPages] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingPageDetail, setLoadingPageDetail] = useState(false);
   const [loadingConflictExplain, setLoadingConflictExplain] = useState(false);
@@ -991,79 +1368,110 @@ export default function App() {
   const [detailTab, setDetailTab] = useState<DetailTab>("semantic");
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
   const [selectedTocSectionKey, setSelectedTocSectionKey] = useState<string | null>(null);
+  const [urlStateReady, setUrlStateReady] = useState(false);
   const effectiveUiMode: UiMode = CAN_ACCESS_ADVANCED_MODE ? uiMode : "core";
   const showExpertModerationControls = effectiveUiMode === "advanced" || (CAN_ACCESS_ADVANCED_MODE && coreExpertControls);
+  const requiresAuthSession =
+    authMode?.auth_mode === "oidc" || authMode?.rbac_mode === "enforce" || authMode?.tenancy_mode === "enforce";
+  const hasSessionToken = sessionToken.trim().length > 0;
 
   const pageNodes = useMemo<WikiPageNode[]>(() => {
-    const map = new Map<string, WikiPageNode>();
+    const draftStats = new Map<
+      string,
+      {
+        title: string;
+        draft_count: number;
+        open_count: number;
+        latest_draft_at: string | null;
+      }
+    >();
     for (const draft of drafts) {
       const slug = String(draft.page.slug || "").trim();
       if (!slug) continue;
-      const current =
-        map.get(slug) ||
-        ({
-          slug,
-          title: draft.page.title || slug,
-          draft_count: 0,
-          open_count: 0,
-          latest_draft_at: null,
-        } satisfies WikiPageNode);
+      const current = draftStats.get(slug) || {
+        title: draft.page.title || slug,
+        draft_count: 0,
+        open_count: 0,
+        latest_draft_at: null,
+      };
       current.draft_count += 1;
       if (draft.status === "pending_review" || draft.status === "blocked_conflict") {
         current.open_count += 1;
       }
-      if (current.latest_draft_at == null || String(draft.created_at) > String(current.latest_draft_at)) {
+      if (activityTimestampMs(draft.created_at) > activityTimestampMs(current.latest_draft_at)) {
         current.latest_draft_at = draft.created_at;
       }
       if (!current.title && draft.page.title) {
         current.title = draft.page.title;
       }
-      map.set(slug, current);
+      draftStats.set(slug, current);
+    }
+
+    const map = new Map<string, WikiPageNode>();
+    for (const page of wikiPages) {
+      const slug = String(page.slug || "").trim();
+      if (!slug) continue;
+      const draft = draftStats.get(slug);
+      const latestDraftAtCandidates = [
+        String(page.latest_draft_at || ""),
+        String(draft?.latest_draft_at || ""),
+      ]
+        .filter(Boolean)
+        .sort();
+      const latestDraftAt =
+        latestDraftAtCandidates.length > 0 ? latestDraftAtCandidates[latestDraftAtCandidates.length - 1] : null;
+      map.set(slug, {
+        id: page.id,
+        slug,
+        title: page.title || draft?.title || slug,
+        status: page.status,
+        page_type: page.page_type,
+        current_version: page.current_version,
+        created_at: page.created_at,
+        updated_at: page.updated_at,
+        draft_count: Math.max(Number(page.draft_count || 0), Number(draft?.draft_count || 0)),
+        open_count: Math.max(Number(page.open_draft_count || 0), Number(draft?.open_count || 0)),
+        latest_draft_at: latestDraftAt,
+      });
+    }
+    for (const [slug, draft] of draftStats.entries()) {
+      if (map.has(slug)) continue;
+      map.set(slug, {
+        slug,
+        title: draft.title || slug,
+        status: "draft",
+        page_type: null,
+        current_version: null,
+        created_at: null,
+        updated_at: draft.latest_draft_at,
+        draft_count: draft.draft_count,
+        open_count: draft.open_count,
+        latest_draft_at: draft.latest_draft_at,
+      });
     }
     return [...map.values()].sort((a, b) => {
       if (a.open_count !== b.open_count) return b.open_count - a.open_count;
-      if (String(a.latest_draft_at || "") !== String(b.latest_draft_at || "")) {
-        return String(b.latest_draft_at || "").localeCompare(String(a.latest_draft_at || ""));
-      }
+      const aActivity = activityTimestampMs(a.latest_draft_at || a.updated_at || a.created_at);
+      const bActivity = activityTimestampMs(b.latest_draft_at || b.updated_at || b.created_at);
+      if (aActivity !== bActivity) return bActivity - aActivity;
       return String(a.title || a.slug).localeCompare(String(b.title || b.slug));
     });
-  }, [drafts]);
+  }, [drafts, wikiPages]);
 
-  const pageGroups = useMemo(() => {
+  const filteredPageNodes = useMemo(() => {
     const selectedSpace = selectedSpaceKey;
-    const filter = pageFilter.trim().toLowerCase();
-    const grouped = new Map<string, WikiPageNode[]>();
-    for (const page of pageNodes) {
+    const filterNeedle = pageFilter.trim().toLowerCase();
+    return pageNodes.filter((page) => {
       const groupKey = pageGroupKey(page.slug);
-      if (selectedSpace && groupKey !== selectedSpace) continue;
-      if (openPagesOnly && page.open_count <= 0) continue;
-      if (filter) {
-        const haystack = `${page.title} ${page.slug}`.toLowerCase();
-        if (!haystack.includes(filter)) continue;
-      }
-      const key = groupKey;
-      const rows = grouped.get(key) || [];
-      rows.push(page);
-      grouped.set(key, rows);
-    }
-    return [...grouped.entries()]
-      .map(([group, rows]) => [
-        group,
-        [...rows].sort((a, b) => {
-          if (a.open_count !== b.open_count) return b.open_count - a.open_count;
-          if (String(a.latest_draft_at || "") !== String(b.latest_draft_at || "")) {
-            return String(b.latest_draft_at || "").localeCompare(String(a.latest_draft_at || ""));
-          }
-          return String(a.title || a.slug).localeCompare(String(b.title || b.slug));
-        }),
-      ] as const)
-      .sort((a, b) => {
-        if (a[0] === b[0]) return 0;
-        if (selectedSpace && a[0] === selectedSpace) return -1;
-        if (selectedSpace && b[0] === selectedSpace) return 1;
-        return a[0].localeCompare(b[0]);
-      });
+      if (selectedSpace && groupKey !== selectedSpace) return false;
+      if (openPagesOnly && page.open_count <= 0) return false;
+      if (!filterNeedle) return true;
+      const haystack = `${page.title} ${page.slug}`.toLowerCase();
+      return haystack.includes(filterNeedle);
+    });
   }, [openPagesOnly, pageFilter, pageNodes, selectedSpaceKey]);
+
+  const wikiTreeNodes = useMemo(() => buildWikiTreeNodes(filteredPageNodes), [filteredPageNodes]);
 
   const spaceNodes = useMemo<WikiSpaceNode[]>(() => {
     const map = new Map<string, WikiSpaceNode>();
@@ -1080,8 +1488,9 @@ export default function App() {
         } satisfies WikiSpaceNode);
       current.page_count += 1;
       current.open_count += page.open_count;
-      if (current.latest_draft_at == null || String(page.latest_draft_at || "") > String(current.latest_draft_at || "")) {
-        current.latest_draft_at = page.latest_draft_at;
+      const pageActivity = page.latest_draft_at || page.updated_at || page.created_at || null;
+      if (activityTimestampMs(pageActivity) > activityTimestampMs(current.latest_draft_at)) {
+        current.latest_draft_at = pageActivity;
       }
       map.set(key, current);
     }
@@ -1097,7 +1506,11 @@ export default function App() {
   const recentPages = useMemo(() => {
     return [...pageNodes]
       .filter((item) => !selectedSpaceKey || pageGroupKey(item.slug) === selectedSpaceKey)
-      .sort((a, b) => String(b.latest_draft_at || "").localeCompare(String(a.latest_draft_at || "")))
+      .sort((a, b) => {
+        const aTs = activityTimestampMs(a.latest_draft_at || a.updated_at || a.created_at);
+        const bTs = activityTimestampMs(b.latest_draft_at || b.updated_at || b.created_at);
+        return bTs - aTs;
+      })
       .slice(0, 5);
   }, [pageNodes, selectedSpaceKey]);
 
@@ -1193,7 +1606,10 @@ export default function App() {
         sessionToken?: string;
         uiMode?: UiMode;
         coreExpertControls?: boolean;
+        coreWorkspaceTab?: CoreWorkspaceTab;
         status?: string | null;
+        pageStatusFilter?: string | null;
+        pageUpdatedByFilter?: string;
         selectedSpaceKey?: string | null;
         openPagesOnly?: boolean;
         savedViews?: SavedView[];
@@ -1213,7 +1629,20 @@ export default function App() {
       if (CAN_ACCESS_ADVANCED_MODE && typeof parsed.coreExpertControls === "boolean") {
         setCoreExpertControls(parsed.coreExpertControls);
       }
+      if (
+        parsed.coreWorkspaceTab === "wiki" ||
+        parsed.coreWorkspaceTab === "drafts" ||
+        parsed.coreWorkspaceTab === "tasks"
+      ) {
+        setCoreWorkspaceTab(parsed.coreWorkspaceTab);
+      }
       if (typeof parsed.status === "string" || parsed.status === null) setStatus(parsed.status);
+      if (typeof parsed.pageStatusFilter === "string" || parsed.pageStatusFilter === null) {
+        setPageStatusFilter(parsed.pageStatusFilter);
+      }
+      if (typeof parsed.pageUpdatedByFilter === "string") {
+        setPageUpdatedByFilter(parsed.pageUpdatedByFilter);
+      }
       if (typeof parsed.selectedSpaceKey === "string" || parsed.selectedSpaceKey === null) {
         setSelectedSpaceKey(parsed.selectedSpaceKey);
       }
@@ -1251,6 +1680,76 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const projectParam = String(params.get("project") || "").trim();
+      if (projectParam) {
+        setProjectId(projectParam);
+      }
+      const spaceParam = String(params.get("wiki_space") || "").trim();
+      if (spaceParam) {
+        setSelectedSpaceKey(spaceParam);
+      }
+      const pageParam = String(params.get("wiki_page") || "").trim();
+      if (pageParam) {
+        setSelectedPageSlug(pageParam);
+      }
+      const pageStatusParam = String(params.get("wiki_status") || "").trim().toLowerCase();
+      if (pageStatusParam && ["draft", "reviewed", "published", "archived"].includes(pageStatusParam)) {
+        setPageStatusFilter(pageStatusParam);
+      }
+      const pageUpdatedByParam = String(params.get("wiki_updated_by") || "").trim();
+      if (pageUpdatedByParam) {
+        setPageUpdatedByFilter(pageUpdatedByParam);
+      }
+      const withOpenDraftsParam = String(params.get("wiki_with_open_drafts") || "")
+        .trim()
+        .toLowerCase();
+      if (withOpenDraftsParam === "true") {
+        setOpenPagesOnly(true);
+      } else if (withOpenDraftsParam === "false") {
+        setOpenPagesOnly(false);
+      }
+      const pageQueryParam = String(params.get("wiki_q") || "").trim();
+      if (pageQueryParam) {
+        setPageFilter(pageQueryParam);
+      }
+    } catch {
+      // ignore invalid URL params
+    } finally {
+      setUrlStateReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!urlStateReady) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const setOrDelete = (key: string, value: string | null) => {
+      if (value && value.trim()) {
+        params.set(key, value.trim());
+      } else {
+        params.delete(key);
+      }
+    };
+    setOrDelete("project", projectId.trim() || null);
+    setOrDelete("wiki_space", selectedSpaceKey || null);
+    setOrDelete("wiki_page", selectedPageSlug || null);
+    setOrDelete("wiki_status", pageStatusFilter || null);
+    setOrDelete("wiki_updated_by", pageUpdatedByFilter.trim() || null);
+    setOrDelete("wiki_with_open_drafts", openPagesOnly ? "true" : null);
+    setOrDelete("wiki_q", pageFilter.trim() || null);
+    const nextSearch = params.toString();
+    const currentSearch = window.location.search.replace(/^\?/, "");
+    if (nextSearch === currentSearch) {
+      return;
+    }
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+  }, [openPagesOnly, pageFilter, pageStatusFilter, pageUpdatedByFilter, projectId, selectedPageSlug, selectedSpaceKey, urlStateReady]);
+
+  useEffect(() => {
     if (!CAN_ACCESS_ADVANCED_MODE) {
       if (uiMode !== "core") {
         setUiMode("core");
@@ -1271,7 +1770,10 @@ export default function App() {
         sessionToken,
         uiMode: effectiveUiMode,
         coreExpertControls: CAN_ACCESS_ADVANCED_MODE ? coreExpertControls : false,
+        coreWorkspaceTab,
         status,
+        pageStatusFilter,
+        pageUpdatedByFilter,
         selectedSpaceKey,
         openPagesOnly,
         savedViews,
@@ -1286,6 +1788,9 @@ export default function App() {
     apiUrl,
     bulkForceApprove,
     coreExpertControls,
+    coreWorkspaceTab,
+    pageStatusFilter,
+    pageUpdatedByFilter,
     openPagesOnly,
     pinnedPageSlugs,
     projectId,
@@ -1438,6 +1943,60 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadWikiPages = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const project = projectId.trim();
+      if (!project) {
+        setWikiPages([]);
+        return;
+      }
+      setLoadingPages(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("project_id", project);
+        params.set("limit", "500");
+        params.set("sort_by", "activity");
+        params.set("sort_dir", "desc");
+        const normalizedPageStatus = String(pageStatusFilter || "").trim().toLowerCase();
+        if (normalizedPageStatus) {
+          params.set("status", normalizedPageStatus);
+        }
+        const normalizedUpdatedBy = pageUpdatedByFilter.trim();
+        if (normalizedUpdatedBy) {
+          params.set("updated_by", normalizedUpdatedBy);
+        }
+        if (openPagesOnly) {
+          params.set("with_open_drafts", "true");
+        }
+        const payload = await apiFetch<{ pages: WikiPageListItem[] }>(
+          apiUrl,
+          `/v1/wiki/pages?${params.toString()}`,
+        );
+        setWikiPages(payload.pages ?? []);
+      } catch (error) {
+        setWikiPages([]);
+        if (!opts?.silent) {
+          notifications.show({
+            color: "red",
+            title: "Failed to load wiki pages",
+            message: String(error),
+          });
+        }
+      } finally {
+        setLoadingPages(false);
+      }
+    },
+    [apiUrl, openPagesOnly, pageStatusFilter, pageUpdatedByFilter, projectId],
+  );
+
+  useEffect(() => {
+    if (!projectId.trim()) {
+      setWikiPages([]);
+      return;
+    }
+    void loadWikiPages({ silent: true });
+  }, [loadWikiPages, projectId]);
+
   const loadDrafts = useCallback(async () => {
     if (!projectId.trim()) {
       notifications.show({
@@ -1467,6 +2026,7 @@ export default function App() {
       if (!selectedDraftId && data.drafts.length > 0) {
         setSelectedDraftId(data.drafts[0].id);
       }
+      await loadWikiPages({ silent: true });
       await throughputPromise;
     } catch (error) {
       notifications.show({
@@ -1477,7 +2037,15 @@ export default function App() {
     } finally {
       setLoadingDrafts(false);
     }
-  }, [apiUrl, loadModerationThroughput, projectId, selectedDraftId, showExpertModerationControls, status]);
+  }, [
+    apiUrl,
+    loadModerationThroughput,
+    loadWikiPages,
+    projectId,
+    selectedDraftId,
+    showExpertModerationControls,
+    status,
+  ]);
 
   const loadDraftDetail = useCallback(
     async (draftId: string) => {
@@ -1569,6 +2137,216 @@ export default function App() {
     [apiUrl, projectId],
   );
 
+  const loadPageAliases = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setPageAliases([]);
+        return;
+      }
+      setLoadingPageAliases(true);
+      try {
+        const payload = await apiFetch<{ aliases: WikiPageAliasItem[] }>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(slug)}/aliases?project_id=${encodeURIComponent(projectId)}`,
+        );
+        setPageAliases(payload.aliases ?? []);
+      } catch {
+        setPageAliases([]);
+      } finally {
+        setLoadingPageAliases(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadPageComments = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setPageComments([]);
+        return;
+      }
+      setLoadingPageComments(true);
+      try {
+        const payload = await apiFetch<{ comments: WikiPageCommentItem[] }>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(slug)}/comments?project_id=${encodeURIComponent(projectId)}&limit=100`,
+        );
+        setPageComments(payload.comments ?? []);
+      } catch {
+        setPageComments([]);
+      } finally {
+        setLoadingPageComments(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadPageWatchers = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setPageWatchers([]);
+        return;
+      }
+      setLoadingPageWatchers(true);
+      try {
+        const payload = await apiFetch<{ watchers: WikiPageWatcherItem[] }>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(slug)}/watchers?project_id=${encodeURIComponent(projectId)}`,
+        );
+        setPageWatchers(payload.watchers ?? []);
+      } catch {
+        setPageWatchers([]);
+      } finally {
+        setLoadingPageWatchers(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadPageReviewAssignments = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setPageReviewAssignments([]);
+        return;
+      }
+      setLoadingPageReviewAssignments(true);
+      try {
+        const payload = await apiFetch<{ assignments: WikiPageReviewAssignmentItem[] }>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(slug)}/review-assignments?project_id=${encodeURIComponent(projectId)}&limit=100`,
+        );
+        setPageReviewAssignments(payload.assignments ?? []);
+      } catch {
+        setPageReviewAssignments([]);
+      } finally {
+        setLoadingPageReviewAssignments(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadSpacePolicy = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setSpacePolicy(null);
+        return;
+      }
+      setLoadingSpacePolicy(true);
+      try {
+        const spaceKey = pageGroupKey(slug).toLowerCase();
+        const payload = await apiFetch<WikiSpacePolicyPayload>(
+          apiUrl,
+          `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/policy?project_id=${encodeURIComponent(projectId)}`,
+        );
+        setSpacePolicy(payload.policy);
+        setSpaceWriteMode(payload.policy.write_mode === "owners_only" ? "owners_only" : "open");
+        setSpaceCommentMode(payload.policy.comment_mode === "owners_only" ? "owners_only" : "open");
+        setSpaceReviewRequired(Boolean(payload.policy.review_assignment_required));
+      } catch {
+        setSpacePolicy(null);
+      } finally {
+        setLoadingSpacePolicy(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadSpaceOwners = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setSpaceOwners([]);
+        return;
+      }
+      setLoadingSpaceOwners(true);
+      try {
+        const spaceKey = pageGroupKey(slug).toLowerCase();
+        const payload = await apiFetch<{ owners: WikiSpaceOwnerItem[] }>(
+          apiUrl,
+          `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/owners?project_id=${encodeURIComponent(projectId)}`,
+        );
+        setSpaceOwners(payload.owners ?? []);
+      } catch {
+        setSpaceOwners([]);
+      } finally {
+        setLoadingSpaceOwners(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadPageOwners = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setPageOwners([]);
+        return;
+      }
+      setLoadingPageOwners(true);
+      try {
+        const payload = await apiFetch<{ owners: WikiPageOwnerItem[] }>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(slug)}/owners?project_id=${encodeURIComponent(projectId)}`,
+        );
+        setPageOwners(payload.owners ?? []);
+      } catch {
+        setPageOwners([]);
+      } finally {
+        setLoadingPageOwners(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadPageUploads = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setPageUploads([]);
+        return;
+      }
+      setLoadingPageUploads(true);
+      try {
+        const payload = await apiFetch<{ uploads: WikiUploadItem[] }>(
+          apiUrl,
+          `/v1/wiki/uploads?project_id=${encodeURIComponent(projectId)}&page_slug=${encodeURIComponent(slug)}&limit=50`,
+        );
+        setPageUploads(payload.uploads ?? []);
+      } catch {
+        setPageUploads([]);
+      } finally {
+        setLoadingPageUploads(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadNotificationsInbox = useCallback(
+    async (targetRecipient?: string) => {
+      const recipient = (targetRecipient ?? reviewer).trim();
+      if (!projectId.trim() || !recipient) {
+        setNotificationsInbox([]);
+        setUnreadNotificationCount(0);
+        return;
+      }
+      setLoadingNotificationsInbox(true);
+      try {
+        const payload = await apiFetch<{
+          notifications: WikiNotificationItem[];
+          meta?: { unread_count?: number };
+        }>(
+          apiUrl,
+          `/v1/wiki/notifications?project_id=${encodeURIComponent(projectId)}&recipient=${encodeURIComponent(recipient)}&status=all&limit=25`,
+        );
+        setNotificationsInbox(payload.notifications ?? []);
+        setUnreadNotificationCount(Number(payload.meta?.unread_count ?? 0));
+      } catch {
+        setNotificationsInbox([]);
+        setUnreadNotificationCount(0);
+      } finally {
+        setLoadingNotificationsInbox(false);
+      }
+    },
+    [apiUrl, projectId, reviewer],
+  );
+
   useEffect(() => {
     if (visibleDrafts.length === 0) {
       setSelectedDraftId(null);
@@ -1596,11 +2374,20 @@ export default function App() {
   }, [selectedPageSlug, selectedSpaceKey]);
 
   useEffect(() => {
-    if (Object.keys(collapsedSpaces).length === 0) return;
-    const valid = new Set(spaceNodes.map((item) => item.key));
+    if (Object.keys(collapsedTreeNodes).length === 0) return;
+    const valid = new Set<string>();
+    const stack = [...wikiTreeNodes];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (!node) continue;
+      valid.add(node.key);
+      if (node.children.length > 0) {
+        stack.push(...node.children);
+      }
+    }
     const next: Record<string, boolean> = {};
     let changed = false;
-    for (const [key, value] of Object.entries(collapsedSpaces)) {
+    for (const [key, value] of Object.entries(collapsedTreeNodes)) {
       if (valid.has(key)) {
         next[key] = value;
       } else {
@@ -1608,9 +2395,9 @@ export default function App() {
       }
     }
     if (changed) {
-      setCollapsedSpaces(next);
+      setCollapsedTreeNodes(next);
     }
-  }, [collapsedSpaces, spaceNodes]);
+  }, [collapsedTreeNodes, wikiTreeNodes]);
 
   useEffect(() => {
     if (!selectedViewId) return;
@@ -1661,11 +2448,92 @@ export default function App() {
     if (!selectedPageSlug) {
       setSelectedPageDetail(null);
       setPageHistory(null);
+      setPageAliases([]);
+      setPageComments([]);
+      setPageWatchers([]);
+      setPageReviewAssignments([]);
+      setSpacePolicy(null);
+      setSpaceOwners([]);
+      setPageOwners([]);
+      setPageUploads([]);
+      setPageEditMode(false);
+      setPageMoveMode(false);
       return;
     }
     void loadPageDetail(selectedPageSlug);
     void loadPageHistory(selectedPageSlug);
-  }, [loadPageDetail, loadPageHistory, selectedPageSlug]);
+    void loadPageAliases(selectedPageSlug);
+    void loadPageComments(selectedPageSlug);
+    void loadPageWatchers(selectedPageSlug);
+    void loadPageReviewAssignments(selectedPageSlug);
+    void loadSpacePolicy(selectedPageSlug);
+    void loadSpaceOwners(selectedPageSlug);
+    void loadPageOwners(selectedPageSlug);
+    void loadPageUploads(selectedPageSlug);
+  }, [
+    loadPageAliases,
+    loadPageComments,
+    loadPageDetail,
+    loadPageHistory,
+    loadPageOwners,
+    loadPageUploads,
+    loadPageReviewAssignments,
+    loadSpaceOwners,
+    loadSpacePolicy,
+    loadPageWatchers,
+    selectedPageSlug,
+  ]);
+
+  useEffect(() => {
+    void loadNotificationsInbox();
+  }, [loadNotificationsInbox]);
+
+  useEffect(() => {
+    if (pageEditMode) return;
+    if (!selectedPageDetail) {
+      setPageEditTitle("");
+      setPageEditStatus("published");
+      setPageEditSummary("Manual wiki page edit");
+      setPageEditMarkdown("");
+      return;
+    }
+    setPageEditTitle(selectedPageDetail.page.title || "");
+    const normalizedStatus = String(selectedPageDetail.page.status || "published");
+    if (
+      normalizedStatus === "draft" ||
+      normalizedStatus === "reviewed" ||
+      normalizedStatus === "published" ||
+      normalizedStatus === "archived"
+    ) {
+      setPageEditStatus(normalizedStatus);
+    } else {
+      setPageEditStatus("published");
+    }
+    setPageEditSummary("Manual wiki page edit");
+    const nextMarkdown = String(selectedPageDetail.latest_version?.markdown || "");
+    setPageEditMarkdown(nextMarkdown);
+  }, [pageEditMode, selectedPageDetail]);
+
+  useEffect(() => {
+    if (pageMoveMode) return;
+    if (!selectedPageDetail) {
+      setPageMoveParentPath("");
+      setPageMoveSlugLeaf("");
+      setPageMoveTitle("");
+      setPageMoveSummary("Page move/rename");
+      setPageMoveIncludeDescendants(true);
+      return;
+    }
+    const slug = String(selectedPageDetail.page.slug || "").trim();
+    const segments = slug.split("/").filter(Boolean);
+    const leaf = segments.length > 0 ? segments[segments.length - 1] : slugifySegment(selectedPageDetail.page.title || "page");
+    const parent = segments.length > 1 ? segments.slice(0, -1).join("/") : "";
+    setPageMoveParentPath(parent);
+    setPageMoveSlugLeaf(leaf);
+    setPageMoveTitle(selectedPageDetail.page.title || "");
+    setPageMoveSummary("Page move/rename");
+    setPageMoveIncludeDescendants(true);
+  }, [pageMoveMode, selectedPageDetail]);
 
   useEffect(() => {
     const sections = selectedPageDetail?.sections ?? [];
@@ -1874,6 +2742,9 @@ export default function App() {
   );
 
   const openDraftFromTriage = useCallback((draft: DraftSummary) => {
+    if (effectiveUiMode === "core") {
+      setCoreWorkspaceTab("drafts");
+    }
     setSelectedDraftId(draft.id);
     const slug = String(draft.page.slug || "").trim();
     if (slug) {
@@ -1895,7 +2766,7 @@ export default function App() {
         },
       };
     });
-  }, []);
+  }, [effectiveUiMode]);
 
   const quickModerateDraft = useCallback(
     async (draft: DraftSummary, action: "approve" | "reject", source: QuickModerationSource = "inbox_card") => {
@@ -1914,6 +2785,9 @@ export default function App() {
           message: "Quick moderation is only available for open drafts.",
         });
         return;
+      }
+      if (effectiveUiMode === "core") {
+        setCoreWorkspaceTab("drafts");
       }
       setSelectedDraftId(draft.id);
       setRunningAction(true);
@@ -2000,22 +2874,851 @@ export default function App() {
       projectId,
       reviewer,
       selectedDraftId,
+      effectiveUiMode,
     ],
   );
 
+  const runBootstrapApprove = useCallback(
+    async (dryRun: boolean) => {
+      if (!projectId.trim() || !reviewer.trim()) {
+        notifications.show({
+          color: "red",
+          title: "Missing reviewer or project",
+          message: "Set Project ID and Reviewer before migration bootstrap.",
+        });
+        return;
+      }
+      const trustedSourceSystems = normalizeSourceSystemCsv(bootstrapTrustedSources);
+      const limitRaw = Number.parseInt(bootstrapLimit, 10);
+      const sampleRaw = Number.parseInt(bootstrapSampleSize, 10);
+      const confidenceRaw = Number.parseFloat(bootstrapMinConfidence);
+      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, limitRaw)) : 50;
+      const sampleSize = Number.isFinite(sampleRaw) ? Math.max(1, Math.min(200, sampleRaw)) : 15;
+      const minConfidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0.85;
+      const normalizedTrusted = trustedSourceSystems;
+      if (!dryRun && normalizedTrusted.length === 0) {
+        notifications.show({
+          color: "orange",
+          title: "Trusted sources required",
+          message: "Set trusted sources before applying bootstrap migration.",
+        });
+        return;
+      }
+      if (!dryRun && limit > 200) {
+        notifications.show({
+          color: "orange",
+          title: "Batch too large",
+          message: "Apply flow is capped at 200 drafts per run in migration mode. Lower Batch limit.",
+        });
+        return;
+      }
+      const previewSelection = bootstrapResult?.selection;
+      const previewTrusted = [...(previewSelection?.trusted_source_systems || [])]
+        .map((item) => String(item || "").trim().toLowerCase())
+        .filter(Boolean)
+        .sort();
+      const hasMatchingPreview =
+        Boolean(bootstrapResult?.dry_run) &&
+        String(bootstrapResult?.project_id || "") === projectId &&
+        Number(previewSelection?.limit || -1) === limit &&
+        Number(previewSelection?.min_confidence || -1) === minConfidence &&
+        Boolean(previewSelection?.require_conflict_free) === bootstrapRequireConflictFree &&
+        previewTrusted.join(",") === normalizedTrusted.join(",");
+      if (!dryRun && !hasMatchingPreview) {
+        notifications.show({
+          color: "orange",
+          title: "Preview required",
+          message: "Run Preview Candidates first with the same migration settings before batch approval.",
+        });
+        return;
+      }
+      setBootstrapLoading(true);
+      try {
+        const payload = await apiFetch<BootstrapApproveRunPayload>(apiUrl, "/v1/wiki/drafts/bootstrap-approve/run", {
+          method: "POST",
+          body: {
+            project_id: projectId,
+            reviewed_by: reviewer.trim(),
+            source_system: "web_bootstrap_ui",
+            limit,
+            sample_size: sampleSize,
+            min_confidence: minConfidence,
+            require_conflict_free: bootstrapRequireConflictFree,
+            trusted_source_systems: trustedSourceSystems,
+            require_trusted_sources_on_apply: true,
+            allow_large_batch: false,
+            dry_run: dryRun,
+          },
+          idempotencyKey: randomKey(),
+        });
+        setBootstrapResult(payload);
+        if (dryRun) {
+          notifications.show({
+            color: "indigo",
+            title: "Bootstrap preview ready",
+            message: `Candidates: ${payload.summary.candidates}; sample: ${payload.summary.sample_size ?? 0}.`,
+          });
+          return;
+        }
+        notifications.show({
+          color: payload.summary.failed ? "orange" : "green",
+          title: "Bootstrap approval completed",
+          message: `Approved ${payload.summary.approved ?? 0}; failed ${payload.summary.failed ?? 0}.`,
+        });
+        await loadDrafts();
+        if (selectedDraftId) {
+          await loadDraftDetail(selectedDraftId);
+          await loadConflictExplain(selectedDraftId);
+        }
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Bootstrap migration failed",
+          message: String(error),
+        });
+      } finally {
+        setBootstrapLoading(false);
+      }
+    },
+    [
+      apiUrl,
+      bootstrapLimit,
+      bootstrapMinConfidence,
+      bootstrapRequireConflictFree,
+      bootstrapSampleSize,
+      bootstrapTrustedSources,
+      bootstrapResult,
+      loadConflictExplain,
+      loadDraftDetail,
+      loadDrafts,
+      projectId,
+      reviewer,
+      selectedDraftId,
+    ],
+  );
+
+  const saveWikiPageEdit = useCallback(async () => {
+    if (!selectedPageSlug) {
+      notifications.show({
+        color: "red",
+        title: "Page not selected",
+        message: "Select wiki page before saving edits.",
+      });
+      return;
+    }
+    if (!projectId.trim() || !reviewer.trim()) {
+      notifications.show({
+        color: "red",
+        title: "Missing reviewer or project",
+        message: "Set Project ID and Reviewer before saving page edits.",
+      });
+      return;
+    }
+    const markdown = pageEditMarkdown.trim();
+    if (!markdown) {
+      notifications.show({
+        color: "red",
+        title: "Markdown required",
+        message: "Page markdown cannot be empty.",
+      });
+      return;
+    }
+    setSavingPageEdit(true);
+    try {
+      const payload = await apiFetch<WikiPageUpdateResponse>(
+        apiUrl,
+        `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}`,
+        {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            updated_by: reviewer.trim(),
+            title: pageEditTitle.trim() || null,
+            page_type: selectedPageDetail?.page.page_type || null,
+            status: pageEditStatus,
+            markdown,
+            change_summary: pageEditSummary.trim() || null,
+          },
+          idempotencyKey: randomKey(),
+        },
+      );
+      if (payload.status === "no_change") {
+        notifications.show({
+          color: "gray",
+          title: "No page changes",
+          message: "Wiki page content is unchanged.",
+        });
+      } else {
+        notifications.show({
+          color: "green",
+          title: "Wiki page saved",
+          message: `Version ${payload.page.current_version ?? "updated"} published.`,
+        });
+      }
+      setPageEditMode(false);
+      await loadPageDetail(selectedPageSlug);
+      await loadPageHistory(selectedPageSlug);
+      await loadWikiPages({ silent: true });
+      await loadDrafts();
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Save failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingPageEdit(false);
+    }
+  }, [
+    apiUrl,
+    loadDrafts,
+    loadPageDetail,
+    loadPageHistory,
+    loadWikiPages,
+    pageEditMarkdown,
+    pageEditStatus,
+    pageEditSummary,
+    pageEditTitle,
+    projectId,
+    reviewer,
+    selectedPageDetail?.page.page_type,
+    selectedPageSlug,
+  ]);
+
+  const moveWikiPage = useCallback(async () => {
+    if (!selectedPageSlug) {
+      notifications.show({
+        color: "red",
+        title: "Page not selected",
+        message: "Select wiki page before move/rename.",
+      });
+      return;
+    }
+    if (!projectId.trim() || !reviewer.trim()) {
+      notifications.show({
+        color: "red",
+        title: "Missing reviewer or project",
+        message: "Set Project ID and Reviewer before moving pages.",
+      });
+      return;
+    }
+    const leaf = slugifySegment(pageMoveSlugLeaf.trim() || pageMoveTitle.trim() || selectedPageSlug);
+    const parentRaw = pageMoveParentPath.trim();
+    const normalizedParent = parentRaw ? normalizeWikiSlug(parentRaw, "root") : "";
+    const rawTarget = normalizedParent ? `${normalizedParent}/${leaf}` : leaf;
+    const normalizedNewSlug = normalizeWikiSlug(rawTarget, selectedPageSlug);
+    if (!normalizedNewSlug) {
+      notifications.show({
+        color: "red",
+        title: "Invalid target slug",
+        message: "Provide valid parent path and slug leaf.",
+      });
+      return;
+    }
+    setMovingPage(true);
+    try {
+      const payload = await apiFetch<WikiPageMoveResponse>(
+        apiUrl,
+        `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/reparent`,
+        {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            moved_by: reviewer.trim(),
+            new_parent_slug: normalizedParent || null,
+            new_slug_leaf: leaf,
+            new_title: pageMoveTitle.trim() || null,
+            include_descendants: pageMoveIncludeDescendants,
+            change_summary: pageMoveSummary.trim() || null,
+          },
+          idempotencyKey: randomKey(),
+        },
+      );
+      if (payload.status === "no_change") {
+        notifications.show({
+          color: "gray",
+          title: "No move changes",
+          message: "Page slug/title unchanged.",
+        });
+      } else {
+        notifications.show({
+          color: "green",
+          title: "Page moved",
+          message: `${payload.moved_pages.length || 1} page(s) updated.`,
+        });
+      }
+      const nextSlug = String(payload.page.slug || normalizedNewSlug);
+      setSelectedSpaceKey(pageGroupKey(nextSlug));
+      setSelectedPageSlug(nextSlug);
+      setPageMoveMode(false);
+      await loadWikiPages({ silent: true });
+      await loadPageDetail(nextSlug);
+      await loadPageHistory(nextSlug);
+      await loadDrafts();
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Move failed",
+        message: String(error),
+      });
+    } finally {
+      setMovingPage(false);
+    }
+  }, [
+    apiUrl,
+    loadDrafts,
+    loadPageDetail,
+    loadPageHistory,
+    loadWikiPages,
+    pageMoveIncludeDescendants,
+    pageMoveParentPath,
+    pageMoveSlugLeaf,
+    pageMoveSummary,
+    pageMoveTitle,
+    projectId,
+    reviewer,
+    selectedPageSlug,
+  ]);
+
+  const transitionWikiPageStatus = useCallback(
+    async (mode: "archive" | "restore") => {
+      if (!selectedPageSlug) {
+        notifications.show({
+          color: "red",
+          title: "Page not selected",
+          message: "Select wiki page before changing status.",
+        });
+        return;
+      }
+      if (!projectId.trim() || !reviewer.trim()) {
+        notifications.show({
+          color: "red",
+          title: "Missing reviewer or project",
+          message: "Set Project ID and Reviewer before status change.",
+        });
+        return;
+      }
+      setMovingPage(true);
+      try {
+        const endpoint = mode === "archive" ? "archive" : "restore";
+        const payload = await apiFetch<WikiPageStatusTransitionResponse>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/${endpoint}`,
+          {
+            method: "PUT",
+            body: {
+              project_id: projectId,
+              updated_by: reviewer.trim(),
+              include_descendants: false,
+              restore_status: "published",
+              change_summary:
+                mode === "archive"
+                  ? `Archived by ${reviewer.trim()}`
+                  : `Restored by ${reviewer.trim()} to published`,
+            },
+            idempotencyKey: randomKey(),
+          },
+        );
+        const nextSlug = String(payload.page.slug || selectedPageSlug);
+        notifications.show({
+          color: "green",
+          title: mode === "archive" ? "Page archived" : "Page restored",
+          message: `${payload.changed_pages.length || 0} page(s) updated.`,
+        });
+        await loadWikiPages({ silent: true });
+        await loadPageDetail(nextSlug);
+        await loadPageHistory(nextSlug);
+        await loadDrafts();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: mode === "archive" ? "Archive failed" : "Restore failed",
+          message: String(error),
+        });
+      } finally {
+        setMovingPage(false);
+      }
+    },
+    [
+      apiUrl,
+      loadDrafts,
+      loadPageDetail,
+      loadPageHistory,
+      loadWikiPages,
+      projectId,
+      reviewer,
+      selectedPageSlug,
+    ],
+  );
+
+  const uploadPageAsset = useCallback(async () => {
+    if (!pageAssetFile || !projectId.trim() || !reviewer.trim()) {
+      notifications.show({
+        color: "red",
+        title: "Asset upload unavailable",
+        message: "Select a file and ensure Project ID + Reviewer are set.",
+      });
+      return;
+    }
+    setUploadingPageAsset(true);
+    try {
+      const formData = new FormData();
+      formData.set("project_id", projectId.trim());
+      formData.set("uploaded_by", reviewer.trim());
+      if (selectedPageSlug) {
+        formData.set("page_slug", selectedPageSlug);
+      }
+      formData.set("file", pageAssetFile);
+      const payload = await apiFetch<WikiUploadCreatePayload>(apiUrl, "/v1/wiki/uploads", {
+        method: "POST",
+        formData,
+        idempotencyKey: randomKey(),
+      });
+      const snippet = String(payload.upload.markdown_snippet || "").trim();
+      if (snippet) {
+        setPageEditMarkdown((prev) => {
+          const normalizedPrev = prev.trimEnd();
+          if (normalizedPrev.includes(snippet)) {
+            return `${normalizedPrev}\n`;
+          }
+          return `${normalizedPrev}\n\n${snippet}\n`;
+        });
+      }
+      setPageAssetFile(null);
+      if (selectedPageSlug) {
+        await loadPageUploads(selectedPageSlug);
+      }
+      notifications.show({
+        color: "green",
+        title: "Asset uploaded",
+        message: `${payload.upload.filename} uploaded and snippet inserted into markdown.`,
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Asset upload failed",
+        message: String(error),
+      });
+    } finally {
+      setUploadingPageAsset(false);
+    }
+  }, [apiUrl, loadPageUploads, pageAssetFile, projectId, reviewer, selectedPageSlug]);
+
+  const createPageAlias = useCallback(async () => {
+    if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+    const raw = newPageAlias.trim();
+    if (!raw) return;
+    setSavingPageAlias(true);
+    try {
+      await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/aliases`, {
+        method: "POST",
+        body: {
+          project_id: projectId,
+          created_by: reviewer.trim(),
+          alias_text: raw,
+        },
+        idempotencyKey: randomKey(),
+      });
+      setNewPageAlias("");
+      await loadPageAliases(selectedPageSlug);
+      notifications.show({
+        color: "green",
+        title: "Alias added",
+        message: "Wiki alias saved.",
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Alias create failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingPageAlias(false);
+    }
+  }, [apiUrl, loadPageAliases, newPageAlias, projectId, reviewer, selectedPageSlug]);
+
+  const deletePageAlias = useCallback(
+    async (aliasText: string) => {
+      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+      setSavingPageAlias(true);
+      try {
+        await apiFetch(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/aliases/${encodeURIComponent(aliasText)}?project_id=${encodeURIComponent(projectId)}&deleted_by=${encodeURIComponent(reviewer.trim())}`,
+          {
+            method: "DELETE",
+            idempotencyKey: randomKey(),
+          },
+        );
+        await loadPageAliases(selectedPageSlug);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Alias delete failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingPageAlias(false);
+      }
+    },
+    [apiUrl, loadPageAliases, projectId, reviewer, selectedPageSlug],
+  );
+
+  const createPageComment = useCallback(async () => {
+    if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+    const body = newPageComment.trim();
+    if (!body) return;
+    setSavingPageComment(true);
+    try {
+      await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/comments`, {
+        method: "POST",
+        body: {
+          project_id: projectId,
+          created_by: reviewer.trim(),
+          body,
+        },
+        idempotencyKey: randomKey(),
+      });
+      setNewPageComment("");
+      await loadPageComments(selectedPageSlug);
+      notifications.show({
+        color: "green",
+        title: "Comment added",
+        message: "Page comment saved.",
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Comment create failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingPageComment(false);
+    }
+  }, [apiUrl, loadPageComments, newPageComment, projectId, reviewer, selectedPageSlug]);
+
+  const deletePageComment = useCallback(
+    async (commentId: string) => {
+      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+      setSavingPageComment(true);
+      try {
+        await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/comments/${encodeURIComponent(commentId)}`, {
+          method: "DELETE",
+          body: {
+            project_id: projectId,
+            deleted_by: reviewer.trim(),
+          },
+          idempotencyKey: randomKey(),
+        });
+        await loadPageComments(selectedPageSlug);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Comment delete failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingPageComment(false);
+      }
+    },
+    [apiUrl, loadPageComments, projectId, reviewer, selectedPageSlug],
+  );
+
+  const upsertPageWatcher = useCallback(
+    async (watcher: string, active: boolean) => {
+      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+      const normalizedWatcher = watcher.trim();
+      if (!normalizedWatcher) return;
+      setSavingPageWatcher(true);
+      try {
+        await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/watchers`, {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            actor: reviewer.trim(),
+            watcher: normalizedWatcher,
+            active,
+          },
+          idempotencyKey: randomKey(),
+        });
+        if (active) setWatcherInput("");
+        await loadPageWatchers(selectedPageSlug);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: active ? "Watcher add failed" : "Watcher remove failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingPageWatcher(false);
+      }
+    },
+    [apiUrl, loadPageWatchers, projectId, reviewer, selectedPageSlug],
+  );
+
+  const createPageReviewAssignment = useCallback(async () => {
+    if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+    const assignee = assignmentAssigneeInput.trim();
+    if (!assignee) return;
+    setSavingPageAssignment(true);
+    try {
+      await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/review-assignments`, {
+        method: "PUT",
+        body: {
+          project_id: projectId,
+          created_by: reviewer.trim(),
+          assignee,
+          role: "reviewer",
+          note: assignmentNoteInput.trim() || null,
+        },
+        idempotencyKey: randomKey(),
+      });
+      setAssignmentAssigneeInput("");
+      setAssignmentNoteInput("");
+      await loadPageReviewAssignments(selectedPageSlug);
+      notifications.show({
+        color: "green",
+        title: "Reviewer assigned",
+        message: `${assignee} assigned to page review.`,
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Assign reviewer failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingPageAssignment(false);
+    }
+  }, [
+    apiUrl,
+    assignmentAssigneeInput,
+    assignmentNoteInput,
+    loadPageReviewAssignments,
+    projectId,
+    reviewer,
+    selectedPageSlug,
+  ]);
+
+  const resolvePageReviewAssignment = useCallback(
+    async (assignmentId: string) => {
+      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+      setSavingPageAssignment(true);
+      try {
+        await apiFetch(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/review-assignments/${encodeURIComponent(assignmentId)}/resolve`,
+          {
+            method: "POST",
+            body: {
+              project_id: projectId,
+              resolved_by: reviewer.trim(),
+              resolution_note: "Resolved from wiki context panel",
+            },
+            idempotencyKey: randomKey(),
+          },
+        );
+        await loadPageReviewAssignments(selectedPageSlug);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Resolve assignment failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingPageAssignment(false);
+      }
+    },
+    [apiUrl, loadPageReviewAssignments, projectId, reviewer, selectedPageSlug],
+  );
+
+  const saveSpacePolicy = useCallback(async () => {
+    if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+    const spaceKey = pageGroupKey(selectedPageSlug).toLowerCase();
+    setSavingSpacePolicy(true);
+    try {
+      await apiFetch(apiUrl, `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/policy`, {
+        method: "PUT",
+        body: {
+          project_id: projectId,
+          space_key: spaceKey,
+          updated_by: reviewer.trim(),
+          write_mode: spaceWriteMode,
+          comment_mode: spaceCommentMode,
+          review_assignment_required: spaceReviewRequired,
+        },
+        idempotencyKey: randomKey(),
+      });
+      await loadSpacePolicy(selectedPageSlug);
+      notifications.show({
+        color: "green",
+        title: "Space policy updated",
+        message: `${spaceKey} policy saved.`,
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Policy update failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingSpacePolicy(false);
+    }
+  }, [
+    apiUrl,
+    loadSpacePolicy,
+    projectId,
+    reviewer,
+    selectedPageSlug,
+    spaceCommentMode,
+    spaceReviewRequired,
+    spaceWriteMode,
+  ]);
+
+  const upsertSpaceOwner = useCallback(
+    async (owner: string, active: boolean) => {
+      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+      const ownerValue = owner.trim();
+      if (!ownerValue) return;
+      const spaceKey = pageGroupKey(selectedPageSlug).toLowerCase();
+      setSavingSpaceOwner(true);
+      try {
+        await apiFetch(apiUrl, `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/owners`, {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            actor: reviewer.trim(),
+            owner: ownerValue,
+            role: spaceOwnerRoleInput.trim() || "owner",
+            active,
+          },
+          idempotencyKey: randomKey(),
+        });
+        if (active) setSpaceOwnerInput("");
+        await loadSpaceOwners(selectedPageSlug);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: active ? "Owner add failed" : "Owner remove failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingSpaceOwner(false);
+      }
+    },
+    [
+      apiUrl,
+      loadSpaceOwners,
+      projectId,
+      reviewer,
+      selectedPageSlug,
+      spaceOwnerRoleInput,
+    ],
+  );
+
+  const upsertPageOwner = useCallback(
+    async (owner: string, active: boolean) => {
+      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
+      const ownerValue = owner.trim();
+      if (!ownerValue) return;
+      setSavingPageOwner(true);
+      try {
+        await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/owners`, {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            actor: reviewer.trim(),
+            owner: ownerValue,
+            role: pageOwnerRoleInput.trim() || "editor",
+            active,
+          },
+          idempotencyKey: randomKey(),
+        });
+        if (active) setPageOwnerInput("");
+        await loadPageOwners(selectedPageSlug);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: active ? "Page owner add failed" : "Page owner remove failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingPageOwner(false);
+      }
+    },
+    [apiUrl, loadPageOwners, pageOwnerRoleInput, projectId, reviewer, selectedPageSlug],
+  );
+
+  const markNotificationRead = useCallback(
+    async (notificationId: string) => {
+      if (!projectId.trim() || !reviewer.trim()) return;
+      setSavingNotificationState(true);
+      try {
+        await apiFetch(apiUrl, `/v1/wiki/notifications/${encodeURIComponent(notificationId)}/read`, {
+          method: "POST",
+          body: {
+            project_id: projectId,
+            recipient: reviewer.trim(),
+          },
+          idempotencyKey: randomKey(),
+        });
+        await loadNotificationsInbox(reviewer.trim());
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Notification update failed",
+          message: String(error),
+        });
+      } finally {
+        setSavingNotificationState(false);
+      }
+    },
+    [apiUrl, loadNotificationsInbox, projectId, reviewer],
+  );
+
+  const markAllNotificationsRead = useCallback(async () => {
+    if (!projectId.trim() || !reviewer.trim()) return;
+    setSavingNotificationState(true);
+    try {
+      await apiFetch(apiUrl, "/v1/wiki/notifications/read-all", {
+        method: "POST",
+        body: {
+          project_id: projectId,
+          recipient: reviewer.trim(),
+        },
+        idempotencyKey: randomKey(),
+      });
+      await loadNotificationsInbox(reviewer.trim());
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Mark all failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingNotificationState(false);
+    }
+  }, [apiUrl, loadNotificationsInbox, projectId, reviewer]);
+
   const selectPrevDraft = useCallback(() => {
     if (visibleDrafts.length === 0) return;
+    if (effectiveUiMode === "core") {
+      setCoreWorkspaceTab("drafts");
+    }
     const current = selectedIndex >= 0 ? selectedIndex : 0;
     const prev = current <= 0 ? visibleDrafts.length - 1 : current - 1;
     setSelectedDraftId(visibleDrafts[prev].id);
-  }, [selectedIndex, visibleDrafts]);
+  }, [effectiveUiMode, selectedIndex, visibleDrafts]);
 
   const selectNextDraft = useCallback(() => {
     if (visibleDrafts.length === 0) return;
+    if (effectiveUiMode === "core") {
+      setCoreWorkspaceTab("drafts");
+    }
     const current = selectedIndex >= 0 ? selectedIndex : -1;
     const next = current >= visibleDrafts.length - 1 ? 0 : current + 1;
     setSelectedDraftId(visibleDrafts[next].id);
-  }, [selectedIndex, visibleDrafts]);
+  }, [effectiveUiMode, selectedIndex, visibleDrafts]);
 
   const applyPageTemplate = useCallback(
     (templateKey: string) => {
@@ -2104,6 +3807,8 @@ export default function App() {
                 selectedSpaceKey,
                 selectedPageSlug,
                 status,
+                pageStatusFilter,
+                pageUpdatedByFilter,
                 openPagesOnly,
                 pageFilter,
                 draftFilter,
@@ -2127,6 +3832,8 @@ export default function App() {
       selectedSpaceKey,
       selectedPageSlug,
       status,
+      pageStatusFilter,
+      pageUpdatedByFilter,
       openPagesOnly,
       pageFilter,
       draftFilter,
@@ -2145,6 +3852,8 @@ export default function App() {
     draftFilter,
     openPagesOnly,
     pageFilter,
+    pageStatusFilter,
+    pageUpdatedByFilter,
     savedViewName,
     savedViews,
     selectedPageSlug,
@@ -2164,6 +3873,8 @@ export default function App() {
       setSelectedSpaceKey(view.selectedSpaceKey);
       setSelectedPageSlug(view.selectedPageSlug);
       setStatus(view.status);
+      setPageStatusFilter(view.pageStatusFilter ?? null);
+      setPageUpdatedByFilter(view.pageUpdatedByFilter ?? "");
       setOpenPagesOnly(view.openPagesOnly);
       setPageFilter(view.pageFilter);
       setDraftFilter(view.draftFilter);
@@ -2454,6 +4165,7 @@ export default function App() {
       });
       await loadPageDetail(pageSlug);
       await loadPageHistory(pageSlug);
+      await loadWikiPages({ silent: true });
       setDetailTab("history");
     } catch (error) {
       notifications.show({
@@ -2464,7 +4176,7 @@ export default function App() {
     } finally {
       setCreatingPage(false);
     }
-  }, [apiUrl, guidedPageForm, loadPageDetail, loadPageHistory, projectId, reviewer]);
+  }, [apiUrl, guidedPageForm, loadPageDetail, loadPageHistory, loadWikiPages, projectId, reviewer]);
 
   const runRetrievalExplain = useCallback(async () => {
     if (!projectId.trim()) {
@@ -2677,6 +4389,24 @@ export default function App() {
       };
     });
   }, [selectedPageDetail]);
+  const wikiPreviewMarkdown = useMemo(() => {
+    const latestMarkdown = String(selectedPageDetail?.latest_version?.markdown || "").trim();
+    if (latestMarkdown) return latestMarkdown;
+    const sections = selectedPageDetail?.sections ?? [];
+    const statements = selectedPageDetail?.statements ?? [];
+    if (sections.length === 0) return "";
+    return sections
+      .map((section) => {
+        const lines = statements
+          .filter((item) => item.section_key === section.section_key)
+          .map((item) => `- ${item.statement_text}`);
+        if (lines.length === 0) {
+          return `## ${section.heading}\n\n_No statements yet._`;
+        }
+        return `## ${section.heading}\n\n${lines.join("\n")}`;
+      })
+      .join("\n\n");
+  }, [selectedPageDetail]);
   const selectedTocSection = useMemo(
     () => pageTocSections.find((item) => item.section_key === selectedTocSectionKey) || null,
     [pageTocSections, selectedTocSectionKey],
@@ -2707,8 +4437,72 @@ export default function App() {
   );
   const selectedSpaceTitle = selectedSpaceNode?.title || "All spaces";
   const selectedPageTitle = selectedPageNode?.title || selectedPageSlug || "All pages";
+  const wikiPageBreadcrumb = useMemo(() => {
+    const slug = String(selectedPageDetail?.page.slug || selectedPageSlug || "").trim();
+    const segments = slug.split("/").filter(Boolean);
+    const crumbs: Array<{ label: string; slug: string | null }> = [
+      { label: "Wiki", slug: null },
+    ];
+    let current = "";
+    for (const segment of segments) {
+      current = current ? `${current}/${segment}` : segment;
+      const pageMatch = pageNodes.find((item) => item.slug === current);
+      crumbs.push({
+        label: pageMatch?.title || segment,
+        slug: current,
+      });
+    }
+    if (segments.length === 0 && selectedPageDetail?.page.title) {
+      crumbs.push({ label: selectedPageDetail.page.title, slug: selectedPageSlug });
+    }
+    return crumbs;
+  }, [pageNodes, selectedPageDetail?.page.slug, selectedPageDetail?.page.title, selectedPageSlug]);
   const effectiveQueuePreset: ReviewQueuePresetKey = showExpertModerationControls ? reviewQueuePreset : "open_queue";
   const isCoreSimplified = effectiveUiMode === "core" && (!CAN_ACCESS_ADVANCED_MODE || !coreExpertControls);
+  const showCoreWikiPanel = effectiveUiMode === "advanced" || coreWorkspaceTab === "wiki";
+  const showCoreDraftPanels = effectiveUiMode === "advanced" || coreWorkspaceTab === "drafts";
+  const showCoreTaskPanel = effectiveUiMode === "advanced" || coreWorkspaceTab === "tasks";
+  const showCoreWikiPreviewPanel = effectiveUiMode === "core" && coreWorkspaceTab === "wiki";
+  const showCoreWikiContextPanel = effectiveUiMode === "core" && coreWorkspaceTab === "wiki";
+  const bootstrapTrustedSourceSystems = useMemo(
+    () => normalizeSourceSystemCsv(bootstrapTrustedSources),
+    [bootstrapTrustedSources],
+  );
+  const bootstrapLimitValue = useMemo(() => {
+    const parsed = Number.parseInt(bootstrapLimit, 10);
+    return Number.isFinite(parsed) ? Math.max(1, Math.min(2000, parsed)) : 50;
+  }, [bootstrapLimit]);
+  const bootstrapMinConfidenceValue = useMemo(() => {
+    const parsed = Number.parseFloat(bootstrapMinConfidence);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0.85;
+  }, [bootstrapMinConfidence]);
+  const bootstrapCanApply = useMemo(() => {
+    const selection = bootstrapResult?.selection;
+    if (!bootstrapResult?.dry_run || !selection) return false;
+    if (String(bootstrapResult.project_id || "") !== projectId) return false;
+    const previewTrusted = [...(selection.trusted_source_systems || [])]
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter(Boolean)
+      .sort();
+    if (previewTrusted.join(",") !== bootstrapTrustedSourceSystems.join(",")) return false;
+    if (Number(selection.limit || -1) !== bootstrapLimitValue) return false;
+    if (Number(selection.min_confidence || -1) !== bootstrapMinConfidenceValue) return false;
+    if (Boolean(selection.require_conflict_free) !== bootstrapRequireConflictFree) return false;
+    return Number(bootstrapResult.summary.candidates || 0) > 0;
+  }, [
+    bootstrapLimitValue,
+    bootstrapMinConfidenceValue,
+    bootstrapRequireConflictFree,
+    bootstrapResult,
+    bootstrapTrustedSourceSystems,
+    projectId,
+  ]);
+  const coreGridCols =
+    effectiveUiMode === "advanced"
+      ? { base: 1, xl: 3 }
+      : coreWorkspaceTab === "wiki"
+        ? { base: 1, xl: 3 }
+        : { base: 1, xl: 2 };
   const selectedQueuePreset = useMemo(
     () => REVIEW_QUEUE_PRESETS.find((item) => item.key === effectiveQueuePreset) || REVIEW_QUEUE_PRESETS[0],
     [effectiveQueuePreset],
@@ -2717,6 +4511,45 @@ export default function App() {
     () => (selectedDraftId ? drafts.find((item) => item.id === selectedDraftId) || null : null),
     [drafts, selectedDraftId],
   );
+  const latestPageVersion = useMemo(() => (pageHistory?.versions ?? [])[0] || null, [pageHistory]);
+  const pageRevisionDelta = useMemo(() => {
+    const addedTokens = pageHistoryDiff.after.filter((token) => token.kind === "added").length;
+    const removedTokens = pageHistoryDiff.before.filter((token) => token.kind === "removed").length;
+    return {
+      addedTokens,
+      removedTokens,
+      changed: addedTokens + removedTokens,
+    };
+  }, [pageHistoryDiff]);
+  const selectedPageOpenDrafts = useMemo(() => {
+    if (!selectedPageSlug) return [];
+    return drafts
+      .filter((item) => String(item.page.slug || "").trim() === selectedPageSlug && isOpenReviewDraft(item))
+      .slice(0, 6);
+  }, [drafts, selectedPageSlug]);
+  const currentReviewerWatchingPage = useMemo(() => {
+    const actor = reviewer.trim().toLowerCase();
+    if (!actor) return false;
+    return pageWatchers.some((item) => String(item.watcher || "").trim().toLowerCase() === actor);
+  }, [pageWatchers, reviewer]);
+  const pageMovePreviewSlug = useMemo(() => {
+    const leaf = slugifySegment(pageMoveSlugLeaf.trim() || pageMoveTitle.trim() || selectedPageSlug || "page");
+    const parentRaw = pageMoveParentPath.trim();
+    if (!parentRaw) {
+      return normalizeWikiSlug(leaf, leaf);
+    }
+    const normalizedParent = normalizeWikiSlug(parentRaw, "root");
+    return normalizeWikiSlug(`${normalizedParent}/${leaf}`, leaf);
+  }, [pageMoveParentPath, pageMoveSlugLeaf, pageMoveTitle, selectedPageSlug]);
+  const wikiHomeRecentPages = useMemo(() => {
+    return [...pageNodes]
+      .sort((a, b) => {
+        const tsA = a.latest_draft_at ? new Date(a.latest_draft_at).getTime() : 0;
+        const tsB = b.latest_draft_at ? new Date(b.latest_draft_at).getTime() : 0;
+        return tsB - tsA;
+      })
+      .slice(0, 8);
+  }, [pageNodes]);
   const queueMetrics = useMemo(() => {
     const nowMs = Date.now();
     const openScoped = scopedDrafts.filter((item) => isOpenReviewDraft(item));
@@ -2764,68 +4597,6 @@ export default function App() {
   const formDismissArmed = armedRiskActionKey === `reject-dismiss-form:${selectedDraftId ?? "none"}`;
   const bulkApproveArmed = armedRiskActionKey === "bulk-approve";
   const bulkRejectArmed = armedRiskActionKey === "bulk-reject";
-  const walkthroughHasWorkspace = Boolean(apiUrl.trim() && projectId.trim() && reviewer.trim());
-  const walkthroughHasDrafts = visibleDrafts.length > 0;
-  const walkthroughTargetDraft = useMemo(
-    () => visibleDrafts.find((item) => isOpenReviewDraft(item)) || visibleDrafts[0] || null,
-    [visibleDrafts],
-  );
-  const walkthroughHasSelectedDraft = Boolean(
-    selectedDraftId && drafts.some((item) => item.id === selectedDraftId),
-  );
-  const walkthroughCompletedSteps = [walkthroughHasWorkspace, walkthroughHasDrafts, walkthroughHasSelectedDraft].filter(
-    Boolean,
-  ).length;
-  useEffect(() => {
-    if (!walkthroughHasWorkspace) return;
-    setWalkthroughTelemetry((prev) => {
-      if (prev.stepCompletedAtMs.workspace != null) return prev;
-      return {
-        ...prev,
-        stepCompletedAtMs: {
-          ...prev.stepCompletedAtMs,
-          workspace: Date.now(),
-        },
-      };
-    });
-  }, [walkthroughHasWorkspace]);
-  useEffect(() => {
-    if (!walkthroughHasDrafts) return;
-    setWalkthroughTelemetry((prev) => {
-      if (prev.stepCompletedAtMs.inbox != null) return prev;
-      return {
-        ...prev,
-        stepCompletedAtMs: {
-          ...prev.stepCompletedAtMs,
-          inbox: Date.now(),
-        },
-      };
-    });
-  }, [walkthroughHasDrafts]);
-  useEffect(() => {
-    if (!walkthroughHasSelectedDraft) return;
-    setWalkthroughTelemetry((prev) => {
-      if (prev.stepCompletedAtMs.firstReview != null) return prev;
-      return {
-        ...prev,
-        stepCompletedAtMs: {
-          ...prev.stepCompletedAtMs,
-          firstReview: Date.now(),
-        },
-      };
-    });
-  }, [walkthroughHasSelectedDraft]);
-  const walkthroughLatencySeconds = useMemo(() => {
-    const startedAtMs = walkthroughTelemetry.startedAtMs;
-    const completed = walkthroughTelemetry.stepCompletedAtMs;
-    const toSeconds = (timestampMs: number | null) =>
-      timestampMs == null ? null : Math.max(0, (timestampMs - startedAtMs) / 1000);
-    return {
-      workspace: toSeconds(completed.workspace),
-      inbox: toSeconds(completed.inbox),
-      firstReview: toSeconds(completed.firstReview),
-    };
-  }, [walkthroughTelemetry.startedAtMs, walkthroughTelemetry.stepCompletedAtMs]);
   const coreIntentSummary = useMemo(() => {
     const quick = coreIntentSignals.quickModeration;
     const sessionMinutes = Math.max(0, (Date.now() - coreIntentSignals.startedAtMs) / (1000 * 60));
@@ -2842,6 +4613,154 @@ export default function App() {
       lastAction: coreIntentSignals.lastAction,
     };
   }, [coreIntentSignals]);
+
+  const renderWikiTreeNode = (node: WikiTreeNode) => {
+    const isSelected = Boolean(node.slug && selectedPageSlug === node.slug);
+    const isCollapsed = Boolean(collapsedTreeNodes[node.key]);
+    const hasChildren = node.children.length > 0;
+    const hasPage = Boolean(node.page && node.slug);
+    const page = node.page;
+    return (
+      <Stack key={node.key} gap={6} style={{ marginLeft: `${Math.max(0, node.depth) * 14}px` }}>
+        <Paper
+          withBorder
+          p="xs"
+          radius="md"
+          className={isSelected ? "draft-card active wiki-tree-node-row" : "draft-card wiki-tree-node-row"}
+          onClick={() => {
+            if (!node.slug) return;
+            setSelectedSpaceKey(pageGroupKey(node.slug));
+            setSelectedPageSlug(node.slug);
+          }}
+        >
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Group gap={6} wrap="nowrap">
+              {hasChildren ? (
+                <ActionIcon
+                  size="sm"
+                  variant="subtle"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setCollapsedTreeNodes((prev) => ({ ...prev, [node.key]: !prev[node.key] }));
+                  }}
+                  aria-label={isCollapsed ? `Expand ${node.label}` : `Collapse ${node.label}`}
+                >
+                  {isCollapsed ? <IconChevronDown size={14} /> : <IconChevronUp size={14} />}
+                </ActionIcon>
+              ) : (
+                <Box w={24} />
+              )}
+              <Stack gap={2}>
+                <Text size="sm" fw={700}>
+                  {node.label}
+                </Text>
+                {node.slug && (
+                  <Text size="xs" c="dimmed">
+                    {node.slug}
+                  </Text>
+                )}
+              </Stack>
+            </Group>
+            <Group gap={6} wrap="nowrap">
+              {hasPage && page ? (
+                <ActionIcon
+                  size="sm"
+                  variant="subtle"
+                  color={pinnedPageSlugs.includes(page.slug) ? "yellow" : "gray"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    togglePinPage(page.slug);
+                  }}
+                  aria-label={pinnedPageSlugs.includes(page.slug) ? "Unpin page" : "Pin page"}
+                >
+                  {pinnedPageSlugs.includes(page.slug) ? <IconBookmarkFilled size={14} /> : <IconBookmark size={14} />}
+                </ActionIcon>
+              ) : null}
+              <Badge size="xs" variant="light" color="blue">
+                pages {node.page_count}
+              </Badge>
+              <Badge size="xs" variant="light" color="orange">
+                open {node.open_count}
+              </Badge>
+            </Group>
+          </Group>
+          {isSelected && loadingPageDetail && (
+            <Group mt={6}>
+              <Loader size="xs" />
+              <Text size="xs" c="dimmed">
+                loading page sections
+              </Text>
+            </Group>
+          )}
+          {isSelected && selectedPageDetail && selectedPageDetail.sections.length > 0 && (
+            <Stack gap={2} mt={6}>
+              {selectedPageDetail.sections.slice(0, 4).map((section) => (
+                <Text key={section.section_key} size="xs" c="dimmed">
+                  {section.heading} ({section.statement_count})
+                </Text>
+              ))}
+            </Stack>
+          )}
+        </Paper>
+        {hasChildren && !isCollapsed && (
+          <Stack gap={6}>
+            {node.children.map((child) => renderWikiTreeNode(child))}
+          </Stack>
+        )}
+      </Stack>
+    );
+  };
+
+  if (requiresAuthSession && !hasSessionToken) {
+    return (
+      <Box className="synapse-shell">
+        <Box className="bg-orb bg-orb-a" />
+        <Box className="bg-orb bg-orb-b" />
+        <Stack gap="lg">
+          <Paper radius="xl" p="xl" className="hero-card">
+            <Stack gap={6}>
+              <Text className="eyebrow">Synapse Wiki</Text>
+              <Title order={1}>Sign in to continue</Title>
+              <Text c="dimmed">
+                Authenticate once, then you will land directly in Wiki workspace with Drafts and Tasks.
+              </Text>
+            </Stack>
+          </Paper>
+          <Paper radius="xl" p="lg">
+            <Stack gap="sm">
+              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+                <PasswordInput
+                  label="OIDC Bearer Token"
+                  value={oidcToken}
+                  onChange={(event) => setOidcToken(event.currentTarget.value)}
+                  placeholder="Paste token (without Bearer prefix)"
+                />
+                <TextInput
+                  label="Session Token"
+                  value={sessionToken}
+                  onChange={(event) => setSessionToken(event.currentTarget.value)}
+                  placeholder="syns_..."
+                />
+              </SimpleGrid>
+              <Group gap="xs" wrap="wrap">
+                <Button size="sm" variant="filled" loading={authActionLoading} onClick={() => void createWebSessionFromOidc()}>
+                  Create Session
+                </Button>
+                <Button size="sm" variant="light" loading={authActionLoading} onClick={() => void validateSession()}>
+                  Validate Session
+                </Button>
+              </Group>
+              <Text size="xs" c="dimmed">
+                Auth mode: {authMode?.auth_mode || "unknown"}; RBAC: {authMode?.rbac_mode || "unknown"}; tenancy:{" "}
+                {authMode?.tenancy_mode || "unknown"}.
+              </Text>
+            </Stack>
+          </Paper>
+        </Stack>
+      </Box>
+    );
+  }
+
   return (
     <Box className="synapse-shell">
       <Box className="bg-orb bg-orb-a" />
@@ -2863,7 +4782,16 @@ export default function App() {
                 size="lg"
                 variant="light"
                 color="teal"
-                onClick={() => void loadDrafts()}
+                onClick={() => {
+                  void loadDrafts();
+                  void loadNotificationsInbox();
+                  if (selectedPageSlug) {
+                    void loadSpacePolicy(selectedPageSlug);
+                    void loadSpaceOwners(selectedPageSlug);
+                    void loadPageOwners(selectedPageSlug);
+                    void loadPageUploads(selectedPageSlug);
+                  }
+                }}
                 aria-label="Refresh drafts"
               >
                 <IconRefresh size={18} />
@@ -2873,14 +4801,16 @@ export default function App() {
         </Paper>
 
         <Paper radius="xl" p="lg">
-          <SimpleGrid cols={{ base: 1, md: 2, lg: effectiveUiMode === "advanced" ? 5 : 4 }} spacing="md">
-            <TextInput
-              label="API URL"
-              value={apiUrl}
-              onChange={(event) => setApiUrl(event.currentTarget.value)}
-              leftSection={<IconCloudCog size={16} />}
-              placeholder="http://localhost:8080"
-            />
+          <SimpleGrid cols={{ base: 1, md: 2, lg: effectiveUiMode === "advanced" ? 5 : 3 }} spacing="md">
+            {effectiveUiMode === "advanced" && (
+              <TextInput
+                label="API URL"
+                value={apiUrl}
+                onChange={(event) => setApiUrl(event.currentTarget.value)}
+                leftSection={<IconCloudCog size={16} />}
+                placeholder="http://localhost:8080"
+              />
+            )}
             <TextInput
               label="Project ID"
               value={projectId}
@@ -2920,110 +4850,164 @@ export default function App() {
               Refresh Inbox
             </Button>
           </SimpleGrid>
+          {effectiveUiMode === "core" && (
+            <Text size="xs" c="dimmed" mt={8}>
+              API endpoint uses workspace default. Switch to advanced profile to override API URL.
+            </Text>
+          )}
 
           <Paper mt="md" withBorder radius="lg" p="md">
-            <Stack gap="sm">
+            <Stack gap="xs">
               <Group justify="space-between" align="center" wrap="wrap">
-                <Text fw={700}>Auth Session</Text>
                 <Group gap={8}>
-                  <Badge variant="light" color={authMode?.auth_mode === "oidc" ? "teal" : "gray"}>
-                    auth: {authMode?.auth_mode || "unknown"}
-                  </Badge>
-                  <Badge variant="light" color={authMode?.rbac_mode === "enforce" ? "orange" : "gray"}>
-                    rbac: {authMode?.rbac_mode || "unknown"}
-                  </Badge>
-                  <Badge variant="light" color={authMode?.tenancy_mode === "enforce" ? "violet" : "gray"}>
-                    tenancy: {authMode?.tenancy_mode || "unknown"}
+                  <ThemeIcon size="sm" radius="xl" variant="light" color={unreadNotificationCount > 0 ? "orange" : "gray"}>
+                    <IconBell size={14} />
+                  </ThemeIcon>
+                  <Text size="sm" fw={700}>
+                    Notifications
+                  </Text>
+                  <Badge size="xs" variant="light" color={unreadNotificationCount > 0 ? "orange" : "gray"}>
+                    unread {unreadNotificationCount}
                   </Badge>
                 </Group>
+                <Group gap={6}>
+                  <Button size="compact-xs" variant="light" onClick={() => void loadNotificationsInbox()}>
+                    Refresh
+                  </Button>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="teal"
+                    loading={savingNotificationState}
+                    onClick={() => void markAllNotificationsRead()}
+                  >
+                    Mark all read
+                  </Button>
+                </Group>
               </Group>
-              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                <PasswordInput
-                  label="OIDC Bearer Token"
-                  value={oidcToken}
-                  onChange={(event) => setOidcToken(event.currentTarget.value)}
-                  placeholder="Paste token only (without Bearer prefix)"
-                />
-                <TextInput
-                  label="Session Token"
-                  value={sessionToken}
-                  onChange={(event) => setSessionToken(event.currentTarget.value)}
-                  placeholder="syns_..."
-                />
-              </SimpleGrid>
-              <Group gap="xs" wrap="wrap">
-                <Button size="xs" variant="light" loading={authActionLoading} onClick={() => void createWebSessionFromOidc()}>
-                  Create Session
-                </Button>
-                <Button size="xs" variant="light" loading={authActionLoading} onClick={() => void validateSession()}>
-                  Validate Session
-                </Button>
-                <Button size="xs" color="red" variant="light" loading={authActionLoading} onClick={() => void revokeSession()}>
-                  Revoke Session
-                </Button>
-              </Group>
-              <Text size="xs" c="dimmed">
-                {sessionSummary
-                  ? `Session actor: ${sessionSummary.subject} (${(sessionSummary.roles || []).join(", ") || "no roles"})`
-                  : "No active session loaded."}
-              </Text>
+              {loadingNotificationsInbox ? (
+                <Group gap={6}>
+                  <Loader size="xs" />
+                  <Text size="xs" c="dimmed">
+                    loading notifications…
+                  </Text>
+                </Group>
+              ) : notificationsInbox.length === 0 ? (
+                <Text size="xs" c="dimmed">
+                  No notifications for current reviewer.
+                </Text>
+              ) : (
+                <Stack gap={6}>
+                  {notificationsInbox.slice(0, 6).map((item) => (
+                    <Paper key={`notif-${item.id}`} withBorder p="xs" radius="md">
+                      <Group justify="space-between" align="flex-start" wrap="nowrap">
+                        <Stack gap={2} style={{ flex: 1 }}>
+                          <Text size="xs" fw={700}>
+                            {item.title}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {item.actor ? `${item.actor} • ` : ""}
+                            {fmtDate(item.created_at)}
+                          </Text>
+                          {item.body ? (
+                            <Text size="xs" c="dimmed">
+                              {item.body}
+                            </Text>
+                          ) : null}
+                        </Stack>
+                        {item.status === "unread" ? (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="teal"
+                            loading={savingNotificationState}
+                            onClick={() => void markNotificationRead(item.id)}
+                          >
+                            Read
+                          </Button>
+                        ) : (
+                          <Badge size="xs" variant="light" color="gray">
+                            read
+                          </Badge>
+                        )}
+                      </Group>
+                    </Paper>
+                  ))}
+                </Stack>
+              )}
             </Stack>
           </Paper>
 
-          <Paper mt="md" withBorder radius="lg" p="md" className="hotkey-panel">
-            <Group justify="space-between" align="center" wrap="wrap">
-              <Stack gap={2}>
-                <Text fw={700}>Workspace Mode</Text>
+          {effectiveUiMode === "advanced" && (
+            <Paper mt="md" withBorder radius="lg" p="md">
+              <Stack gap="sm">
+                <Group justify="space-between" align="center" wrap="wrap">
+                  <Text fw={700}>Auth Session</Text>
+                  <Group gap={8}>
+                    <Badge variant="light" color={authMode?.auth_mode === "oidc" ? "teal" : "gray"}>
+                      auth: {authMode?.auth_mode || "unknown"}
+                    </Badge>
+                    <Badge variant="light" color={authMode?.rbac_mode === "enforce" ? "orange" : "gray"}>
+                      rbac: {authMode?.rbac_mode || "unknown"}
+                    </Badge>
+                    <Badge variant="light" color={authMode?.tenancy_mode === "enforce" ? "violet" : "gray"}>
+                      tenancy: {authMode?.tenancy_mode || "unknown"}
+                    </Badge>
+                  </Group>
+                </Group>
+                <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+                  <PasswordInput
+                    label="OIDC Bearer Token"
+                    value={oidcToken}
+                    onChange={(event) => setOidcToken(event.currentTarget.value)}
+                    placeholder="Paste token only (without Bearer prefix)"
+                  />
+                  <TextInput
+                    label="Session Token"
+                    value={sessionToken}
+                    onChange={(event) => setSessionToken(event.currentTarget.value)}
+                    placeholder="syns_..."
+                  />
+                </SimpleGrid>
+                <Group gap="xs" wrap="wrap">
+                  <Button size="xs" variant="light" loading={authActionLoading} onClick={() => void createWebSessionFromOidc()}>
+                    Create Session
+                  </Button>
+                  <Button size="xs" variant="light" loading={authActionLoading} onClick={() => void validateSession()}>
+                    Validate Session
+                  </Button>
+                  <Button size="xs" color="red" variant="light" loading={authActionLoading} onClick={() => void revokeSession()}>
+                    Revoke Session
+                  </Button>
+                </Group>
                 <Text size="xs" c="dimmed">
-                  Core mode keeps only the day-to-day workflow. Advanced mode unlocks analytics and operations controls.
+                  {sessionSummary
+                    ? `Session actor: ${sessionSummary.subject} (${(sessionSummary.roles || []).join(", ") || "no roles"})`
+                    : "No active session loaded."}
                 </Text>
               </Stack>
-              <Group>
-                <Button
-                  size="xs"
-                  variant={effectiveUiMode === "core" ? "filled" : "light"}
-                  color="teal"
-                  onClick={() => setUiMode("core")}
-                >
-                  Core Mode
-                </Button>
-                {CAN_ACCESS_ADVANCED_MODE && (
-                  <Button
-                    size="xs"
-                    variant={effectiveUiMode === "advanced" ? "filled" : "light"}
-                    color="orange"
-                    onClick={() => setUiMode("advanced")}
-                  >
-                    Advanced Mode
-                  </Button>
-                )}
-              </Group>
-            </Group>
-            {effectiveUiMode === "core" && (
-              <Group mt="sm" justify="space-between" align="center" wrap="wrap">
-                <Text size="xs" c="dimmed">
-                  {CAN_ACCESS_ADVANCED_MODE
-                    ? coreExpertControls
-                      ? "Expert controls are visible in core mode."
-                      : "Simplified core mode hides advanced controls for faster moderation."
-                    : "Core-only profile is active: workspace is locked to the essential Agentic Wiki workflow."}
-                </Text>
-                {CAN_ACCESS_ADVANCED_MODE && (
-                  <Button
-                    size="xs"
-                    variant={coreExpertControls ? "light" : "filled"}
-                    color={coreExpertControls ? "gray" : "teal"}
-                    onClick={() => setCoreExpertControls((prev) => !prev)}
-                  >
-                    {coreExpertControls ? "Back to Simplified Core" : "Enable Expert Controls"}
-                  </Button>
-                )}
-              </Group>
-            )}
-          </Paper>
+            </Paper>
+          )}
 
-          <Paper mt="md" withBorder radius="lg" p="sm" className="hotkey-panel">
-            <Group gap="md" wrap="wrap">
+          {effectiveUiMode === "advanced" && (
+            <Paper mt="md" withBorder radius="lg" p="md" className="hotkey-panel">
+              <Group justify="space-between" align="center" wrap="wrap">
+                <Stack gap={2}>
+                  <Text fw={700}>Workspace Mode</Text>
+                  <Text size="xs" c="dimmed">
+                    Advanced profile is enabled for this workspace.
+                  </Text>
+                </Stack>
+                <Badge variant="light" color="orange">
+                  advanced
+                </Badge>
+              </Group>
+            </Paper>
+          )}
+
+          {effectiveUiMode === "advanced" && (
+            <Paper mt="md" withBorder radius="lg" p="sm" className="hotkey-panel">
+              <Group gap="md" wrap="wrap">
               <Group gap={6}>
                 <ThemeIcon variant="light" color="teal" size="sm">
                   <IconKeyboard size={14} />
@@ -3102,8 +5086,9 @@ export default function App() {
                   refresh
                 </Text>
               </Group>
-            </Group>
-          </Paper>
+              </Group>
+            </Paper>
+          )}
         </Paper>
 
         {effectiveUiMode === "advanced" ? (
@@ -3125,271 +5110,121 @@ export default function App() {
         ) : (
           <Paper radius="xl" p="lg" className="intelligence-panel">
             <Stack gap="sm">
-              <Text className="eyebrow">Core Mode</Text>
-              <Title order={3}>Focused Workflow</Title>
+              <Text className="eyebrow">Wiki Workspace</Text>
+              <Title order={3}>Company Wiki, Written by Agents.</Title>
               <Text c="dimmed" size="sm">
-                Advanced analytics and queue operations are hidden to keep this workspace simple: capture facts, review drafts,
-                approve knowledge, and manage tasks.
+                Review and publish trusted knowledge pages. Draft moderation and task tracking stay available as
+                operational side flows when needed.
               </Text>
-              <Group gap="xs">
+              <Group gap="xs" wrap="wrap">
                 <Badge variant="light" color="teal">
-                  SDK ingest
+                  Wiki
                 </Badge>
-                <Badge variant="light" color="cyan">
-                  Draft moderation
-                </Badge>
-                <Badge variant="light" color="orange">
-                  Task lifecycle
-                </Badge>
+                <Text size="xs" c="dimmed">
+                  Draft moderation and tasks are available in Operations actions.
+                </Text>
               </Group>
-              <Divider />
-              <Stack gap="xs" className="core-walkthrough-card">
-                <Group justify="space-between" align="center" wrap="wrap">
-                  <Text size="sm" fw={700}>
-                    Operator Walkthrough
-                  </Text>
-                  <Badge size="sm" variant="light" color={walkthroughCompletedSteps === 3 ? "teal" : "indigo"}>
-                    {walkthroughCompletedSteps}/3 complete
-                  </Badge>
-                </Group>
-                <SimpleGrid cols={{ base: 1, md: 3 }} spacing="xs">
-                  <Paper withBorder p="xs" radius="md" className="core-walkthrough-step-card">
-                    <Stack gap={6}>
-                      <Group gap={6} align="center" wrap="nowrap">
-                        <ThemeIcon size="sm" variant="light" color={walkthroughHasWorkspace ? "teal" : "gray"}>
-                          {walkthroughHasWorkspace ? <IconCheck size={12} /> : <Text size="xs">1</Text>}
-                        </ThemeIcon>
-                        <Text size="sm" fw={600}>
-                          Connect workspace
-                        </Text>
-                      </Group>
-                      <Text size="xs" c="dimmed">
-                        Configure API URL, project ID, and reviewer.
-                      </Text>
-                      {walkthroughHasWorkspace ? (
-                        <Badge size="xs" variant="light" color="teal">
-                          ready
-                        </Badge>
-                      ) : (
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          onClick={() => {
-                            setWalkthroughTelemetry((prev) => ({
-                              ...prev,
-                              actionCounts: {
-                                ...prev.actionCounts,
-                                useDemoValues: prev.actionCounts.useDemoValues + 1,
-                              },
-                            }));
-                            if (!apiUrl.trim()) {
-                              setApiUrl("http://localhost:8080");
-                            }
-                            if (!projectId.trim()) {
-                              setProjectId("omega_demo");
-                            }
-                            if (!reviewer.trim()) {
-                              setReviewer("ops_manager");
-                            }
-                          }}
-                        >
-                          Use demo values
-                        </Button>
-                      )}
-                    </Stack>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md" className="core-walkthrough-step-card">
-                    <Stack gap={6}>
-                      <Group gap={6} align="center" wrap="nowrap">
-                        <ThemeIcon size="sm" variant="light" color={walkthroughHasDrafts ? "teal" : "gray"}>
-                          {walkthroughHasDrafts ? <IconCheck size={12} /> : <Text size="xs">2</Text>}
-                        </ThemeIcon>
-                        <Text size="sm" fw={600}>
-                          Load inbox
-                        </Text>
-                      </Group>
-                      <Text size="xs" c="dimmed">
-                        Pull current draft queue for triage and moderation.
-                      </Text>
-                      {walkthroughHasDrafts ? (
-                        <Badge size="xs" variant="light" color="teal">
-                          {visibleDrafts.length} drafts
-                        </Badge>
-                      ) : (
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          onClick={() => {
-                            setWalkthroughTelemetry((prev) => ({
-                              ...prev,
-                              actionCounts: {
-                                ...prev.actionCounts,
-                                loadDraftQueue: prev.actionCounts.loadDraftQueue + 1,
-                              },
-                            }));
-                            void loadDrafts();
-                          }}
-                          loading={loadingDrafts}
-                        >
-                          Load Draft Queue
-                        </Button>
-                      )}
-                    </Stack>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md" className="core-walkthrough-step-card">
-                    <Stack gap={6}>
-                      <Group gap={6} align="center" wrap="nowrap">
-                        <ThemeIcon size="sm" variant="light" color={walkthroughHasSelectedDraft ? "teal" : "gray"}>
-                          {walkthroughHasSelectedDraft ? <IconCheck size={12} /> : <Text size="xs">3</Text>}
-                        </ThemeIcon>
-                        <Text size="sm" fw={600}>
-                          Review first draft
-                        </Text>
-                      </Group>
-                      <Text size="xs" c="dimmed">
-                        Open any draft to inspect semantic diff and approve or reject.
-                      </Text>
-                      {walkthroughHasSelectedDraft ? (
-                        <Badge size="xs" variant="light" color="teal">
-                          draft selected
-                        </Badge>
-                      ) : (
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          disabled={!walkthroughTargetDraft}
-                          onClick={() => {
-                            if (!walkthroughTargetDraft) return;
-                            setWalkthroughTelemetry((prev) => ({
-                              ...prev,
-                              actionCounts: {
-                                ...prev.actionCounts,
-                                selectDraft: prev.actionCounts.selectDraft + 1,
-                              },
-                            }));
-                            setSelectedDraftId(walkthroughTargetDraft.id);
-                            const slug = String(walkthroughTargetDraft.page.slug || "").trim();
-                            if (slug) {
-                              setSelectedSpaceKey(pageGroupKey(slug));
-                              setSelectedPageSlug(slug);
-                            }
-                            setDetailTab("semantic");
-                          }}
-                        >
-                          Select draft
-                        </Button>
-                      )}
-                    </Stack>
-                  </Paper>
-                </SimpleGrid>
-                <Group gap="xs" wrap="wrap">
-                  {CORE_WALKTHROUGH_DOC_LINKS.map((item) => (
-                    <HoverCard key={item.href} width={300} shadow="md" openDelay={120} closeDelay={80} withArrow>
-                      <HoverCard.Target>
-                        <Button
-                          component="a"
-                          href={item.href}
-                          target="_blank"
-                          rel="noreferrer"
-                          size="compact-xs"
-                          variant="subtle"
-                          rightSection={<IconExternalLink size={12} />}
-                        >
-                          {item.label}
-                        </Button>
-                      </HoverCard.Target>
-                      <HoverCard.Dropdown>
-                        <Stack gap={4} className="core-doc-preview-card">
-                          <Text size="xs" fw={700}>
-                            {item.label}
-                          </Text>
-                          <Text size="xs" c="dimmed">
-                            {item.preview}
-                          </Text>
-                          <Stack gap={2}>
-                            {item.highlights.map((highlight) => (
-                              <Text key={`${item.label}-${highlight}`} size="xs">
-                                - {highlight}
-                              </Text>
-                            ))}
-                          </Stack>
-                        </Stack>
-                      </HoverCard.Dropdown>
-                    </HoverCard>
-                  ))}
-                </Group>
-                <Paper withBorder p="xs" radius="md" className="core-walkthrough-telemetry-card">
-                  <Stack gap={6}>
-                    <Group justify="space-between" align="center" wrap="wrap">
-                      <Text size="xs" fw={700}>
-                        Onboarding Telemetry (Session)
-                      </Text>
-                      <Badge size="xs" variant="light" color="gray">
-                        step timers
-                      </Badge>
-                    </Group>
-                    <SimpleGrid cols={{ base: 1, md: 3 }} spacing="xs">
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Workspace ready
-                        </Text>
-                        <Text size="sm" fw={700}>
-                          {formatSeconds(walkthroughLatencySeconds.workspace)}
-                        </Text>
-                      </Paper>
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Inbox loaded
-                        </Text>
-                        <Text size="sm" fw={700}>
-                          {formatSeconds(walkthroughLatencySeconds.inbox)}
-                        </Text>
-                      </Paper>
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          First draft opened
-                        </Text>
-                        <Text size="sm" fw={700}>
-                          {formatSeconds(walkthroughLatencySeconds.firstReview)}
-                        </Text>
-                      </Paper>
-                    </SimpleGrid>
-                    <Group gap={6} wrap="wrap">
-                      <Badge size="xs" variant="light" color="indigo">
-                        demo clicks {walkthroughTelemetry.actionCounts.useDemoValues}
-                      </Badge>
-                      <Badge size="xs" variant="light" color="cyan">
-                        queue clicks {walkthroughTelemetry.actionCounts.loadDraftQueue}
-                      </Badge>
-                      <Badge size="xs" variant="light" color="teal">
-                        select clicks {walkthroughTelemetry.actionCounts.selectDraft}
-                      </Badge>
-                    </Group>
-                  </Stack>
-                </Paper>
-              </Stack>
             </Stack>
           </Paper>
         )}
 
-        <Suspense
-          fallback={
-            <Paper radius="xl" p="lg" className="intelligence-panel">
-              <Group justify="space-between" align="center">
-                <Stack gap={2}>
-                  <Text className="eyebrow">Agentic Todo Core</Text>
-                  <Title order={3}>Loading tasks…</Title>
-                </Stack>
-                <Loader size="sm" />
+        {effectiveUiMode === "core" && (
+          <Paper radius="xl" p="md" withBorder className="wiki-command-bar">
+            <Group justify="space-between" align="flex-end" wrap="wrap">
+              <Stack gap={2}>
+                <Text className="eyebrow">Corporate Wiki Workspace</Text>
+                <Text size="sm" c="dimmed">
+                  Wiki is primary. Draft inbox and tasks are operational side flows.
+                </Text>
+              </Stack>
+              <Group gap="xs" wrap="wrap">
+                <Select
+                  searchable
+                  value={selectedPageSlug}
+                  onChange={(value) => {
+                    setCoreWorkspaceTab("wiki");
+                    setSelectedPageSlug(value || null);
+                    if (value) {
+                      setSelectedSpaceKey(pageGroupKey(value));
+                    }
+                  }}
+                  placeholder="Jump to wiki page"
+                  w={320}
+                  data={pageNodes.map((item) => ({
+                    value: item.slug,
+                    label: `${item.title || item.slug} (${item.open_count} open drafts)`,
+                  }))}
+                  clearable
+                />
+                <Button
+                  variant={coreWorkspaceTab === "wiki" ? "filled" : "light"}
+                  color="teal"
+                  onClick={() => setCoreWorkspaceTab("wiki")}
+                >
+                  Open Wiki
+                </Button>
+                <Button
+                  variant={coreWorkspaceTab === "drafts" || coreWorkspaceTab === "tasks" ? "filled" : "light"}
+                  color={coreWorkspaceTab === "drafts" || coreWorkspaceTab === "tasks" ? "cyan" : "gray"}
+                  onClick={() => setShowOperationsNav((value) => !value)}
+                >
+                  Operations ({openDraftCount})
+                </Button>
               </Group>
-            </Paper>
-          }
-        >
-          <LazyTaskTrackerPanel apiUrl={apiUrl} projectId={projectId} reviewer={reviewer} />
-        </Suspense>
+            </Group>
+          </Paper>
+        )}
 
-        <SimpleGrid cols={{ base: 1, xl: 3 }} spacing="lg" className="wiki-core-grid">
-          <Paper radius="xl" p="lg" className="wiki-tree-panel">
+        {effectiveUiMode === "core" && showOperationsNav && (
+          <Paper radius="xl" p="sm" withBorder className="operations-nav-card">
+            <Group justify="space-between" align="center" wrap="wrap">
+              <Text size="sm" c="dimmed">
+                Operational flows for moderation and execution tracking.
+              </Text>
+              <Group gap="xs" wrap="wrap">
+                <Button
+                  size="compact-sm"
+                  variant={coreWorkspaceTab === "drafts" ? "filled" : "light"}
+                  color={coreWorkspaceTab === "drafts" ? "cyan" : "gray"}
+                  onClick={() => setCoreWorkspaceTab("drafts")}
+                >
+                  Open Draft Inbox
+                </Button>
+                <Button
+                  size="compact-sm"
+                  variant={coreWorkspaceTab === "tasks" ? "filled" : "light"}
+                  color={coreWorkspaceTab === "tasks" ? "orange" : "gray"}
+                  onClick={() => setCoreWorkspaceTab("tasks")}
+                >
+                  Open Tasks
+                </Button>
+              </Group>
+            </Group>
+          </Paper>
+        )}
+
+        {showCoreTaskPanel && (
+          <Suspense
+            fallback={
+              <Paper radius="xl" p="lg" className="intelligence-panel">
+                <Group justify="space-between" align="center">
+                  <Stack gap={2}>
+                    <Text className="eyebrow">Agentic Todo Core</Text>
+                    <Title order={3}>Loading tasks…</Title>
+                  </Stack>
+                  <Loader size="sm" />
+                </Group>
+              </Paper>
+            }
+          >
+            <LazyTaskTrackerPanel apiUrl={apiUrl} projectId={projectId} reviewer={reviewer} />
+          </Suspense>
+        )}
+
+        {(effectiveUiMode === "advanced" || coreWorkspaceTab !== "tasks") && (
+          <SimpleGrid cols={coreGridCols} spacing="lg" className="wiki-core-grid">
+            {showCoreWikiPanel && (
+              <Paper radius="xl" p="lg" className="wiki-tree-panel">
             <Group justify="space-between" mb="sm">
               <Title order={3}>Wiki Tree</Title>
               <Badge size="lg" color="indigo" variant="light">
@@ -3436,6 +5271,25 @@ export default function App() {
                   value: space.key,
                 }))}
               />
+              <Select
+                label="Page status"
+                placeholder="All statuses"
+                value={pageStatusFilter}
+                onChange={(value) => setPageStatusFilter(value || null)}
+                clearable
+                data={[
+                  { label: "Draft", value: "draft" },
+                  { label: "Reviewed", value: "reviewed" },
+                  { label: "Published", value: "published" },
+                  { label: "Archived", value: "archived" },
+                ]}
+              />
+              <TextInput
+                label="Updated by"
+                value={pageUpdatedByFilter}
+                onChange={(event) => setPageUpdatedByFilter(event.currentTarget.value)}
+                placeholder="ops_manager"
+              />
               <TextInput
                 label="Page filter"
                 value={pageFilter}
@@ -3461,6 +5315,17 @@ export default function App() {
                 <Button size="xs" variant={selectedPageSlug ? "light" : "filled"} onClick={() => setSelectedPageSlug(null)}>
                   All pages
                 </Button>
+                <Button
+                  size="xs"
+                  variant={pageStatusFilter || pageUpdatedByFilter.trim() || openPagesOnly ? "light" : "filled"}
+                  onClick={() => {
+                    setPageStatusFilter(null);
+                    setPageUpdatedByFilter("");
+                    setOpenPagesOnly(false);
+                  }}
+                >
+                  Reset index filters
+                </Button>
                 {selectedSpaceKey && (
                   <Badge variant="light" color="violet">
                     {selectedSpaceTitle}
@@ -3469,6 +5334,16 @@ export default function App() {
                 {selectedPageSlug && (
                   <Badge variant="light" color="teal">
                     {selectedPageTitle}
+                  </Badge>
+                )}
+                {pageStatusFilter && (
+                  <Badge variant="light" color="grape">
+                    status: {pageStatusFilter}
+                  </Badge>
+                )}
+                {pageUpdatedByFilter.trim() && (
+                  <Badge variant="light" color="cyan">
+                    updated by: {pageUpdatedByFilter.trim()}
                   </Badge>
                 )}
               </Group>
@@ -3607,11 +5482,12 @@ export default function App() {
                       onChange={(value) =>
                         setGuidedPageForm((prev) => ({
                           ...prev,
-                          status: (value as "draft" | "published" | null) ?? "published",
+                          status: (value as "draft" | "reviewed" | "published" | null) ?? "published",
                         }))
                       }
                       data={[
                         { label: "published", value: "published" },
+                        { label: "reviewed", value: "reviewed" },
                         { label: "draft", value: "draft" },
                       ]}
                     />
@@ -3915,131 +5791,1294 @@ export default function App() {
             </Stack>
             <ScrollArea h={640} type="auto">
               <Stack gap="sm">
-                {pageGroups.length === 0 && (
+                {(loadingPages || loadingDrafts) && (
                   <Paper withBorder p="md" radius="lg">
-                    <Text c="dimmed">No pages in current draft scope.</Text>
+                    <Group gap="xs">
+                      <Loader size="xs" />
+                      <Text c="dimmed" size="sm">
+                        syncing wiki tree…
+                      </Text>
+                    </Group>
                   </Paper>
                 )}
-                {pageGroups.map(([group, items]) => (
-                  <Paper key={group} withBorder p="sm" radius="md">
-                    <Group justify="space-between" align="center" wrap="nowrap">
-                      <Group gap={8} wrap="nowrap">
-                        <Text size="xs" c="dimmed" fw={700}>
-                          {group}
-                        </Text>
-                        <Badge size="xs" variant="light" color="indigo">
-                          {items.length}
-                        </Badge>
-                        <Badge size="xs" variant="light" color="orange">
-                          {items.reduce((acc, page) => acc + page.open_count, 0)} open
-                        </Badge>
-                      </Group>
-                      <ActionIcon
-                        size="sm"
-                        variant="subtle"
-                        onClick={() => setCollapsedSpaces((prev) => ({ ...prev, [group]: !prev[group] }))}
-                        aria-label={`Toggle ${group}`}
-                      >
-                        {collapsedSpaces[group] ? <IconChevronDown size={14} /> : <IconChevronUp size={14} />}
-                      </ActionIcon>
-                    </Group>
-                    {!collapsedSpaces[group] && (
-                      <Stack gap={6} mt={6}>
-                        {items.map((page) => (
-                          <Card
-                            key={page.slug}
-                            withBorder
-                            radius="md"
-                            p="xs"
-                            className={selectedPageSlug === page.slug ? "draft-card active" : "draft-card"}
+                {wikiTreeNodes.length === 0 && !loadingPages && !loadingDrafts && (
+                  <Paper withBorder p="md" radius="lg">
+                    <Text c="dimmed">No pages in current scope.</Text>
+                  </Paper>
+                )}
+                {wikiTreeNodes.map((node) => renderWikiTreeNode(node))}
+              </Stack>
+            </ScrollArea>
+          </Paper>
+            )}
+
+          {showCoreWikiPreviewPanel && (
+            <Paper radius="xl" p="lg" className="wiki-page-preview-panel">
+              <Group justify="space-between" mb="sm">
+                <Title order={3}>Wiki Page</Title>
+                {selectedPageSlug ? (
+                  <Badge size="lg" variant="light" color="teal">
+                    {selectedPageTitle}
+                  </Badge>
+                ) : (
+                  <Badge size="lg" variant="light" color="gray">
+                    not selected
+                  </Badge>
+                )}
+              </Group>
+              {!selectedPageSlug && (
+                <Stack gap="sm">
+                  <Paper withBorder p="md" radius="md">
+                    <Stack gap={6}>
+                      <Text size="sm" fw={700}>
+                        Wiki Home
+                      </Text>
+                      <Text size="sm" c="dimmed">
+                        Select a page in Wiki Tree or jump from recent pages.
+                      </Text>
+                    </Stack>
+                  </Paper>
+                  <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+                    <Paper withBorder p="xs" radius="md">
+                      <Text size="xs" fw={700} mb={6}>
+                        Spaces
+                      </Text>
+                      <Stack gap={4}>
+                        {spaceNodes.slice(0, 6).map((space) => (
+                          <Button
+                            key={`wiki-home-space-${space.key}`}
+                            size="compact-sm"
+                            variant="subtle"
+                            onClick={() => setSelectedSpaceKey(space.key)}
+                          >
+                            {space.title} ({space.page_count})
+                          </Button>
+                        ))}
+                        {spaceNodes.length === 0 && (
+                          <Text size="xs" c="dimmed">
+                            No spaces available yet.
+                          </Text>
+                        )}
+                      </Stack>
+                    </Paper>
+                    <Paper withBorder p="xs" radius="md">
+                      <Text size="xs" fw={700} mb={6}>
+                        Recent pages
+                      </Text>
+                      <Stack gap={4}>
+                        {wikiHomeRecentPages.map((page) => (
+                          <Button
+                            key={`wiki-home-page-${page.slug}`}
+                            size="compact-sm"
+                            variant="light"
                             onClick={() => {
-                              setSelectedSpaceKey(pageGroupKey(page.slug));
                               setSelectedPageSlug(page.slug);
+                              setSelectedSpaceKey(pageGroupKey(page.slug));
                             }}
                           >
-                            <Group justify="space-between" align="flex-start" wrap="nowrap">
-                              <Stack gap={2}>
-                                <Text size="sm" fw={700}>
-                                  {page.title || page.slug}
-                                </Text>
-                                <Text size="xs" c="dimmed">
-                                  {page.slug}
-                                </Text>
-                              </Stack>
-                              <Stack gap={2} align="flex-end">
-                                <ActionIcon
-                                  size="sm"
-                                  variant="subtle"
-                                  color={pinnedPageSlugs.includes(page.slug) ? "yellow" : "gray"}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    togglePinPage(page.slug);
-                                  }}
-                                  aria-label={pinnedPageSlugs.includes(page.slug) ? "Unpin page" : "Pin page"}
-                                >
-                                  {pinnedPageSlugs.includes(page.slug) ? (
-                                    <IconBookmarkFilled size={14} />
-                                  ) : (
-                                    <IconBookmark size={14} />
-                                  )}
-                                </ActionIcon>
-                                <Badge size="xs" variant="light" color="blue">
-                                  drafts {page.draft_count}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="orange">
-                                  open {page.open_count}
-                                </Badge>
-                              </Stack>
+                            {page.title || page.slug}
+                          </Button>
+                        ))}
+                        {wikiHomeRecentPages.length === 0 && (
+                          <Text size="xs" c="dimmed">
+                            No recent pages yet.
+                          </Text>
+                        )}
+                      </Stack>
+                    </Paper>
+                  </SimpleGrid>
+                </Stack>
+              )}
+              {selectedPageSlug && loadingPageDetail && (
+                <Group py="md">
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">
+                    Loading wiki page…
+                  </Text>
+                </Group>
+              )}
+              {selectedPageSlug && !loadingPageDetail && !selectedPageDetail && (
+                <Paper withBorder p="md" radius="md">
+                  <Text size="sm" c="dimmed">
+                    Page content is not available yet for this selection.
+                  </Text>
+                </Paper>
+              )}
+              {selectedPageSlug && selectedPageDetail && (
+                <Stack gap="sm">
+                  <Paper withBorder p="xs" radius="md" className="wiki-page-header-card">
+                    <Stack gap={6}>
+                      <Group justify="space-between" align="flex-start" wrap="wrap">
+                        <Stack gap={2}>
+                          <Breadcrumbs separator="›">
+                            {wikiPageBreadcrumb.map((crumb, index) => (
+                              <Text
+                                key={`wiki-page-breadcrumb-${index}-${crumb.slug || "root"}`}
+                                size="xs"
+                                c={crumb.slug ? "dimmed" : "gray"}
+                                style={crumb.slug ? { cursor: "pointer" } : undefined}
+                                onClick={() => {
+                                  if (!crumb.slug) {
+                                    setSelectedPageSlug(null);
+                                    return;
+                                  }
+                                  setSelectedSpaceKey(pageGroupKey(crumb.slug));
+                                  setSelectedPageSlug(crumb.slug);
+                                }}
+                              >
+                                {crumb.label}
+                              </Text>
+                            ))}
+                          </Breadcrumbs>
+                          <Text size="xs" fw={700}>
+                            {selectedPageDetail.page.title || selectedPageDetail.page.slug}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {selectedSpaceTitle} / {selectedPageDetail.page.slug}
+                          </Text>
+                        </Stack>
+                        <Group gap={6} wrap="wrap">
+                          <Badge size="xs" variant="light" color="indigo">
+                            status {selectedPageDetail.page.status}
+                          </Badge>
+                          {selectedPageDetail.page.page_type ? (
+                            <Badge size="xs" variant="light" color="grape">
+                              type {selectedPageDetail.page.page_type}
+                            </Badge>
+                          ) : null}
+                          <Badge size="xs" variant="light" color="blue">
+                            v{latestPageVersion?.version ?? selectedPageDetail.page.current_version ?? "—"}
+                          </Badge>
+                        </Group>
+                      </Group>
+                      <Group gap={6} wrap="wrap">
+                        <Badge size="xs" variant="light" color="teal">
+                          updated {fmtDate(latestPageVersion?.created_at)}
+                        </Badge>
+                        {latestPageVersion?.created_by ? (
+                          <Badge size="xs" variant="light" color="gray">
+                            by {latestPageVersion.created_by}
+                          </Badge>
+                        ) : null}
+                        <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
+                          delta +{pageRevisionDelta.addedTokens} / -{pageRevisionDelta.removedTokens}
+                        </Badge>
+                      </Group>
+                      <Group gap="xs" wrap="wrap">
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          onClick={() => {
+                            if (!selectedPageSlug) return;
+                            void loadPageDetail(selectedPageSlug);
+                            void loadPageHistory(selectedPageSlug);
+                            void loadPageAliases(selectedPageSlug);
+                            void loadPageComments(selectedPageSlug);
+                            void loadPageWatchers(selectedPageSlug);
+                            void loadPageReviewAssignments(selectedPageSlug);
+                          }}
+                        >
+                          Refresh Page
+                        </Button>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="cyan"
+                          onClick={() => setCoreWorkspaceTab("drafts")}
+                        >
+                          Open Page Drafts ({selectedPageOpenDrafts.length})
+                        </Button>
+                        {!pageEditMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="indigo"
+                            onClick={() => {
+                              setPageMoveMode(false);
+                              setPageEditMode(true);
+                            }}
+                          >
+                            Edit Page
+                          </Button>
+                        )}
+                        {!pageMoveMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="violet"
+                            onClick={() => {
+                              setPageEditMode(false);
+                              setPageMoveMode(true);
+                            }}
+                          >
+                            Move/Rename
+                          </Button>
+                        )}
+                        {selectedPageDetail.page.status !== "archived" && !pageEditMode && !pageMoveMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="red"
+                            loading={movingPage}
+                            onClick={() => void transitionWikiPageStatus("archive")}
+                          >
+                            Archive
+                          </Button>
+                        )}
+                        {selectedPageDetail.page.status === "archived" && !pageEditMode && !pageMoveMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="teal"
+                            loading={movingPage}
+                            onClick={() => void transitionWikiPageStatus("restore")}
+                          >
+                            Restore
+                          </Button>
+                        )}
+                        {pageEditMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="gray"
+                            onClick={() => setPageEditMode(false)}
+                          >
+                            Cancel Edit
+                          </Button>
+                        )}
+                        {pageEditMode && (
+                          <Button
+                            size="compact-xs"
+                            color="teal"
+                            loading={savingPageEdit}
+                            onClick={() => void saveWikiPageEdit()}
+                          >
+                            Save Page
+                          </Button>
+                        )}
+                        {pageMoveMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="gray"
+                            onClick={() => setPageMoveMode(false)}
+                          >
+                            Cancel Move
+                          </Button>
+                        )}
+                        {pageMoveMode && (
+                          <Button
+                            size="compact-xs"
+                            color="violet"
+                            loading={movingPage}
+                            onClick={() => void moveWikiPage()}
+                          >
+                            Apply Move
+                          </Button>
+                        )}
+                      </Group>
+                    </Stack>
+                  </Paper>
+                  {pageMoveMode ? (
+                    <Paper withBorder p="sm" radius="md" className="wiki-page-edit-card">
+                      <Stack gap="sm">
+                        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+                          <TextInput
+                            label="Parent path"
+                            value={pageMoveParentPath}
+                            onChange={(event) => setPageMoveParentPath(event.currentTarget.value)}
+                            placeholder="operations/locations"
+                            description="Leave empty to move page to space root."
+                          />
+                          <TextInput
+                            label="Slug leaf"
+                            value={pageMoveSlugLeaf}
+                            onChange={(event) => setPageMoveSlugLeaf(event.currentTarget.value)}
+                            placeholder="bc-omega-access-policy"
+                            description="Final segment for target page slug."
+                          />
+                        </SimpleGrid>
+                        <TextInput
+                          label="Page title"
+                          value={pageMoveTitle}
+                          onChange={(event) => setPageMoveTitle(event.currentTarget.value)}
+                          placeholder="BC Omega Access Policy"
+                        />
+                        <TextInput
+                          label="Change summary"
+                          value={pageMoveSummary}
+                          onChange={(event) => setPageMoveSummary(event.currentTarget.value)}
+                          placeholder="Moved under operations/locations and renamed page."
+                        />
+                        <Checkbox
+                          label="Move descendants (pages under current slug prefix)"
+                          checked={pageMoveIncludeDescendants}
+                          onChange={(event) => setPageMoveIncludeDescendants(event.currentTarget.checked)}
+                        />
+                        <Group gap="xs">
+                          <Badge size="xs" variant="light" color="gray">
+                            current {selectedPageDetail.page.slug}
+                          </Badge>
+                          <Badge size="xs" variant="light" color="violet">
+                            target {pageMovePreviewSlug}
+                          </Badge>
+                        </Group>
+                      </Stack>
+                    </Paper>
+                  ) : pageEditMode ? (
+                    <Paper withBorder p="sm" radius="md" className="wiki-page-edit-card">
+                      <Stack gap="sm">
+                        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+                          <TextInput
+                            label="Page title"
+                            value={pageEditTitle}
+                            onChange={(event) => setPageEditTitle(event.currentTarget.value)}
+                            placeholder="Operations / BC Omega Access"
+                          />
+                          <Select
+                            label="Page status"
+                            value={pageEditStatus}
+                            onChange={(value) => {
+                              if (value === "draft" || value === "reviewed" || value === "published" || value === "archived") {
+                                setPageEditStatus(value);
+                              }
+                            }}
+                            data={[
+                              { value: "published", label: "published" },
+                              { value: "reviewed", label: "reviewed" },
+                              { value: "draft", label: "draft" },
+                              { value: "archived", label: "archived" },
+                            ]}
+                            allowDeselect={false}
+                          />
+                        </SimpleGrid>
+                        <TextInput
+                          label="Change summary"
+                          value={pageEditSummary}
+                          onChange={(event) => setPageEditSummary(event.currentTarget.value)}
+                          placeholder="Updated access policy and pickup constraints."
+                        />
+                        <Paper withBorder p="xs" radius="md">
+                          <Stack gap={6}>
+                            <Text size="xs" fw={700}>
+                              Attach file / media
+                            </Text>
+                            <Group gap={8} align="center" wrap="wrap">
+                              <input
+                                type="file"
+                                onChange={(event) => {
+                                  const file = event.currentTarget.files?.[0] ?? null;
+                                  setPageAssetFile(file);
+                                }}
+                              />
+                              <Button
+                                size="compact-xs"
+                                variant="light"
+                                color="indigo"
+                                loading={uploadingPageAsset}
+                                disabled={!pageAssetFile}
+                                onClick={() => void uploadPageAsset()}
+                              >
+                                Upload + insert snippet
+                              </Button>
                             </Group>
-                            {selectedPageSlug === page.slug && loadingPageDetail && (
-                              <Group mt={6}>
-                                <Loader size="xs" />
-                                <Text size="xs" c="dimmed">
-                                  loading page sections
-                                </Text>
-                              </Group>
-                            )}
-                            {selectedPageSlug === page.slug &&
-                              selectedPageDetail &&
-                              selectedPageDetail.sections.length > 0 && (
-                                <Stack gap={2} mt={6}>
-                                  {selectedPageDetail.sections.slice(0, 6).map((section) => (
-                                    <Text key={section.section_key} size="xs" c="dimmed">
-                                      {section.heading} ({section.statement_count})
-                                    </Text>
-                                  ))}
-                                </Stack>
-                              )}
-                          </Card>
+                            <Text size="xs" c="dimmed">
+                              Allowed common extensions. Uploaded file link will be inserted into markdown automatically.
+                            </Text>
+                          </Stack>
+                        </Paper>
+                        <Textarea
+                          label="Page markdown"
+                          value={pageEditMarkdown}
+                          onChange={(event) => setPageEditMarkdown(event.currentTarget.value)}
+                          minRows={18}
+                          autosize
+                        />
+                      </Stack>
+                    </Paper>
+                  ) : (
+                    <>
+                      <Group gap="xs" wrap="wrap">
+                        <Badge size="xs" variant="light" color="indigo">
+                          slug {selectedPageDetail.page.slug}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="grape">
+                          sections {selectedPageDetail.sections.length}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="blue">
+                          statements {selectedPageDetail.statements.length}
+                        </Badge>
+                      </Group>
+                      <Suspense
+                        fallback={
+                          <Paper withBorder p="md" radius="md">
+                            <Group py="sm">
+                              <Loader size="sm" />
+                              <Text size="sm" c="dimmed">
+                                Rendering page preview…
+                              </Text>
+                            </Group>
+                          </Paper>
+                        }
+                      >
+                        <LazyWikiPageCanvas
+                          title={selectedPageDetail.page.title || selectedPageDetail.page.slug || "Untitled page"}
+                          slug={selectedPageDetail.page.slug}
+                          markdown={wikiPreviewMarkdown}
+                          apiBaseUrl={apiUrl}
+                          readonly
+                          onApplyEditedStatement={() => {}}
+                        />
+                      </Suspense>
+                    </>
+                  )}
+                </Stack>
+              )}
+            </Paper>
+          )}
+
+          {showCoreWikiContextPanel && (
+            <Paper radius="xl" p="lg" className="wiki-context-panel">
+              <Group justify="space-between" mb="sm">
+                <Title order={3}>Page Context</Title>
+                {selectedPageSlug ? (
+                  <Badge variant="light" color="indigo">
+                    {selectedPageSlug}
+                  </Badge>
+                ) : null}
+              </Group>
+              {!selectedPageSlug && (
+                <Text size="sm" c="dimmed">
+                  Select a page to view sections, revision timeline, and open draft context.
+                </Text>
+              )}
+              {selectedPageSlug && (
+                <Stack gap="sm">
+                  <Paper withBorder p="xs" radius="md">
+                    <Text size="xs" fw={700} mb={6}>
+                      Sections
+                    </Text>
+                    {(selectedPageDetail?.sections ?? []).length === 0 ? (
+                      <Text size="xs" c="dimmed">
+                        No sections available.
+                      </Text>
+                    ) : (
+                      <Stack gap={4}>
+                        {(selectedPageDetail?.sections ?? []).slice(0, 8).map((section) => (
+                          <Text key={`ctx-section-${section.section_key}`} size="xs" c="dimmed">
+                            {section.heading} ({section.statement_count})
+                          </Text>
                         ))}
                       </Stack>
                     )}
                   </Paper>
-                ))}
-              </Stack>
-            </ScrollArea>
-          </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Text size="xs" fw={700} mb={6}>
+                      Latest revisions
+                    </Text>
+                    {(pageHistory?.versions ?? []).length === 0 ? (
+                      <Text size="xs" c="dimmed">
+                        Revision history is not available.
+                      </Text>
+                    ) : (
+                      <Stack gap={4}>
+                        {(pageHistory?.versions ?? []).slice(0, 5).map((version) => (
+                          <Text key={`ctx-version-${version.version}`} size="xs" c="dimmed">
+                            v{version.version} • {fmtDate(version.created_at)}
+                          </Text>
+                        ))}
+                      </Stack>
+                    )}
+                    {(pageHistory?.versions ?? []).length > 1 && (
+                      <Group gap={6} mt={8} wrap="wrap">
+                        <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
+                          changes {pageRevisionDelta.changed}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="teal">
+                          +{pageRevisionDelta.addedTokens}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="red">
+                          -{pageRevisionDelta.removedTokens}
+                        </Badge>
+                      </Group>
+                    )}
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Open drafts on this page
+                      </Text>
+                      <Badge size="xs" variant="light" color="cyan">
+                        {selectedPageOpenDrafts.length}
+                      </Badge>
+                    </Group>
+                    {selectedPageOpenDrafts.length === 0 ? (
+                      <Text size="xs" c="dimmed">
+                        No open drafts for this page.
+                      </Text>
+                    ) : (
+                      <Stack gap={6}>
+                        {selectedPageOpenDrafts.map((draft) => (
+                          <Button
+                            key={`ctx-draft-${draft.id}`}
+                            size="compact-sm"
+                            variant="light"
+                            color="cyan"
+                            onClick={() => {
+                              setCoreWorkspaceTab("drafts");
+                              setSelectedDraftId(draft.id);
+                            }}
+                          >
+                            {draft.page.title || draft.section_key || draft.id.slice(0, 8)} • conf {draft.confidence.toFixed(2)}
+                          </Button>
+                        ))}
+                      </Stack>
+                    )}
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Aliases
+                      </Text>
+                      <Badge size="xs" variant="light" color="indigo">
+                        {pageAliases.length}
+                      </Badge>
+                    </Group>
+                    <Stack gap={6}>
+                      <Group gap={6} wrap="wrap">
+                        <TextInput
+                          size="xs"
+                          placeholder="operations/old-slug"
+                          value={newPageAlias}
+                          onChange={(event) => setNewPageAlias(event.currentTarget.value)}
+                          style={{ flex: 1, minWidth: 180 }}
+                        />
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="indigo"
+                          loading={savingPageAlias}
+                          onClick={() => void createPageAlias()}
+                        >
+                          Add alias
+                        </Button>
+                      </Group>
+                      {loadingPageAliases ? (
+                        <Group gap={6}>
+                          <Loader size="xs" />
+                          <Text size="xs" c="dimmed">
+                            loading aliases…
+                          </Text>
+                        </Group>
+                      ) : pageAliases.length === 0 ? (
+                        <Text size="xs" c="dimmed">
+                          No aliases configured.
+                        </Text>
+                      ) : (
+                        <Stack gap={4}>
+                          {pageAliases.map((alias) => (
+                            <Group key={`page-alias-${alias.alias_text}`} justify="space-between" align="center" wrap="nowrap">
+                              <Text size="xs" c="dimmed">
+                                {alias.alias_text}
+                              </Text>
+                              <ActionIcon
+                                size="sm"
+                                variant="subtle"
+                                color="red"
+                                loading={savingPageAlias}
+                                onClick={() => void deletePageAlias(alias.alias_text)}
+                                aria-label="Delete alias"
+                              >
+                                <IconTrash size={12} />
+                              </ActionIcon>
+                            </Group>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Governance
+                      </Text>
+                      <Badge size="xs" variant="light" color="violet">
+                        {pageGroupKey(selectedPageSlug)}
+                      </Badge>
+                    </Group>
+                    <Stack gap={8}>
+                      <SimpleGrid cols={{ base: 1, md: 2 }} spacing={6}>
+                        <Select
+                          size="xs"
+                          label="Write mode"
+                          value={spaceWriteMode}
+                          onChange={(value) => {
+                            if (value === "open" || value === "owners_only") {
+                              setSpaceWriteMode(value);
+                            }
+                          }}
+                          data={[
+                            { value: "open", label: "open" },
+                            { value: "owners_only", label: "owners_only" },
+                          ]}
+                          allowDeselect={false}
+                          disabled={loadingSpacePolicy}
+                        />
+                        <Select
+                          size="xs"
+                          label="Comment mode"
+                          value={spaceCommentMode}
+                          onChange={(value) => {
+                            if (value === "open" || value === "owners_only") {
+                              setSpaceCommentMode(value);
+                            }
+                          }}
+                          data={[
+                            { value: "open", label: "open" },
+                            { value: "owners_only", label: "owners_only" },
+                          ]}
+                          allowDeselect={false}
+                          disabled={loadingSpacePolicy}
+                        />
+                      </SimpleGrid>
+                      <Checkbox
+                        size="xs"
+                        checked={spaceReviewRequired}
+                        onChange={(event) => setSpaceReviewRequired(event.currentTarget.checked)}
+                        label="Require review assignment before publish"
+                        disabled={loadingSpacePolicy}
+                      />
+                      <Group justify="flex-end">
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="violet"
+                          loading={savingSpacePolicy}
+                          onClick={() => void saveSpacePolicy()}
+                        >
+                          Save policy
+                        </Button>
+                      </Group>
+                      {spacePolicy && (
+                        <Text size="xs" c="dimmed">
+                          policy source: {spacePolicy.exists ? "configured" : "default open"}
+                        </Text>
+                      )}
 
-          <Paper radius="xl" p="lg" className="draft-inbox-panel">
+                      <Divider />
+
+                      <Text size="xs" fw={700}>
+                        Space owners
+                      </Text>
+                      <Group gap={6} wrap="wrap">
+                        <TextInput
+                          size="xs"
+                          placeholder="owner_id"
+                          value={spaceOwnerInput}
+                          onChange={(event) => setSpaceOwnerInput(event.currentTarget.value)}
+                          style={{ flex: 1, minWidth: 120 }}
+                        />
+                        <TextInput
+                          size="xs"
+                          placeholder="role"
+                          value={spaceOwnerRoleInput}
+                          onChange={(event) => setSpaceOwnerRoleInput(event.currentTarget.value)}
+                          style={{ width: 100 }}
+                        />
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="violet"
+                          loading={savingSpaceOwner}
+                          onClick={() => void upsertSpaceOwner(spaceOwnerInput, true)}
+                        >
+                          Add
+                        </Button>
+                      </Group>
+                      {loadingSpaceOwners ? (
+                        <Group gap={6}>
+                          <Loader size="xs" />
+                          <Text size="xs" c="dimmed">
+                            loading space owners…
+                          </Text>
+                        </Group>
+                      ) : spaceOwners.length === 0 ? (
+                        <Text size="xs" c="dimmed">
+                          No space owners configured.
+                        </Text>
+                      ) : (
+                        <Stack gap={4}>
+                          {spaceOwners.map((owner) => (
+                            <Group key={`space-owner-${owner.owner}`} justify="space-between" align="center" wrap="nowrap">
+                              <Text size="xs" c="dimmed">
+                                {owner.owner} ({owner.role})
+                              </Text>
+                              <ActionIcon
+                                size="sm"
+                                variant="subtle"
+                                color="red"
+                                loading={savingSpaceOwner}
+                                onClick={() => void upsertSpaceOwner(owner.owner, false)}
+                                aria-label="Remove space owner"
+                              >
+                                <IconTrash size={12} />
+                              </ActionIcon>
+                            </Group>
+                          ))}
+                        </Stack>
+                      )}
+
+                      <Divider />
+
+                      <Text size="xs" fw={700}>
+                        Page owners
+                      </Text>
+                      <Group gap={6} wrap="wrap">
+                        <TextInput
+                          size="xs"
+                          placeholder="owner_id"
+                          value={pageOwnerInput}
+                          onChange={(event) => setPageOwnerInput(event.currentTarget.value)}
+                          style={{ flex: 1, minWidth: 120 }}
+                        />
+                        <TextInput
+                          size="xs"
+                          placeholder="role"
+                          value={pageOwnerRoleInput}
+                          onChange={(event) => setPageOwnerRoleInput(event.currentTarget.value)}
+                          style={{ width: 100 }}
+                        />
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="violet"
+                          loading={savingPageOwner}
+                          onClick={() => void upsertPageOwner(pageOwnerInput, true)}
+                        >
+                          Add
+                        </Button>
+                      </Group>
+                      {loadingPageOwners ? (
+                        <Group gap={6}>
+                          <Loader size="xs" />
+                          <Text size="xs" c="dimmed">
+                            loading page owners…
+                          </Text>
+                        </Group>
+                      ) : pageOwners.length === 0 ? (
+                        <Text size="xs" c="dimmed">
+                          No page owners configured.
+                        </Text>
+                      ) : (
+                        <Stack gap={4}>
+                          {pageOwners.map((owner) => (
+                            <Group key={`page-owner-${owner.owner}`} justify="space-between" align="center" wrap="nowrap">
+                              <Text size="xs" c="dimmed">
+                                {owner.owner} ({owner.role})
+                              </Text>
+                              <ActionIcon
+                                size="sm"
+                                variant="subtle"
+                                color="red"
+                                loading={savingPageOwner}
+                                onClick={() => void upsertPageOwner(owner.owner, false)}
+                                aria-label="Remove page owner"
+                              >
+                                <IconTrash size={12} />
+                              </ActionIcon>
+                            </Group>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Watchers
+                      </Text>
+                      <Badge size="xs" variant="light" color="teal">
+                        {pageWatchers.length}
+                      </Badge>
+                    </Group>
+                    <Stack gap={6}>
+                      <Group gap={6} wrap="wrap">
+                        <Button
+                          size="compact-xs"
+                          variant={currentReviewerWatchingPage ? "light" : "filled"}
+                          color={currentReviewerWatchingPage ? "gray" : "teal"}
+                          loading={savingPageWatcher}
+                          onClick={() => void upsertPageWatcher(reviewer.trim(), !currentReviewerWatchingPage)}
+                        >
+                          {currentReviewerWatchingPage ? "Unwatch me" : "Watch me"}
+                        </Button>
+                        <TextInput
+                          size="xs"
+                          placeholder="teammate_id"
+                          value={watcherInput}
+                          onChange={(event) => setWatcherInput(event.currentTarget.value)}
+                          style={{ flex: 1, minWidth: 140 }}
+                        />
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="teal"
+                          loading={savingPageWatcher}
+                          onClick={() => void upsertPageWatcher(watcherInput, true)}
+                        >
+                          Add
+                        </Button>
+                      </Group>
+                      {loadingPageWatchers ? (
+                        <Group gap={6}>
+                          <Loader size="xs" />
+                          <Text size="xs" c="dimmed">
+                            loading watchers…
+                          </Text>
+                        </Group>
+                      ) : pageWatchers.length === 0 ? (
+                        <Text size="xs" c="dimmed">
+                          No watchers.
+                        </Text>
+                      ) : (
+                        <Stack gap={4}>
+                          {pageWatchers.map((item) => (
+                            <Group key={`page-watcher-${item.watcher}`} justify="space-between" align="center" wrap="nowrap">
+                              <Text size="xs" c="dimmed">
+                                {item.watcher}
+                              </Text>
+                              <ActionIcon
+                                size="sm"
+                                variant="subtle"
+                                color="red"
+                                loading={savingPageWatcher}
+                                onClick={() => void upsertPageWatcher(item.watcher, false)}
+                                aria-label="Remove watcher"
+                              >
+                                <IconTrash size={12} />
+                              </ActionIcon>
+                            </Group>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Comments
+                      </Text>
+                      <Badge size="xs" variant="light" color="grape">
+                        {pageComments.length}
+                      </Badge>
+                    </Group>
+                    <Stack gap={6}>
+                      <Textarea
+                        size="xs"
+                        minRows={2}
+                        autosize
+                        placeholder="Add comment for reviewers and operators... Use @username for mention."
+                        value={newPageComment}
+                        onChange={(event) => setNewPageComment(event.currentTarget.value)}
+                      />
+                      <Text size="xs" c="dimmed">
+                        Mentions (`@username`) notify teammates and page watchers.
+                      </Text>
+                      <Group justify="flex-end">
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="grape"
+                          loading={savingPageComment}
+                          onClick={() => void createPageComment()}
+                        >
+                          Add comment
+                        </Button>
+                      </Group>
+                      {loadingPageComments ? (
+                        <Group gap={6}>
+                          <Loader size="xs" />
+                          <Text size="xs" c="dimmed">
+                            loading comments…
+                          </Text>
+                        </Group>
+                      ) : pageComments.length === 0 ? (
+                        <Text size="xs" c="dimmed">
+                          No comments yet.
+                        </Text>
+                      ) : (
+                        <Stack gap={6}>
+                          {pageComments.map((comment) => (
+                            <Paper key={`page-comment-${comment.id}`} withBorder p="xs" radius="md">
+                              <Stack gap={4}>
+                                <Group justify="space-between" align="center" wrap="nowrap">
+                                  <Text size="xs" fw={700}>
+                                    {comment.author}
+                                  </Text>
+                                  <Group gap={6} wrap="nowrap">
+                                    <Text size="xs" c="dimmed">
+                                      {fmtDate(comment.created_at)}
+                                    </Text>
+                                    <ActionIcon
+                                      size="sm"
+                                      variant="subtle"
+                                      color="red"
+                                      loading={savingPageComment}
+                                      onClick={() => void deletePageComment(comment.id)}
+                                      aria-label="Delete comment"
+                                    >
+                                      <IconTrash size={12} />
+                                    </ActionIcon>
+                                  </Group>
+                                </Group>
+                                <Text size="xs" c="dimmed">
+                                  {comment.body}
+                                </Text>
+                              </Stack>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Attachments
+                      </Text>
+                      <Badge size="xs" variant="light" color="indigo">
+                        {pageUploads.length}
+                      </Badge>
+                    </Group>
+                    {loadingPageUploads ? (
+                      <Group gap={6}>
+                        <Loader size="xs" />
+                        <Text size="xs" c="dimmed">
+                          loading uploads…
+                        </Text>
+                      </Group>
+                    ) : pageUploads.length === 0 ? (
+                      <Text size="xs" c="dimmed">
+                        No uploads for this page yet.
+                      </Text>
+                    ) : (
+                      <Stack gap={6}>
+                        {pageUploads.slice(0, 12).map((upload) => {
+                          const resolvedUrl = resolveWikiAssetUrl(
+                            apiUrl,
+                            upload.content_url_absolute || upload.content_url,
+                          );
+                          return (
+                            <Paper key={`page-upload-${upload.id}`} withBorder p="xs" radius="md">
+                              <Group justify="space-between" align="center" wrap="nowrap">
+                                <Stack gap={2} style={{ flex: 1 }}>
+                                  <Text size="xs" fw={700} lineClamp={1}>
+                                    {upload.filename}
+                                  </Text>
+                                  <Text size="xs" c="dimmed">
+                                    {upload.content_type || "application/octet-stream"} •{" "}
+                                    {(upload.size_bytes / 1024).toFixed(1)} KB • {fmtDate(upload.created_at)}
+                                  </Text>
+                                </Stack>
+                                <Button
+                                  component="a"
+                                  href={resolvedUrl || undefined}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  size="compact-xs"
+                                  variant="light"
+                                  color="indigo"
+                                >
+                                  Open
+                                </Button>
+                              </Group>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    )}
+                  </Paper>
+                  <Paper withBorder p="xs" radius="md">
+                    <Group justify="space-between" align="center" mb={6}>
+                      <Text size="xs" fw={700}>
+                        Review assignments
+                      </Text>
+                      <Badge size="xs" variant="light" color="orange">
+                        {pageReviewAssignments.filter((item) => item.status === "open").length}
+                      </Badge>
+                    </Group>
+                    <Stack gap={6}>
+                      <SimpleGrid cols={{ base: 1, md: 2 }} spacing={6}>
+                        <TextInput
+                          size="xs"
+                          placeholder="assignee_id"
+                          value={assignmentAssigneeInput}
+                          onChange={(event) => setAssignmentAssigneeInput(event.currentTarget.value)}
+                        />
+                        <TextInput
+                          size="xs"
+                          placeholder="Note (optional)"
+                          value={assignmentNoteInput}
+                          onChange={(event) => setAssignmentNoteInput(event.currentTarget.value)}
+                        />
+                      </SimpleGrid>
+                      <Group justify="flex-end">
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="orange"
+                          loading={savingPageAssignment}
+                          onClick={() => void createPageReviewAssignment()}
+                        >
+                          Assign reviewer
+                        </Button>
+                      </Group>
+                      {loadingPageReviewAssignments ? (
+                        <Group gap={6}>
+                          <Loader size="xs" />
+                          <Text size="xs" c="dimmed">
+                            loading assignments…
+                          </Text>
+                        </Group>
+                      ) : pageReviewAssignments.length === 0 ? (
+                        <Text size="xs" c="dimmed">
+                          No review assignments yet.
+                        </Text>
+                      ) : (
+                        <Stack gap={6}>
+                          {pageReviewAssignments.slice(0, 12).map((assignment) => (
+                            <Paper key={`assignment-${assignment.id}`} withBorder p="xs" radius="md">
+                              <Group justify="space-between" align="center" wrap="nowrap">
+                                <Stack gap={2}>
+                                  <Text size="xs" fw={700}>
+                                    {assignment.assignee}
+                                  </Text>
+                                  <Text size="xs" c="dimmed">
+                                    {assignment.status} • {assignment.role} • {fmtDate(assignment.created_at)}
+                                  </Text>
+                                  {assignment.note ? (
+                                    <Text size="xs" c="dimmed">
+                                      {assignment.note}
+                                    </Text>
+                                  ) : null}
+                                </Stack>
+                                {assignment.status === "open" ? (
+                                  <Button
+                                    size="compact-xs"
+                                    variant="subtle"
+                                    color="teal"
+                                    loading={savingPageAssignment}
+                                    onClick={() => void resolvePageReviewAssignment(assignment.id)}
+                                  >
+                                    Resolve
+                                  </Button>
+                                ) : (
+                                  <Badge size="xs" variant="light" color="gray">
+                                    resolved
+                                  </Badge>
+                                )}
+                              </Group>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                </Stack>
+              )}
+            </Paper>
+          )}
+
+          {showCoreDraftPanels && (
+            <Paper radius="xl" p="lg" className="draft-inbox-panel">
             <Group justify="space-between" mb="sm">
               <Title order={3}>Draft Inbox</Title>
-              <Badge size="lg" color="teal" variant="light">
-                {visibleDrafts.length}/{scopedDrafts.length}
-              </Badge>
+              <Group gap="xs" wrap="wrap">
+                <Badge size="lg" color="teal" variant="light">
+                  {visibleDrafts.length}/{scopedDrafts.length}
+                </Badge>
+                {!showExpertModerationControls && (
+                  <Button
+                    size="compact-xs"
+                    variant="light"
+                    onClick={() => setShowDraftOperationsTools((value) => !value)}
+                  >
+                    {showDraftOperationsTools ? "Hide operations" : "Open operations"}
+                  </Button>
+                )}
+              </Group>
             </Group>
-            <Stack gap={6} mb="sm">
-              <TextInput
-                label="Draft filter"
-                value={draftFilter}
-                onChange={(event) => setDraftFilter(event.currentTarget.value)}
-                placeholder="Filter by page, section, or decision"
-              />
-              {selectedSpaceKey && (
+            {(showExpertModerationControls || showDraftOperationsTools) && (
+              <>
+                <Stack gap={6} mb="sm">
+                  <TextInput
+                    label="Draft filter"
+                    value={draftFilter}
+                    onChange={(event) => setDraftFilter(event.currentTarget.value)}
+                    placeholder="Filter by page, section, or decision"
+                  />
+                  {selectedSpaceKey && (
+                    <Text size="xs" c="dimmed">
+                      Space scope: <Code>{selectedSpaceTitle}</Code>
+                    </Text>
+                  )}
+                </Stack>
+            {!showExpertModerationControls && (
+              <Paper withBorder p="xs" radius="md" mb="sm" className="bootstrap-migration-card">
+                <Group justify="space-between" align="center" wrap="wrap">
+                  <Stack gap={2}>
+                    <Text size="sm" fw={700}>
+                      Migration Mode
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Enable only for initial trusted-source adoption batches.
+                    </Text>
+                  </Stack>
+                  <Button
+                    size="compact-xs"
+                    variant={showMigrationMode ? "filled" : "light"}
+                    color={showMigrationMode ? "orange" : "gray"}
+                    onClick={() => setShowMigrationMode((value) => !value)}
+                  >
+                    {showMigrationMode ? "Hide migration tools" : "Open migration tools"}
+                  </Button>
+                </Group>
+              </Paper>
+            )}
+            {(showExpertModerationControls || showMigrationMode) && (
+            <Paper withBorder p="xs" radius="md" mb="sm" className="bootstrap-migration-card">
+              <Stack gap={8}>
+                <Group justify="space-between" align="center" wrap="wrap">
+                  <Group gap="xs" wrap="wrap">
+                    <Text size="sm" fw={700}>
+                      Bootstrap Migration
+                    </Text>
+                    <Badge variant="light" color="indigo">
+                      trusted source flow
+                    </Badge>
+                  </Group>
+                  <Button
+                    size="compact-xs"
+                    variant="light"
+                    onClick={() => setShowBootstrapTools((value) => !value)}
+                  >
+                    {showBootstrapTools ? "Hide tools" : "Open tools"}
+                  </Button>
+                </Group>
                 <Text size="xs" c="dimmed">
-                  Space scope: <Code>{selectedSpaceTitle}</Code>
+                  Use this after legacy import to approve high-confidence drafts in phased batches.
                 </Text>
-              )}
-            </Stack>
+                {showBootstrapTools && (
+                  <>
+                    <TextInput
+                      label="Trusted sources (csv)"
+                      value={bootstrapTrustedSources}
+                      onChange={(event) => setBootstrapTrustedSources(event.currentTarget.value)}
+                      placeholder="legacy_import,postgres_sql"
+                    />
+                    <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="xs">
+                      <TextInput
+                        label="Min confidence"
+                        value={bootstrapMinConfidence}
+                        onChange={(event) => setBootstrapMinConfidence(event.currentTarget.value)}
+                        placeholder="0.85"
+                      />
+                      <TextInput
+                        label="Batch limit"
+                        value={bootstrapLimit}
+                        onChange={(event) => setBootstrapLimit(event.currentTarget.value)}
+                        placeholder="50"
+                      />
+                      <TextInput
+                        label="Preview sample"
+                        value={bootstrapSampleSize}
+                        onChange={(event) => setBootstrapSampleSize(event.currentTarget.value)}
+                        placeholder="15"
+                      />
+                    </SimpleGrid>
+                    <Group gap={6} wrap="wrap">
+                      <Text size="xs" c="dimmed">
+                        Phased rollout:
+                      </Text>
+                      {["25", "50", "200"].map((preset) => (
+                        <Button
+                          key={`bootstrap-limit-${preset}`}
+                          size="compact-xs"
+                          variant={bootstrapLimit === preset ? "filled" : "light"}
+                          onClick={() => setBootstrapLimit(preset)}
+                        >
+                          {preset}
+                        </Button>
+                      ))}
+                    </Group>
+                    <Checkbox
+                      label="Require conflict-free drafts"
+                      checked={bootstrapRequireConflictFree}
+                      onChange={(event) => setBootstrapRequireConflictFree(event.currentTarget.checked)}
+                    />
+                    <Group gap="xs" wrap="wrap">
+                      <Button
+                        size="xs"
+                        variant="light"
+                        color="indigo"
+                        loading={bootstrapLoading}
+                        onClick={() => void runBootstrapApprove(true)}
+                      >
+                        Preview Candidates
+                      </Button>
+                      <Button
+                        size="xs"
+                        color="teal"
+                        disabled={!bootstrapCanApply && !bootstrapLoading}
+                        loading={bootstrapLoading}
+                        onClick={() => void runBootstrapApprove(false)}
+                      >
+                        Approve Trusted Batch
+                      </Button>
+                    </Group>
+                    {!bootstrapCanApply && (
+                      <Text size="xs" c="dimmed">
+                        Preview with current settings first. Apply is capped to 200 drafts/run and requires trusted sources.
+                      </Text>
+                    )}
+                  </>
+                )}
+                {bootstrapResult && (
+                  <Paper withBorder p="xs" radius="md">
+                    <Stack gap={6}>
+                      <Group gap={6} wrap="wrap">
+                        <Badge size="xs" variant="light" color={bootstrapResult.dry_run ? "indigo" : "teal"}>
+                          {bootstrapResult.dry_run ? "dry-run" : "applied"}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="blue">
+                          candidates {bootstrapResult.summary.candidates}
+                        </Badge>
+                        {typeof bootstrapResult.summary.approved === "number" && (
+                          <Badge size="xs" variant="light" color="teal">
+                            approved {bootstrapResult.summary.approved}
+                          </Badge>
+                        )}
+                        {typeof bootstrapResult.summary.failed === "number" && (
+                          <Badge size="xs" variant="light" color={bootstrapResult.summary.failed > 0 ? "orange" : "gray"}>
+                            failed {bootstrapResult.summary.failed}
+                          </Badge>
+                        )}
+                      </Group>
+                      {bootstrapResult.dry_run && (bootstrapResult.sample ?? []).length > 0 && (
+                        <Stack gap={4}>
+                          {(bootstrapResult.sample ?? []).slice(0, 5).map((item) => (
+                            <Text key={`bootstrap-sample-${item.draft_id}`} size="xs" c="dimmed">
+                              {item.draft_id.slice(0, 8)} • {item.decision} • conf {Number(item.confidence).toFixed(2)}
+                            </Text>
+                          ))}
+                        </Stack>
+                      )}
+                    </Stack>
+                  </Paper>
+                )}
+              </Stack>
+            </Paper>
+            )}
             <Paper withBorder p="xs" radius="md" mb="sm" className="queue-presets-card">
               <Stack gap={8}>
                 <Group justify="space-between" align="center" wrap="wrap">
@@ -4245,7 +7284,8 @@ export default function App() {
                   )}
                   </Paper>
                 )}
-                <Paper withBorder p="xs" radius="md" className="triage-lane-card">
+                {showExpertModerationControls && (
+                  <Paper withBorder p="xs" radius="md" className="triage-lane-card">
                   <Group justify="space-between" align="center" mb={6}>
                     <Text size="xs" fw={700}>
                       Triage lane
@@ -4348,7 +7388,9 @@ export default function App() {
                     </Stack>
                   )}
                 </Paper>
-                <Paper withBorder p="xs" radius="md" className="core-intent-signals-card">
+                )}
+                {showExpertModerationControls && (
+                  <Paper withBorder p="xs" radius="md" className="core-intent-signals-card">
                   <Stack gap={6}>
                     <Group justify="space-between" align="center" wrap="wrap">
                       <Text size="xs" fw={700}>
@@ -4402,8 +7444,11 @@ export default function App() {
                     </Text>
                   </Stack>
                 </Paper>
+                )}
               </Stack>
             </Paper>
+              </>
+            )}
             {showExpertModerationControls && (
               <Paper withBorder p="xs" radius="md" mb="sm" className="bulk-actions-card">
                 <Stack gap={6}>
@@ -4574,8 +7619,10 @@ export default function App() {
               </Stack>
             </ScrollArea>
           </Paper>
+          )}
 
-          <Paper radius="xl" p="lg" className="draft-detail-panel">
+          {showCoreDraftPanels && (
+            <Paper radius="xl" p="lg" className="draft-detail-panel">
             <Group justify="space-between" mb="sm">
               <Group gap="xs">
                 <Title order={3}>Draft Detail</Title>
@@ -4765,6 +7812,7 @@ export default function App() {
                         title={draftDetail.draft.page.title || draftDetail.draft.page.slug || "Untitled page"}
                         slug={draftDetail.draft.page.slug}
                         markdown={selectedPageDetail?.latest_version?.markdown || ""}
+                        apiBaseUrl={apiUrl}
                         onApplyEditedStatement={(value) => {
                           setApproveForm((prev) => ({ ...prev, editedStatement: value }));
                           notifications.show({
@@ -5272,9 +8320,12 @@ export default function App() {
               </Stack>
             )}
           </Paper>
-        </SimpleGrid>
+          )}
+          </SimpleGrid>
+        )}
 
-        <Paper radius="xl" p="sm" withBorder>
+        {(effectiveUiMode === "advanced" || coreWorkspaceTab === "drafts") && (
+          <Paper radius="xl" p="sm" withBorder>
           <Group justify="space-between">
             <Group>
               <Button
@@ -5335,7 +8386,8 @@ export default function App() {
                 : "no draft selected"}
             </Text>
           </Group>
-        </Paper>
+          </Paper>
+        )}
       </Stack>
     </Box>
   );

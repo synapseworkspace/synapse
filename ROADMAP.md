@@ -40,6 +40,80 @@ Owner: Core team
 13. Reliability + SLO guardrails (latency, quality, observability, release gating).
 14. Existing-memory adoption layer (coexistence modes, migration wizard, source-ownership policy).
 
+## Recovery Plan: Wiki-First UX + Draft Quality (April 2026)
+
+Status: `done`
+
+Goal:
+- убрать ощущение “control center” в default self-hosted опыте;
+- сделать вход в продукт через понятный wiki workflow;
+- остановить захламление Drafts низко-сигнальными memory событиями.
+
+Workstreams:
+- `done` UI IA reset:
+  - auth-gated entry for enforced auth projects;
+  - default profile -> core wiki workspace (`Wiki/Drafts/Tasks`);
+  - tabbed core navigation (`Wiki | Drafts | Tasks`) with contextual rendering;
+  - advanced/ops controls hidden unless explicit advanced profile.
+- `done` Draft noise suppression:
+  - tighten Gatekeeper for single-source one-off memory events;
+  - preserve policy-grade / repeated / multi-source signals for moderation queue.
+- `done` Wiki engine UX alignment:
+  - Confluence-like page-first navigation, reduced control density in first viewport.
+- `done` Adoption migration mode:
+  - trusted-source bootstrap approve with sampling + rollback defaults in UI flow.
+
+## Confluence-Like Wiki Track (Q2-Q3 2026)
+
+Status: `done`
+
+Goal:
+- сделать Synapse интерфейсом уровня корпоративной wiki (page-first, human editing, revision workflows, information architecture);
+- оставить Drafts/Tasks как secondary operations layer.
+
+Build-vs-buy decision:
+- `not_selected` Full standalone wiki replacement (Wiki.js / BookStack / Outline) as embedded UI:
+  - these projects are strong products, but not drop-in embeddable React shells for our FastAPI + MCP architecture;
+  - migration and deep behavior overrides would cost more than controlled in-house shell evolution.
+- `selected` Headless composition:
+  - keep current React + Mantine shell;
+  - keep TipTap editor/canvas as page-edit foundation;
+  - incrementally add Confluence-like IA/UX on top of existing Synapse data contracts.
+- `selected` OSS building blocks (to avoid custom reinventing):
+  - TipTap/ProseMirror for page editor and rich blocks;
+  - Mantine primitives for enterprise-grade information density and accessibility baseline;
+  - Markdown + page-version model in Synapse API as system-of-record (not browser-only document state).
+
+Execution slices:
+- `done` C1 Page Editing Core:
+  - direct human page edit/save with new page versions and snapshots.
+- `done` C2 Full Page Index:
+  - API `list pages` independent of draft queue;
+  - tree built from wiki pages, not from draft-derived nodes.
+  - done now: `GET /v1/wiki/pages` with page/draft counters + sort/filter + pagination metadata.
+  - done now: Web `Wiki Tree` renders from wiki page index first, with draft overlay metrics.
+- `done` C3 Page Operations:
+  - move/rename page, archive/restore, parent-child hierarchy, breadcrumbs.
+  - done now: explicit `reparent` API operation (parent-child by slug hierarchy) on top of move primitives.
+  - done now: page lifecycle transition APIs (`archive`, `restore`) and wiki header controls in web UI.
+- `done` C4 Collaboration:
+  - comments, mentions, reviewer assignments, watch/follow pages.
+  - done now: page comments + watchers + aliases API surfaces and page-context UI integration.
+  - done now: page review assignments (`assign/resolve`) API + UI context workflow.
+- `done` C5 Knowledge Governance:
+  - page ownership, approval policies per space, status lifecycle (`draft/reviewed/published/archived`).
+  - done now: space-level governance APIs (`policy`, `owners`) + page-level owners APIs.
+  - done now: policy enforcement in wiki write/comment flows (`owners_only`, review-required publish gate).
+  - done now: wiki notifications inbox APIs + mention/watcher/review notifications.
+  - done now: reviewed status lifecycle support across DB/API/UI (`draft/reviewed/published/archived`).
+- `done` C6 Quality-of-Life:
+  - keyboard navigation, slash commands, richer table/callout blocks, attachment previews.
+  - done now: wiki editor command palette (`Ctrl/Cmd + /`) with slash-style quick actions.
+  - done now: no-code quick blocks (Info/Warning callouts, incident template, decision template).
+  - done now: table authoring controls (insert/add row/add column/delete) in wiki editor.
+  - done now: attachment/media preview panel on wiki pages (inline image gallery + linked file list from markdown).
+  - done now: upload-to-wiki flow (`/v1/wiki/uploads`) with automatic markdown snippet insertion in page edit mode.
+
 ## Milestones
 
 ## M1: Foundation (Weeks 1-2)
@@ -404,9 +478,8 @@ Progress:
 
 ## Next Up (Execution Queue)
 
-1. Add per-resource RBAC policy-decision audit stream for compliance-grade access reviews.
-2. Add SAML/SCIM bridge on top of OIDC baseline for enterprise IdP provisioning.
-3. Upgrade reliability drills from fixture mode to automated pre-prod chaos runs.
+1. Expand release gate from fixture-backed checks to auto-appended live reliability history snapshots per environment.
+2. Add incident runbooks linked to SLO violation codes for faster operator triage.
 
 ## Risks to Watch
 
@@ -421,6 +494,39 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Closed execution queue item “automated pre-prod chaos runs”: added `scripts/run_selfhost_chaos_drill.sh` (clean self-hosted stack boot, baseline core-loop acceptance, dependency fault injection, post-fault recovery + core-loop verification, JSON report), wired optional CI workflow dispatch job (`run_selfhost_chaos_drill=true`) with artifact upload, and integrated local opt-in + script-smoke coverage into `scripts/ci_checks.sh` plus reliability/self-hosted runbook updates.
+- 2026-04-03: Closed execution queue item “low-latency external-memory ingestion”: extended `postgres_sql` legacy source with `sql_sync_mode=wal_cdc` (logical-slot CDC via `pg_logical_slot_get_changes|peek_changes`, `test_decoding` + `wal2json` parser support, table/operation filters, LSN state persistence, and canonical record mapping), kept polling mode as default/backward-compatible path, lowered orchestration cadence floor to 1 minute (migration `048_legacy_sync_low_latency_interval.sql` + API validation update), and added deterministic WAL connector smoke check (`scripts/check_legacy_sync_wal_connector.py`) to CI.
+- 2026-04-03: Completed Recovery Plan closure for wiki-first rollout: tightened Gatekeeper runtime-noise demotion (single-source one-off runtime memory events now route to `operational_memory` unless high-priority/policy signals), simplified Draft Inbox core UX with explicit `Migration Mode` gating for bootstrap tools, and hardened trusted-source adoption API (`/v1/wiki/drafts/bootstrap-approve/run`) with apply-time trusted-source requirement + soft batch cap + safety metadata.
+- 2026-04-03: Closed SAML/SCIM bridge execution queue item: added enterprise bridge migration `047_saml_scim_bridge.sql` (`enterprise_idp_connections`, `scim_api_tokens`, `scim_directory_users`), shipped tenant-scoped IdP bridge APIs (`GET/PUT /v1/enterprise/idp/connections`, `GET /v1/enterprise/idp/saml/metadata`), delivered SCIM token admin APIs (`GET/PUT/DELETE /v1/enterprise/scim/tokens`), and added SCIM provisioning surface (`/scim/v2/ServiceProviderConfig`, `/scim/v2/Users*`) wired to tenant memberships with scope-gated token auth.
+- 2026-04-03: Shipped enterprise RBAC policy-decision audit baseline: added migration `046_access_policy_decisions.sql`, middleware logging for guarded request decisions (`allow|deny` with roles/project scope/path/action metadata), and compliance read API `GET /v1/enterprise/rbac/decisions` protected by operator roles in RBAC enforce mode.
+- 2026-04-03: Closed the remaining C2 execution queue item: `GET /v1/wiki/pages` now supports explicit index filters (`status`, `updated_by`, `with_open_drafts`) and web Wiki Tree now exposes those filters in UI; added deep-linkable wiki selection/filter state via URL params (`project`, `wiki_space`, `wiki_page`, `wiki_status`, `wiki_updated_by`, `wiki_with_open_drafts`, `wiki_q`) for shareable page context links.
+- 2026-04-03: Marked Confluence-like execution slices C1-C6 as complete (`done`) after finishing page editing/index/operations/collaboration/governance and QoL closure (including uploads, media previews, and command-palette editing).
+- 2026-04-03: Completed reviewed-status lifecycle rollout: added migration `045_wiki_reviewed_status.sql` and extended wiki page status handling in API/UI to support `reviewed` between `draft` and `published`.
+- 2026-04-03: Completed C6 upload workflow closure: added wiki upload storage + delivery APIs (`POST /v1/wiki/uploads`, `GET /v1/wiki/uploads`, `GET /v1/wiki/uploads/{upload_id}/content`) backed by migration `044_wiki_uploads.sql`, wired page edit UI upload action with auto-insert markdown snippet, and added page-context attachment list with direct open links.
+- 2026-04-03: Extended C6 with wiki media ergonomics: `WikiPageCanvas` now extracts markdown media/attachments and renders production-style preview surfaces (image gallery + linked file list), plus quick insert commands for image/file markdown templates.
+- 2026-04-03: Started C6 wiki editor quality pass: upgraded `WikiPageCanvas` with command palette (`Ctrl/Cmd + /`), quick block insertions (Info/Warning callouts, incident + decision templates), and table authoring commands (insert/add row/add column/delete), with new table typography styling for page-edit readability.
+- 2026-04-03: Advanced C5 governance delivery: added migration `043_wiki_policy_notifications.sql`; shipped space policy + ownership APIs (`/v1/wiki/spaces/{space_key}/policy`, `/v1/wiki/spaces/{space_key}/owners`), page ownership APIs (`/v1/wiki/pages/{slug}/owners`), and notification inbox APIs (`/v1/wiki/notifications*`); enforced wiki space policy in write/comment flows (`owners_only` + review-required publish gate), added mention/watcher/review assignment notification fan-out, and integrated web governance controls + notifications inbox into core wiki workspace.
+- 2026-04-03: Extended C4 collaboration with reviewer workflow: added migration `042_wiki_review_assignments.sql`, API endpoints for page review assignments (`list/upsert/resolve`), and web Page Context card to assign and resolve reviewers directly from wiki page operations.
+- 2026-04-03: Started C4 collaboration layer for wiki pages: added migration `041_wiki_collaboration.sql`, new APIs for page aliases/comments/watchers (`/aliases`, `/comments`, `/watchers`), alias-aware page resolution for `GET /v1/wiki/pages/{slug}` and history (canonical slug fallback via alias), and integrated collaboration cards into `Page Context` UI.
+- 2026-04-03: Extended C3 with lifecycle + hierarchy operations: added `PUT /v1/wiki/pages/{slug}/reparent`, `PUT /v1/wiki/pages/{slug}/archive`, and `PUT /v1/wiki/pages/{slug}/restore`; web wiki page header now exposes `Archive`/`Restore` actions and uses explicit reparent flow from `Move/Rename`.
+- 2026-04-03: Started C3 page operations execution: added API endpoint `PUT /v1/wiki/pages/{slug}/move` with optional subtree move (`include_descendants`), slug/title rename support, backward-compat alias insertion, source-ownership + idempotency safeguards, and knowledge snapshot invalidation; web `Wiki Page` now includes breadcrumb navigation and inline `Move/Rename` flow (parent path + slug leaf + subtree toggle) with immediate tree refresh.
+- 2026-04-03: Started Confluence-like C2 execution: added API endpoint `GET /v1/wiki/pages` (independent page index with page/draft counters, sort/filter, and paging metadata) and switched web Wiki Tree rendering to page-index-first mode, so pages appear even without active drafts; page edits/creates now trigger tree refresh immediately.
+- 2026-04-03: Further de-emphasized non-wiki surfaces in core header navigation: replaced direct `Draft Inbox`/`Tasks` top actions with a single `Operations` entrypoint and nested operational actions (`Open Draft Inbox`, `Open Tasks`) so wiki remains the dominant product affordance.
+- 2026-04-03: Added wiki-first empty-state experience: `Wiki Home` now renders spaces directory and recent-pages quick-jump when no page is selected, avoiding dead-end empty preview states and reinforcing page-centric navigation.
+- 2026-04-03: Reduced Draft Inbox operational noise in core mode: default Draft view now exposes queue-first cards only, while filters/bootstrap/queue controls are moved behind `Open operations`; expert mode still shows full controls by default.
+- 2026-04-03: Added wiki page-level decision surface for core mode: `Wiki Page` now includes a page header card with page status/type/version, latest update metadata, revision delta summary, and quick actions (`Refresh Page`, `Open Page Drafts`) while `Page Context` now exposes compact change deltas from recent revisions.
+- 2026-04-03: Finalized wiki-centric visual hierarchy in core landing: updated primary banner/product copy to `Company Wiki, Written by Agents`, removed equal visual emphasis for Drafts/Tasks in the hero, and positioned operations controls as secondary actions to align with corporate-wiki-first product intent.
+- 2026-04-03: Reframed core navigation to wiki-first command pattern: replaced equal-priority `Wiki/Drafts/Tasks` tabs with a corporate-wiki command bar (`Open Wiki` primary + secondary operations actions), added page quick-jump, and introduced a dedicated `Page Context` rail (sections, recent revisions, page-scoped open drafts) to make wiki browsing the dominant workflow.
+- 2026-04-03: Simplified core connection setup: `API URL` field is now advanced-only, while core mode uses `VITE_SYNAPSE_API_URL`/default endpoint to reduce first-run configuration burden; Playwright config now injects API URL via env for deterministic core e2e.
+- 2026-04-03: Reduced `Drafts` first-view density in core mode: bootstrap migration controls are now collapsed behind `Open tools`, and triage/intent analytics cards are shown only in expert mode, keeping default operator flow focused on queue + moderation actions.
+- 2026-04-03: Started Confluence-like wiki page-first alignment in core mode: added dedicated `Wiki Page` preview panel with read-only wiki canvas (article view) next to `Wiki Tree`, so operators can browse published content without entering moderation screens.
+- 2026-04-03: Hardened migration bootstrap safety defaults in `Drafts`: batch approve now requires a matching dry-run preview (same project/source/confidence/conflict/limit settings), reducing accidental mass-approval risk during first-time backfill adoption.
+- 2026-04-03: Started adoption migration UX in web `Drafts`: added `Bootstrap Migration` card with trusted-source filters, confidence/limit controls, dry-run candidate preview, and batch-approve execution against `POST /v1/wiki/drafts/bootstrap-approve/run` for first-run backfill onboarding.
+- 2026-04-03: Completed core wiki IA split in default profile: added explicit `Wiki | Drafts | Tasks` navigation tabs, switched core rendering to contextual surfaces (task tracker isolated from wiki/draft moderation panels), auto-routed triage/quick-moderation actions to `Drafts`, and updated core e2e coverage for the new workflow.
+- 2026-04-03: Started Wiki-first recovery implementation: web console now enforces a cleaner default IA (advanced control-center mode hidden unless explicit advanced UI profile), added auth-gated entry screen for enforced auth projects, and simplified core banner from walkthrough-heavy blocks to a compact `Wiki/Drafts/Tasks` operator surface.
+- 2026-04-03: Started Draft noise suppression rollout: Gatekeeper now demotes single-source one-off observations without policy signal to `operational_memory`, reducing low-signal draft creation from raw memory/backfill streams.
+- 2026-04-03: Added native existing-memory SQL adoption path to reduce custom importer burden: introduced `postgres_sql` legacy source type across API + DB migration (`040_legacy_sync_postgres_sql_source.sql`), implemented generic SQL importer (`SQLImporter`) with canonical-column/mapping support, deterministic `source_id` generation, metadata enrichment, and incremental cursor handoff; wired scheduled sync engine cursor state persistence (`sql_last_cursor`) and one-shot SQL mode in `run_legacy_import.py`, plus docs and CI smoke coverage updates.
+- 2026-04-03: Hardened self-hosted production defaults and adoption diagnostics: switched selfhost MCP transport default to `streamable-http`, removed fixed `container_name` from selfhost compose, added loopback-safe port binds (`SYNAPSE_BIND_HOST`), added MCP healthcheck + restart-loop detection in selfhost acceptance scripts, added selfhost static consistency CI gate (`scripts/check_selfhost_stack_defaults.py`), improved wiki search explainability metadata + new `GET /v1/wiki/stats`, and shipped trusted-source bootstrap migration endpoint `POST /v1/wiki/drafts/bootstrap-approve/run` (`dry_run` + confidence/conflict/source filters).
 - 2026-04-03: Completed M14 existing-memory adoption closure: added API source-ownership registry endpoints (`GET/PUT/DELETE /v1/adoption/source-ownership`) + runtime write-master enforcement by domain with advisory/enforce modes and `X-Synapse-Source-System` support, shipped `synapse-cli adopt --shadow-retrieval-check` (baseline-vs-Synapse diff report), and extended CI smoke coverage for shadow adoption checks.
 - 2026-04-03: Started M14 existing-memory adoption track: added Python/TypeScript SDK coexistence modes (`full_loop|observe_only|draft_only|retrieve_only`) with OpenClaw hook/tool gating, shipped CLI migration wizard `synapse-cli adopt` (+ sample memory risk analysis + rollout plan), extended `synapse-cli connect openclaw` with `--adoption-mode`, and added CI smoke coverage for adoption flow.
 - 2026-04-03: Added hybrid publish-control business logic: Gatekeeper config now supports `publish_mode_default` + per-category overrides + conditional auto-publish thresholds (`auto_publish_min_score`, `auto_publish_min_sources`, `auto_publish_require_golden`, `auto_publish_allow_conflicts`); API endpoint `POST /v1/wiki/auto-publish/run` executes policy-driven approvals; worker loop now includes scheduled auto-publish job (`run_wiki_autopublish.py`).

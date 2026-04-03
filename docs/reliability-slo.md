@@ -76,6 +76,23 @@ python3 scripts/capture_operational_slo_snapshots.py \
 
 This gives deterministic pass/fail enforcement on latency/quality budgets in contributor flow.
 
+Pre-prod chaos drill (dependency fault injection + recovery verification):
+
+```bash
+./scripts/run_selfhost_chaos_drill.sh \
+  --report-file artifacts/selfhost-chaos/report.json
+```
+
+The chaos drill:
+- boots a clean self-hosted compose stack;
+- runs baseline end-to-end core loop acceptance;
+- injects dependency faults (`postgres_restart`, `mcp_restart` by default);
+- verifies service health recovery and re-runs core loop after each fault;
+- emits a structured JSON report with stage-by-stage status.
+
+GitHub Actions opt-in:
+- `workflow_dispatch` in `.github/workflows/ci.yml` with input `run_selfhost_chaos_drill=true`.
+
 Release error-budget gate (rolling policy):
 
 ```bash
@@ -104,4 +121,3 @@ python3 scripts/run_reliability_drills.py \
 
 1. Expand release gate from fixture-backed checks to auto-appended live history snapshots per environment.
 2. Add incident runbooks linked to SLO violation codes.
-3. Add chaos-style dependency fault injection in pre-prod.

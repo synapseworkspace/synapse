@@ -15,4 +15,4 @@ ENV PYTHONPATH=/app/services:/app/services/mcp
 
 EXPOSE 8091
 
-CMD ["python", "services/mcp/scripts/run_mcp_server.py", "--transport", "http"]
+CMD ["python", "services/mcp/scripts/run_mcp_server.py"]

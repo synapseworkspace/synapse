@@ -4,23 +4,30 @@ import { expect, test } from "@playwright/test";
 const UI_PROFILE = String(process.env.VITE_SYNAPSE_UI_PROFILE || "")
   .trim()
   .toLowerCase();
-const CORE_ONLY_UI_PROFILES = new Set(["core", "core-only", "core_only", "wiki-core", "wiki_core"]);
-const IS_CORE_ONLY_PROFILE = CORE_ONLY_UI_PROFILES.has(UI_PROFILE);
+const ADVANCED_UI_PROFILES = new Set(["advanced", "admin", "ops-admin", "ops_admin", "control-center", "control_center"]);
+const HAS_ADVANCED_UI = ADVANCED_UI_PROFILES.has(UI_PROFILE);
 
 async function openDashboard(page: Page, mode: "core" | "advanced" = "core") {
   await page.goto("/");
-  await page.getByLabel("API URL").fill("http://127.0.0.1:18180");
+  const apiUrlField = page.getByLabel("API URL");
+  if ((await apiUrlField.count()) > 0) {
+    await apiUrlField.fill("http://127.0.0.1:18180");
+  }
   await page.getByLabel("Project ID").fill("omega_demo");
   await page.getByLabel("Reviewer").fill("qa_reviewer");
   await page.getByRole("button", { name: "Refresh Inbox" }).click();
-  await expect(page.getByRole("button", { name: "Core Mode", exact: true })).toBeVisible();
   if (mode === "advanced") {
-    await page.getByRole("button", { name: "Advanced Mode", exact: true }).click();
+    if (!HAS_ADVANCED_UI) {
+      test.skip(true, "advanced UI profile is disabled in this run");
+      return;
+    }
     await page.getByRole("button", { name: "Refresh Intelligence" }).click();
     await expect(page.getByText("Scheduler Run History (30d)")).toBeVisible();
     await expect(page.getByText("Top alert codes")).toBeVisible();
   } else {
-    await expect(page.getByText("Focused Workflow", { exact: true })).toBeVisible();
+    await expect(page.getByText("Company Wiki, Written by Agents.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open Wiki", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Operations \(\d+\)/ })).toBeVisible();
   }
 }
 
@@ -245,57 +252,11 @@ test("task tracker lifecycle flow", async ({ page }) => {
   test.setTimeout(120000);
   await openDashboard(page, "core");
   await expect(page.getByRole("button", { name: "Refresh drafts", exact: true })).toBeVisible();
-  if (IS_CORE_ONLY_PROFILE) {
-    await expect(page.getByRole("button", { name: "Enable Expert Controls", exact: true })).toHaveCount(0);
-  } else {
-    await expect(page.getByRole("button", { name: "Enable Expert Controls", exact: true })).toBeVisible();
-  }
-  await expect(page.getByText("Operator Walkthrough", { exact: true })).toBeVisible();
-  await expect(page.getByText("Onboarding Telemetry (Session)", { exact: true })).toBeVisible();
-  await expect(page.getByText("Intent Signals (Session)", { exact: true })).toBeVisible();
-  await expect(page.getByText("Triage lane", { exact: true })).toBeVisible();
-  await expect(page.getByText(/[123]\/3 complete/)).toBeVisible();
-  await expect(page.getByRole("link", { name: "Getting Started", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "Getting Started", exact: true }).hover();
-  await expect(page.getByText("Bootstrap Synapse API, SDK ingest, and local wiki moderation", { exact: false })).toBeVisible();
-  const triageOpenButtons = page.getByRole("button", { name: /Open draft .* from triage/ });
-  if ((await triageOpenButtons.count()) > 0) {
-    await triageOpenButtons.first().click();
-    await expect(page.getByText("Last action: triage open draft", { exact: false })).toBeVisible();
-  } else {
-    await expect(page.getByText("No triage or quick moderation actions recorded", { exact: false })).toBeVisible();
-  }
   await expect(page.getByText("Review Queue Presets", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Guided Page Builder", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Next Page (Shift+J)", exact: true })).toHaveCount(0);
-  if (!IS_CORE_ONLY_PROFILE) {
-    await page.getByRole("button", { name: "Enable Expert Controls", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Back to Simplified Core", exact: true })).toBeVisible();
-    await expect(page.getByText("Wiki Tree", { exact: true })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Space", exact: true })).toBeVisible();
-    await expect(page.getByLabel("Show only pages with open drafts")).toBeVisible();
-    await expect(page.getByText("Saved Views", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Save current", exact: true })).toBeVisible();
-    await expect(page.getByText("Guided Page Builder", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "All pages", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Next Page (Shift+J)", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Next Conflict Page (Shift+C)", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve Selected", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Reject Selected", exact: true })).toBeVisible();
-    await expect(page.getByText("Review Queue Presets", { exact: true })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "Queue preset", exact: true })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "SLA threshold (hours)", exact: true })).toBeVisible();
-    await expect(page.getByText("Queue health metrics", { exact: true })).toBeVisible();
-    await expect(page.getByText("Moderation throughput (24h)", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "SLA breaches", exact: true }).click();
-    await page.getByRole("button", { name: "Full timeline", exact: true }).click();
-    const guidedCard = page.locator(".guided-page-card").first();
-    await guidedCard.getByLabel("Page title").fill(`E2E Page ${Date.now().toString(36)}`);
-    await guidedCard.getByLabel("First statement").fill("E2E guided builder flow statement.");
-    await guidedCard.getByRole("button", { name: "Normalize slug", exact: true }).click();
-    await guidedCard.getByRole("button", { name: "Create Page", exact: true }).click();
-    await expect(page.getByText(/Page created|Existing page opened/)).toBeVisible();
-  }
+  await page.getByRole("button", { name: /Operations \(\d+\)/ }).click();
+  await page.getByRole("button", { name: "Open Tasks", exact: true }).click();
   const taskPanel = page.locator(".intelligence-panel").filter({ hasText: "Task Tracker" }).first();
   await taskPanel.scrollIntoViewIfNeeded();
   await expect(taskPanel.getByText("Task Tracker", { exact: true })).toBeVisible();

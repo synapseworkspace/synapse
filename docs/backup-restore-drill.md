@@ -3,7 +3,7 @@
 Last updated: 2026-04-02
 
 Automates a safe restore validation for self-hosted deployments:
-1. Reads row-count baseline from live `synapse-postgres`.
+1. Reads row-count baseline from live compose `postgres` service.
 2. Creates SQL backup via `pg_dump`.
 3. Restores backup into temporary Postgres container.
 4. Compares core table counts between source and restored DB.
@@ -41,7 +41,7 @@ Success criteria:
 ```bash
 ./scripts/run_selfhost_backup_restore_drill.sh \
   --env-file .env.selfhost \
-  --source-container synapse-postgres \
+  --source-service postgres \
   --backup-file /tmp/synapse-backup.sql \
   --temp-port 55439 \
   --keep-artifacts

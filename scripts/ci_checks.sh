@@ -55,6 +55,8 @@ python3 -m py_compile scripts/capture_operational_slo_snapshots.py
 python3 -m py_compile scripts/check_release_error_budget.py
 python3 -m py_compile scripts/run_reliability_drills.py
 python3 -m py_compile scripts/export_enterprise_governance_pack.py
+python3 -m py_compile scripts/check_selfhost_stack_defaults.py
+python3 -m py_compile scripts/check_legacy_sync_wal_connector.py
 
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
@@ -356,6 +358,9 @@ python3 scripts/check_repo_hygiene.py >/dev/null
 
 echo "[4.5/6] OpenClaw docs canonical references"
 python3 scripts/check_openclaw_docs_canonical.py >/dev/null
+
+echo "[4.55/6] Self-hosted stack defaults and docs consistency"
+python3 scripts/check_selfhost_stack_defaults.py >/dev/null
 
 echo "[4.6/6] Release error-budget policy gate"
 python3 scripts/check_release_error_budget.py \
@@ -1520,6 +1525,46 @@ assert any("Driver Playbook" in item["metadata"].get("notion_title", "") for ite
 print("notion legacy import smoke ok")
 PY
 
+echo "[5.675/6] SQL legacy import mapping smoke (offline)"
+PYTHONPATH="$ROOT_DIR/services/worker" python3 - <<'PY'
+from app.legacy_import import SQLImporter
+
+importer = SQLImporter(
+    dsn="postgresql://example.invalid/db",
+    query="SELECT id, note, updated_at FROM ops_kb_items WHERE updated_at > %(cursor)s",
+    mapping={
+        "source_id_field": "id",
+        "content_field": "note",
+        "entity_key_field": "driver_id",
+        "category_field": "category",
+        "observed_at_field": "updated_at",
+        "metadata_fields": ["session_id"],
+        "metadata_static": {"source": "ops_kb_items"},
+    },
+    source_id_prefix="hw",
+)
+row = {
+    "id": 42,
+    "note": "Gate for BC Omega is card-only after 10:00",
+    "driver_id": "petrov",
+    "category": "access_policy",
+    "updated_at": "2026-04-03T12:00:00Z",
+    "session_id": "s-1",
+    "metadata": {"team": "ops"},
+}
+record = importer._map_row_to_record(row=row, row_index=1)
+assert record is not None, "record should be produced for valid row"
+assert record["source_id"] == "hw:42", record
+assert "card-only" in record["content"], record
+assert record["entity_key"] == "petrov", record
+assert record["category"] == "access_policy", record
+assert record["observed_at"] == "2026-04-03T12:00:00Z", record
+assert record["metadata"]["team"] == "ops", record
+assert record["metadata"]["source"] == "ops_kb_items", record
+assert importer._extract_cursor_value(row=row, explicit_cursor_column="updated_at") == "2026-04-03T12:00:00Z"
+print("sql legacy import mapping smoke ok")
+PY
+
 echo "[5.68/6] Legacy sync orchestration smoke (offline)"
 PYTHONPATH="$ROOT_DIR/services/worker" python3 - <<'PY'
 from hashlib import sha256
@@ -1557,6 +1602,7 @@ PY
 
 echo "[5.685/6] Legacy seed regression evaluator"
 PYTHONPATH="$ROOT_DIR/services/worker" python3 scripts/eval_legacy_seed_regression.py --summary-only
+PYTHONPATH="$ROOT_DIR/services/worker" python3 scripts/check_legacy_sync_wal_connector.py
 
 PYTHONPATH="$ROOT_DIR/services/worker" python3 services/worker/scripts/run_legacy_sync_scheduler.py --help >/dev/null
 PYTHONPATH="$ROOT_DIR/services/worker" python3 services/worker/scripts/run_queue_incident_sync_scheduler.py --help >/dev/null
@@ -1837,8 +1883,16 @@ else
   echo "self-hosted DR acceptance skipped (set SYNAPSE_RUN_SELFHOST_DR_ACCEPTANCE=1 to run)"
 fi
 
+echo "[5.967/6] Self-hosted chaos drill acceptance (opt-in)"
+if [[ "${SYNAPSE_RUN_SELFHOST_CHAOS_DRILL:-0}" == "1" ]]; then
+  ./scripts/run_selfhost_chaos_drill.sh
+else
+  echo "self-hosted chaos drill skipped (set SYNAPSE_RUN_SELFHOST_CHAOS_DRILL=1 to run)"
+fi
+
 echo "[5.97/6] Self-hosted backup/restore drill script smoke"
 ./scripts/run_selfhost_backup_restore_drill.sh --help >/dev/null
+./scripts/run_selfhost_chaos_drill.sh --help >/dev/null
 
 echo "[6/6] Cleanup artifacts"
 find . -type d -name '__pycache__' -prune -exec rm -rf {} +

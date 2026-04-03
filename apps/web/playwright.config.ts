@@ -31,6 +31,10 @@ export default defineConfig({
       command: `npm run dev -- --host 127.0.0.1 --port ${webPort} --strictPort`,
       url: `http://127.0.0.1:${webPort}`,
       reuseExistingServer: !process.env.CI,
+      env: {
+        ...process.env,
+        VITE_SYNAPSE_API_URL: `http://127.0.0.1:${apiPort}`,
+      },
     },
   ],
   reporter: [["list"], ["html", { outputFolder: "playwright-report", open: "never" }]],

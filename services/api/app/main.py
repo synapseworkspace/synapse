@@ -170,7 +170,7 @@ class TenantProjectUpsertRequest(BaseModel):
 
 
 class EnterpriseIdpConnectionUpsertRequest(BaseModel):
-    tenant_id: UUID | None = None
+    tenant_id: UUID
     provider: str = Field(pattern="^(oidc|saml)$")
     name: str = Field(default="default", min_length=1, max_length=128)
     status: str = Field(default="active", pattern="^(active|disabled)$")
@@ -270,6 +270,8 @@ class WikiBootstrapApproveRunRequest(BaseModel):
     min_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
     require_conflict_free: bool = True
     trusted_source_systems: list[str] | None = None
+    allow_large_batch: bool = False
+    require_trusted_sources_on_apply: bool = True
     dry_run: bool = True
 
 
@@ -664,7 +666,7 @@ class LegacyImportSourceUpsertRequest(BaseModel):
     source_type: str = Field(pattern="^(local_dir|notion_root_page|notion_database|postgres_sql)$")
     source_ref: str = Field(min_length=1, max_length=2000)
     enabled: bool = True
-    sync_interval_minutes: int = Field(default=1440, ge=15, le=10080)
+    sync_interval_minutes: int = Field(default=1440, ge=1, le=10080)
     next_run_at: datetime | None = None
     config: dict[str, Any] | None = None
     updated_by: str = Field(min_length=1, max_length=256)
@@ -1730,6 +1732,377 @@ def _record_access_policy_decision(
                 Jsonb(detail_payload),
             ),
         )
+
+
+def _enterprise_idp_connections_table_exists(conn) -> bool:
+    global _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS
+    if _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'enterprise_idp_connections'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS = True
+    return exists
+
+
+def _scim_api_tokens_table_exists(conn) -> bool:
+    global _SCIM_API_TOKENS_TABLE_EXISTS
+    if _SCIM_API_TOKENS_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'scim_api_tokens'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _SCIM_API_TOKENS_TABLE_EXISTS = True
+    return exists
+
+
+def _scim_directory_users_table_exists(conn) -> bool:
+    global _SCIM_DIRECTORY_USERS_TABLE_EXISTS
+    if _SCIM_DIRECTORY_USERS_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'scim_directory_users'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _SCIM_DIRECTORY_USERS_TABLE_EXISTS = True
+    return exists
+
+
+def _extract_bearer_token_header(authorization: str | None) -> str | None:
+    value = str(authorization or "").strip()
+    if not value:
+        return None
+    if value.lower().startswith("bearer "):
+        token = value[7:].strip()
+        return token or None
+    return None
+
+
+def _scim_token_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _generate_scim_token_secret() -> str:
+    raw = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii").rstrip("=")
+    return f"scim_{raw}"
+
+
+def _mask_token_hash(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= 10:
+        return "********"
+    return f"{text[:6]}...{text[-4:]}"
+
+
+def _normalize_scim_scopes(values: list[str] | None) -> list[str]:
+    allowed = {"users:read", "users:write"}
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        scope = str(raw or "").strip().lower()
+        if scope not in allowed or scope in seen:
+            continue
+        seen.add(scope)
+        out.append(scope)
+    if not out:
+        out = ["users:read", "users:write"]
+    return out[:16]
+
+
+def _resolve_scim_auth_context(conn, authorization: str | None) -> dict[str, Any]:
+    if not _scim_api_tokens_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "scim_not_configured"})
+    token = _extract_bearer_token_header(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail={"code": "scim_token_required"})
+    token_hash = _scim_token_hash(token)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text, tenant_id::text, name, scopes, status, expires_at, metadata
+            FROM scim_api_tokens
+            WHERE token_hash = %s
+            LIMIT 1
+            """,
+            (token_hash,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail={"code": "scim_token_invalid"})
+        status = str(row[4] or "active").strip().lower()
+        expires_at = row[5]
+        if status != "active":
+            raise HTTPException(status_code=401, detail={"code": "scim_token_inactive", "status": status})
+        if expires_at is not None and expires_at <= datetime.now(UTC):
+            cur.execute(
+                """
+                UPDATE scim_api_tokens
+                SET status = 'expired',
+                    updated_at = NOW()
+                WHERE id = %s::uuid
+                """,
+                (str(row[0]),),
+            )
+            raise HTTPException(status_code=401, detail={"code": "scim_token_expired"})
+        cur.execute(
+            """
+            UPDATE scim_api_tokens
+            SET last_used_at = NOW(),
+                updated_at = NOW()
+            WHERE id = %s::uuid
+            """,
+            (str(row[0]),),
+        )
+    return {
+        "token_id": str(row[0]),
+        "tenant_id": str(row[1]),
+        "name": str(row[2] or ""),
+        "scopes": _normalize_scim_scopes(row[3] if isinstance(row[3], list) else []),
+        "status": status,
+        "expires_at": expires_at.isoformat() if expires_at is not None else None,
+        "metadata": dict(row[6] or {}) if isinstance(row[6], dict) else {},
+    }
+
+
+def _require_scim_scope(context: dict[str, Any], required_scope: str) -> None:
+    scopes = [str(item).strip().lower() for item in (context.get("scopes") or []) if str(item).strip()]
+    if required_scope in scopes:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "scim_scope_forbidden",
+            "required_scope": required_scope,
+            "token_scopes": scopes,
+        },
+    )
+
+
+def _scim_pick_email(emails: list[ScimEmailValue] | None) -> str | None:
+    if not emails:
+        return None
+    primary = next((item for item in emails if bool(item.primary)), None)
+    target = primary or emails[0]
+    value = str(target.value or "").strip()
+    return value[:512] if value else None
+
+
+def _scim_roles_from_payload(roles: list[ScimRoleValue] | None) -> list[str]:
+    return _normalize_roles_list([item.value for item in (roles or []) if str(item.value or "").strip()])
+
+
+def _parse_scim_user_filter(value: str | None) -> dict[str, str] | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = re.match(r'^(userName|externalId)\s+eq\s+"([^"]+)"$', raw, flags=re.IGNORECASE)
+    if not match:
+        raise HTTPException(status_code=422, detail={"code": "scim_filter_not_supported", "filter": raw})
+    field = str(match.group(1) or "").strip()
+    expected = str(match.group(2) or "").strip()
+    if not expected:
+        raise HTTPException(status_code=422, detail={"code": "scim_filter_not_supported", "filter": raw})
+    return {"field": field, "value": expected}
+
+
+def _scim_user_resource_from_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    user_id = str(row[0] or "")
+    email = str(row[1]) if row[1] is not None else None
+    display_name = str(row[2]) if row[2] is not None else user_id
+    roles = _normalize_roles_list(row[3] if isinstance(row[3], list) else [])
+    status_value = str(row[4] or "active").strip().lower()
+    updated_at = row[5]
+    external_id = str(row[6]) if row[6] is not None else None
+    active = status_value == "active"
+    payload: dict[str, Any] = {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+        "id": user_id,
+        "userName": user_id,
+        "displayName": display_name,
+        "active": active,
+        "meta": {
+            "resourceType": "User",
+            "lastModified": updated_at.isoformat() if updated_at is not None else None,
+        },
+    }
+    if external_id:
+        payload["externalId"] = external_id
+    if email:
+        payload["emails"] = [{"value": email, "primary": True}]
+    if roles:
+        payload["roles"] = [{"value": role} for role in roles]
+    return payload
+
+
+def _upsert_scim_user(
+    conn,
+    *,
+    tenant_id: str,
+    payload: ScimUserWriteRequest,
+    actor: str,
+    override_user_id: str | None = None,
+) -> dict[str, Any]:
+    user_id = str(override_user_id or payload.userName).strip()
+    if not user_id:
+        raise HTTPException(status_code=422, detail={"code": "scim_username_required"})
+    email = _scim_pick_email(payload.emails)
+    display_name = str(payload.displayName or "").strip() or user_id
+    roles = _scim_roles_from_payload(payload.roles)
+    membership_status = "active" if bool(payload.active) else "disabled"
+    external_id = str(payload.externalId or "").strip() or None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tenant_memberships (
+              id,
+              tenant_id,
+              user_id,
+              email,
+              display_name,
+              roles,
+              status,
+              metadata,
+              created_by,
+              updated_by
+            )
+            VALUES (
+              %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (tenant_id, user_id)
+            DO UPDATE
+              SET email = EXCLUDED.email,
+                  display_name = EXCLUDED.display_name,
+                  roles = EXCLUDED.roles,
+                  status = EXCLUDED.status,
+                  metadata = EXCLUDED.metadata,
+                  updated_by = EXCLUDED.updated_by,
+                  updated_at = NOW()
+            RETURNING user_id, email, display_name, roles, status, updated_at
+            """,
+            (
+                uuid4(),
+                tenant_id,
+                user_id,
+                email,
+                display_name,
+                roles,
+                membership_status,
+                Jsonb(
+                    {
+                        "source": "scim",
+                        "external_id": external_id,
+                    }
+                ),
+                actor,
+                actor,
+            ),
+        )
+        membership_row = cur.fetchone()
+        if _scim_directory_users_table_exists(conn):
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO scim_directory_users (
+                      id,
+                      tenant_id,
+                      external_id,
+                      user_id,
+                      email,
+                      display_name,
+                      active,
+                      roles,
+                      metadata,
+                      raw_payload,
+                      created_by,
+                      updated_by
+                    )
+                    VALUES (
+                      %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    ON CONFLICT (tenant_id, user_id)
+                    DO UPDATE
+                      SET external_id = EXCLUDED.external_id,
+                          email = EXCLUDED.email,
+                          display_name = EXCLUDED.display_name,
+                          active = EXCLUDED.active,
+                          roles = EXCLUDED.roles,
+                          metadata = EXCLUDED.metadata,
+                          raw_payload = EXCLUDED.raw_payload,
+                          updated_by = EXCLUDED.updated_by,
+                          updated_at = NOW()
+                    """,
+                    (
+                        uuid4(),
+                        tenant_id,
+                        external_id,
+                        user_id,
+                        email,
+                        display_name,
+                        bool(payload.active),
+                        roles,
+                        Jsonb({"source": "scim"}),
+                        Jsonb(payload.model_dump(mode="json")),
+                        actor,
+                        actor,
+                    ),
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=409, detail={"code": "scim_external_id_conflict", "message": str(exc)}) from exc
+
+        external_id_row_value = external_id
+        if _scim_directory_users_table_exists(conn):
+            cur.execute(
+                """
+                SELECT external_id
+                FROM scim_directory_users
+                WHERE tenant_id = %s::uuid
+                  AND user_id = %s
+                LIMIT 1
+                """,
+                (tenant_id, user_id),
+            )
+            external_row = cur.fetchone()
+            if external_row is not None and external_row[0] is not None:
+                external_id_row_value = str(external_row[0])
+    return _scim_user_resource_from_row(
+        (
+            membership_row[0],
+            membership_row[1],
+            membership_row[2],
+            membership_row[3],
+            membership_row[4],
+            membership_row[5],
+            external_id_row_value,
+        )
+    )
 
 
 def _normalize_source_system(value: Any, *, default: str = "unknown") -> str:
@@ -11130,6 +11503,647 @@ def upsert_tenant_project(
     }
 
 
+@app.get("/v1/enterprise/idp/connections")
+def list_enterprise_idp_connections(
+    tenant_id: UUID | None = Query(default=None),
+    provider: str | None = Query(default=None),
+    include_disabled: bool = Query(default=True),
+) -> dict[str, Any]:
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider and normalized_provider not in {"oidc", "saml"}:
+        raise HTTPException(status_code=422, detail={"code": "idp_provider_invalid"})
+    filters: list[str] = []
+    params: list[Any] = []
+    if tenant_id is not None:
+        filters.append("tenant_id = %s::uuid")
+        params.append(str(tenant_id))
+    if normalized_provider:
+        filters.append("provider = %s")
+        params.append(normalized_provider)
+    if not include_disabled:
+        filters.append("status = 'active'")
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_conn() as conn:
+        if not _enterprise_idp_connections_table_exists(conn):
+            raise HTTPException(status_code=503, detail={"code": "enterprise_idp_bridge_not_configured"})
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  tenant_id::text,
+                  provider,
+                  name,
+                  status,
+                  config,
+                  metadata,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM enterprise_idp_connections
+                {where_sql}
+                ORDER BY updated_at DESC, name ASC
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+    return {
+        "connections": [
+            {
+                "id": str(row[0]),
+                "tenant_id": str(row[1]) if row[1] is not None else None,
+                "provider": str(row[2]),
+                "name": str(row[3]),
+                "status": str(row[4]),
+                "config": dict(row[5] or {}) if isinstance(row[5], dict) else {},
+                "metadata": dict(row[6] or {}) if isinstance(row[6], dict) else {},
+                "created_by": str(row[7]) if row[7] is not None else None,
+                "updated_by": str(row[8]) if row[8] is not None else None,
+                "created_at": row[9].isoformat() if row[9] is not None else None,
+                "updated_at": row[10].isoformat() if row[10] is not None else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.put("/v1/enterprise/idp/connections", response_model=None)
+def upsert_enterprise_idp_connection(payload: EnterpriseIdpConnectionUpsertRequest, request: Request) -> Any:
+    actor = payload.updated_by or _request_actor(request)
+    with get_conn() as conn:
+        if not _enterprise_idp_connections_table_exists(conn):
+            raise HTTPException(status_code=503, detail={"code": "enterprise_idp_bridge_not_configured"})
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO enterprise_idp_connections (
+                  id,
+                  tenant_id,
+                  provider,
+                  name,
+                  status,
+                  config,
+                  metadata,
+                  created_by,
+                  updated_by
+                )
+                VALUES (
+                  %s, %s::uuid, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (tenant_id, provider, name)
+                DO UPDATE
+                  SET status = EXCLUDED.status,
+                      config = EXCLUDED.config,
+                      metadata = EXCLUDED.metadata,
+                      updated_by = EXCLUDED.updated_by,
+                      updated_at = NOW()
+                RETURNING
+                  id::text,
+                  tenant_id::text,
+                  provider,
+                  name,
+                  status,
+                  config,
+                  metadata,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    uuid4(),
+                    str(payload.tenant_id),
+                    payload.provider.strip().lower(),
+                    payload.name.strip(),
+                    payload.status,
+                    Jsonb(dict(payload.config or {})),
+                    Jsonb(dict(payload.metadata or {})),
+                    actor,
+                    actor,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "connection": {
+            "id": str(row[0]),
+            "tenant_id": str(row[1]) if row[1] is not None else None,
+            "provider": str(row[2]),
+            "name": str(row[3]),
+            "status": str(row[4]),
+            "config": dict(row[5] or {}) if isinstance(row[5], dict) else {},
+            "metadata": dict(row[6] or {}) if isinstance(row[6], dict) else {},
+            "created_by": str(row[7]) if row[7] is not None else None,
+            "updated_by": str(row[8]) if row[8] is not None else None,
+            "created_at": row[9].isoformat() if row[9] is not None else None,
+            "updated_at": row[10].isoformat() if row[10] is not None else None,
+        },
+    }
+
+
+@app.get("/v1/enterprise/idp/saml/metadata", response_model=None)
+def get_enterprise_saml_metadata(
+    tenant_id: UUID,
+    name: str = Query(default="default", min_length=1, max_length=128),
+) -> Any:
+    with get_conn() as conn:
+        if not _enterprise_idp_connections_table_exists(conn):
+            raise HTTPException(status_code=503, detail={"code": "enterprise_idp_bridge_not_configured"})
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT config, status
+                FROM enterprise_idp_connections
+                WHERE tenant_id = %s::uuid
+                  AND provider = 'saml'
+                  AND name = %s
+                LIMIT 1
+                """,
+                (str(tenant_id), name.strip()),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "saml_connection_not_found"})
+    config = dict(row[0] or {}) if isinstance(row[0], dict) else {}
+    if str(row[1] or "active").strip().lower() != "active":
+        raise HTTPException(status_code=409, detail={"code": "saml_connection_disabled"})
+
+    def xml_escape(value: str | None) -> str:
+        text = str(value or "")
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;")
+        )
+
+    entity_id = str(config.get("sp_entity_id") or f"https://synapse.local/tenants/{tenant_id}/saml/metadata").strip()
+    acs_url = str(config.get("acs_url") or "https://synapse.local/v1/auth/saml/acs").strip()
+    idp_sso_url = str(config.get("idp_sso_url") or "").strip()
+    certificate = str(config.get("x509_certificate") or "").strip()
+    cert_block = f"<ds:X509Certificate>{xml_escape(certificate)}</ds:X509Certificate>" if certificate else ""
+    single_sign_on = (
+        f'<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="{xml_escape(idp_sso_url)}"/>'
+        if idp_sso_url
+        else ""
+    )
+    xml_payload = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" '
+        'xmlns:ds="http://www.w3.org/2000/09/xmldsig#" '
+        f'entityID="{xml_escape(entity_id)}">\n'
+        "  <md:SPSSODescriptor AuthnRequestsSigned=\"false\" WantAssertionsSigned=\"true\" "
+        'protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">\n'
+        "    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>\n"
+        f'    <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" '
+        f'Location="{xml_escape(acs_url)}" index="1" isDefault="true"/>\n'
+        f"    {single_sign_on}\n"
+        "    <md:KeyDescriptor use=\"signing\">\n"
+        "      <ds:KeyInfo>\n"
+        "        <ds:X509Data>\n"
+        f"          {cert_block}\n"
+        "        </ds:X509Data>\n"
+        "      </ds:KeyInfo>\n"
+        "    </md:KeyDescriptor>\n"
+        "  </md:SPSSODescriptor>\n"
+        "</md:EntityDescriptor>\n"
+    )
+    return Response(content=xml_payload, media_type="application/samlmetadata+xml")
+
+
+@app.get("/v1/enterprise/scim/tokens")
+def list_enterprise_scim_tokens(
+    tenant_id: UUID | None = Query(default=None),
+    status: str | None = Query(default=None),
+) -> dict[str, Any]:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"active", "revoked", "expired"}:
+        raise HTTPException(status_code=422, detail={"code": "scim_token_status_invalid"})
+    filters: list[str] = []
+    params: list[Any] = []
+    if tenant_id is not None:
+        filters.append("tenant_id = %s::uuid")
+        params.append(str(tenant_id))
+    if normalized_status:
+        filters.append("status = %s")
+        params.append(normalized_status)
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_conn() as conn:
+        if not _scim_api_tokens_table_exists(conn):
+            raise HTTPException(status_code=503, detail={"code": "scim_not_configured"})
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  tenant_id::text,
+                  name,
+                  token_hash,
+                  scopes,
+                  status,
+                  expires_at,
+                  last_used_at,
+                  metadata,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM scim_api_tokens
+                {where_sql}
+                ORDER BY updated_at DESC
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+    return {
+        "tokens": [
+            {
+                "id": str(row[0]),
+                "tenant_id": str(row[1]),
+                "name": str(row[2]),
+                "token_hint": _mask_token_hash(str(row[3] or "")),
+                "scopes": _normalize_scim_scopes(row[4] if isinstance(row[4], list) else []),
+                "status": str(row[5]),
+                "expires_at": row[6].isoformat() if row[6] is not None else None,
+                "last_used_at": row[7].isoformat() if row[7] is not None else None,
+                "metadata": dict(row[8] or {}) if isinstance(row[8], dict) else {},
+                "created_by": str(row[9]) if row[9] is not None else None,
+                "updated_by": str(row[10]) if row[10] is not None else None,
+                "created_at": row[11].isoformat() if row[11] is not None else None,
+                "updated_at": row[12].isoformat() if row[12] is not None else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.put("/v1/enterprise/scim/tokens", response_model=None)
+def create_enterprise_scim_token(payload: EnterpriseScimTokenCreateRequest, request: Request) -> Any:
+    actor = payload.updated_by or _request_actor(request)
+    scopes = _normalize_scim_scopes(payload.scopes)
+    expires_at = payload.expires_at
+    if expires_at is not None and expires_at <= datetime.now(UTC):
+        raise HTTPException(status_code=422, detail={"code": "scim_token_expiry_invalid"})
+    token_secret = _generate_scim_token_secret()
+    token_hash = _scim_token_hash(token_secret)
+    with get_conn() as conn:
+        if not _scim_api_tokens_table_exists(conn):
+            raise HTTPException(status_code=503, detail={"code": "scim_not_configured"})
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO scim_api_tokens (
+                  id,
+                  tenant_id,
+                  name,
+                  token_hash,
+                  scopes,
+                  status,
+                  expires_at,
+                  metadata,
+                  created_by,
+                  updated_by
+                )
+                VALUES (
+                  %s, %s::uuid, %s, %s, %s, 'active', %s, %s, %s, %s
+                )
+                RETURNING
+                  id::text,
+                  tenant_id::text,
+                  name,
+                  scopes,
+                  status,
+                  expires_at,
+                  metadata,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                """,
+                (
+                    uuid4(),
+                    str(payload.tenant_id),
+                    payload.name.strip(),
+                    token_hash,
+                    scopes,
+                    expires_at,
+                    Jsonb(dict(payload.metadata or {})),
+                    actor,
+                    actor,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "token": {
+            "id": str(row[0]),
+            "tenant_id": str(row[1]),
+            "name": str(row[2]),
+            "scopes": _normalize_scim_scopes(row[3] if isinstance(row[3], list) else []),
+            "status": str(row[4]),
+            "expires_at": row[5].isoformat() if row[5] is not None else None,
+            "metadata": dict(row[6] or {}) if isinstance(row[6], dict) else {},
+            "created_by": str(row[7]) if row[7] is not None else None,
+            "updated_by": str(row[8]) if row[8] is not None else None,
+            "created_at": row[9].isoformat() if row[9] is not None else None,
+            "updated_at": row[10].isoformat() if row[10] is not None else None,
+        },
+        "secret": token_secret,
+        "secret_notice": "Store this token now. It is shown only once.",
+    }
+
+
+@app.delete("/v1/enterprise/scim/tokens/{token_id}", response_model=None)
+def revoke_enterprise_scim_token(token_id: UUID, updated_by: str = Query(default="web_ui", min_length=1, max_length=256)) -> Any:
+    actor = (updated_by or "web_ui").strip()[:256] or "web_ui"
+    with get_conn() as conn:
+        if not _scim_api_tokens_table_exists(conn):
+            raise HTTPException(status_code=503, detail={"code": "scim_not_configured"})
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE scim_api_tokens
+                SET status = 'revoked',
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING id::text
+                """,
+                (actor, token_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "scim_token_not_found"})
+    return {"status": "ok", "revoked": True, "token_id": str(row[0])}
+
+
+@app.get("/scim/v2/ServiceProviderConfig")
+def scim_service_provider_config(authorization: str | None = Header(default=None, alias="Authorization")) -> dict[str, Any]:
+    with get_conn() as conn:
+        context = _resolve_scim_auth_context(conn, authorization)
+    _require_scim_scope(context, "users:read")
+    return {
+        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
+        "patch": {"supported": False},
+        "bulk": {"supported": False, "maxOperations": 0, "maxPayloadSize": 0},
+        "filter": {"supported": True, "maxResults": 200},
+        "changePassword": {"supported": False},
+        "sort": {"supported": False},
+        "etag": {"supported": False},
+        "authenticationSchemes": [
+            {
+                "name": "OAuth Bearer Token",
+                "description": "Supply enterprise SCIM token via Authorization: Bearer <token>",
+                "type": "oauthbearertoken",
+                "primary": True,
+            }
+        ],
+    }
+
+
+@app.get("/scim/v2/Users")
+def scim_list_users(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    startIndex: int = Query(default=1, ge=1, le=100000),
+    count: int = Query(default=50, ge=1, le=200),
+    filter: str | None = Query(default=None),
+) -> dict[str, Any]:
+    parsed_filter = _parse_scim_user_filter(filter)
+    with get_conn() as conn:
+        context = _resolve_scim_auth_context(conn, authorization)
+        _require_scim_scope(context, "users:read")
+        tenant_id = str(context["tenant_id"])
+        with_scim = _scim_directory_users_table_exists(conn)
+        extra_filter_sql = ""
+        params: list[Any] = [tenant_id]
+        if parsed_filter is not None:
+            if parsed_filter["field"].lower() == "username":
+                extra_filter_sql = "AND tm.user_id = %s"
+                params.append(parsed_filter["value"])
+            else:
+                if with_scim:
+                    extra_filter_sql = "AND sd.external_id = %s"
+                    params.append(parsed_filter["value"])
+                else:
+                    return {
+                        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+                        "totalResults": 0,
+                        "startIndex": startIndex,
+                        "itemsPerPage": count,
+                        "Resources": [],
+                    }
+        with conn.cursor() as cur:
+            if with_scim:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*)::bigint
+                    FROM tenant_memberships tm
+                    LEFT JOIN scim_directory_users sd
+                      ON sd.tenant_id = tm.tenant_id
+                     AND sd.user_id = tm.user_id
+                    WHERE tm.tenant_id = %s::uuid
+                      {extra_filter_sql}
+                    """,
+                    tuple(params),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*)::bigint
+                    FROM tenant_memberships tm
+                    WHERE tm.tenant_id = %s::uuid
+                      {extra_filter_sql}
+                    """,
+                    tuple(params),
+                )
+            total_row = cur.fetchone()
+            total = int(total_row[0] if total_row and total_row[0] is not None else 0)
+            offset = max(0, startIndex - 1)
+            if with_scim:
+                cur.execute(
+                    f"""
+                    SELECT
+                      tm.user_id,
+                      tm.email,
+                      tm.display_name,
+                      tm.roles,
+                      tm.status,
+                      tm.updated_at,
+                      sd.external_id
+                    FROM tenant_memberships tm
+                    LEFT JOIN scim_directory_users sd
+                      ON sd.tenant_id = tm.tenant_id
+                     AND sd.user_id = tm.user_id
+                    WHERE tm.tenant_id = %s::uuid
+                      {extra_filter_sql}
+                    ORDER BY tm.updated_at DESC, tm.user_id ASC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (*params, count, offset),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT
+                      tm.user_id,
+                      tm.email,
+                      tm.display_name,
+                      tm.roles,
+                      tm.status,
+                      tm.updated_at,
+                      NULL::text
+                    FROM tenant_memberships tm
+                    WHERE tm.tenant_id = %s::uuid
+                      {extra_filter_sql}
+                    ORDER BY tm.updated_at DESC, tm.user_id ASC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (*params, count, offset),
+                )
+            rows = cur.fetchall() or []
+    return {
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+        "totalResults": total,
+        "startIndex": startIndex,
+        "itemsPerPage": count,
+        "Resources": [_scim_user_resource_from_row(row) for row in rows],
+    }
+
+
+@app.get("/scim/v2/Users/{user_id}")
+def scim_get_user(user_id: str, authorization: str | None = Header(default=None, alias="Authorization")) -> dict[str, Any]:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=404, detail={"code": "scim_user_not_found"})
+    with get_conn() as conn:
+        context = _resolve_scim_auth_context(conn, authorization)
+        _require_scim_scope(context, "users:read")
+        tenant_id = str(context["tenant_id"])
+        with_scim = _scim_directory_users_table_exists(conn)
+        with conn.cursor() as cur:
+            if with_scim:
+                cur.execute(
+                    """
+                    SELECT
+                      tm.user_id,
+                      tm.email,
+                      tm.display_name,
+                      tm.roles,
+                      tm.status,
+                      tm.updated_at,
+                      sd.external_id
+                    FROM tenant_memberships tm
+                    LEFT JOIN scim_directory_users sd
+                      ON sd.tenant_id = tm.tenant_id
+                     AND sd.user_id = tm.user_id
+                    WHERE tm.tenant_id = %s::uuid
+                      AND tm.user_id = %s
+                    LIMIT 1
+                    """,
+                    (tenant_id, normalized_user_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      tm.user_id,
+                      tm.email,
+                      tm.display_name,
+                      tm.roles,
+                      tm.status,
+                      tm.updated_at,
+                      NULL::text
+                    FROM tenant_memberships tm
+                    WHERE tm.tenant_id = %s::uuid
+                      AND tm.user_id = %s
+                    LIMIT 1
+                    """,
+                    (tenant_id, normalized_user_id),
+                )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "scim_user_not_found"})
+    return _scim_user_resource_from_row(row)
+
+
+@app.post("/scim/v2/Users", response_model=None)
+def scim_create_user(payload: ScimUserWriteRequest, authorization: str | None = Header(default=None, alias="Authorization")) -> Any:
+    with get_conn() as conn:
+        context = _resolve_scim_auth_context(conn, authorization)
+        _require_scim_scope(context, "users:write")
+        resource = _upsert_scim_user(
+            conn,
+            tenant_id=str(context["tenant_id"]),
+            payload=payload,
+            actor=f"scim:{context['name'] or 'token'}",
+        )
+    return resource
+
+
+@app.put("/scim/v2/Users/{user_id}", response_model=None)
+def scim_replace_user(
+    user_id: str,
+    payload: ScimUserWriteRequest,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Any:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=404, detail={"code": "scim_user_not_found"})
+    with get_conn() as conn:
+        context = _resolve_scim_auth_context(conn, authorization)
+        _require_scim_scope(context, "users:write")
+        resource = _upsert_scim_user(
+            conn,
+            tenant_id=str(context["tenant_id"]),
+            payload=payload,
+            actor=f"scim:{context['name'] or 'token'}",
+            override_user_id=normalized_user_id,
+        )
+    return resource
+
+
+@app.delete("/scim/v2/Users/{user_id}", response_model=None)
+def scim_disable_user(user_id: str, authorization: str | None = Header(default=None, alias="Authorization")) -> Any:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=404, detail={"code": "scim_user_not_found"})
+    with get_conn() as conn:
+        context = _resolve_scim_auth_context(conn, authorization)
+        _require_scim_scope(context, "users:write")
+        tenant_id = str(context["tenant_id"])
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE tenant_memberships
+                SET status = 'disabled',
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE tenant_id = %s::uuid
+                  AND user_id = %s
+                RETURNING user_id
+                """,
+                (f"scim:{context['name'] or 'token'}", tenant_id, normalized_user_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail={"code": "scim_user_not_found"})
+            if _scim_directory_users_table_exists(conn):
+                cur.execute(
+                    """
+                    UPDATE scim_directory_users
+                    SET active = FALSE,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE tenant_id = %s::uuid
+                      AND user_id = %s
+                    """,
+                    (f"scim:{context['name'] or 'token'}", tenant_id, normalized_user_id),
+                )
+    return {"status": "ok", "id": normalized_user_id, "active": False}
+
+
 @app.post("/v1/openclaw/provenance/verify")
 def verify_openclaw_provenance(payload: OpenClawProvenanceVerifyRequest) -> dict[str, Any]:
     result = _verify_openclaw_provenance_payload(
@@ -17679,6 +18693,17 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
 @app.post("/v1/wiki/drafts/bootstrap-approve/run")
 def run_wiki_bootstrap_approve(payload: WikiBootstrapApproveRunRequest) -> dict[str, Any]:
     trusted_sources = _normalize_source_system_list(payload.trusted_source_systems or [])
+    apply_limit_soft_cap = 200
+    if int(payload.sample_size) > int(payload.limit):
+        raise HTTPException(status_code=422, detail="bootstrap_sample_size_exceeds_limit")
+    if not payload.dry_run:
+        if bool(payload.require_trusted_sources_on_apply) and not trusted_sources:
+            raise HTTPException(status_code=409, detail="bootstrap_trusted_sources_required_for_apply")
+        if int(payload.limit) > apply_limit_soft_cap and not bool(payload.allow_large_batch):
+            raise HTTPException(
+                status_code=409,
+                detail=f"bootstrap_apply_limit_exceeded:{int(payload.limit)}>{apply_limit_soft_cap}",
+            )
     with get_conn() as conn:
         source_ownership_advisories = 0
         if _source_ownership_table_exists(conn):
@@ -17803,6 +18828,13 @@ def run_wiki_bootstrap_approve(payload: WikiBootstrapApproveRunRequest) -> dict[
                 "min_confidence": float(payload.min_confidence),
                 "require_conflict_free": bool(payload.require_conflict_free),
                 "trusted_source_systems": trusted_sources,
+                "allow_large_batch": bool(payload.allow_large_batch),
+                "require_trusted_sources_on_apply": bool(payload.require_trusted_sources_on_apply),
+            },
+            "safety": {
+                "apply_limit_soft_cap": apply_limit_soft_cap,
+                "trusted_sources_required_on_apply": bool(payload.require_trusted_sources_on_apply),
+                "next_step": "Run apply only after validating sample quality from dry-run.",
             },
             "summary": {
                 "candidates": len(candidates),
@@ -17856,6 +18888,16 @@ def run_wiki_bootstrap_approve(payload: WikiBootstrapApproveRunRequest) -> dict[
             "min_confidence": float(payload.min_confidence),
             "require_conflict_free": bool(payload.require_conflict_free),
             "trusted_source_systems": trusted_sources,
+            "allow_large_batch": bool(payload.allow_large_batch),
+            "require_trusted_sources_on_apply": bool(payload.require_trusted_sources_on_apply),
+        },
+        "safety": {
+            "apply_limit_soft_cap": apply_limit_soft_cap,
+            "trusted_sources_required_on_apply": bool(payload.require_trusted_sources_on_apply),
+            "rollback_hint": {
+                "moderation_actions_endpoint": f"/v1/wiki/moderation/actions?project_id={quote(payload.project_id)}",
+                "note": "Use moderation audit feed and page history to revert unintended bootstrap approvals.",
+            },
         },
         "summary": {
             "candidates": len(candidates),

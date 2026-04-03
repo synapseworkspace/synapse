@@ -33,6 +33,12 @@ Environment:
 - `GET /health`
 - `GET /v1/auth/mode`
 - `GET /v1/enterprise/rbac/decisions?project_id=...&decision=deny&path_prefix=/v1/wiki/&limit=100` (compliance audit stream for RBAC/tenancy policy decisions)
+- `GET /v1/enterprise/idp/connections?tenant_id=...&provider=saml` (enterprise IdP bridge registry)
+- `PUT /v1/enterprise/idp/connections` (upsert tenant-scoped OIDC/SAML bridge config)
+- `GET /v1/enterprise/idp/saml/metadata?tenant_id=...&name=default` (SAML SP metadata document)
+- `GET /v1/enterprise/scim/tokens?tenant_id=...` (list SCIM provisioning tokens with masked hints)
+- `PUT /v1/enterprise/scim/tokens` (create SCIM provisioning token; returns secret once)
+- `DELETE /v1/enterprise/scim/tokens/{token_id}?updated_by=...` (revoke SCIM token)
 - `POST /v1/auth/session`
 - `GET /v1/auth/session`
 - `DELETE /v1/auth/session`
@@ -41,6 +47,12 @@ Environment:
 - `GET /v1/tenants/{tenant_id}`
 - `PUT /v1/tenants/{tenant_id}/memberships`
 - `PUT /v1/tenants/{tenant_id}/projects`
+- `GET /scim/v2/ServiceProviderConfig` (SCIM discovery endpoint; bearer token protected)
+- `GET /scim/v2/Users?startIndex=1&count=50&filter=userName eq "alice"` (supports equality filters on `userName` / `externalId`)
+- `GET /scim/v2/Users/{user_id}`
+- `POST /scim/v2/Users`
+- `PUT /scim/v2/Users/{user_id}`
+- `DELETE /scim/v2/Users/{user_id}` (soft-disables tenant membership)
 - `POST /v1/events` (idempotent by `event.id`, plus request-level idempotency via `Idempotency-Key`)
 - `GET /v1/events/throughput?project_id=...&window_hours=24&event_type=tool_result` (ingest latency + throughput SLO metrics)
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
@@ -90,7 +102,7 @@ Environment:
 - `GET /v1/wiki/drafts/{draft_id}?project_id=...`
 - `GET /v1/wiki/drafts/{draft_id}/conflicts/explain?project_id=...` (MCP `explain_conflicts` compatible enrichment for UI conflict resolver)
 - `POST /v1/wiki/auto-publish/run` (policy-driven auto-approve runner for eligible drafts; supports `dry_run`)
-- `POST /v1/wiki/drafts/bootstrap-approve/run` (trusted-source migration helper: confidence/conflict/source-gated bulk approve with `dry_run`)
+- `POST /v1/wiki/drafts/bootstrap-approve/run` (trusted-source migration helper: confidence/conflict/source-gated bootstrap; apply path enforces trusted sources and soft batch cap unless explicitly overridden)
 - `GET /v1/wiki/moderation/throughput?project_id=...&window_hours=24&top_reviewers=5` (core moderation throughput/backlog/latency analytics)
 - `POST /v1/wiki/drafts/{draft_id}/approve`
 - `POST /v1/wiki/drafts/{draft_id}/reject`
@@ -167,7 +179,9 @@ Legacy source types for `PUT /v1/legacy-import/sources`:
 - `local_dir`
 - `notion_root_page`
 - `notion_database`
-- `postgres_sql` (query-based pull from existing Postgres memory schema)
+- `postgres_sql`:
+  - query-based pull from existing Postgres memory schema (`sql_sync_mode=polling`);
+  - low-latency logical-slot ingestion (`sql_sync_mode=wal_cdc`).
 - `POST /v1/simulator/runs`
 - `GET /v1/simulator/runs?project_id=...`
 - `GET /v1/simulator/runs/{run_id}?project_id=...&findings_limit=50`
@@ -291,12 +305,14 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Agent Simulator async queue status + API enqueue flow depends on migration `014_agent_simulator_queue_status.sql`.
 - Legacy sync source/run orchestration endpoints depend on migration `015_legacy_sync_orchestration.sql`.
 - `postgres_sql` legacy source type support depends on migration `040_legacy_sync_postgres_sql_source.sql`.
+- low-latency legacy-sync cadence (`sync_interval_minutes >= 1`) depends on migration `048_legacy_sync_low_latency_interval.sql`.
 - wiki collaboration surfaces (comments/watchers) depend on migration `041_wiki_collaboration.sql`.
 - wiki review assignment surfaces depend on migration `042_wiki_review_assignments.sql`.
 - wiki governance + notifications surfaces (space/page ownership, policy, inbox) depend on migration `043_wiki_policy_notifications.sql`.
 - wiki upload storage surfaces depend on migration `044_wiki_uploads.sql`.
 - reviewed wiki-page status lifecycle support depends on migration `045_wiki_reviewed_status.sql`.
 - RBAC/tenancy decision audit stream endpoint depends on migration `046_access_policy_decisions.sql`.
+- Enterprise SAML/SCIM bridge endpoints depend on migration `047_saml_scim_bridge.sql`.
 - Queue incident auto-ticket hooks + incident lifecycle endpoints depend on migration `028_gatekeeper_calibration_queue_incident_hooks.sql`.
 - Incident provider adapters (webhook + PagerDuty + Jira presets with `provider_config`) depend on migration `029_gatekeeper_calibration_queue_incident_provider_adapters.sql`.
 - Alert-to-incident policy templates depend on migration `030_gatekeeper_calibration_queue_incident_policies.sql`.

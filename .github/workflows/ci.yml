@@ -17,6 +17,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_selfhost_chaos_drill:
+        description: "Run self-hosted chaos reliability drill job"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   checks:
@@ -81,4 +86,27 @@ jobs:
         with:
           name: selfhost-dr-report
           path: artifacts/selfhost-dr/report.json
+          if-no-files-found: error
+
+  selfhost-chaos-drill:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_selfhost_chaos_drill == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run self-hosted chaos drill
+        run: ./scripts/run_selfhost_chaos_drill.sh --report-file artifacts/selfhost-chaos/report.json
+
+      - name: Upload chaos drill report
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfhost-chaos-report
+          path: artifacts/selfhost-chaos/report.json
           if-no-files-found: error

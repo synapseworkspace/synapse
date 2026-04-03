@@ -1186,17 +1186,79 @@ class WikiSynthesisEngine:
         tokens = self._tokens(claim.claim_text)
         evidence_count = len(claim.evidence)
         is_short = len(text) < config.operational_short_text_len or len(tokens) < config.operational_short_token_len
-        operational_verbs = {"sent", "send", "clicked", "click", "opened", "processed", "done", "ok"}
+        operational_verbs = {
+            "sent",
+            "send",
+            "clicked",
+            "click",
+            "opened",
+            "processed",
+            "done",
+            "ok",
+            "called",
+            "pinged",
+            "updated",
+            "logged",
+            "assigned",
+            "started",
+            "finished",
+            "отправил",
+            "отправлено",
+            "нажал",
+            "обновил",
+            "сделал",
+            "готово",
+            "позвонил",
+        }
         has_operational_pattern = bool(set(tokens) & operational_verbs)
         policy_words = {"must", "required", "only", "forbidden", "until", "closed", "open", "policy", "quarantine"}
         has_policy_signal = bool(set(tokens) & policy_words)
+        high_priority_words = {
+            "blocked",
+            "outage",
+            "incident",
+            "hazard",
+            "unsafe",
+            "security",
+            "breach",
+            "critical",
+            "failure",
+            "broken",
+            "авария",
+            "инцидент",
+            "опасно",
+            "критично",
+            "поломка",
+            "сбой",
+            "закрыт",
+            "карантин",
+        }
+        has_high_priority_signal = bool(set(tokens) & high_priority_words)
         category_hint = self._category_to_page_type(claim.category)
+        incoming_source_systems = self._extract_source_systems(claim.evidence)
         source_diversity = max(historical_source_count, len(incoming_source_ids))
+        runtime_source_systems = {
+            "runtime_memory",
+            "sdk_monitor",
+            "openclaw_runtime",
+            "agent_runtime",
+            "tool_result",
+            "chat_runtime",
+        }
+        all_runtime_sources = bool(incoming_source_systems) and set(incoming_source_systems).issubset(runtime_source_systems)
+        looks_like_runtime_noise = (
+            all_runtime_sources
+            and repeated_count == 0
+            and source_diversity <= 1
+            and not has_policy_signal
+            and not has_high_priority_signal
+            and (is_short or has_operational_pattern or category_hint == "general")
+        )
         is_single_source_one_off = (
             not has_policy_signal
             and repeated_count == 0
             and source_diversity <= 1
-            and evidence_count <= 1
+            and evidence_count <= 2
         )
 
         score = 0.35
@@ -1217,7 +1279,10 @@ class WikiSynthesisEngine:
         score = max(0.0, min(1.0, round(score, 4)))
         score_before_llm = score
 
-        if is_single_source_one_off:
+        if looks_like_runtime_noise:
+            tier = "operational_memory"
+            rationale = "single-source runtime operational event without durable policy signal"
+        elif is_single_source_one_off:
             tier = "operational_memory"
             rationale = "single-source one-off observation without policy signal"
         elif has_operational_pattern and is_short and repeated_count == 0:
@@ -1295,9 +1360,13 @@ class WikiSynthesisEngine:
             "historical_source_count": historical_source_count,
             "incoming_source_count": len(incoming_source_ids),
             "source_diversity": source_diversity,
+            "incoming_source_systems": incoming_source_systems,
+            "all_runtime_sources": all_runtime_sources,
+            "looks_like_runtime_noise": looks_like_runtime_noise,
             "is_short": is_short,
             "has_operational_pattern": has_operational_pattern,
             "has_policy_signal": has_policy_signal,
+            "has_high_priority_signal": has_high_priority_signal,
             "has_recent_open_conflict": has_recent_open_conflict,
             "gatekeeper_min_sources_for_golden": config.min_sources_for_golden,
             "gatekeeper_conflict_free_days": config.conflict_free_days,
@@ -2589,6 +2658,24 @@ class WikiSynthesisEngine:
             if source_id:
                 source_ids.add(str(source_id))
         return sorted(source_ids)
+
+    def _extract_source_systems(self, evidence: list[dict[str, Any]]) -> list[str]:
+        systems: set[str] = set()
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("source_system")
+            if not candidate and isinstance(item.get("metadata"), dict):
+                metadata = item.get("metadata") or {}
+                candidate = metadata.get("source_system") or metadata.get("source")
+            value = str(candidate or "").strip().lower()
+            if not value:
+                continue
+            value = re.sub(r"[^a-z0-9_./:-]+", "_", value)
+            value = re.sub(r"_+", "_", value).strip("_")
+            if value:
+                systems.add(value[:128])
+        return sorted(systems)
 
     def _normalize_text(self, text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text).lower().strip()

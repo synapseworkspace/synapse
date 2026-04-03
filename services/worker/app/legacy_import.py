@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 import csv
@@ -40,6 +41,13 @@ class LegacyImportResult:
 class LegacySeedPlanResult:
     records: list[dict[str, Any]]
     summary: dict[str, Any]
+
+
+@dataclass(slots=True)
+class SQLImportResult:
+    records: list[dict[str, Any]]
+    parser_warnings: list[str]
+    next_cursor: str | None = None
 
 
 class LegacySeedOrchestrator:
@@ -338,6 +346,295 @@ class LegacyImporter:
             if normalized:
                 chunks.append(f"page {idx}: {normalized}")
         return chunks
+
+
+class SQLImporter:
+    """Collect normalized legacy-import records from an arbitrary SQL query result."""
+
+    def __init__(
+        self,
+        *,
+        dsn: str,
+        query: str,
+        query_params: dict[str, Any] | None = None,
+        mapping: dict[str, Any] | None = None,
+        max_chars_per_record: int = 1800,
+        source_connector: str = "postgres_sql",
+        source_id_prefix: str | None = None,
+    ) -> None:
+        self.dsn = str(dsn or "").strip()
+        self.query = str(query or "").strip()
+        self.query_params = dict(query_params or {})
+        self.mapping = dict(mapping or {})
+        self.max_chars_per_record = max(200, int(max_chars_per_record))
+        self.source_connector = _slugify_key(source_connector) or "postgres_sql"
+        self.source_id_prefix = _slugify_key(str(source_id_prefix or ""), max_len=80)
+        self.query_fingerprint = sha256(self.query.encode("utf-8")).hexdigest()[:16] if self.query else ""
+        self._warnings: list[str] = []
+
+    def collect_records(
+        self,
+        *,
+        max_records: int | None = None,
+        cursor: Any | None = None,
+        cursor_param: str = "cursor",
+        cursor_column: str | None = None,
+    ) -> SQLImportResult:
+        if not self.dsn:
+            raise ValueError("SQL importer requires non-empty dsn")
+        if not self.query:
+            raise ValueError("SQL importer requires non-empty query")
+
+        try:
+            import psycopg  # type: ignore
+            from psycopg.rows import dict_row  # type: ignore
+        except Exception as exc:  # pragma: no cover - runtime dependency validation
+            raise RuntimeError("psycopg is required for SQL importer") from exc
+
+        params = dict(self.query_params)
+        cursor_key = str(cursor_param or "cursor").strip() or "cursor"
+        if cursor is not None and f"%({cursor_key})s" in self.query:
+            params[cursor_key] = cursor
+        if max_records is not None and max_records <= 0:
+            return SQLImportResult(records=[], parser_warnings=list(self._warnings), next_cursor=_to_iso_text(cursor))
+
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                if params:
+                    cur.execute(self.query, params)
+                else:
+                    cur.execute(self.query)
+                rows = cur.fetchall()
+
+        records: list[dict[str, Any]] = []
+        seen_source_ids: set[str] = set()
+        seen_fingerprints: set[str] = set()
+        cursor_token: tuple[str, Any] | None = None
+        cursor_text: str | None = _to_iso_text(cursor)
+        explicit_cursor_column = _sanitize_key(str(cursor_column or "").strip()) or None
+
+        for idx, raw_row in enumerate(rows, start=1):
+            if max_records is not None and len(records) >= max_records:
+                break
+            row = self._normalize_row(raw_row)
+            record = self._map_row_to_record(row=row, row_index=idx)
+            if record is None:
+                continue
+            source_id = str(record.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            if source_id in seen_source_ids:
+                self._warnings.append(f"duplicate source_id in SQL result skipped: {source_id}")
+                continue
+            seen_source_ids.add(source_id)
+
+            content = str(record.get("content") or "").strip()
+            if not content:
+                continue
+            content_fingerprint = sha256(content.encode("utf-8")).hexdigest()
+            if content_fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(content_fingerprint)
+
+            metadata = dict(record.get("metadata") or {})
+            metadata.setdefault("legacy_import", True)
+            metadata.setdefault("source_connector", self.source_connector)
+            metadata.setdefault("sql_query_fingerprint", self.query_fingerprint)
+            metadata.setdefault("content_fingerprint", content_fingerprint[:16])
+            record["metadata"] = metadata
+            records.append(record)
+
+            cursor_value = self._extract_cursor_value(row=row, explicit_cursor_column=explicit_cursor_column)
+            if cursor_value is not None:
+                token = _cursor_sort_token(cursor_value)
+                if cursor_token is None or token > cursor_token:
+                    cursor_token = token
+                    cursor_text = _to_iso_text(cursor_value)
+
+        return SQLImportResult(records=records, parser_warnings=list(self._warnings), next_cursor=cursor_text)
+
+    def _normalize_row(self, raw_row: Any) -> dict[str, Any]:
+        if isinstance(raw_row, dict):
+            return {str(key): value for key, value in raw_row.items()}
+        row_dict: dict[str, Any] = {}
+        if hasattr(raw_row, "items"):
+            try:
+                for key, value in raw_row.items():
+                    row_dict[str(key)] = value
+                return row_dict
+            except Exception:
+                pass
+        return {"value": raw_row}
+
+    def _map_row_to_record(self, *, row: dict[str, Any], row_index: int) -> dict[str, Any] | None:
+        source_id = self._resolve_source_id(row=row, row_index=row_index)
+        content = self._resolve_content(row=row)
+        if not content:
+            return None
+        observed_at = self._resolve_observed_at(row=row)
+        category = self._resolve_category(row=row, content=content)
+        entity_key = self._resolve_entity_key(row=row, source_id=source_id)
+        metadata = self._resolve_metadata(row=row)
+        return {
+            "source_id": source_id,
+            "content": content,
+            "observed_at": observed_at,
+            "entity_key": entity_key,
+            "category": category,
+            "metadata": metadata,
+        }
+
+    def _resolve_source_id(self, *, row: dict[str, Any], row_index: int) -> str:
+        source_id_field = self._mapping_text("source_id_field")
+        source_id = _normalize_whitespace(
+            str(
+                _first_non_empty(
+                    row.get("source_id"),
+                    row.get(source_id_field) if source_id_field else None,
+                    row.get("id"),
+                )
+                or ""
+            )
+        )
+        if not source_id:
+            fallback_payload = json.dumps(_json_safe_payload(row), ensure_ascii=False, sort_keys=True)
+            source_id = f"row_{row_index}_{sha256(fallback_payload.encode('utf-8')).hexdigest()[:16]}"
+        if self.source_id_prefix and not source_id.startswith(f"{self.source_id_prefix}:"):
+            source_id = f"{self.source_id_prefix}:{source_id}"
+        return source_id
+
+    def _resolve_content(self, *, row: dict[str, Any]) -> str:
+        content_field = self._mapping_text("content_field")
+        raw_content = _first_non_empty(
+            row.get("content"),
+            row.get(content_field) if content_field else None,
+        )
+        text = _normalize_whitespace(_stringify_scalar(raw_content))
+        if not text:
+            content_fields = self._mapping_string_list("content_fields")
+            if content_fields:
+                parts: list[str] = []
+                for field in content_fields:
+                    value = _normalize_whitespace(_stringify_scalar(row.get(field)))
+                    if value:
+                        parts.append(f"{field}: {value}")
+                text = _normalize_whitespace(" | ".join(parts))
+        if not text:
+            parts = []
+            for key in sorted(row.keys()):
+                if key == "metadata":
+                    continue
+                value = _normalize_whitespace(_stringify_scalar(row.get(key)))
+                if value:
+                    parts.append(f"{key}: {value}")
+            text = _normalize_whitespace(" | ".join(parts))
+        if len(text) > self.max_chars_per_record:
+            text = f"{text[:self.max_chars_per_record]}...(truncated)"
+        return text
+
+    def _resolve_observed_at(self, *, row: dict[str, Any]) -> str | None:
+        observed_at_field = self._mapping_text("observed_at_field")
+        value = _first_non_empty(
+            row.get("observed_at"),
+            row.get(observed_at_field) if observed_at_field else None,
+            row.get("updated_at"),
+            row.get("created_at"),
+        )
+        observed_at = _to_iso_text(value)
+        return observed_at
+
+    def _resolve_category(self, *, row: dict[str, Any], content: str) -> str:
+        category_field = self._mapping_text("category_field")
+        category = _normalize_seed_category(
+            str(
+                _first_non_empty(
+                    row.get("category"),
+                    row.get(category_field) if category_field else None,
+                )
+                or ""
+            )
+        )
+        if not category:
+            category = _infer_category(content)
+        return category or "legacy_import"
+
+    def _resolve_entity_key(self, *, row: dict[str, Any], source_id: str) -> str:
+        entity_field = self._mapping_text("entity_key_field")
+        entity_key = _slugify_key(
+            str(
+                _first_non_empty(
+                    row.get("entity_key"),
+                    row.get(entity_field) if entity_field else None,
+                )
+                or ""
+            ),
+            max_len=120,
+        )
+        if not entity_key:
+            entity_key = _infer_seed_entity(metadata=row, source_id=source_id)
+        return entity_key or "legacy_entity"
+
+    def _resolve_metadata(self, *, row: dict[str, Any]) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
+        raw_metadata = row.get("metadata")
+        if isinstance(raw_metadata, dict):
+            metadata.update(_json_safe_payload(raw_metadata))
+        elif isinstance(raw_metadata, str):
+            candidate = raw_metadata.strip()
+            if candidate.startswith("{") and candidate.endswith("}"):
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        metadata.update(_json_safe_payload(parsed))
+                except json.JSONDecodeError:
+                    self._warnings.append("metadata column contains invalid JSON object string; ignoring")
+
+        metadata_fields = self._mapping_string_list("metadata_fields")
+        for field in metadata_fields:
+            if field not in row:
+                continue
+            value = row.get(field)
+            if value is None:
+                continue
+            metadata[field] = _json_safe_payload(value)
+
+        metadata_static = self.mapping.get("metadata_static")
+        if isinstance(metadata_static, dict):
+            for key, value in metadata_static.items():
+                safe_key = str(key).strip()
+                if not safe_key:
+                    continue
+                metadata[safe_key] = _json_safe_payload(value)
+        return metadata
+
+    def _extract_cursor_value(self, *, row: dict[str, Any], explicit_cursor_column: str | None) -> Any:
+        if explicit_cursor_column:
+            for key in row.keys():
+                if _sanitize_key(key) == explicit_cursor_column:
+                    return row.get(key)
+        observed_at_field = self._mapping_text("observed_at_field")
+        return _first_non_empty(
+            row.get("observed_at"),
+            row.get(observed_at_field) if observed_at_field else None,
+            row.get("updated_at"),
+        )
+
+    def _mapping_text(self, key: str) -> str:
+        value = self.mapping.get(key)
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+
+    def _mapping_string_list(self, key: str) -> list[str]:
+        raw = self.mapping.get(key)
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for item in raw:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
 
 
 class NotionApiClient:
@@ -679,6 +976,75 @@ def _flatten_payload(payload: Any, *, prefix: str = "") -> list[str]:
 
 def _normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        return value
+    return None
+
+
+def _sanitize_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9_]+", "", value.strip().lower())
+
+
+def _to_iso_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _stringify_scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return json.dumps(_json_safe_payload(value), ensure_ascii=False, sort_keys=True)
+    if isinstance(value, list):
+        return json.dumps(_json_safe_payload(value), ensure_ascii=False)
+    return str(value)
+
+
+def _json_safe_payload(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_safe_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_payload(item) for key, item in value.items()}
+    return str(value)
+
+
+def _cursor_sort_token(value: Any) -> tuple[str, Any]:
+    if isinstance(value, datetime):
+        return ("dt", value.isoformat())
+    if isinstance(value, bool):
+        return ("num", int(value))
+    if isinstance(value, (int, float)):
+        return ("num", float(value))
+    text = _to_iso_text(value) or ""
+    return ("str", text)
 
 
 def _normalize_notion_id(value: str) -> str:

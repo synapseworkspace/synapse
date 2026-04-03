@@ -1,12 +1,16 @@
 # Self-Hosted Deployment Guide (API + Worker + MCP)
 
-Last updated: 2026-04-02
+Last updated: 2026-04-03
 
 This guide runs Synapse core services in Docker Compose with production-like defaults:
 - PostgreSQL (`pgvector`)
 - API (`services/api`)
 - Worker loop (`services/worker`)
 - MCP runtime (`services/mcp`)
+
+Networking default:
+- Compose binds API/MCP/Postgres ports to `127.0.0.1` by default via `SYNAPSE_BIND_HOST`.
+- Keep this for local/staging unless you intentionally expose services behind a secure ingress.
 
 ## 1. Prerequisites
 
@@ -27,6 +31,7 @@ Minimum required edits in `.env.selfhost`:
 2. Set `SYNAPSE_UI_ORIGINS` to allowed frontend origins (do not leave `*` in production).
 3. Optional: set `OPENAI_API_KEY` if you use LLM-assisted Gatekeeper mode.
 4. Optional: set `SYNAPSE_OPENCLAW_PROVENANCE_SECRET` for signed OpenClaw evidence provenance.
+5. Keep `SYNAPSE_BIND_HOST=127.0.0.1` unless you intentionally expose services outside localhost.
 
 ## 3. Boot the Stack
 
@@ -45,7 +50,7 @@ curl -fsS http://localhost:8080/health
 
 Expected:
 - API responds with `{"status":"ok"}`.
-- Containers `synapse-api`, `synapse-worker`, `synapse-mcp`, `synapse-postgres` are `Up`.
+- Services `api`, `worker`, `mcp`, `postgres` are `Up`.
 
 ## 5. Core Loop Smoke Test
 
@@ -68,9 +73,11 @@ CI opt-in path:
 
 1. `workflow_dispatch` in `.github/workflows/ci.yml` with input `run_selfhost_acceptance=true`.
 2. `workflow_dispatch` in `.github/workflows/ci.yml` with input `run_selfhost_dr_drill=true` (backup/restore drill against live compose stack).
-3. Local CI toggles:
+3. `workflow_dispatch` in `.github/workflows/ci.yml` with input `run_selfhost_chaos_drill=true` (dependency-fault injection drill with recovery checks).
+4. Local CI toggles:
    - `SYNAPSE_RUN_SELFHOST_CORE_ACCEPTANCE=1 ./scripts/ci_checks.sh`
    - `SYNAPSE_RUN_SELFHOST_DR_ACCEPTANCE=1 ./scripts/ci_checks.sh`
+   - `SYNAPSE_RUN_SELFHOST_CHAOS_DRILL=1 ./scripts/ci_checks.sh`
 
 ## 6. Operations
 
@@ -109,13 +116,15 @@ Runbook reference:
 Backup:
 
 ```bash
-docker exec synapse-postgres pg_dump -U "${POSTGRES_USER:-synapse}" "${POSTGRES_DB:-synapse}" > synapse-backup.sql
+docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml exec -T postgres \
+  pg_dump -U "${POSTGRES_USER:-synapse}" "${POSTGRES_DB:-synapse}" > synapse-backup.sql
 ```
 
 Restore:
 
 ```bash
-cat synapse-backup.sql | docker exec -i synapse-postgres psql -U "${POSTGRES_USER:-synapse}" "${POSTGRES_DB:-synapse}"
+cat synapse-backup.sql | docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml exec -T postgres \
+  psql -U "${POSTGRES_USER:-synapse}" "${POSTGRES_DB:-synapse}"
 ```
 
 Automated backup/restore drill (dump -> restore into temporary Postgres -> row-count parity check):
@@ -128,6 +137,12 @@ Full DR acceptance (clean compose stack + seed API data + backup/restore drill):
 
 ```bash
 ./scripts/run_selfhost_dr_ci_acceptance.sh --report-file artifacts/selfhost-dr/report.json
+```
+
+Automated chaos/recovery drill (baseline core loop + fault injection + post-fault core loop checks):
+
+```bash
+./scripts/run_selfhost_chaos_drill.sh --report-file artifacts/selfhost-chaos/report.json
 ```
 
 Detailed runbook:

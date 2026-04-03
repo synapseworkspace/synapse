@@ -10,6 +10,10 @@ Run Synapse as a **knowledge synthesis and governance layer**:
 - Synapse ingests + synthesizes + moderates;
 - approved wiki knowledge becomes policy-grade context for retrieval.
 
+For custom Postgres memory stacks, use native `legacy-import` source type `postgres_sql` (`/v1/legacy-import/sources`) to avoid writing one-off importer scripts. Synapse supports both:
+- incremental SQL polling (`sql_sync_mode=polling`, cursor state like `sql_last_cursor`);
+- low-latency WAL/CDC ingestion (`sql_sync_mode=wal_cdc`, logical-slot LSN state like `sql_last_lsn`).
+
 ## Coexistence Modes
 
 `Synapse.attach(..., adoption_mode=...)` (Python) / `adoptionMode` (TypeScript):
@@ -55,6 +59,10 @@ Runtime enforcement uses `X-Synapse-Source-System` and can run in `off|advisory|
 2. `draft_only`:
    - enable proposal path;
    - moderate drafts and tune gatekeeper thresholds.
+   - for trusted migration batches, run bootstrap dry-run + sampled bulk approve:
+     - `POST /v1/wiki/drafts/bootstrap-approve/run` with `dry_run=true`;
+     - inspect `sample` output and confidence/conflict filters;
+     - rerun with `dry_run=false` and conservative `limit`.
 3. `retrieve_only` shadow:
    - enable retrieval tools in controlled slice;
    - compare answer quality with existing retrieval path.
@@ -99,3 +107,4 @@ synapse-cli connect openclaw --dir . --adoption-mode observe_only
 - Keep provenance metadata enabled (`synapse_provenance`) for auditability.
 - Start with `human_required` publish mode, then open `conditional/auto_publish` only for low-risk categories.
 - Track moderation latency and conflict rates before enabling full-loop rollout.
+- For first migration waves, prefer bootstrap-approve in capped batches (`limit`, `min_confidence`, `require_conflict_free`) and keep `dry_run` sampling in the loop.

@@ -6,7 +6,8 @@ cd "$ROOT_DIR"
 
 ENV_FILE=".env.selfhost"
 COMPOSE_FILE="infra/docker-compose.selfhost.yml"
-SOURCE_CONTAINER="synapse-postgres"
+SOURCE_SERVICE="postgres"
+SOURCE_CONTAINER=""
 KEEP_ARTIFACTS="${SYNAPSE_KEEP_BACKUP_DRILL_ARTIFACTS:-0}"
 BACKUP_FILE=""
 TEMP_PORT=""
@@ -20,7 +21,8 @@ Usage:
 Options:
   --env-file <path>            Environment file for self-hosted stack (default: .env.selfhost)
   --compose-file <path>        Compose file path (default: infra/docker-compose.selfhost.yml)
-  --source-container <name>    Running Postgres container name (default: synapse-postgres)
+  --source-service <name>      Compose Postgres service name (default: postgres)
+  --source-container <name>    Optional direct Postgres container name (legacy override)
   --backup-file <path>         Backup SQL output path (default: /tmp/synapse-backup-drill-<ts>.sql)
   --temp-port <port>           Host port for temporary restore Postgres (default: auto)
   --keep-artifacts             Keep backup SQL file after successful drill
@@ -40,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --source-container)
       SOURCE_CONTAINER="$2"
+      shift 2
+      ;;
+    --source-service)
+      SOURCE_SERVICE="$2"
       shift 2
       ;;
     --backup-file)
@@ -70,6 +76,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing env file: $ENV_FILE" >&2
   exit 2
 fi
+COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 
 if [[ -z "$BACKUP_FILE" ]]; then
   BACKUP_FILE="/tmp/synapse-backup-drill-$(date +%Y%m%d%H%M%S).sql"
@@ -109,14 +116,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! docker ps --format '{{.Names}}' | grep -qx "$SOURCE_CONTAINER"; then
-  echo "Source Postgres container is not running: $SOURCE_CONTAINER" >&2
-  exit 2
+if [[ -n "$SOURCE_CONTAINER" ]]; then
+  if ! docker ps --format '{{.Names}}' | grep -qx "$SOURCE_CONTAINER"; then
+    echo "Source Postgres container is not running: $SOURCE_CONTAINER" >&2
+    exit 2
+  fi
+  SOURCE_COUNTS="$(docker exec "$SOURCE_CONTAINER" psql -U "$POSTGRES_USER" "$POSTGRES_DB" -Atqc "$COUNTS_SQL")"
+  docker exec "$SOURCE_CONTAINER" pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "$BACKUP_FILE"
+else
+  if ! "${COMPOSE[@]}" ps --status running --services | grep -qx "$SOURCE_SERVICE"; then
+    echo "Source Postgres service is not running in compose stack: $SOURCE_SERVICE" >&2
+    exit 2
+  fi
+  SOURCE_COUNTS="$("${COMPOSE[@]}" exec -T "$SOURCE_SERVICE" psql -U "$POSTGRES_USER" "$POSTGRES_DB" -Atqc "$COUNTS_SQL")"
+  "${COMPOSE[@]}" exec -T "$SOURCE_SERVICE" pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "$BACKUP_FILE"
 fi
-
-SOURCE_COUNTS="$(docker exec "$SOURCE_CONTAINER" psql -U "$POSTGRES_USER" "$POSTGRES_DB" -Atqc "$COUNTS_SQL")"
-
-docker exec "$SOURCE_CONTAINER" pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > "$BACKUP_FILE"
 
 TEMP_CONTAINER="synapse-restore-drill-$RANDOM"
 docker run -d --rm \
