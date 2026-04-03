@@ -125,8 +125,8 @@ if [[ "$SKIP_PYTHON" != "1" ]]; then
   python -m build packages/synapse-sdk-py --outdir "$PY_DIST_DIR" >/dev/null
   deactivate
 
-  WHEEL_PATH="$(find "$PY_DIST_DIR" -type f -name 'synapse_sdk-*.whl' | head -n 1)"
-  SDIST_PATH="$(find "$PY_DIST_DIR" -type f -name 'synapse_sdk-*.tar.gz' | head -n 1)"
+  WHEEL_PATH="$(find "$PY_DIST_DIR" -type f -name '*.whl' | head -n 1)"
+  SDIST_PATH="$(find "$PY_DIST_DIR" -type f -name '*.tar.gz' | head -n 1)"
   if [[ -z "$WHEEL_PATH" || -z "$SDIST_PATH" ]]; then
     echo "Python build artifacts not found in $PY_DIST_DIR" >&2
     exit 1

@@ -14,6 +14,27 @@ The format is inspired by Keep a Changelog and Semantic Versioning.
 
 - (none yet)
 
+## [0.1.2] - 2026-04-04
+
+### Added
+
+- Wiki-first recovery closure for core UX: default flow now emphasizes `Wiki -> Drafts -> Tasks` with reduced control-plane noise and explicit migration tooling gate in Drafts.
+- Automated pre-prod chaos drill for self-hosted stacks: `scripts/run_selfhost_chaos_drill.sh` with baseline core-loop check, dependency fault injection, post-fault recovery verification, and JSON report artifact.
+- CI workflow opt-in chaos job (`run_selfhost_chaos_drill=true`) with report upload artifact in `.github/workflows/ci.yml`.
+- Low-latency external-memory ingestion path for existing Postgres stacks via `postgres_sql` `sql_sync_mode=wal_cdc` in legacy sync worker:
+  - logical slot change pull (`pg_logical_slot_get_changes` / `pg_logical_slot_peek_changes`);
+  - parser support for `test_decoding` and `wal2json`;
+  - table/operation allowlists, field mapping, LSN cursor persistence, and canonical backfill mapping.
+- Deterministic WAL connector smoke check script `scripts/check_legacy_sync_wal_connector.py` wired into contributor CI checks.
+- Migration `048_legacy_sync_low_latency_interval.sql` enabling 1-minute sync cadence floor for low-latency legacy ingestion.
+
+### Changed
+
+- Legacy sync API validation now allows `sync_interval_minutes >= 1` (was `>= 15`) for near-real-time adoption flows.
+- Reliability and self-hosted runbooks updated with chaos drill execution paths and workflow dispatch instructions.
+- Adoption and legacy-sync docs updated with native WAL/CDC onboarding contracts and config examples for existing memory integration.
+- Roadmap execution queue updated to reflect closure of chaos drill and low-latency ingestion milestones.
+
 ## [0.1.1] - 2026-04-03
 
 ### Added

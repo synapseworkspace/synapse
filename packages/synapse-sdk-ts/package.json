@@ -1,6 +1,6 @@
 {
   "name": "@synapseworkspace/sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "description": "Synapse universal TypeScript SDK",
   "license": "Apache-2.0",
