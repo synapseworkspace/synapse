@@ -55,6 +55,26 @@ The monitor wrapper emits lifecycle + result events to Synapse without changing 
 Nested monitored calls keep propagated `trace_id` / `span_id` for correlation.
 `attach(...)` can auto-detect common runtime shapes for `langgraph`, `langchain`, and `crewai`.
 
+Native framework binding helpers:
+
+```ts
+const lcHandler = synapse.langchainCallbackHandler({ sessionId: "langchain-session-1" });
+const langchainRuntime = synapse.bindLangchain(existingLangChainRuntime, {
+  handler: lcHandler,
+  fallbackMonitor: true
+});
+
+const langgraphRuntime = synapse.bindLanggraph(existingLangGraphRuntime, {
+  fallbackMonitor: true
+});
+
+const crewRuntime = synapse.bindCrewAi(existingCrewRuntime, {
+  monitorRuntime: true
+});
+```
+
+If native callback/event surfaces are unavailable, `bindLangchain`/`bindLanggraph` can fall back to monitor wrappers.
+
 Facade shortcut:
 
 ```ts

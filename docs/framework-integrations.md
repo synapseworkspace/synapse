@@ -9,9 +9,9 @@ This page tracks integration maturity for major agent frameworks.
 | Framework | Status | Notes |
 | --- | --- | --- |
 | OpenClaw | Production path | Native runtime connector, tool wiring, bootstrap presets, provenance chain. |
-| LangGraph | Supported | Monitor/attach wrappers plus native callback binding helpers (`bind_langgraph`). |
-| CrewAI | Supported | Monitor/attach wrappers plus native event/step hook helpers (`bind_crewai`). |
-| LangChain | Supported | Auto-detection + monitor wrappers, plus native callback binding (`langchain_callback_handler`, `bind_langchain`). |
+| LangGraph | Supported | Monitor/attach wrappers plus native callback binding helpers (Python `bind_langgraph`, TypeScript `bindLanggraph`). |
+| CrewAI | Supported | Monitor/attach wrappers plus native event/step hook helpers (Python `bind_crewai`, TypeScript `bindCrewAi`). |
+| LangChain | Supported | Auto-detection + monitor wrappers, plus native callback binding (Python `langchain_callback_handler`/`bind_langchain`, TypeScript `langchainCallbackHandler`/`bindLangchain`). |
 
 Cookbook-backed examples:
 - OpenClaw: `demos/cookbook/openclaw_playbook_sync.py`

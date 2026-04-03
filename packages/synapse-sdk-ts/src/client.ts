@@ -4,6 +4,9 @@ import { buildOpenClawBootstrapOptions } from "./openclaw.js";
 import type {
   AttachBootstrapMemoryOptions,
   AttachOptions,
+  BindCrewAiOptions,
+  BindLangChainOptions,
+  BindLangGraphOptions,
   BootstrapMemoryInput,
   Claim,
   EvidenceRef,
@@ -19,6 +22,8 @@ import type {
   MemoryBackfillRecord,
   MonitorOptions,
   ObservationEvent,
+  LangChainCallbackHandler,
+  LangChainCallbackHandlerOptions,
   SynthesisContext,
   SynapseConfig,
   SynapseTransport,
@@ -44,6 +49,15 @@ const DEFAULT_METHODS: Record<string, string[]> = {
 };
 
 const DEFAULT_OPENCLAW_EVENTS = ["tool:result", "message:received", "agent:completed", "session:reset"] as const;
+const DEFAULT_CREWAI_NATIVE_EVENTS = [
+  "crew_started",
+  "crew_completed",
+  "crew_failed",
+  "task_started",
+  "task_completed",
+  "task_failed",
+  "agent_step"
+] as const;
 
 type TraceContext = {
   traceId: string;
@@ -1676,6 +1690,367 @@ export class Synapse extends SynapseClient {
     );
   }
 
+  langchainCallbackHandler(options: LangChainCallbackHandlerOptions = {}): LangChainCallbackHandler {
+    const integration = options.integration ?? "langchain";
+    const agentId = options.agentId;
+    const sessionId = options.sessionId;
+    const flushOnSuccess = options.flushOnSuccess ?? false;
+    const flushOnError = options.flushOnError ?? true;
+    const captureInputs = options.captureInputs ?? true;
+    const captureOutputs = options.captureOutputs ?? true;
+
+    const emit = (
+      phase: string,
+      payload: Record<string, unknown>,
+      context: { runId?: string; parentRunId?: string },
+      eventType: ObservationEvent["event_type"] = "system_signal"
+    ): void => {
+      const resolvedSessionId = sessionId ?? context.runId ?? makeId();
+      const mergedPayload: Record<string, unknown> = {
+        integration,
+        phase,
+        ...payload
+      };
+      if (context.runId) {
+        mergedPayload.run_id = context.runId;
+      }
+      if (context.parentRunId) {
+        mergedPayload.parent_run_id = context.parentRunId;
+      }
+      this.capture({
+        event_type: eventType,
+        payload: safeSerialize(mergedPayload) as Record<string, unknown>,
+        agent_id: agentId,
+        session_id: resolvedSessionId,
+        tags: [`integration:${integration}`, "native_callback"]
+      });
+    };
+
+    const maybeFlush = (mode: "success" | "error"): void => {
+      if ((mode === "success" && flushOnSuccess) || (mode === "error" && flushOnError)) {
+        void this.flush().catch(() => undefined);
+      }
+    };
+
+    const handler: LangChainCallbackHandler = {
+      on_chain_start: (serialized, inputs, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "chain_started",
+          {
+            serialized: captureInputs ? serialized : undefined,
+            inputs: captureInputs ? inputs : undefined
+          },
+          meta
+        );
+      },
+      on_chain_end: (outputs, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "chain_completed",
+          { outputs: captureOutputs ? outputs : undefined },
+          meta,
+          "tool_result"
+        );
+        maybeFlush("success");
+      },
+      on_chain_error: (error, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "chain_failed",
+          {
+            error_type: error instanceof Error ? error.name : "Error",
+            error_message: error instanceof Error ? error.message : String(error)
+          },
+          meta
+        );
+        maybeFlush("error");
+      },
+      on_tool_start: (serialized, input, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "tool_started",
+          {
+            serialized: captureInputs ? serialized : undefined,
+            tool_input: captureInputs ? input : undefined
+          },
+          meta
+        );
+      },
+      on_tool_end: (output, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "tool_completed",
+          { tool_output: captureOutputs ? output : undefined },
+          meta,
+          "tool_result"
+        );
+      },
+      on_tool_error: (error, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "tool_failed",
+          {
+            error_type: error instanceof Error ? error.name : "Error",
+            error_message: error instanceof Error ? error.message : String(error)
+          },
+          meta
+        );
+      },
+      on_llm_start: (serialized, prompts, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "llm_started",
+          {
+            serialized: captureInputs ? serialized : undefined,
+            prompts: captureInputs ? prompts : undefined
+          },
+          meta
+        );
+      },
+      on_llm_end: (response, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "llm_completed",
+          { response: captureOutputs ? response : undefined },
+          meta,
+          "tool_result"
+        );
+      },
+      on_llm_error: (error, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "llm_failed",
+          {
+            error_type: error instanceof Error ? error.name : "Error",
+            error_message: error instanceof Error ? error.message : String(error)
+          },
+          meta
+        );
+      },
+      on_agent_action: (action, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "agent_action",
+          { action: captureOutputs ? action : undefined },
+          meta,
+          "tool_result"
+        );
+      },
+      on_agent_finish: (finish, kwargs = {}) => {
+        const meta = normalizeCallbackMeta(kwargs);
+        emit(
+          "agent_finished",
+          { finish: captureOutputs ? finish : undefined },
+          meta,
+          "tool_result"
+        );
+      },
+      handleChainStart: (serialized, inputs, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_chain_start?.(serialized, inputs, meta);
+      },
+      handleChainEnd: (outputs, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_chain_end?.(outputs, meta);
+      },
+      handleChainError: (error, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_chain_error?.(error, meta);
+      },
+      handleToolStart: (serialized, input, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_tool_start?.(serialized, input, meta);
+      },
+      handleToolEnd: (output, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_tool_end?.(output, meta);
+      },
+      handleToolError: (error, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_tool_error?.(error, meta);
+      },
+      handleLLMStart: (serialized, prompts, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_llm_start?.(serialized, prompts, meta);
+      },
+      handleLLMEnd: (response, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_llm_end?.(response, meta);
+      },
+      handleLLMError: (error, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_llm_error?.(error, meta);
+      },
+      handleAgentAction: (action, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_agent_action?.(action, meta);
+      },
+      handleAgentEnd: (finish, runId, parentRunId, kwargs = {}) => {
+        const meta = mergeCallbackMeta(runId, parentRunId, kwargs);
+        handler.on_agent_finish?.(finish, meta);
+      }
+    };
+
+    return handler;
+  }
+
+  buildLangchainConfig(handler: LangChainCallbackHandler): { callbacks: LangChainCallbackHandler[] } {
+    return { callbacks: [handler] };
+  }
+
+  bindLangchain<T extends object>(target: T, options: BindLangChainOptions = {}): T {
+    const handler = options.handler ?? this.langchainCallbackHandler({
+      integration: "langchain",
+      agentId: options.agentId,
+      sessionId: options.sessionId
+    });
+    const bound = bindLangChainLikeTarget(target, handler);
+    if (bound.mode) {
+      this.emitDebug("native_framework_bound", {
+        framework: "langchain",
+        binding_mode: bound.mode,
+        target_type: getAttachTargetType(target)
+      });
+      return bound.target;
+    }
+
+    if (options.fallbackMonitor ?? true) {
+      this.emitDebug("native_framework_fallback_monitor", {
+        framework: "langchain",
+        target_type: getAttachTargetType(target)
+      });
+      return this.monitor(target, {
+        integration: "langchain",
+        includeMethods: options.monitorIncludeMethods,
+        agentId: options.agentId,
+        sessionId: options.sessionId
+      });
+    }
+
+    throw new Error("Unable to bind native LangChain callbacks; no supported callback surface found on target.");
+  }
+
+  bindLanggraph<T extends object>(target: T, options: BindLangGraphOptions = {}): T {
+    const handler = options.handler ?? this.langchainCallbackHandler({
+      integration: "langgraph",
+      agentId: options.agentId,
+      sessionId: options.sessionId
+    });
+    const bound = bindLangChainLikeTarget(target, handler);
+    if (bound.mode) {
+      this.emitDebug("native_framework_bound", {
+        framework: "langgraph",
+        binding_mode: bound.mode,
+        target_type: getAttachTargetType(target)
+      });
+      return bound.target;
+    }
+
+    if (options.fallbackMonitor ?? true) {
+      this.emitDebug("native_framework_fallback_monitor", {
+        framework: "langgraph",
+        target_type: getAttachTargetType(target)
+      });
+      return this.monitor(target, {
+        integration: "langgraph",
+        includeMethods: options.monitorIncludeMethods,
+        agentId: options.agentId,
+        sessionId: options.sessionId
+      });
+    }
+
+    throw new Error("Unable to bind native LangGraph callbacks; no supported callback surface found on target.");
+  }
+
+  bindCrewAi<T extends object>(target: T, options: BindCrewAiOptions = {}): T {
+    const eventNames = options.eventNames?.length ? options.eventNames : Array.from(DEFAULT_CREWAI_NATIVE_EVENTS);
+    const defaultHandler = (eventName: string, payload: unknown): void => {
+      this.capture({
+        event_type: "system_signal",
+        payload: safeSerialize({
+          integration: "crewai",
+          phase: "event_bus_signal",
+          event_name: eventName,
+          payload
+        }) as Record<string, unknown>,
+        agent_id: options.agentId,
+        session_id: options.sessionId ?? makeId(),
+        tags: ["integration:crewai", "native_callback"]
+      });
+    };
+    const eventHandler = options.eventHandler ?? defaultHandler;
+
+    let registeredHooks = 0;
+    const targets: unknown[] = [target];
+    const asRecord = target as unknown as Record<string, unknown>;
+    if (asRecord.eventBus != null) {
+      targets.push(asRecord.eventBus);
+    }
+    if (asRecord.event_bus != null) {
+      targets.push(asRecord.event_bus);
+    }
+
+    for (const name of eventNames) {
+      let bound = false;
+      for (const item of targets) {
+        if (registerNativeEventListener(item, name, (payload: unknown) => eventHandler(name, payload))) {
+          bound = true;
+          break;
+        }
+      }
+      if (bound) {
+        registeredHooks += 1;
+      }
+    }
+
+    const stepKeys = ["stepCallback", "step_callback"] as const;
+    for (const key of stepKeys) {
+      if (!Object.prototype.hasOwnProperty.call(asRecord, key) && typeof asRecord[key] !== "function") {
+        continue;
+      }
+      const existing = typeof asRecord[key] === "function" ? (asRecord[key] as (...args: unknown[]) => unknown) : undefined;
+      const wrapped = (...args: unknown[]): unknown => {
+        this.capture({
+          event_type: "system_signal",
+          payload: safeSerialize({
+            integration: "crewai",
+            phase: "step_callback",
+            args
+          }) as Record<string, unknown>,
+          agent_id: options.agentId,
+          session_id: options.sessionId ?? makeId(),
+          tags: ["integration:crewai", "native_callback"]
+        });
+        return existing ? existing(...args) : undefined;
+      };
+      try {
+        (asRecord as Record<string, unknown>)[key] = wrapped;
+        registeredHooks += 1;
+      } catch {
+        // ignore immutable runtime objects
+      }
+      break;
+    }
+
+    this.emitDebug("native_framework_bound", {
+      framework: "crewai",
+      binding_mode: "event_bus_or_callbacks",
+      target_type: getAttachTargetType(target),
+      registered_hooks: registeredHooks
+    });
+
+    if (options.monitorRuntime ?? true) {
+      return this.monitor(target, {
+        integration: "crewai",
+        includeMethods: options.monitorIncludeMethods,
+        agentId: options.agentId,
+        sessionId: options.sessionId
+      });
+    }
+    return target;
+  }
+
   attach<T extends object>(target: T, options: AttachOptions = {}): T {
     const integration = options.integration ?? detectIntegration(target);
     const optionsWithDefaults = this.applyAttachDefaults(target, integration, options);
@@ -2580,6 +2955,148 @@ function normalizeTaskStatus(value: string): TaskStatus {
     return normalized;
   }
   return "todo";
+}
+
+function normalizeCallbackMeta(kwargs: Record<string, unknown>): { runId?: string; parentRunId?: string } {
+  return {
+    runId: asOptionalString(kwargs.run_id) ?? asOptionalString(kwargs.runId),
+    parentRunId: asOptionalString(kwargs.parent_run_id) ?? asOptionalString(kwargs.parentRunId)
+  };
+}
+
+function mergeCallbackMeta(
+  runId?: string,
+  parentRunId?: string,
+  kwargs: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...kwargs };
+  if (runId) {
+    out.run_id = runId;
+    out.runId = runId;
+  }
+  if (parentRunId) {
+    out.parent_run_id = parentRunId;
+    out.parentRunId = parentRunId;
+  }
+  return out;
+}
+
+function bindLangChainLikeTarget<T extends object>(
+  target: T,
+  handler: LangChainCallbackHandler
+): { target: T; mode?: string } {
+  const candidate = target as unknown as Record<string, unknown>;
+
+  if (typeof candidate.withConfig === "function") {
+    try {
+      const withConfig = candidate.withConfig as (config: Record<string, unknown>) => unknown;
+      const bound = withConfig({ callbacks: [handler] });
+      if (bound && typeof bound === "object") {
+        return { target: bound as T, mode: "withConfig" };
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  const callbackManager = candidate.callbackManager;
+  if (callbackManager && typeof callbackManager === "object") {
+    const manager = callbackManager as Record<string, unknown>;
+    if (typeof manager.addHandler === "function") {
+      const addHandler = manager.addHandler as (...args: unknown[]) => unknown;
+      for (const call of [
+        () => addHandler(handler),
+        () => addHandler(handler, true),
+        () => addHandler(handler, { inherit: true })
+      ]) {
+        try {
+          call();
+          return { target, mode: "callbackManager.addHandler" };
+        } catch {
+          // continue
+        }
+      }
+    }
+    if (typeof manager.addHandlers === "function") {
+      const addHandlers = manager.addHandlers as (...args: unknown[]) => unknown;
+      for (const call of [
+        () => addHandlers([handler]),
+        () => addHandlers([handler], true),
+        () => addHandlers([handler], { inherit: true })
+      ]) {
+        try {
+          call();
+          return { target, mode: "callbackManager.addHandlers" };
+        } catch {
+          // continue
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(candidate.callbacks)) {
+    const callbacks = candidate.callbacks as unknown[];
+    if (!callbacks.includes(handler)) {
+      callbacks.push(handler);
+    }
+    return { target, mode: "callbacks_list" };
+  }
+
+  if (Array.isArray(candidate.config)) {
+    // impossible shape for langchain config; ignore
+  } else if (isPlainObject(candidate.config)) {
+    const config = candidate.config as Record<string, unknown>;
+    if (Array.isArray(config.callbacks)) {
+      const callbacks = config.callbacks as unknown[];
+      if (!callbacks.includes(handler)) {
+        callbacks.push(handler);
+      }
+      return { target, mode: "config_callbacks_list" };
+    }
+    config.callbacks = [handler];
+    return { target, mode: "config_callbacks_new" };
+  }
+
+  if (candidate.callbacks == null) {
+    try {
+      candidate.callbacks = [handler];
+      return { target, mode: "callbacks_new" };
+    } catch {
+      // ignore immutable objects
+    }
+  }
+
+  return { target };
+}
+
+function registerNativeEventListener(
+  container: unknown,
+  eventName: string,
+  handler: (payload: unknown) => void
+): boolean {
+  if (!container || typeof container !== "object") {
+    return false;
+  }
+  const target = container as Record<string, unknown>;
+  const attempts: Array<{ method: string; args: unknown[] }> = [
+    { method: "on", args: [eventName, handler] },
+    { method: "addListener", args: [eventName, handler] },
+    { method: "subscribe", args: [eventName, handler] },
+    { method: "registerListener", args: [eventName, handler] }
+  ];
+  for (const attempt of attempts) {
+    const fn = target[attempt.method];
+    if (typeof fn !== "function") {
+      continue;
+    }
+    try {
+      (fn as (...args: unknown[]) => unknown)(...attempt.args);
+      return true;
+    } catch {
+      // try next binding signature
+    }
+  }
+  return false;
 }
 
 function makeClaimIdempotencyKey(claimId: string): string {

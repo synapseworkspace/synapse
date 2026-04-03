@@ -91,6 +91,66 @@ export interface MonitorOptions {
 
 export type AttachOptions = MonitorOptions;
 
+export interface LangChainCallbackHandler {
+  on_chain_start?: (serialized: unknown, inputs: unknown, kwargs?: Record<string, unknown>) => void;
+  on_chain_end?: (outputs: unknown, kwargs?: Record<string, unknown>) => void;
+  on_chain_error?: (error: unknown, kwargs?: Record<string, unknown>) => void;
+  on_tool_start?: (serialized: unknown, input: unknown, kwargs?: Record<string, unknown>) => void;
+  on_tool_end?: (output: unknown, kwargs?: Record<string, unknown>) => void;
+  on_tool_error?: (error: unknown, kwargs?: Record<string, unknown>) => void;
+  on_llm_start?: (serialized: unknown, prompts: unknown, kwargs?: Record<string, unknown>) => void;
+  on_llm_end?: (response: unknown, kwargs?: Record<string, unknown>) => void;
+  on_llm_error?: (error: unknown, kwargs?: Record<string, unknown>) => void;
+  on_agent_action?: (action: unknown, kwargs?: Record<string, unknown>) => void;
+  on_agent_finish?: (finish: unknown, kwargs?: Record<string, unknown>) => void;
+  handleChainStart?: (serialized: unknown, inputs: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleChainEnd?: (outputs: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleChainError?: (error: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleToolStart?: (serialized: unknown, input: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleToolEnd?: (output: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleToolError?: (error: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleLLMStart?: (serialized: unknown, prompts: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleLLMEnd?: (response: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleLLMError?: (error: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleAgentAction?: (action: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+  handleAgentEnd?: (finish: unknown, runId?: string, parentRunId?: string, kwargs?: Record<string, unknown>) => void;
+}
+
+export interface LangChainCallbackHandlerOptions {
+  integration?: "langchain" | "langgraph" | string;
+  agentId?: string;
+  sessionId?: string;
+  flushOnSuccess?: boolean;
+  flushOnError?: boolean;
+  captureInputs?: boolean;
+  captureOutputs?: boolean;
+}
+
+export interface BindLangChainOptions {
+  handler?: LangChainCallbackHandler;
+  fallbackMonitor?: boolean;
+  monitorIncludeMethods?: string[];
+  agentId?: string;
+  sessionId?: string;
+}
+
+export interface BindLangGraphOptions {
+  handler?: LangChainCallbackHandler;
+  fallbackMonitor?: boolean;
+  monitorIncludeMethods?: string[];
+  agentId?: string;
+  sessionId?: string;
+}
+
+export interface BindCrewAiOptions {
+  eventNames?: string[];
+  eventHandler?: (eventName: string, payload: unknown) => void;
+  monitorRuntime?: boolean;
+  monitorIncludeMethods?: string[];
+  agentId?: string;
+  sessionId?: string;
+}
+
 export type OpenClawSearchKnowledgeResolver = (
   query: string,
   limit: number,

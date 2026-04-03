@@ -210,6 +210,54 @@ class CrewAiLikeRunner {
   }
 }
 
+class NativeLangChainBoundRunner {
+  constructor(callbacks = []) {
+    this.callbacks = callbacks;
+  }
+  invoke(payload) {
+    for (const callback of this.callbacks) {
+      if (typeof callback.on_chain_start === "function") {
+        callback.on_chain_start({ name: "native_chain" }, payload, { run_id: "ts-lc-run-1", parent_run_id: "ts-parent-1" });
+      } else if (typeof callback.handleChainStart === "function") {
+        callback.handleChainStart({ name: "native_chain" }, payload, "ts-lc-run-1", "ts-parent-1", {});
+      }
+    }
+    const result = { result: `native:${String(payload?.input ?? "unknown")}` };
+    for (const callback of this.callbacks) {
+      if (typeof callback.on_chain_end === "function") {
+        callback.on_chain_end(result, { run_id: "ts-lc-run-1", parent_run_id: "ts-parent-1" });
+      } else if (typeof callback.handleChainEnd === "function") {
+        callback.handleChainEnd(result, "ts-lc-run-1", "ts-parent-1", {});
+      }
+    }
+    return result;
+  }
+}
+
+class NativeLangChainRuntime {
+  withConfig(config) {
+    return new NativeLangChainBoundRunner(Array.isArray(config?.callbacks) ? config.callbacks : []);
+  }
+}
+
+class NativeCrewRuntime {
+  constructor() {
+    this.listeners = {};
+    this.stepCallback = undefined;
+  }
+  on(eventName, handler) {
+    this.listeners[eventName] = handler;
+  }
+  kickoff() {
+    const started = this.listeners["crew_started"];
+    if (typeof started === "function") started({ status: "started" });
+    if (typeof this.stepCallback === "function") this.stepCallback({ phase: "plan" });
+    const completed = this.listeners["crew_completed"];
+    if (typeof completed === "function") completed({ status: "completed" });
+    return { status: "ok" };
+  }
+}
+
 const frameworkSynapse = new Synapse({ apiUrl: "http://localhost:8080", projectId: "framework_smoke" }, transport);
 frameworkSynapse.setDebugMode({ enabled: true, maxRecords: 500 });
 
@@ -226,6 +274,30 @@ lc.call({ question: "route update" });
 
 const crewRunner = frameworkSynapse.attach(new CrewAiLikeRunner());
 crewRunner.kickoff();
+
+const nativeLangChain = frameworkSynapse.bindLangchain(new NativeLangChainRuntime(), { fallbackMonitor: false, sessionId: "native-lc" });
+const nativeLcResult = nativeLangChain.invoke({ input: "hello" });
+assert.equal(nativeLcResult.result, "native:hello", nativeLcResult);
+
+const nativeLangGraph = frameworkSynapse.bindLanggraph(new NativeLangChainRuntime(), { fallbackMonitor: false, sessionId: "native-lg" });
+const nativeLgResult = nativeLangGraph.invoke({ input: "graph" });
+assert.equal(nativeLgResult.result, "native:graph", nativeLgResult);
+
+const nativeCrew = frameworkSynapse.bindCrewAi(new NativeCrewRuntime(), { sessionId: "native-crewai" });
+nativeCrew.kickoff();
+
+const frozenRunner = Object.preventExtensions({
+  invoke(payload) {
+    return { ok: true, payload };
+  }
+});
+const fallbackNative = frameworkSynapse.bindLangchain(frozenRunner, {
+  fallbackMonitor: true,
+  monitorIncludeMethods: ["invoke"],
+  sessionId: "native-fallback"
+});
+fallbackNative.invoke({ input: "fallback" });
+
 await frameworkSynapse.flush();
 
 const frameworkDebug = frameworkSynapse.getDebugRecords();
@@ -238,6 +310,8 @@ const frameworkAttachIntegrations = new Set(
 assert.ok(frameworkAttachIntegrations.has("langgraph"), frameworkAttachIntegrations);
 assert.ok(frameworkAttachIntegrations.has("langchain"), frameworkAttachIntegrations);
 assert.ok(frameworkAttachIntegrations.has("crewai"), frameworkAttachIntegrations);
+assert.ok(frameworkDebug.some((item) => item.event === "native_framework_bound"), frameworkDebug.map((item) => item.event));
+assert.ok(frameworkDebug.some((item) => item.event === "native_framework_fallback_monitor"), frameworkDebug.map((item) => item.event));
 
 console.log("ts openclaw bootstrap preset smoke ok");
 JS

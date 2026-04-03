@@ -11,6 +11,9 @@ Source: `packages/synapse-sdk-ts/src/types.ts`
 Exports:
 - `AttachBootstrapMemoryOptions`
 - `AttachOptions`
+- `BindCrewAiOptions`
+- `BindLangChainOptions`
+- `BindLangGraphOptions`
 - `BootstrapMemoryInput`
 - `Claim`
 - `CollectInsightOptions`
@@ -24,6 +27,8 @@ Exports:
 - `InsightContext`
 - `InsightExtractor`
 - `InsightSynthesizer`
+- `LangChainCallbackHandler`
+- `LangChainCallbackHandlerOptions`
 - `MemoryBackfillOptions`
 - `MemoryBackfillRecord`
 - `MonitorOptions`
