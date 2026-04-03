@@ -39,6 +39,13 @@ Define one write-master per knowledge domain:
 
 If two systems can mutate the same domain, expect source-of-truth drift.
 
+API support:
+- `GET /v1/adoption/source-ownership?project_id=...`
+- `PUT /v1/adoption/source-ownership`
+- `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
+
+Runtime enforcement uses `X-Synapse-Source-System` and can run in `off|advisory|enforce` mode per domain.
+
 ## Recommended Rollout
 
 1. `observe_only`:
@@ -66,6 +73,18 @@ synapse-cli adopt \
   --memory-source hybrid \
   --adoption-mode observe_only \
   --sample-file ./memory_export.jsonl
+```
+
+Run retrieval in shadow mode before `full_loop` rollout:
+
+```bash
+synapse-cli adopt \
+  --dir . \
+  --sample-file ./memory_export.jsonl \
+  --shadow-retrieval-check \
+  --shadow-query "warehouse 2 ramp status" \
+  --shadow-query "bc omega gate access" \
+  --json
 ```
 
 Generate attach snippet directly:

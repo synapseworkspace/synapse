@@ -44,6 +44,9 @@ Environment:
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
 - `POST /v1/backfill/memory` (bulk historical memory ingestion with `batch_id` and status transitions)
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
+- `GET /v1/adoption/source-ownership?project_id=...`
+- `PUT /v1/adoption/source-ownership`
+- `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
 - `GET /v1/wiki/pages/search?project_id=...&q=...`
 - `GET /v1/mcp/retrieval/explain?project_id=...&q=...&limit=10&related_entity_key=...&context_policy_mode=enforced&min_retrieval_confidence=0.45` (MCP-compatible retrieval diagnostics with score/confidence breakdown, reason traces, and context-injection policy controls)
 - `POST /v1/wiki/pages` (guided/manual page create with initial version + optional sections/statements from markdown)
@@ -196,6 +199,12 @@ Incident secret RBAC:
 - same key + different payload: `409 Conflict`.
 - in-progress request with same key: waits briefly, then returns `409` + `Retry-After` if still processing.
 
+Source ownership enforcement:
+- write-path endpoints (`/v1/events`, `/v1/facts/proposals`, `/v1/backfill/memory`, wiki moderation/publish paths) can be governed by project-level source ownership rules from `/v1/adoption/source-ownership`.
+- pass `X-Synapse-Source-System` to identify caller/source system for enforcement decisions.
+- in `advisory` mode, writes succeed and response includes `source_ownership_advisories`.
+- in `enforce` mode, writes from disallowed sources fail with `403` (`source_ownership_denied`).
+
 ## Cleanup
 
 Run manual TTL cleanup:
@@ -249,6 +258,7 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Incident sync preflight enforcement settings depend on migration `034_gatekeeper_calibration_queue_incident_sync_enforcement.sql`.
 - Incident sync schedule persistence and due-run execution depend on migration `035_gatekeeper_calibration_queue_incident_sync_schedules.sql`.
 - Enterprise tenancy/auth/session baseline depends on migration `037_enterprise_tenancy_auth_rbac.sql`.
+- Source-ownership registry/enforcement endpoints depend on migration `039_source_ownership_policy.sql`.
 - Backfill dedup uses deterministic event id per `batch_id + source_id`; keep `source_id` stable and unique inside a batch.
 - `/v1/events` accepts optional tracing fields (`trace_id`, `span_id`, `parent_span_id`) and stores them in payload metadata (`_synapse.*`).
 - `GET /v1/wiki/pages/{slug}` returns only currently valid active statements (`valid_from <= now <= valid_to`, with open bounds support).

@@ -219,6 +219,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum records to load from --sample-file.",
     )
     adopt.add_argument(
+        "--shadow-retrieval-check",
+        action="store_true",
+        help="Run shadow retrieval diff report against /v1/mcp/retrieval/explain using sample-file as baseline.",
+    )
+    adopt.add_argument(
+        "--shadow-query",
+        action="append",
+        default=None,
+        help="Explicit query for shadow retrieval check (repeatable).",
+    )
+    adopt.add_argument(
+        "--shadow-limit",
+        type=int,
+        default=5,
+        help="Top-k limit for baseline and Synapse retrieval comparison (default: 5).",
+    )
+    adopt.add_argument(
+        "--shadow-timeout-seconds",
+        type=float,
+        default=4.0,
+        help="HTTP timeout per shadow retrieval request (default: 4.0).",
+    )
+    adopt.add_argument(
         "--context-policy-profile",
         default=None,
         help="MCP context policy profile (advisory|enforced|strict_enforced|off).",
@@ -941,6 +964,7 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
     session_id = _coerce_text(args.session_id)
     entity_key = _sanitize_simple_key(args.entity_key, fallback="") if _coerce_text(args.entity_key) else None
 
+    sample_records: list[dict[str, Any]] | None = None
     sample_report: dict[str, Any] | None = None
     sample_file = _coerce_text(args.sample_file)
     if sample_file:
@@ -948,7 +972,12 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
         if not sample_path.exists() or not sample_path.is_file():
             print(f"[synapse-cli] --sample-file does not exist: {sample_path}", file=sys.stderr)
             return 2
-        sample_report = _analyze_adoption_memory_sample(sample_path, max_records=max(1, int(args.max_sample_records)))
+        sample_records = _load_adoption_memory_records(sample_path, max_records=max(1, int(args.max_sample_records)))
+        sample_report = _analyze_adoption_memory_records(
+            sample_path,
+            sample_records,
+            max_records=max(1, int(args.max_sample_records)),
+        )
 
     snippet = _build_openclaw_connect_snippet(
         api_url=api_url,
@@ -1023,6 +1052,43 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
             f"--project-id {project_id} --dry-run"
         ),
     ]
+    shadow_report: dict[str, Any] | None = None
+    if bool(args.shadow_retrieval_check):
+        if not sample_records:
+            print(
+                "[synapse-cli] --shadow-retrieval-check requires --sample-file with at least one parseable record",
+                file=sys.stderr,
+            )
+            return 2
+        queries = [
+            query
+            for raw in list(args.shadow_query or [])
+            for query in [_coerce_text(raw)]
+            if query
+        ]
+        if not queries:
+            queries = _derive_shadow_queries_from_records(sample_records, max_queries=5)
+        if not queries:
+            print(
+                "[synapse-cli] unable to derive shadow queries from sample records; pass --shadow-query",
+                file=sys.stderr,
+            )
+            return 2
+        shadow_report = _run_shadow_retrieval_check(
+            api_url=api_url,
+            project_id=project_id,
+            records=sample_records,
+            queries=queries,
+            limit=max(1, int(args.shadow_limit)),
+            timeout_seconds=max(0.2, float(args.shadow_timeout_seconds)),
+        )
+        if shadow_report.get("summary", {}).get("status") == "error":
+            print(
+                "[synapse-cli] shadow retrieval check failed: "
+                f"{shadow_report.get('summary', {}).get('error')}",
+                file=sys.stderr,
+            )
+            return 3
 
     result = {
         "status": "ok",
@@ -1041,6 +1107,7 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
         "rollout_plan": rollout,
         "risks": risks,
         "sample_report": sample_report,
+        "shadow_retrieval_report": shadow_report,
         "snippet": snippet,
         "quickstart_commands": quickstart_commands,
     }
@@ -1058,6 +1125,14 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
                 f"records={sample_report.get('records_total', 0)} "
                 f"risk={sample_report.get('risk_level')} "
                 f"missing_source_id={sample_report.get('missing_source_id', 0)}"
+            )
+        if shadow_report is not None:
+            summary = shadow_report.get("summary") if isinstance(shadow_report, dict) else {}
+            print(
+                "- shadow_retrieval: "
+                f"queries={summary.get('queries_total', 0)} "
+                f"avg_overlap={summary.get('avg_overlap_ratio', 0.0)} "
+                f"status={summary.get('status')}"
             )
         print("Python snippet:")
         print(snippet)
@@ -1572,18 +1647,12 @@ def _normalize_adoption_mode_value(value: Any, *, fallback: str = "full_loop") -
     return normalized
 
 
-def _analyze_adoption_memory_sample(path: Path, *, max_records: int) -> dict[str, Any]:
+def _load_adoption_memory_records(path: Path, *, max_records: int) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     suffix = path.suffix.lower()
     raw = path.read_text(encoding="utf-8").strip()
     if not raw:
-        return {
-            "path": str(path),
-            "records_total": 0,
-            "records_loaded": 0,
-            "risk_level": "low",
-            "risks": ["Sample file is empty."],
-        }
+        return []
 
     if suffix == ".jsonl":
         for line_no, line in enumerate(raw.splitlines(), start=1):
@@ -1600,24 +1669,48 @@ def _analyze_adoption_memory_sample(path: Path, *, max_records: int) -> dict[str
             if record is not None:
                 record["_line_no"] = line_no
                 records.append(record)
+        return records
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = []
+    candidates: list[Any]
+    if isinstance(parsed, list):
+        candidates = parsed
+    elif isinstance(parsed, dict) and isinstance(parsed.get("records"), list):
+        candidates = list(parsed.get("records") or [])
+    elif isinstance(parsed, dict):
+        candidates = [parsed]
     else:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            parsed = []
-        candidates: list[Any]
-        if isinstance(parsed, list):
-            candidates = parsed
-        elif isinstance(parsed, dict) and isinstance(parsed.get("records"), list):
-            candidates = list(parsed.get("records") or [])
-        elif isinstance(parsed, dict):
-            candidates = [parsed]
-        else:
-            candidates = []
-        for item in candidates[:max_records]:
-            record = _coerce_adoption_memory_record(item, index=len(records))
-            if record is not None:
-                records.append(record)
+        candidates = []
+    for item in candidates[:max_records]:
+        record = _coerce_adoption_memory_record(item, index=len(records))
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def _analyze_adoption_memory_sample(path: Path, *, max_records: int) -> dict[str, Any]:
+    records = _load_adoption_memory_records(path, max_records=max_records)
+    return _analyze_adoption_memory_records(path, records, max_records=max_records)
+
+
+def _analyze_adoption_memory_records(
+    path: Path,
+    records: list[dict[str, Any]],
+    *,
+    max_records: int,
+) -> dict[str, Any]:
+    if not records:
+        return {
+            "path": str(path),
+            "records_total": 0,
+            "records_loaded": 0,
+            "records_limit": max_records,
+            "risk_level": "low",
+            "risks": ["Sample file is empty or had no parseable records."],
+        }
 
     categories: Counter[str] = Counter()
     missing_source_id = 0
@@ -1699,6 +1792,223 @@ def _analyze_adoption_memory_sample(path: Path, *, max_records: int) -> dict[str
         "top_categories": categories.most_common(8),
         "risk_level": risk_level,
         "risks": risks,
+    }
+
+
+def _shadow_tokenize(text: str) -> set[str]:
+    tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+    return {token for token in tokens if len(token) >= 2}
+
+
+def _normalize_shadow_text(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def _shadow_similarity(left: str, right: str) -> float:
+    left_tokens = _shadow_tokenize(left)
+    right_tokens = _shadow_tokenize(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    overlap = left_tokens.intersection(right_tokens)
+    return float(len(overlap)) / float(max(1, min(len(left_tokens), len(right_tokens))))
+
+
+def _derive_shadow_queries_from_records(records: list[dict[str, Any]], *, max_queries: int = 5) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in records:
+        entity = str(row.get("entity_key") or "").strip()
+        category = str(row.get("category") or "").strip()
+        content = str(row.get("content") or "").strip()
+        content_words = re.findall(r"[A-Za-z0-9_#-]+", content)
+        snippet = " ".join(content_words[:8]).strip()
+        candidates = [
+            f"{entity} {category}".strip(),
+            entity,
+            snippet,
+        ]
+        for candidate in candidates:
+            normalized = re.sub(r"\s+", " ", candidate).strip()
+            if len(normalized) < 4:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(normalized)
+            if len(out) >= max(1, int(max_queries)):
+                return out
+    return out
+
+
+def _rank_shadow_baseline_records(
+    records: list[dict[str, Any]],
+    *,
+    query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    query_norm = _normalize_shadow_text(query)
+    query_tokens = _shadow_tokenize(query_norm)
+    if not query_tokens and not query_norm:
+        return []
+
+    scored: list[tuple[float, str, str]] = []
+    for row in records:
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        content_norm = _normalize_shadow_text(content)
+        content_tokens = _shadow_tokenize(content_norm)
+        if not content_tokens:
+            continue
+        shared = query_tokens.intersection(content_tokens)
+        token_recall = float(len(shared)) / float(max(1, len(query_tokens)))
+        token_precision = float(len(shared)) / float(max(1, len(content_tokens)))
+        phrase_bonus = 0.35 if query_norm and query_norm in content_norm else 0.0
+        score = token_recall + (0.35 * token_precision) + phrase_bonus
+        if score <= 0:
+            continue
+        scored.append((score, str(row.get("source_id") or "").strip(), content))
+
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    out: list[dict[str, Any]] = []
+    for score, source_id, content in scored[: max(1, int(limit))]:
+        out.append(
+            {
+                "source_id": source_id,
+                "content": content,
+                "score": round(float(score), 4),
+            }
+        )
+    return out
+
+
+def _extract_shadow_synapse_results(payload: Any, *, limit: int) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        return []
+    out: list[str] = []
+    for row in raw_results:
+        if not isinstance(row, dict):
+            continue
+        text = str(
+            row.get("statement_text")
+            or row.get("claim_text")
+            or row.get("text")
+            or ""
+        ).strip()
+        if not text:
+            continue
+        out.append(text)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _run_shadow_retrieval_check(
+    *,
+    api_url: str,
+    project_id: str,
+    records: list[dict[str, Any]],
+    queries: list[str],
+    limit: int,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    normalized_api = str(api_url or "").strip().rstrip("/")
+    top_k = max(1, int(limit))
+    timeout = max(0.2, float(timeout_seconds))
+    per_query: list[dict[str, Any]] = []
+    overlap_values: list[float] = []
+    successful_queries = 0
+
+    for raw_query in queries:
+        query = str(raw_query or "").strip()
+        if not query:
+            continue
+        baseline = _rank_shadow_baseline_records(records, query=query, limit=top_k)
+        entry: dict[str, Any] = {
+            "query": query,
+            "baseline": baseline,
+        }
+        try:
+            response = requests.get(
+                f"{normalized_api}/v1/mcp/retrieval/explain",
+                params={"project_id": project_id, "q": query, "limit": top_k},
+                timeout=timeout,
+            )
+            entry["http_status"] = int(response.status_code)
+            if response.status_code >= 400:
+                entry["status"] = "error"
+                entry["error"] = f"http_{response.status_code}"
+                per_query.append(entry)
+                continue
+            payload = response.json()
+        except Exception as exc:
+            entry["status"] = "error"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+            per_query.append(entry)
+            continue
+
+        synapse_results = _extract_shadow_synapse_results(payload, limit=top_k)
+        entry["synapse"] = synapse_results
+        baseline_texts = [str(item.get("content") or "") for item in baseline]
+        best_similarities: list[float] = []
+        matched = 0
+        for baseline_text in baseline_texts:
+            best = 0.0
+            for synapse_text in synapse_results:
+                best = max(best, _shadow_similarity(baseline_text, synapse_text))
+            best_similarities.append(best)
+            if best >= 0.5:
+                matched += 1
+
+        denominator = max(1, min(top_k, max(len(baseline_texts), len(synapse_results))))
+        overlap_ratio = float(matched) / float(denominator)
+        avg_similarity = (
+            round(sum(best_similarities) / max(1, len(best_similarities)), 4)
+            if best_similarities
+            else 0.0
+        )
+        entry["status"] = "ok"
+        entry["overlap_ratio"] = round(overlap_ratio, 4)
+        entry["avg_similarity"] = avg_similarity
+        entry["matched_items"] = int(matched)
+        overlap_values.append(overlap_ratio)
+        successful_queries += 1
+        per_query.append(entry)
+
+    errors = sum(1 for item in per_query if item.get("status") == "error")
+    if successful_queries == 0:
+        return {
+            "summary": {
+                "status": "error",
+                "queries_total": len(per_query),
+                "queries_ok": 0,
+                "queries_failed": errors,
+                "error": "no_successful_shadow_queries",
+            },
+            "queries": per_query,
+        }
+
+    avg_overlap = sum(overlap_values) / float(max(1, len(overlap_values)))
+    status = "ok" if errors == 0 else "partial"
+    return {
+        "summary": {
+            "status": status,
+            "queries_total": len(per_query),
+            "queries_ok": successful_queries,
+            "queries_failed": errors,
+            "avg_overlap_ratio": round(avg_overlap, 4),
+            "low_overlap_queries": sum(
+                1
+                for item in per_query
+                if item.get("status") == "ok" and float(item.get("overlap_ratio") or 0.0) < 0.35
+            ),
+            "top_k": top_k,
+        },
+        "queries": per_query,
     }
 
 

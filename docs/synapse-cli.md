@@ -6,6 +6,7 @@
 - readiness diagnostics (`doctor`).
 - project bootstrap scaffolding (`init`).
 - integration snippet generation (`connect`).
+- coexistence/adoption rollout planning (`adopt`).
 - one-command end-to-end core loop verification (`verify core-loop`).
 - one-command onboarding orchestration (`quickstart`).
 
@@ -90,6 +91,30 @@ JSON mode for automation/copy pipelines:
 
 ```bash
 synapse-cli connect openclaw --dir . --env-file .env.synapse --json
+```
+
+## adopt
+
+Generate coexistence rollout plan for projects that already have memory systems:
+
+```bash
+synapse-cli adopt \
+  --dir . \
+  --memory-system ops_kb_items \
+  --memory-source hybrid \
+  --adoption-mode observe_only \
+  --sample-file ./memory_export.jsonl
+```
+
+Run shadow retrieval diff (Synapse retrieval vs lexical baseline from sample records):
+
+```bash
+synapse-cli adopt \
+  --dir . \
+  --sample-file ./memory_export.jsonl \
+  --shadow-retrieval-check \
+  --shadow-query "bc omega gate access policy" \
+  --json
 ```
 
 ## verify core-loop

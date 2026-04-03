@@ -379,7 +379,7 @@ Progress:
 
 ## M14: Existing-Memory Adoption (Weeks 34-36)
 
-Status: `in_progress`
+Status: `done`
 
 Scope:
 - Add first-class coexistence modes for integrating Synapse into mature stacks without replacing existing memory stores.
@@ -398,17 +398,15 @@ Progress:
 - [x] Added CLI adoption wizard (`synapse-cli adopt`) with sample memory analysis, rollout plan, and ready-to-paste integration snippet.
 - [x] Extended CLI connect flow with explicit adoption mode (`--adoption-mode`) and snippet emission.
 - [x] Added CI smoke coverage for adoption wizard flow in `scripts/ci_checks.sh`.
-- [ ] Add API-level source ownership registry and enforcement (`write-master` by domain/category).
-- [ ] Add shadow retrieval evaluation command (`synapse-cli adopt --shadow-retrieval-check`) with quality diff report.
+- [x] Add API-level source ownership registry and enforcement (`write-master` by domain/category).
+- [x] Add shadow retrieval evaluation command (`synapse-cli adopt --shadow-retrieval-check`) with quality diff report.
 - [x] Publish dedicated migration playbook doc (`docs/adoption-existing-memory.md`) with anti-corruption layer patterns.
 
 ## Next Up (Execution Queue)
 
-1. M14: Add API-level source ownership registry and enforce write-master boundaries.
-2. M14: Add shadow retrieval diff checker for safe `retrieve_only` rollout.
-3. Add per-resource RBAC policy-decision audit stream for compliance-grade access reviews.
-4. Add SAML/SCIM bridge on top of OIDC baseline for enterprise IdP provisioning.
-5. Upgrade reliability drills from fixture mode to automated pre-prod chaos runs.
+1. Add per-resource RBAC policy-decision audit stream for compliance-grade access reviews.
+2. Add SAML/SCIM bridge on top of OIDC baseline for enterprise IdP provisioning.
+3. Upgrade reliability drills from fixture mode to automated pre-prod chaos runs.
 
 ## Risks to Watch
 
@@ -423,6 +421,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Completed M14 existing-memory adoption closure: added API source-ownership registry endpoints (`GET/PUT/DELETE /v1/adoption/source-ownership`) + runtime write-master enforcement by domain with advisory/enforce modes and `X-Synapse-Source-System` support, shipped `synapse-cli adopt --shadow-retrieval-check` (baseline-vs-Synapse diff report), and extended CI smoke coverage for shadow adoption checks.
 - 2026-04-03: Started M14 existing-memory adoption track: added Python/TypeScript SDK coexistence modes (`full_loop|observe_only|draft_only|retrieve_only`) with OpenClaw hook/tool gating, shipped CLI migration wizard `synapse-cli adopt` (+ sample memory risk analysis + rollout plan), extended `synapse-cli connect openclaw` with `--adoption-mode`, and added CI smoke coverage for adoption flow.
 - 2026-04-03: Added hybrid publish-control business logic: Gatekeeper config now supports `publish_mode_default` + per-category overrides + conditional auto-publish thresholds (`auto_publish_min_score`, `auto_publish_min_sources`, `auto_publish_require_golden`, `auto_publish_allow_conflicts`); API endpoint `POST /v1/wiki/auto-publish/run` executes policy-driven approvals; worker loop now includes scheduled auto-publish job (`run_wiki_autopublish.py`).
 - 2026-04-03: Completed enterprise foundation closure (M11): shipped migration `037_enterprise_tenancy_auth_rbac.sql` with first-class `tenants`/`tenant_memberships`/`tenant_projects`/`auth_sessions`, added API auth session flow (`/v1/auth/mode`, `/v1/auth/session`), wired request middleware for OIDC + tenancy enforcement + unified RBAC deny-by-default modes, added web console auth-session controls/token propagation, and published governance export/runbook tooling (`scripts/export_enterprise_governance_pack.py`, `docs/enterprise-governance-pack.md`).

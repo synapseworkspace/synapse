@@ -1003,9 +1003,42 @@ PY
 
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python - <<'PY'
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
+from urllib.parse import parse_qs, urlparse
+
+
+class ShadowRetrievalHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path != "/v1/mcp/retrieval/explain":
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"not_found"}')
+            return
+        q = ""
+        params = parse_qs(parsed.query)
+        if "q" in params and params["q"]:
+            q = str(params["q"][0]).lower()
+        if "omega" in q:
+            statement = "BC Omega gate requires card"
+        elif "warehouse" in q:
+            statement = "Warehouse #1 is closed after 19:00"
+        else:
+            statement = "No signal"
+        body = json.dumps({"results": [{"statement_text": statement}], "revision": "ci-shadow"}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        return
 
 with tempfile.TemporaryDirectory(prefix="synapse-cli-init-") as tmp:
     out = subprocess.check_output(
@@ -1092,6 +1125,42 @@ with tempfile.TemporaryDirectory(prefix="synapse-cli-init-") as tmp:
     assert isinstance(adopt_payload.get("rollout_plan"), list) and adopt_payload["rollout_plan"], adopt_payload
     adopt_snippet = str(adopt_payload.get("snippet") or "")
     assert 'adoption_mode="observe_only"' in adopt_snippet, adopt_snippet
+    shadow_server = HTTPServer(("127.0.0.1", 0), ShadowRetrievalHandler)
+    shadow_thread = threading.Thread(target=shadow_server.serve_forever, daemon=True)
+    shadow_thread.start()
+    shadow_api_url = f"http://127.0.0.1:{shadow_server.server_port}"
+    try:
+        shadow_out = subprocess.check_output(
+            [
+                "python",
+                "-m",
+                "synapse_sdk.cli",
+                "adopt",
+                "--dir",
+                tmp,
+                "--env-file",
+                ".env.synapse",
+                "--sample-file",
+                str(sample_path),
+                "--api-url",
+                shadow_api_url,
+                "--shadow-retrieval-check",
+                "--shadow-query",
+                "bc omega gate card",
+                "--json",
+            ],
+            text=True,
+        )
+        shadow_payload = json.loads(shadow_out)
+        shadow_report = shadow_payload.get("shadow_retrieval_report")
+        assert isinstance(shadow_report, dict), shadow_payload
+        summary = shadow_report.get("summary")
+        assert isinstance(summary, dict), shadow_report
+        assert summary.get("queries_ok", 0) >= 1, summary
+        assert summary.get("status") in {"ok", "partial"}, summary
+    finally:
+        shadow_server.shutdown()
+        shadow_server.server_close()
 print("synapse-cli connect openclaw smoke ok")
 print("synapse-cli adopt smoke ok")
 print("synapse-cli init smoke ok")

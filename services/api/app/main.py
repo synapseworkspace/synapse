@@ -222,6 +222,20 @@ class WikiAutoPublishRunRequest(BaseModel):
     dry_run: bool = False
 
 
+class SourceOwnershipRuleUpsert(BaseModel):
+    domain: str = Field(pattern="^(runtime_memory|ops_kb_static|synapse_wiki)$")
+    write_master: str = Field(min_length=1, max_length=128)
+    allowed_source_systems: list[str] | None = None
+    enforcement_mode: str = Field(default="enforce", pattern="^(off|advisory|enforce)$")
+    metadata: dict[str, Any] | None = None
+
+
+class SourceOwnershipPolicyUpsertRequest(BaseModel):
+    project_id: str
+    rules: list[SourceOwnershipRuleUpsert] = Field(min_length=1, max_length=64)
+    updated_by: str | None = None
+
+
 class GatekeeperConfigSnapshotCreateRequest(BaseModel):
     project_id: str
     approved_by: str = Field(min_length=1, max_length=256)
@@ -1030,6 +1044,8 @@ def _insert_task_event(
 
 _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS: bool | None = None
 _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS: bool | None = None
+_SOURCE_OWNERSHIP_TABLE_EXISTS: bool | None = None
+_SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
 
 
 def _gatekeeper_config_has_llm_columns(conn) -> bool:
@@ -1082,6 +1098,187 @@ def _gatekeeper_config_has_publish_columns(conn) -> bool:
         present = {str(row[0]) for row in cur.fetchall()}
     _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS = required.issubset(present)
     return _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS
+
+
+def _source_ownership_table_exists(conn) -> bool:
+    global _SOURCE_OWNERSHIP_TABLE_EXISTS
+    if _SOURCE_OWNERSHIP_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'source_ownership_policies'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _SOURCE_OWNERSHIP_TABLE_EXISTS = True
+    return exists
+
+
+def _normalize_source_system(value: Any, *, default: str = "unknown") -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_./:-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    if not text:
+        return default
+    return text[:128]
+
+
+def _normalize_source_system_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        source = _normalize_source_system(item, default="")
+        if not source or source in seen:
+            continue
+        seen.add(source)
+        out.append(source)
+    return out
+
+
+def _normalize_source_ownership_domain(value: Any, *, default: str = "runtime_memory") -> str:
+    text = str(value or "").strip().lower()
+    if text not in _SOURCE_OWNERSHIP_DOMAINS:
+        return default
+    return text
+
+
+def _load_source_ownership_policies(conn, project_id: str) -> dict[str, dict[str, Any]]:
+    if not _source_ownership_table_exists(conn):
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT domain, write_master, allowed_source_systems, enforcement_mode, metadata, updated_by, created_at, updated_at
+            FROM source_ownership_policies
+            WHERE project_id = %s
+            ORDER BY domain ASC
+            """,
+            (project_id,),
+        )
+        rows = cur.fetchall() or []
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        domain = _normalize_source_ownership_domain(row[0], default="")
+        if not domain:
+            continue
+        write_master = _normalize_source_system(row[1], default="unknown")
+        allowed = _normalize_source_system_list(row[2] if isinstance(row[2], list) else [])
+        if write_master and write_master not in allowed:
+            allowed.append(write_master)
+        enforcement_mode = str(row[3] or "enforce").strip().lower()
+        if enforcement_mode not in {"off", "advisory", "enforce"}:
+            enforcement_mode = "enforce"
+        out[domain] = {
+            "domain": domain,
+            "write_master": write_master,
+            "allowed_source_systems": allowed,
+            "enforcement_mode": enforcement_mode,
+            "metadata": dict(row[4] or {}) if isinstance(row[4], dict) else {},
+            "updated_by": str(row[5]) if row[5] is not None else None,
+            "created_at": row[6].isoformat() if row[6] is not None else None,
+            "updated_at": row[7].isoformat() if row[7] is not None else None,
+        }
+    return out
+
+
+def _extract_source_system_from_payload(payload: Any, *, fallback: str | None = None) -> str:
+    if isinstance(payload, dict):
+        direct = payload.get("source_system") or payload.get("_source_system")
+        if direct is not None:
+            return _normalize_source_system(direct, default=_normalize_source_system(fallback))
+        meta = payload.get("metadata")
+        if isinstance(meta, dict):
+            source = meta.get("source_system") or meta.get("source")
+            if source is not None:
+                return _normalize_source_system(source, default=_normalize_source_system(fallback))
+        backfill = payload.get("backfill")
+        if isinstance(backfill, dict):
+            source = backfill.get("source_system")
+            if source is not None:
+                return _normalize_source_system(source, default=_normalize_source_system(fallback))
+    return _normalize_source_system(fallback)
+
+
+def _resolve_request_source_system(request: Request | None, *, fallback: str | None = None) -> str:
+    if request is None:
+        return _normalize_source_system(fallback)
+    for header_name in ("X-Synapse-Source-System", "X-Source-System"):
+        value = request.headers.get(header_name)
+        if value is not None and str(value).strip():
+            return _normalize_source_system(value, default=_normalize_source_system(fallback))
+    return _normalize_source_system(fallback)
+
+
+def _enforce_source_ownership_write(
+    *,
+    policies_by_domain: dict[str, dict[str, Any]],
+    project_id: str,
+    domain: str,
+    source_system: str,
+    endpoint: str,
+) -> dict[str, Any]:
+    normalized_domain = _normalize_source_ownership_domain(domain)
+    source = _normalize_source_system(source_system)
+    policy = policies_by_domain.get(normalized_domain)
+    if not policy:
+        return {
+            "status": "allow",
+            "project_id": project_id,
+            "domain": normalized_domain,
+            "source_system": source,
+            "reason": "policy_not_configured",
+        }
+    allowed_sources = _normalize_source_system_list(policy.get("allowed_source_systems"))
+    write_master = _normalize_source_system(policy.get("write_master"), default="unknown")
+    if write_master not in allowed_sources:
+        allowed_sources.append(write_master)
+    enforcement_mode = str(policy.get("enforcement_mode") or "enforce").strip().lower()
+    if enforcement_mode not in {"off", "advisory", "enforce"}:
+        enforcement_mode = "enforce"
+    allowed = source in allowed_sources
+    if allowed or enforcement_mode == "off":
+        return {
+            "status": "allow",
+            "project_id": project_id,
+            "domain": normalized_domain,
+            "source_system": source,
+            "write_master": write_master,
+            "allowed_source_systems": allowed_sources,
+            "enforcement_mode": enforcement_mode,
+        }
+    if enforcement_mode == "advisory":
+        return {
+            "status": "advisory",
+            "project_id": project_id,
+            "domain": normalized_domain,
+            "source_system": source,
+            "write_master": write_master,
+            "allowed_source_systems": allowed_sources,
+            "enforcement_mode": enforcement_mode,
+            "reason": "source_not_in_allowed_list",
+            "endpoint": endpoint,
+        }
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "source_ownership_denied",
+            "project_id": project_id,
+            "domain": normalized_domain,
+            "source_system": source,
+            "write_master": write_master,
+            "allowed_source_systems": allowed_sources,
+            "enforcement_mode": enforcement_mode,
+            "endpoint": endpoint,
+        },
+    )
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -10165,11 +10362,33 @@ def verify_openclaw_provenance(payload: OpenClawProvenanceVerifyRequest) -> dict
 @app.post("/v1/events", response_model=None)
 def ingest_events(
     batch: EventBatch,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Any:
     inserted = 0
     response: dict[str, int]
+    source_ownership_advisories = 0
     with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            header_source = _resolve_request_source_system(request, fallback=None)
+            policy_cache: dict[str, dict[str, dict[str, Any]]] = {}
+            for event in batch.events:
+                project_id = str(event.project_id or "").strip()
+                if not project_id:
+                    continue
+                project_policies = policy_cache.get(project_id)
+                if project_policies is None:
+                    project_policies = _load_source_ownership_policies(conn, project_id)
+                    policy_cache[project_id] = project_policies
+                check = _enforce_source_ownership_write(
+                    policies_by_domain=project_policies,
+                    project_id=project_id,
+                    domain="runtime_memory",
+                    source_system=_extract_source_system_from_payload(event.payload, fallback=header_source),
+                    endpoint="/v1/events",
+                )
+                if check.get("status") == "advisory":
+                    source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
@@ -10223,6 +10442,8 @@ def ingest_events(
                     )
                     inserted += cur.rowcount
                 response = {"accepted": len(batch.events), "inserted": inserted, "deduplicated": len(batch.events) - inserted}
+                if source_ownership_advisories > 0:
+                    response["source_ownership_advisories"] = source_ownership_advisories
                 mark_request_completed(
                     conn,
                     endpoint="/v1/events",
@@ -10368,10 +10589,31 @@ def get_event_ingest_throughput(
 @app.post("/v1/facts/proposals", response_model=None)
 def propose_fact(
     payload: ClaimProposal,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Any:
     response = {"status": "queued"}
+    source_ownership_advisories = 0
     with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            project_id = str(payload.claim.project_id or "").strip()
+            if project_id:
+                source_hint = _resolve_request_source_system(request, fallback=None)
+                for evidence in payload.claim.evidence:
+                    source_candidate = _extract_source_system_from_payload(evidence, fallback=None)
+                    if source_candidate != "unknown":
+                        source_hint = source_candidate
+                        break
+                policies = _load_source_ownership_policies(conn, project_id)
+                check = _enforce_source_ownership_write(
+                    policies_by_domain=policies,
+                    project_id=project_id,
+                    domain="runtime_memory",
+                    source_system=source_hint,
+                    endpoint="/v1/facts/proposals",
+                )
+                if check.get("status") == "advisory":
+                    source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
@@ -10408,7 +10650,11 @@ def propose_fact(
                     endpoint="/v1/facts/proposals",
                     idempotency_key=idempotency_key,
                     status_code=200,
-                    response_body=response,
+                    response_body=(
+                        {**response, "source_ownership_advisories": source_ownership_advisories}
+                        if source_ownership_advisories > 0
+                        else response
+                    ),
                 )
             except Exception as exc:
                 mark_request_failed(
@@ -10418,20 +10664,40 @@ def propose_fact(
                     error_message=str(exc),
                 )
                 raise
+    if source_ownership_advisories > 0:
+        return {**response, "source_ownership_advisories": source_ownership_advisories}
     return response
 
 
 @app.post("/v1/backfill/memory", response_model=None)
 def ingest_memory_backfill(
     payload: MemoryBackfillRequest,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Any:
     batch = payload.batch
     batch_id = batch.batch_id or uuid4()
     inserted = 0
     accepted = len(batch.records)
+    source_ownership_advisories = 0
 
     with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            project_id = str(batch.project_id or "").strip()
+            if project_id:
+                source_hint = _normalize_source_system(
+                    batch.source_system or _resolve_request_source_system(request, fallback=None)
+                )
+                policies = _load_source_ownership_policies(conn, project_id)
+                check = _enforce_source_ownership_write(
+                    policies_by_domain=policies,
+                    project_id=project_id,
+                    domain="runtime_memory",
+                    source_system=source_hint,
+                    endpoint="/v1/backfill/memory",
+                )
+                if check.get("status") == "advisory":
+                    source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
@@ -10491,6 +10757,8 @@ def ingest_memory_backfill(
                         "inserted": 0,
                         "deduplicated": accepted,
                     }
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
                     mark_request_completed(
                         conn,
                         endpoint="/v1/backfill/memory",
@@ -10568,6 +10836,8 @@ def ingest_memory_backfill(
                     "inserted_events": int(inserted_events),
                     "next_action": "run_worker" if next_status == "ready" else "continue_upload",
                 }
+                if source_ownership_advisories > 0:
+                    response["source_ownership_advisories"] = source_ownership_advisories
                 mark_request_completed(
                     conn,
                     endpoint="/v1/backfill/memory",
@@ -10640,11 +10910,24 @@ def get_memory_backfill_batch(batch_id: UUID, project_id: str) -> Any:
 @app.post("/v1/wiki/pages", response_model=None)
 def create_wiki_page(
     payload: WikiPageCreateRequest,
+    request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Any:
     endpoint = "/v1/wiki/pages"
     request_payload = payload.model_dump(mode="json")
+    source_ownership_advisories = 0
     with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.created_by or "synapse_api"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
@@ -10699,6 +10982,8 @@ def create_wiki_page(
                     }
                     if payload.allow_existing:
                         response = {"status": "existing", "page": existing_payload}
+                        if source_ownership_advisories > 0:
+                            response["source_ownership_advisories"] = source_ownership_advisories
                         mark_request_completed(
                             conn,
                             endpoint=endpoint,
@@ -10834,6 +11119,8 @@ def create_wiki_page(
                     "snapshot_id": str(snapshot_id),
                     "inserted_statements": len(inserted_statement_ids),
                 }
+                if source_ownership_advisories > 0:
+                    response["source_ownership_advisories"] = source_ownership_advisories
                 mark_request_completed(
                     conn,
                     endpoint=endpoint,
@@ -11720,10 +12007,23 @@ def explain_wiki_draft_conflicts(
 def approve_wiki_draft(
     draft_id: UUID,
     payload: DraftApproveRequest,
+    source_system: str | None = Header(default=None, alias="X-Synapse-Source-System"),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Any:
     endpoint = f"/v1/wiki/drafts/{draft_id}/approve"
+    source_ownership_advisories = 0
     with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_normalize_source_system(source_system or payload.reviewed_by or "human_moderation"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
@@ -12253,6 +12553,8 @@ def approve_wiki_draft(
                     "structured_edits_applied": len(structured_section_edits),
                     "decision": final_decision,
                 }
+                if source_ownership_advisories > 0:
+                    response["source_ownership_advisories"] = source_ownership_advisories
             mark_request_completed(
                 conn,
                 endpoint=endpoint,
@@ -12283,10 +12585,23 @@ def approve_wiki_draft(
 def reject_wiki_draft(
     draft_id: UUID,
     payload: DraftRejectRequest,
+    source_system: str | None = Header(default=None, alias="X-Synapse-Source-System"),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Any:
     endpoint = f"/v1/wiki/drafts/{draft_id}/reject"
+    source_ownership_advisories = 0
     with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_normalize_source_system(source_system or payload.reviewed_by or "human_moderation"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
@@ -12410,6 +12725,8 @@ def reject_wiki_draft(
                     "project_id": project_id,
                     "page_slug": page_slug,
                 }
+                if source_ownership_advisories > 0:
+                    response["source_ownership_advisories"] = source_ownership_advisories
             mark_request_completed(
                 conn,
                 endpoint=endpoint,
@@ -12474,9 +12791,22 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
     total_eligible = 0
     total_approved = 0
     total_failed = 0
+    total_source_ownership_advisories = 0
 
     for project_id in dedup_projects:
         with get_conn() as conn:
+            source_ownership_advisories = 0
+            if _source_ownership_table_exists(conn):
+                ownership_policies = _load_source_ownership_policies(conn, project_id)
+                ownership_check = _enforce_source_ownership_write(
+                    policies_by_domain=ownership_policies,
+                    project_id=project_id,
+                    domain="synapse_wiki",
+                    source_system=_normalize_source_system(payload.reviewed_by or "synapse_autopublisher"),
+                    endpoint="/v1/wiki/auto-publish/run",
+                )
+                if ownership_check.get("status") == "advisory":
+                    source_ownership_advisories += 1
             has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
             policy = {
                 "publish_mode_default": "human_required",
@@ -12658,6 +12988,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
             {
                 "project_id": project_id,
                 "policy": policy,
+                "source_ownership_advisories": source_ownership_advisories,
                 "scanned": scanned,
                 "eligible": eligible,
                 "approved": approved,
@@ -12669,6 +13000,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
         total_eligible += eligible
         total_approved += approved
         total_failed += failed
+        total_source_ownership_advisories += source_ownership_advisories
 
     return {
         "status": "ok",
@@ -12681,6 +13013,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
             "eligible": total_eligible,
             "approved": total_approved,
             "failed": total_failed,
+            "source_ownership_advisories": total_source_ownership_advisories,
         },
         "projects": project_results,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -13156,6 +13489,149 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
             "updated_at": row[7].isoformat(),
             "source": "project_override",
         }
+    }
+
+
+@app.get("/v1/adoption/source-ownership")
+def get_source_ownership_policy(project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        if not _source_ownership_table_exists(conn):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "source_ownership_policy_unavailable",
+                    "message": "source_ownership_policies table is not available. Apply migration 039_source_ownership_policy.sql.",
+                },
+            )
+        policies = _load_source_ownership_policies(conn, project_id)
+
+    policy_list = [policies[key] for key in sorted(policies.keys())]
+    return {
+        "project_id": project_id,
+        "configured_domains": len(policy_list),
+        "domains": sorted(_SOURCE_OWNERSHIP_DOMAINS),
+        "policies": policy_list,
+    }
+
+
+@app.put("/v1/adoption/source-ownership")
+def upsert_source_ownership_policy(payload: SourceOwnershipPolicyUpsertRequest) -> dict[str, Any]:
+    updated_by = _normalize_source_system(payload.updated_by, default="api")
+    with get_conn() as conn:
+        if not _source_ownership_table_exists(conn):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "source_ownership_policy_unavailable",
+                    "message": "source_ownership_policies table is not available. Apply migration 039_source_ownership_policy.sql.",
+                },
+            )
+        with conn.cursor() as cur:
+            for rule in payload.rules:
+                domain = _normalize_source_ownership_domain(rule.domain, default="")
+                if not domain:
+                    continue
+                write_master = _normalize_source_system(rule.write_master)
+                allowed_sources = _normalize_source_system_list(
+                    rule.allowed_source_systems if isinstance(rule.allowed_source_systems, list) else []
+                )
+                if write_master not in allowed_sources:
+                    allowed_sources.append(write_master)
+                enforcement_mode = str(rule.enforcement_mode or "enforce").strip().lower()
+                if enforcement_mode not in {"off", "advisory", "enforce"}:
+                    enforcement_mode = "enforce"
+                metadata = dict(rule.metadata or {}) if isinstance(rule.metadata, dict) else {}
+                cur.execute(
+                    """
+                    INSERT INTO source_ownership_policies (
+                      id,
+                      project_id,
+                      domain,
+                      write_master,
+                      allowed_source_systems,
+                      enforcement_mode,
+                      metadata,
+                      updated_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id, domain) DO UPDATE
+                    SET write_master = EXCLUDED.write_master,
+                        allowed_source_systems = EXCLUDED.allowed_source_systems,
+                        enforcement_mode = EXCLUDED.enforcement_mode,
+                        metadata = EXCLUDED.metadata,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    """,
+                    (
+                        uuid4(),
+                        payload.project_id,
+                        domain,
+                        write_master,
+                        Jsonb(allowed_sources),
+                        enforcement_mode,
+                        Jsonb(metadata),
+                        updated_by,
+                    ),
+                )
+        policies = _load_source_ownership_policies(conn, payload.project_id)
+
+    policy_list = [policies[key] for key in sorted(policies.keys())]
+    return {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "updated_by": updated_by,
+        "configured_domains": len(policy_list),
+        "policies": policy_list,
+    }
+
+
+@app.delete("/v1/adoption/source-ownership/{domain}")
+def delete_source_ownership_policy(
+    domain: str,
+    project_id: str,
+    updated_by: str | None = Query(default=None),
+) -> dict[str, Any]:
+    normalized_domain = _normalize_source_ownership_domain(domain, default="")
+    if not normalized_domain:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_domain",
+                "message": f"Unsupported domain `{domain}`.",
+                "allowed_domains": sorted(_SOURCE_OWNERSHIP_DOMAINS),
+            },
+        )
+    actor = _normalize_source_system(updated_by, default="api")
+    with get_conn() as conn:
+        if not _source_ownership_table_exists(conn):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "source_ownership_policy_unavailable",
+                    "message": "source_ownership_policies table is not available. Apply migration 039_source_ownership_policy.sql.",
+                },
+            )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM source_ownership_policies
+                WHERE project_id = %s
+                  AND domain = %s
+                """,
+                (project_id, normalized_domain),
+            )
+            deleted = cur.rowcount > 0
+        policies = _load_source_ownership_policies(conn, project_id)
+
+    policy_list = [policies[key] for key in sorted(policies.keys())]
+    return {
+        "status": "ok",
+        "project_id": project_id,
+        "domain": normalized_domain,
+        "deleted": deleted,
+        "updated_by": actor,
+        "configured_domains": len(policy_list),
+        "policies": policy_list,
     }
 
 

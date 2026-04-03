@@ -90,6 +90,12 @@ _ROUTE_POLICIES: list[RoutePolicy] = [
     RoutePolicy({"POST"}, re.compile(r"^/v1/events$"), _ROLE_AGENT, "events_ingest"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/facts/proposals$"), _ROLE_AGENT, "facts_propose"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/backfill/memory$"), _ROLE_AGENT, "memory_backfill"),
+    RoutePolicy(
+        {"GET", "PUT", "DELETE"},
+        re.compile(r"^/v1/adoption/source-ownership(?:/[^/]+)?$"),
+        _ROLE_OPERATOR,
+        "adoption_source_ownership",
+    ),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/pages$"), _ROLE_APPROVER, "wiki_page_write"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/drafts/[^/]+/(approve|reject)$"), _ROLE_APPROVER, "wiki_moderation"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/auto-publish/run$"), _ROLE_OPERATOR, "wiki_auto_publish"),
