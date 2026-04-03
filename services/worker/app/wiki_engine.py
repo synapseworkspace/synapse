@@ -300,6 +300,12 @@ class GatekeeperConfig:
     llm_score_weight: float = 0.35
     llm_min_confidence: float = 0.65
     llm_timeout_ms: int = 3500
+    publish_mode_default: str = "human_required"
+    publish_mode_by_category: dict[str, str] | None = None
+    auto_publish_min_score: float = 0.9
+    auto_publish_min_sources: int = 3
+    auto_publish_require_golden: bool = True
+    auto_publish_allow_conflicts: bool = False
 
 
 @dataclass(slots=True)
@@ -487,6 +493,7 @@ class WikiSynthesisEngine:
         self._llm_classifier = llm_classifier or OpenAIGatekeeperClassifier()
         self._claims_has_fingerprint_column_cache: bool | None = None
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
+        self._gatekeeper_config_has_publish_columns_cache: bool | None = None
 
     def run_once(self, conn, *, limit: int = 50) -> dict[str, int]:
         picked = self._pick_claim_proposals(conn, limit=limit)
@@ -1352,10 +1359,80 @@ class WikiSynthesisEngine:
         self._gatekeeper_config_has_llm_columns_cache = required.issubset(present)
         return self._gatekeeper_config_has_llm_columns_cache
 
+    def _gatekeeper_config_has_publish_columns(self, conn) -> bool:
+        if self._gatekeeper_config_has_publish_columns_cache is not None:
+            return self._gatekeeper_config_has_publish_columns_cache
+        required = {
+            "publish_mode_default",
+            "publish_mode_by_category",
+            "auto_publish_min_score",
+            "auto_publish_min_sources",
+            "auto_publish_require_golden",
+            "auto_publish_allow_conflicts",
+        }
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'gatekeeper_project_configs'
+                """
+            )
+            present = {str(row[0]) for row in cur.fetchall()}
+        self._gatekeeper_config_has_publish_columns_cache = required.issubset(present)
+        return self._gatekeeper_config_has_publish_columns_cache
+
+    def _normalize_publish_mode(self, value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw not in {"human_required", "conditional", "auto_publish"}:
+            return "human_required"
+        return raw
+
+    def _normalize_publish_mode_map(self, value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, str] = {}
+        for key, item in value.items():
+            category = str(key or "").strip().lower()
+            if not category:
+                continue
+            mode = self._normalize_publish_mode(item)
+            out[category[:64]] = mode
+        return out
+
     def _resolve_gatekeeper_config(self, conn, project_id: str) -> GatekeeperConfig:
         has_llm_columns = self._gatekeeper_config_has_llm_columns(conn)
+        has_publish_columns = self._gatekeeper_config_has_publish_columns(conn)
         with conn.cursor() as cur:
-            if has_llm_columns:
+            if has_llm_columns and has_publish_columns:
+                cur.execute(
+                    """
+                    SELECT
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts
+                    FROM gatekeeper_project_configs
+                    WHERE project_id = %s
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                )
+            elif has_llm_columns:
                 cur.execute(
                     """
                     SELECT
@@ -1406,9 +1483,15 @@ class WikiSynthesisEngine:
                 llm_score_weight=self.gatekeeper_llm_score_weight,
                 llm_min_confidence=self.gatekeeper_llm_min_confidence,
                 llm_timeout_ms=self.gatekeeper_llm_timeout_ms,
+                publish_mode_default="human_required",
+                publish_mode_by_category={},
+                auto_publish_min_score=0.9,
+                auto_publish_min_sources=3,
+                auto_publish_require_golden=True,
+                auto_publish_allow_conflicts=False,
             )
         else:
-            if has_llm_columns:
+            if has_llm_columns and has_publish_columns:
                 config = GatekeeperConfig(
                     min_sources_for_golden=max(2, int(row[0])),
                     conflict_free_days=max(1, int(row[1])),
@@ -1421,6 +1504,32 @@ class WikiSynthesisEngine:
                     llm_score_weight=max(0.0, min(1.0, float(row[8]))),
                     llm_min_confidence=max(0.0, min(1.0, float(row[9]))),
                     llm_timeout_ms=max(200, int(row[10])),
+                    publish_mode_default=self._normalize_publish_mode(row[11]),
+                    publish_mode_by_category=self._normalize_publish_mode_map(row[12]),
+                    auto_publish_min_score=max(0.0, min(1.0, float(row[13]))),
+                    auto_publish_min_sources=max(1, int(row[14])),
+                    auto_publish_require_golden=bool(row[15]),
+                    auto_publish_allow_conflicts=bool(row[16]),
+                )
+            elif has_llm_columns:
+                config = GatekeeperConfig(
+                    min_sources_for_golden=max(2, int(row[0])),
+                    conflict_free_days=max(1, int(row[1])),
+                    min_score_for_golden=max(0.0, min(1.0, float(row[2]))),
+                    operational_short_text_len=max(8, int(row[3])),
+                    operational_short_token_len=max(1, int(row[4])),
+                    llm_assist_enabled=bool(row[5]),
+                    llm_provider=str(row[6] or "openai").strip().lower(),
+                    llm_model=str(row[7] or "gpt-4.1-mini"),
+                    llm_score_weight=max(0.0, min(1.0, float(row[8]))),
+                    llm_min_confidence=max(0.0, min(1.0, float(row[9]))),
+                    llm_timeout_ms=max(200, int(row[10])),
+                    publish_mode_default="human_required",
+                    publish_mode_by_category={},
+                    auto_publish_min_score=0.9,
+                    auto_publish_min_sources=3,
+                    auto_publish_require_golden=True,
+                    auto_publish_allow_conflicts=False,
                 )
             else:
                 config = GatekeeperConfig(
@@ -1435,6 +1544,12 @@ class WikiSynthesisEngine:
                     llm_score_weight=self.gatekeeper_llm_score_weight,
                     llm_min_confidence=self.gatekeeper_llm_min_confidence,
                     llm_timeout_ms=self.gatekeeper_llm_timeout_ms,
+                    publish_mode_default="human_required",
+                    publish_mode_by_category={},
+                    auto_publish_min_score=0.9,
+                    auto_publish_min_sources=3,
+                    auto_publish_require_golden=True,
+                    auto_publish_allow_conflicts=False,
                 )
         return config
 

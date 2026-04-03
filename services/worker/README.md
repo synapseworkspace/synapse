@@ -30,6 +30,20 @@ Run locally:
 PYTHONPATH=services/worker python services/worker/scripts/run_wiki_synthesis.py --extract-limit 200 --limit 100 --cycles 1
 ```
 
+Auto-publish policy runner (hybrid human/autonomous publication):
+
+```bash
+PYTHONPATH=services/worker python services/worker/scripts/run_wiki_autopublish.py \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --limit-per-project 50
+```
+
+Policy is controlled via `gatekeeper_project_configs`:
+- `publish_mode_default`: `human_required|conditional|auto_publish`
+- `publish_mode_by_category`: per-category overrides
+- conditional thresholds: `auto_publish_min_score`, `auto_publish_min_sources`, `auto_publish_require_golden`
+
 Production-like loop runner (used by self-hosted Docker stack):
 
 ```bash

@@ -206,6 +206,20 @@ class GatekeeperConfigUpsertRequest(BaseModel):
     llm_score_weight: float = Field(default=0.35, ge=0.0, le=1.0)
     llm_min_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     llm_timeout_ms: int = Field(default=3500, ge=200, le=20000)
+    publish_mode_default: str = Field(default="human_required", pattern="^(human_required|conditional|auto_publish)$")
+    publish_mode_by_category: dict[str, str] | None = None
+    auto_publish_min_score: float = Field(default=0.9, ge=0.0, le=1.0)
+    auto_publish_min_sources: int = Field(default=3, ge=1, le=100)
+    auto_publish_require_golden: bool = True
+    auto_publish_allow_conflicts: bool = False
+
+
+class WikiAutoPublishRunRequest(BaseModel):
+    project_id: str | None = None
+    project_ids: list[str] | None = None
+    limit_per_project: int = Field(default=50, ge=1, le=500)
+    reviewed_by: str = Field(default="synapse_autopublisher", min_length=1, max_length=256)
+    dry_run: bool = False
 
 
 class GatekeeperConfigSnapshotCreateRequest(BaseModel):
@@ -1015,6 +1029,7 @@ def _insert_task_event(
 
 
 _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS: bool | None = None
+_GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS: bool | None = None
 
 
 def _gatekeeper_config_has_llm_columns(conn) -> bool:
@@ -1041,6 +1056,32 @@ def _gatekeeper_config_has_llm_columns(conn) -> bool:
         present = {str(row[0]) for row in cur.fetchall()}
     _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS = required.issubset(present)
     return _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS
+
+
+def _gatekeeper_config_has_publish_columns(conn) -> bool:
+    global _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS
+    if _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS is not None:
+        return _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS
+    required = {
+        "publish_mode_default",
+        "publish_mode_by_category",
+        "auto_publish_min_score",
+        "auto_publish_min_sources",
+        "auto_publish_require_golden",
+        "auto_publish_allow_conflicts",
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'gatekeeper_project_configs'
+            """
+        )
+        present = {str(row[0]) for row in cur.fetchall()}
+    _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS = required.issubset(present)
+    return _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -1087,6 +1128,60 @@ def _coerce_bool(value: Any, default: bool) -> bool:
         if text in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+def _normalize_publish_mode(value: Any, *, default: str = "human_required") -> str:
+    mode = str(value or "").strip().lower()
+    if mode not in {"human_required", "conditional", "auto_publish"}:
+        return default
+    return mode
+
+
+def _normalize_publish_mode_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_mode in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key:
+            continue
+        out[key[:64]] = _normalize_publish_mode(raw_mode)
+    return out
+
+
+def _resolve_publish_mode_for_category(
+    *,
+    default_mode: str,
+    category_map: dict[str, str],
+    category: str | None,
+    page_type: str | None,
+) -> str:
+    normalized_category = str(category or "").strip().lower()
+    normalized_page_type = str(page_type or "").strip().lower()
+    for key in (
+        normalized_category,
+        normalized_page_type,
+        normalized_category.split("/")[0] if normalized_category else "",
+        normalized_page_type.split("/")[0] if normalized_page_type else "",
+    ):
+        if key and key in category_map:
+            return _normalize_publish_mode(category_map.get(key), default=default_mode)
+    return _normalize_publish_mode(default_mode)
+
+
+def _extract_source_diversity(features: dict[str, Any]) -> int:
+    for key in ("source_diversity", "historical_source_count", "incoming_source_count"):
+        value = features.get(key)
+        try:
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return max(0, int(value))
+            if isinstance(value, str) and value.strip():
+                return max(0, int(float(value.strip())))
+        except Exception:
+            continue
+    return 0
 
 
 def _extract_calibration_holdout_metrics(calibration_report: dict[str, Any] | None) -> dict[str, float | None]:
@@ -1198,6 +1293,12 @@ def _normalize_gatekeeper_config_for_apply(project_id: str, config: dict[str, An
         llm_score_weight=max(0.0, min(1.0, _coerce_float(config.get("llm_score_weight"), 0.35))),
         llm_min_confidence=max(0.0, min(1.0, _coerce_float(config.get("llm_min_confidence"), 0.65))),
         llm_timeout_ms=max(200, min(20000, _coerce_int(config.get("llm_timeout_ms"), 3500))),
+        publish_mode_default=_normalize_publish_mode(config.get("publish_mode_default"), default="human_required"),
+        publish_mode_by_category=_normalize_publish_mode_map(config.get("publish_mode_by_category")),
+        auto_publish_min_score=max(0.0, min(1.0, _coerce_float(config.get("auto_publish_min_score"), 0.9))),
+        auto_publish_min_sources=max(1, min(100, _coerce_int(config.get("auto_publish_min_sources"), 3))),
+        auto_publish_require_golden=_coerce_bool(config.get("auto_publish_require_golden"), True),
+        auto_publish_allow_conflicts=_coerce_bool(config.get("auto_publish_allow_conflicts"), False),
     )
 
 
@@ -12335,6 +12436,257 @@ def reject_wiki_draft(
             raise
 
 
+@app.post("/v1/wiki/auto-publish/run")
+def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
+    requested_projects: list[str] = []
+    if payload.project_id and payload.project_id.strip():
+        requested_projects.append(payload.project_id.strip())
+    for item in payload.project_ids or []:
+        value = str(item or "").strip()
+        if value:
+            requested_projects.append(value)
+
+    dedup_projects: list[str] = []
+    seen_projects: set[str] = set()
+    for item in requested_projects:
+        if item in seen_projects:
+            continue
+        seen_projects.add(item)
+        dedup_projects.append(item)
+
+    if not dedup_projects:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT project_id
+                    FROM wiki_draft_changes
+                    WHERE status = 'pending_review'
+                    GROUP BY project_id
+                    ORDER BY MAX(created_at) DESC
+                    LIMIT 200
+                    """
+                )
+                dedup_projects = [str(row[0]) for row in (cur.fetchall() or []) if str(row[0]).strip()]
+
+    project_results: list[dict[str, Any]] = []
+    total_scanned = 0
+    total_eligible = 0
+    total_approved = 0
+    total_failed = 0
+
+    for project_id in dedup_projects:
+        with get_conn() as conn:
+            has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
+            policy = {
+                "publish_mode_default": "human_required",
+                "publish_mode_by_category": {},
+                "auto_publish_min_score": 0.9,
+                "auto_publish_min_sources": 3,
+                "auto_publish_require_golden": True,
+                "auto_publish_allow_conflicts": False,
+            }
+            with conn.cursor() as cur:
+                if has_publish_columns:
+                    cur.execute(
+                        """
+                        SELECT
+                          publish_mode_default,
+                          publish_mode_by_category,
+                          auto_publish_min_score,
+                          auto_publish_min_sources,
+                          auto_publish_require_golden,
+                          auto_publish_allow_conflicts
+                        FROM gatekeeper_project_configs
+                        WHERE project_id = %s
+                        LIMIT 1
+                        """,
+                        (project_id,),
+                    )
+                    policy_row = cur.fetchone()
+                    if policy_row is not None:
+                        policy = {
+                            "publish_mode_default": _normalize_publish_mode(policy_row[0]),
+                            "publish_mode_by_category": _normalize_publish_mode_map(policy_row[1]),
+                            "auto_publish_min_score": float(policy_row[2]),
+                            "auto_publish_min_sources": int(policy_row[3]),
+                            "auto_publish_require_golden": bool(policy_row[4]),
+                            "auto_publish_allow_conflicts": bool(policy_row[5]),
+                        }
+
+                cur.execute(
+                    """
+                    SELECT
+                      d.id::text,
+                      d.claim_id::text,
+                      d.decision,
+                      d.status,
+                      d.created_at,
+                      c.category,
+                      p.page_type,
+                      g.tier,
+                      g.score,
+                      g.features,
+                      EXISTS (
+                        SELECT 1
+                        FROM wiki_conflicts wc
+                        WHERE wc.claim_id = d.claim_id
+                          AND wc.resolution_status = 'open'
+                      ) AS has_open_conflict
+                    FROM wiki_draft_changes d
+                    JOIN wiki_pages p ON p.id = d.page_id
+                    LEFT JOIN claims c ON c.id = d.claim_id
+                    LEFT JOIN gatekeeper_decisions g ON g.claim_id = d.claim_id
+                    WHERE d.project_id = %s
+                      AND d.status = 'pending_review'
+                    ORDER BY d.created_at ASC
+                    LIMIT %s
+                    """,
+                    (project_id, payload.limit_per_project),
+                )
+                rows = cur.fetchall() or []
+
+        scanned = len(rows)
+        eligible = 0
+        approved = 0
+        failed = 0
+        items: list[dict[str, Any]] = []
+
+        for row in rows:
+            draft_id_text = str(row[0])
+            claim_id_text = str(row[1])
+            decision = str(row[2] or "")
+            category = str(row[5] or "")
+            page_type = str(row[6] or "")
+            tier = str(row[7] or "")
+            score = float(row[8] or 0.0)
+            features = row[9] if isinstance(row[9], dict) else {}
+            has_open_conflict = bool(row[10])
+            source_diversity = _extract_source_diversity(features)
+
+            mode = _resolve_publish_mode_for_category(
+                default_mode=str(policy["publish_mode_default"]),
+                category_map=policy["publish_mode_by_category"] if isinstance(policy["publish_mode_by_category"], dict) else {},
+                category=category,
+                page_type=page_type,
+            )
+
+            outcome = "skipped"
+            reason = "human_required"
+            eligible_for_auto = False
+
+            if decision not in {"new_page", "new_section", "new_statement"}:
+                reason = f"decision_not_auto_publishable:{decision or 'unknown'}"
+            elif mode == "human_required":
+                reason = "human_required_by_policy"
+            else:
+                eligible_for_auto = True
+                if has_open_conflict and not bool(policy["auto_publish_allow_conflicts"]):
+                    eligible_for_auto = False
+                    reason = "open_conflict_blocked"
+                elif mode == "conditional":
+                    if bool(policy["auto_publish_require_golden"]) and tier != "golden_candidate":
+                        eligible_for_auto = False
+                        reason = f"tier_below_policy:{tier or 'unknown'}"
+                    elif score < float(policy["auto_publish_min_score"]):
+                        eligible_for_auto = False
+                        reason = (
+                            f"score_below_policy:{score:.4f}<{float(policy['auto_publish_min_score']):.4f}"
+                        )
+                    elif source_diversity < int(policy["auto_publish_min_sources"]):
+                        eligible_for_auto = False
+                        reason = (
+                            f"source_diversity_below_policy:{source_diversity}<"
+                            f"{int(policy['auto_publish_min_sources'])}"
+                        )
+                    else:
+                        reason = "conditional_policy_matched"
+                else:
+                    reason = "auto_publish_policy_matched"
+
+            if eligible_for_auto:
+                eligible += 1
+                if payload.dry_run:
+                    outcome = "eligible_dry_run"
+                else:
+                    try:
+                        response = approve_wiki_draft(
+                            UUID(draft_id_text),
+                            DraftApproveRequest(
+                                project_id=project_id,
+                                reviewed_by=payload.reviewed_by,
+                                edited_statement_text=None,
+                                section_edits=None,
+                                note=(
+                                    f"Auto-published by policy mode={mode}; "
+                                    f"tier={tier or 'unknown'}; score={score:.3f}; sources={source_diversity}"
+                                ),
+                                force=False,
+                            ),
+                            idempotency_key=f"auto-publish:{draft_id_text}",
+                        )
+                        outcome = "approved"
+                        approved += 1
+                        reason = "approved"
+                    except HTTPException as exc:
+                        outcome = "failed"
+                        failed += 1
+                        reason = f"http_{exc.status_code}:{exc.detail}"
+                    except Exception as exc:  # pragma: no cover
+                        outcome = "failed"
+                        failed += 1
+                        reason = f"error:{exc}"
+
+            items.append(
+                {
+                    "draft_id": draft_id_text,
+                    "claim_id": claim_id_text,
+                    "category": category,
+                    "page_type": page_type,
+                    "decision": decision,
+                    "tier": tier or None,
+                    "score": score,
+                    "source_diversity": source_diversity,
+                    "mode": mode,
+                    "has_open_conflict": has_open_conflict,
+                    "outcome": outcome,
+                    "reason": reason,
+                }
+            )
+
+        project_results.append(
+            {
+                "project_id": project_id,
+                "policy": policy,
+                "scanned": scanned,
+                "eligible": eligible,
+                "approved": approved,
+                "failed": failed,
+                "items": items,
+            }
+        )
+        total_scanned += scanned
+        total_eligible += eligible
+        total_approved += approved
+        total_failed += failed
+
+    return {
+        "status": "ok",
+        "dry_run": bool(payload.dry_run),
+        "reviewed_by": payload.reviewed_by,
+        "requested_projects": dedup_projects,
+        "summary": {
+            "projects": len(project_results),
+            "scanned": total_scanned,
+            "eligible": total_eligible,
+            "approved": total_approved,
+            "failed": total_failed,
+        },
+        "projects": project_results,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 @app.get("/v1/wiki/moderation/actions")
 def list_moderation_actions(
     project_id: str,
@@ -12623,8 +12975,39 @@ def list_gatekeeper_decisions(
 def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
     with get_conn() as conn:
         has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
+        has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
         with conn.cursor() as cur:
-            if has_llm_columns:
+            if has_llm_columns and has_publish_columns:
+                cur.execute(
+                    """
+                    SELECT
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM gatekeeper_project_configs
+                    WHERE project_id = %s
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                )
+            elif has_llm_columns:
                 cur.execute(
                     """
                     SELECT
@@ -12682,10 +13065,43 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "llm_score_weight": 0.35,
                 "llm_min_confidence": 0.65,
                 "llm_timeout_ms": 3500,
+                "publish_mode_default": "human_required",
+                "publish_mode_by_category": {},
+                "auto_publish_min_score": 0.9,
+                "auto_publish_min_sources": 3,
+                "auto_publish_require_golden": True,
+                "auto_publish_allow_conflicts": False,
                 "updated_by": None,
                 "created_at": None,
                 "updated_at": None,
                 "source": "default",
+            }
+        }
+    if has_llm_columns and has_publish_columns:
+        return {
+            "config": {
+                "project_id": project_id,
+                "min_sources_for_golden": int(row[0]),
+                "conflict_free_days": int(row[1]),
+                "min_score_for_golden": float(row[2]),
+                "operational_short_text_len": int(row[3]),
+                "operational_short_token_len": int(row[4]),
+                "llm_assist_enabled": bool(row[5]),
+                "llm_provider": str(row[6]),
+                "llm_model": str(row[7]),
+                "llm_score_weight": float(row[8]),
+                "llm_min_confidence": float(row[9]),
+                "llm_timeout_ms": int(row[10]),
+                "publish_mode_default": _normalize_publish_mode(row[11]),
+                "publish_mode_by_category": _normalize_publish_mode_map(row[12]),
+                "auto_publish_min_score": float(row[13]),
+                "auto_publish_min_sources": int(row[14]),
+                "auto_publish_require_golden": bool(row[15]),
+                "auto_publish_allow_conflicts": bool(row[16]),
+                "updated_by": row[17],
+                "created_at": row[18].isoformat(),
+                "updated_at": row[19].isoformat(),
+                "source": "project_override",
             }
         }
     if has_llm_columns:
@@ -12703,6 +13119,12 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "llm_score_weight": float(row[8]),
                 "llm_min_confidence": float(row[9]),
                 "llm_timeout_ms": int(row[10]),
+                "publish_mode_default": "human_required",
+                "publish_mode_by_category": {},
+                "auto_publish_min_score": 0.9,
+                "auto_publish_min_sources": 3,
+                "auto_publish_require_golden": True,
+                "auto_publish_allow_conflicts": False,
                 "updated_by": row[11],
                 "created_at": row[12].isoformat(),
                 "updated_at": row[13].isoformat(),
@@ -12723,6 +13145,12 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
             "llm_score_weight": 0.35,
             "llm_min_confidence": 0.65,
             "llm_timeout_ms": 3500,
+            "publish_mode_default": "human_required",
+            "publish_mode_by_category": {},
+            "auto_publish_min_score": 0.9,
+            "auto_publish_min_sources": 3,
+            "auto_publish_require_golden": True,
+            "auto_publish_allow_conflicts": False,
             "updated_by": row[5],
             "created_at": row[6].isoformat(),
             "updated_at": row[7].isoformat(),
@@ -12735,8 +13163,100 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
 def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str, Any]:
     with get_conn() as conn:
         has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
+        has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
+        publish_mode_default = _normalize_publish_mode(payload.publish_mode_default, default="human_required")
+        publish_mode_by_category = _normalize_publish_mode_map(payload.publish_mode_by_category)
         with conn.cursor() as cur:
-            if has_llm_columns:
+            if has_llm_columns and has_publish_columns:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_project_configs (
+                      project_id,
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      updated_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id) DO UPDATE
+                    SET min_sources_for_golden = EXCLUDED.min_sources_for_golden,
+                        conflict_free_days = EXCLUDED.conflict_free_days,
+                        min_score_for_golden = EXCLUDED.min_score_for_golden,
+                        operational_short_text_len = EXCLUDED.operational_short_text_len,
+                        operational_short_token_len = EXCLUDED.operational_short_token_len,
+                        llm_assist_enabled = EXCLUDED.llm_assist_enabled,
+                        llm_provider = EXCLUDED.llm_provider,
+                        llm_model = EXCLUDED.llm_model,
+                        llm_score_weight = EXCLUDED.llm_score_weight,
+                        llm_min_confidence = EXCLUDED.llm_min_confidence,
+                        llm_timeout_ms = EXCLUDED.llm_timeout_ms,
+                        publish_mode_default = EXCLUDED.publish_mode_default,
+                        publish_mode_by_category = EXCLUDED.publish_mode_by_category,
+                        auto_publish_min_score = EXCLUDED.auto_publish_min_score,
+                        auto_publish_min_sources = EXCLUDED.auto_publish_min_sources,
+                        auto_publish_require_golden = EXCLUDED.auto_publish_require_golden,
+                        auto_publish_allow_conflicts = EXCLUDED.auto_publish_allow_conflicts,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    RETURNING
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    """,
+                    (
+                        payload.project_id,
+                        payload.min_sources_for_golden,
+                        payload.conflict_free_days,
+                        payload.min_score_for_golden,
+                        payload.operational_short_text_len,
+                        payload.operational_short_token_len,
+                        payload.llm_assist_enabled,
+                        payload.llm_provider,
+                        payload.llm_model,
+                        payload.llm_score_weight,
+                        payload.llm_min_confidence,
+                        payload.llm_timeout_ms,
+                        publish_mode_default,
+                        Jsonb(publish_mode_by_category),
+                        payload.auto_publish_min_score,
+                        payload.auto_publish_min_sources,
+                        payload.auto_publish_require_golden,
+                        payload.auto_publish_allow_conflicts,
+                        payload.updated_by,
+                    ),
+                )
+            elif has_llm_columns:
                 cur.execute(
                     """
                     INSERT INTO gatekeeper_project_configs (
@@ -12843,6 +13363,34 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
                     ),
                 )
             row = cur.fetchone()
+    if has_llm_columns and has_publish_columns:
+        return {
+            "status": "ok",
+            "config": {
+                "project_id": payload.project_id,
+                "min_sources_for_golden": int(row[0]),
+                "conflict_free_days": int(row[1]),
+                "min_score_for_golden": float(row[2]),
+                "operational_short_text_len": int(row[3]),
+                "operational_short_token_len": int(row[4]),
+                "llm_assist_enabled": bool(row[5]),
+                "llm_provider": str(row[6]),
+                "llm_model": str(row[7]),
+                "llm_score_weight": float(row[8]),
+                "llm_min_confidence": float(row[9]),
+                "llm_timeout_ms": int(row[10]),
+                "publish_mode_default": _normalize_publish_mode(row[11]),
+                "publish_mode_by_category": _normalize_publish_mode_map(row[12]),
+                "auto_publish_min_score": float(row[13]),
+                "auto_publish_min_sources": int(row[14]),
+                "auto_publish_require_golden": bool(row[15]),
+                "auto_publish_allow_conflicts": bool(row[16]),
+                "updated_by": row[17],
+                "created_at": row[18].isoformat(),
+                "updated_at": row[19].isoformat(),
+                "source": "project_override",
+            },
+        }
     if has_llm_columns:
         return {
             "status": "ok",
@@ -12859,6 +13407,12 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
                 "llm_score_weight": float(row[8]),
                 "llm_min_confidence": float(row[9]),
                 "llm_timeout_ms": int(row[10]),
+                "publish_mode_default": "human_required",
+                "publish_mode_by_category": {},
+                "auto_publish_min_score": 0.9,
+                "auto_publish_min_sources": 3,
+                "auto_publish_require_golden": True,
+                "auto_publish_allow_conflicts": False,
                 "updated_by": row[11],
                 "created_at": row[12].isoformat(),
                 "updated_at": row[13].isoformat(),
@@ -12880,6 +13434,12 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
             "llm_score_weight": 0.35,
             "llm_min_confidence": 0.65,
             "llm_timeout_ms": 3500,
+            "publish_mode_default": "human_required",
+            "publish_mode_by_category": {},
+            "auto_publish_min_score": 0.9,
+            "auto_publish_min_sources": 3,
+            "auto_publish_require_golden": True,
+            "auto_publish_allow_conflicts": False,
             "updated_by": row[5],
             "created_at": row[6].isoformat(),
             "updated_at": row[7].isoformat(),

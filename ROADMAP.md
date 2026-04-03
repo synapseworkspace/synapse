@@ -395,6 +395,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Added hybrid publish-control business logic: Gatekeeper config now supports `publish_mode_default` + per-category overrides + conditional auto-publish thresholds (`auto_publish_min_score`, `auto_publish_min_sources`, `auto_publish_require_golden`, `auto_publish_allow_conflicts`); API endpoint `POST /v1/wiki/auto-publish/run` executes policy-driven approvals; worker loop now includes scheduled auto-publish job (`run_wiki_autopublish.py`).
 - 2026-04-03: Completed enterprise foundation closure (M11): shipped migration `037_enterprise_tenancy_auth_rbac.sql` with first-class `tenants`/`tenant_memberships`/`tenant_projects`/`auth_sessions`, added API auth session flow (`/v1/auth/mode`, `/v1/auth/session`), wired request middleware for OIDC + tenancy enforcement + unified RBAC deny-by-default modes, added web console auth-session controls/token propagation, and published governance export/runbook tooling (`scripts/export_enterprise_governance_pack.py`, `docs/enterprise-governance-pack.md`).
 - 2026-04-03: Completed reliability release-policy closure (M13): added rolling error-budget release gate (`scripts/check_release_error_budget.py`, `eval/reliability_error_budget_sample.jsonl`) and deterministic reliability drill suite (`scripts/run_reliability_drills.py`) with CI enforcement in `scripts/ci_checks.sh`.
 - 2026-04-03: Closed framework milestone status sync (M12): all listed LangChain/LangGraph/CrewAI native adapter and contract tasks are complete and milestone status moved to `done`.

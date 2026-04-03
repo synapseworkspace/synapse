@@ -52,6 +52,7 @@ Environment:
 - `GET /v1/wiki/drafts?project_id=...&status=pending_review`
 - `GET /v1/wiki/drafts/{draft_id}?project_id=...`
 - `GET /v1/wiki/drafts/{draft_id}/conflicts/explain?project_id=...` (MCP `explain_conflicts` compatible enrichment for UI conflict resolver)
+- `POST /v1/wiki/auto-publish/run` (policy-driven auto-approve runner for eligible drafts; supports `dry_run`)
 - `GET /v1/wiki/moderation/throughput?project_id=...&window_hours=24&top_reviewers=5` (core moderation throughput/backlog/latency analytics)
 - `POST /v1/wiki/drafts/{draft_id}/approve`
 - `POST /v1/wiki/drafts/{draft_id}/reject`
@@ -225,6 +226,7 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Backfill endpoints depend on migration `005_memory_backfill.sql`.
 - Gatekeeper decision endpoint depends on migration `006_gatekeeper.sql`.
 - Migration `007_claim_fingerprint.sql` improves Gatekeeper matching performance.
+- Migration `038_gatekeeper_publish_policy.sql` adds hybrid publication policy controls (`publish_mode_default`, per-category overrides, conditional auto-publish thresholds).
 - Intelligence endpoints depend on migration `008_knowledge_intelligence.sql`.
 - Moderation audit feed + Gatekeeper config endpoints depend on migration `009_moderation_audit_and_gatekeeper_config.sql`.
 - Delivery target/attempt endpoints depend on migration `010_intelligence_delivery.sql`.

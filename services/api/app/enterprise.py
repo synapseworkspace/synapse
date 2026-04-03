@@ -92,6 +92,7 @@ _ROUTE_POLICIES: list[RoutePolicy] = [
     RoutePolicy({"POST"}, re.compile(r"^/v1/backfill/memory$"), _ROLE_AGENT, "memory_backfill"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/pages$"), _ROLE_APPROVER, "wiki_page_write"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/drafts/[^/]+/(approve|reject)$"), _ROLE_APPROVER, "wiki_moderation"),
+    RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/auto-publish/run$"), _ROLE_OPERATOR, "wiki_auto_publish"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/tasks($|/[^/]+/(status|comments|links)$)"), _ROLE_OPERATOR, "task_mutation"),
     RoutePolicy({"PUT", "POST", "DELETE"}, re.compile(r"^/v1/gatekeeper/"), _ROLE_OPERATOR, "gatekeeper_mutation"),
     RoutePolicy(

@@ -123,6 +123,29 @@ def parse_args() -> argparse.Namespace:
         default=_env_int("SYNAPSE_WORKER_SLEEP_FLOOR_SEC", 2),
         help="Minimum sleep between scheduler ticks.",
     )
+    parser.add_argument(
+        "--enable-auto-publish",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_ENABLE_AUTO_PUBLISH", True),
+        help="Enable periodic wiki auto-publish policy job.",
+    )
+    parser.add_argument(
+        "--auto-publish-interval-sec",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AUTO_PUBLISH_INTERVAL_SEC", 20),
+        help="Interval for wiki auto-publish job.",
+    )
+    parser.add_argument(
+        "--auto-publish-limit-per-project",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AUTO_PUBLISH_LIMIT_PER_PROJECT", 50),
+        help="Per-project draft scan limit for auto-publish run.",
+    )
+    parser.add_argument(
+        "--auto-publish-reviewed-by",
+        default=str(os.getenv("SYNAPSE_AUTOPUBLISH_REVIEWED_BY", "synapse_autopublisher") or "synapse_autopublisher"),
+        help="Actor identity used for auto-publish approvals.",
+    )
     return parser.parse_args()
 
 
@@ -163,6 +186,23 @@ def build_jobs(args: argparse.Namespace) -> list[JobSpec]:
                 name="intelligence_scheduler_daily",
                 argv=intelligence_cmd,
                 interval_sec=max(1, args.intelligence_interval_sec),
+                enabled=True,
+            )
+        )
+    if args.enable_auto_publish:
+        auto_publish_cmd = [
+            python_bin,
+            str(SCRIPT_DIR / "run_wiki_autopublish.py"),
+            "--limit-per-project",
+            str(max(1, int(args.auto_publish_limit_per_project))),
+            "--reviewed-by",
+            str(args.auto_publish_reviewed_by).strip() or "synapse_autopublisher",
+        ]
+        jobs.append(
+            JobSpec(
+                name="wiki_auto_publish",
+                argv=auto_publish_cmd,
+                interval_sec=max(1, int(args.auto_publish_interval_sec)),
                 enabled=True,
             )
         )
