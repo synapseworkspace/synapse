@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -464,6 +465,8 @@ class WikiSynthesisEngine:
         *,
         threshold_high: float = 0.82,
         threshold_mid: float = 0.55,
+        threshold_new_page_margin: float = 0.08,
+        threshold_route_ambiguity_gap: float = 0.06,
         gatekeeper_min_sources_for_golden: int = 3,
         gatekeeper_conflict_free_days: int = 7,
         gatekeeper_min_score_for_golden: float = 0.72,
@@ -479,6 +482,8 @@ class WikiSynthesisEngine:
     ) -> None:
         self.threshold_high = threshold_high
         self.threshold_mid = threshold_mid
+        self.threshold_new_page_margin = max(0.0, min(0.3, threshold_new_page_margin))
+        self.threshold_route_ambiguity_gap = max(0.0, min(1.0, threshold_route_ambiguity_gap))
         self.gatekeeper_min_sources_for_golden = max(2, gatekeeper_min_sources_for_golden)
         self.gatekeeper_conflict_free_days = max(1, gatekeeper_conflict_free_days)
         self.gatekeeper_min_score_for_golden = max(0.0, min(1.0, gatekeeper_min_score_for_golden))
@@ -494,6 +499,20 @@ class WikiSynthesisEngine:
         self._claims_has_fingerprint_column_cache: bool | None = None
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
         self._gatekeeper_config_has_publish_columns_cache: bool | None = None
+        self._routing_feedback_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._page_context_cache: dict[str, tuple[float, str]] = {}
+        self.routing_feedback_cache_ttl_sec = max(
+            15,
+            int(str(os.getenv("SYNAPSE_ROUTING_FEEDBACK_CACHE_TTL_SEC", "120")).strip() or "120"),
+        )
+        self.page_context_cache_ttl_sec = max(
+            15,
+            int(str(os.getenv("SYNAPSE_PAGE_CONTEXT_CACHE_TTL_SEC", "60")).strip() or "60"),
+        )
+        self.route_rerank_top_k = max(
+            1,
+            int(str(os.getenv("SYNAPSE_ROUTE_RERANK_TOP_K", "8")).strip() or "8"),
+        )
 
     def run_once(self, conn, *, limit: int = 50) -> dict[str, int]:
         picked = self._pick_claim_proposals(conn, limit=limit)
@@ -907,7 +926,7 @@ class WikiSynthesisEngine:
             return
 
         page_candidates = self._load_pages(conn, claim.project_id)
-        page_resolution = self._resolve_page(claim, page_candidates)
+        page_resolution = self._resolve_page(claim, page_candidates, conn=conn)
 
         page = page_resolution.page
         decision = "new_page" if page_resolution.mode == "new_page" else "new_statement"
@@ -1173,6 +1192,12 @@ class WikiSynthesisEngine:
         has_policy_signal = bool(set(tokens) & policy_words)
         category_hint = self._category_to_page_type(claim.category)
         source_diversity = max(historical_source_count, len(incoming_source_ids))
+        is_single_source_one_off = (
+            not has_policy_signal
+            and repeated_count == 0
+            and source_diversity <= 1
+            and evidence_count <= 1
+        )
 
         score = 0.35
         if has_policy_signal:
@@ -1192,7 +1217,10 @@ class WikiSynthesisEngine:
         score = max(0.0, min(1.0, round(score, 4)))
         score_before_llm = score
 
-        if has_operational_pattern and is_short and repeated_count == 0:
+        if is_single_source_one_off:
+            tier = "operational_memory"
+            rationale = "single-source one-off observation without policy signal"
+        elif has_operational_pattern and is_short and repeated_count == 0:
             tier = "operational_memory"
             rationale = "short operational event with low reusable signal"
         elif has_policy_signal and (evidence_count >= 2 or repeated_count >= 1):
@@ -1766,24 +1794,64 @@ class WikiSynthesisEngine:
             for row in rows
         ]
 
-    def _resolve_page(self, claim: ClaimInput, candidates: list[PageRecord]) -> PageResolution:
+    def _resolve_page(
+        self,
+        claim: ClaimInput,
+        candidates: list[PageRecord],
+        *,
+        conn=None,
+    ) -> PageResolution:
         if not candidates:
             return PageResolution(mode="new_page", page=None, confidence=0.45, rationale="no page candidates found")
+
+        active_candidates = [page for page in candidates if str(page.status).strip().lower() != "archived"]
+        if not active_candidates:
+            return PageResolution(
+                mode="new_page",
+                page=None,
+                confidence=0.45,
+                rationale="only archived page candidates found",
+            )
 
         scored: list[tuple[float, PageRecord]] = []
         claim_tokens = set(self._tokens(claim.claim_text))
         entity_norm = self._normalize_text(claim.entity_key)
+        entity_slug_norm = self._normalize_text(self._slugify(claim.entity_key))
         page_type = self._category_to_page_type(claim.category)
+        route_policy: dict[str, Any] = {
+            "threshold_high": float(self.threshold_high),
+            "threshold_mid": float(self.threshold_mid),
+            "new_page_margin": float(self.threshold_new_page_margin),
+            "ambiguity_gap": float(self.threshold_route_ambiguity_gap),
+            "new_page_false_positive_rate": 0.0,
+            "conflict_rate": 0.0,
+        }
+        if conn is not None:
+            route_policy = self._resolve_effective_route_policy(conn, claim.project_id)
+        effective_threshold_high = float(route_policy["threshold_high"])
+        effective_threshold_mid = float(route_policy["threshold_mid"])
+        effective_margin = float(route_policy["new_page_margin"])
+        effective_gap = float(route_policy["ambiguity_gap"])
 
-        for page in candidates:
+        for page in active_candidates:
             score = 0.0
             page_entity_norm = self._normalize_text(page.entity_key)
             if entity_norm and entity_norm == page_entity_norm:
                 score += 0.65
             if entity_norm and entity_norm == self._normalize_text(page.slug):
                 score += 0.55
+            identity_signals = self._page_identity_signals(page)
+            if entity_norm and entity_norm in identity_signals:
+                score += 0.2
+            if entity_slug_norm and entity_slug_norm in identity_signals:
+                score += 0.14
             if page.page_type == page_type:
                 score += 0.15
+            page_status = str(page.status).strip().lower()
+            if page_status == "published":
+                score += 0.05
+            elif page_status == "draft":
+                score += 0.01
 
             candidate_tokens = set(self._tokens(page.title + " " + page.entity_key + " " + " ".join(page.aliases)))
             if claim_tokens and candidate_tokens:
@@ -1795,29 +1863,235 @@ class WikiSynthesisEngine:
             score = min(score, 1.0)
             scored.append((score, page))
 
+        if conn is not None:
+            scored = self._rerank_page_candidates(conn, claim, scored, top_k=min(self.route_rerank_top_k, len(scored)))
         scored.sort(key=lambda item: item[0], reverse=True)
         top_score, top_page = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        gap = max(0.0, top_score - second_score)
+        diagnostics = (
+            f"top_score={top_score:.2f}, second_score={second_score:.2f}, gap={gap:.2f}, "
+            f"threshold_high={effective_threshold_high:.2f}, threshold_mid={effective_threshold_mid:.2f}, "
+            f"new_page_margin={effective_margin:.2f}, ambiguity_gap={effective_gap:.2f}, "
+            f"new_page_false_positive_rate={float(route_policy['new_page_false_positive_rate']):.2f}, "
+            f"conflict_rate={float(route_policy['conflict_rate']):.2f}"
+        )
 
-        if top_score >= self.threshold_high:
+        if top_score >= effective_threshold_high:
             return PageResolution(
                 mode="existing",
                 page=top_page,
                 confidence=top_score,
-                rationale=f"matched existing page by entity/title similarity score={top_score:.2f}",
+                rationale=f"matched existing page by entity/title similarity; {diagnostics}",
             )
-        if top_score >= self.threshold_mid:
+        if top_score >= effective_threshold_mid:
             return PageResolution(
                 mode="existing_low_confidence",
                 page=top_page,
                 confidence=top_score,
-                rationale=f"weak page match score={top_score:.2f}, human validation required",
+                rationale=f"weak page match, human validation required; {diagnostics}",
+            )
+
+        near_mid_threshold = max(0.0, effective_threshold_mid - effective_margin)
+        if top_score >= near_mid_threshold and gap <= effective_gap:
+            return PageResolution(
+                mode="existing_low_confidence",
+                page=top_page,
+                confidence=top_score,
+                rationale=(
+                    "ambiguous route near new-page threshold, reusing best existing page for human validation; "
+                    f"{diagnostics}"
+                ),
             )
         return PageResolution(
             mode="new_page",
             page=None,
             confidence=top_score,
-            rationale=f"no reliable page match score={top_score:.2f}",
+            rationale=f"no reliable active page match; {diagnostics}",
         )
+
+    def _page_identity_signals(self, page: PageRecord) -> set[str]:
+        signals: set[str] = set()
+        for value in [page.entity_key, page.slug, page.title, *(page.aliases or [])]:
+            if not value:
+                continue
+            normalized = self._normalize_text(str(value))
+            if normalized:
+                signals.add(normalized)
+            slugified = self._normalize_text(self._slugify(str(value)))
+            if slugified:
+                signals.add(slugified)
+        return signals
+
+    def _load_page_routing_context(self, conn, page: PageRecord) -> str:
+        cache_key = str(page.id)
+        now = time.monotonic()
+        cached = self._page_context_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) <= float(self.page_context_cache_ttl_sec):
+            return cached[1]
+
+        headings: list[str] = []
+        statement_lines: list[str] = []
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT heading
+                FROM wiki_sections
+                WHERE page_id = %s
+                ORDER BY order_index ASC, section_key ASC
+                LIMIT 20
+                """,
+                (page.id,),
+            )
+            headings = [str(row[0]).strip() for row in cur.fetchall() if row and row[0]]
+            cur.execute(
+                """
+                SELECT statement_text
+                FROM wiki_statements
+                WHERE page_id = %s
+                  AND status = 'active'
+                ORDER BY created_at DESC
+                LIMIT 12
+                """,
+                (page.id,),
+            )
+            statement_lines = [str(row[0]).strip() for row in cur.fetchall() if row and row[0]]
+
+        context_parts = [page.title, page.entity_key, page.slug, " ".join(page.aliases or []), " ".join(headings), " ".join(statement_lines)]
+        context_text = " ".join(part for part in context_parts if isinstance(part, str) and part.strip())
+        context_text = context_text[:6000]
+        self._page_context_cache[cache_key] = (now, context_text)
+        return context_text
+
+    def _rerank_page_candidates(
+        self,
+        conn,
+        claim: ClaimInput,
+        scored: list[tuple[float, PageRecord]],
+        *,
+        top_k: int,
+    ) -> list[tuple[float, PageRecord]]:
+        if top_k <= 0 or not scored:
+            return scored
+        claim_context = f"{claim.entity_key} {claim.category} {claim.claim_text}"
+        claim_tokens = set(self._tokens(claim_context))
+        page_type = self._category_to_page_type(claim.category)
+        reranked: list[tuple[float, PageRecord]] = []
+        sorted_scored = sorted(scored, key=lambda item: item[0], reverse=True)
+        for index, (base_score, page) in enumerate(sorted_scored):
+            if index >= top_k:
+                reranked.append((base_score, page))
+                continue
+            page_context = self._load_page_routing_context(conn, page)
+            similarity = self._text_similarity(claim_context, page_context) if page_context else 0.0
+            page_tokens = set(self._tokens(page_context))
+            overlap_ratio = 0.0
+            if claim_tokens and page_tokens:
+                overlap_ratio = len(claim_tokens & page_tokens) / max(len(claim_tokens), 1)
+
+            rerank_boost = min(similarity * 0.22, 0.18) + min(overlap_ratio * 0.16, 0.12)
+            if page.page_type == page_type:
+                rerank_boost += 0.02
+            reranked_score = max(0.0, min(1.0, base_score + rerank_boost))
+            reranked.append((reranked_score, page))
+        return reranked
+
+    def _resolve_effective_route_policy(self, conn, project_id: str) -> dict[str, Any]:
+        now = time.monotonic()
+        cached = self._routing_feedback_cache.get(project_id)
+        if cached is not None and (now - cached[0]) <= float(self.routing_feedback_cache_ttl_sec):
+            return cached[1]
+
+        new_page_total = 0
+        new_page_reassigned = 0
+        draft_total = 0
+        conflict_total = 0
+        route_quality_total = 0
+        ambiguous_total = 0
+        weak_match_total = 0
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE action_type = 'approve' AND decision_before = 'new_page')::bigint,
+                      COUNT(*) FILTER (
+                        WHERE action_type = 'approve'
+                          AND decision_before = 'new_page'
+                          AND COALESCE(decision_after, '') <> 'new_page'
+                      )::bigint
+                    FROM moderation_actions
+                    WHERE project_id = %s
+                      AND created_at >= NOW() - INTERVAL '30 days'
+                    """,
+                    (project_id,),
+                )
+                row = cur.fetchone() or (0, 0)
+                new_page_total = int(row[0] or 0)
+                new_page_reassigned = int(row[1] or 0)
+
+                cur.execute(
+                    """
+                    SELECT
+                      COUNT(*)::bigint,
+                      COUNT(*) FILTER (WHERE decision = 'conflict')::bigint,
+                      COUNT(*) FILTER (WHERE rationale ILIKE 'ambiguous route near new-page threshold%%')::bigint,
+                      COUNT(*) FILTER (WHERE rationale ILIKE 'weak page match%%')::bigint
+                    FROM wiki_draft_changes
+                    WHERE project_id = %s
+                      AND created_at >= NOW() - INTERVAL '30 days'
+                    """,
+                    (project_id,),
+                )
+                draft_row = cur.fetchone() or (0, 0, 0, 0)
+                draft_total = int(draft_row[0] or 0)
+                conflict_total = int(draft_row[1] or 0)
+                ambiguous_total = int(draft_row[2] or 0)
+                weak_match_total = int(draft_row[3] or 0)
+                route_quality_total = draft_total
+        except Exception:
+            pass
+
+        new_page_false_positive_rate = (
+            float(new_page_reassigned) / float(new_page_total) if new_page_total > 0 else 0.0
+        )
+        conflict_rate = float(conflict_total) / float(draft_total) if draft_total > 0 else 0.0
+        ambiguous_rate = float(ambiguous_total) / float(route_quality_total) if route_quality_total > 0 else 0.0
+
+        threshold_mid = float(self.threshold_mid)
+        new_page_margin = float(self.threshold_new_page_margin)
+        ambiguity_gap = float(self.threshold_route_ambiguity_gap)
+
+        if new_page_total >= 10:
+            if new_page_false_positive_rate >= 0.2:
+                new_page_margin += 0.03
+            if new_page_false_positive_rate >= 0.35:
+                new_page_margin += 0.03
+        if draft_total >= 30 and conflict_rate >= 0.25:
+            threshold_mid = min(0.95, threshold_mid + 0.01)
+            new_page_margin = max(0.02, new_page_margin - 0.03)
+            ambiguity_gap = max(0.01, ambiguity_gap - 0.01)
+        if route_quality_total >= 30 and ambiguous_rate > 0.35 and conflict_rate < 0.12:
+            new_page_margin = min(0.3, new_page_margin + 0.01)
+
+        policy = {
+            "threshold_high": float(self.threshold_high),
+            "threshold_mid": max(0.0, min(0.99, threshold_mid)),
+            "new_page_margin": max(0.0, min(0.3, new_page_margin)),
+            "ambiguity_gap": max(0.0, min(1.0, ambiguity_gap)),
+            "new_page_total": new_page_total,
+            "new_page_reassigned": new_page_reassigned,
+            "new_page_false_positive_rate": round(new_page_false_positive_rate, 4),
+            "draft_total": draft_total,
+            "conflict_total": conflict_total,
+            "conflict_rate": round(conflict_rate, 4),
+            "ambiguous_total": ambiguous_total,
+            "ambiguous_rate": round(ambiguous_rate, 4),
+            "weak_match_total": weak_match_total,
+        }
+        self._routing_feedback_cache[project_id] = (now, policy)
+        return policy
 
     def _resolve_section(
         self,

@@ -26,11 +26,13 @@ Environment:
 - `SYNAPSE_OIDC_ROLES_CLAIM` (default: `roles`)
 - `SYNAPSE_OIDC_TENANT_CLAIM` (default: `tenant_id`)
 - `SYNAPSE_OIDC_EMAIL_CLAIM` (default: `email`)
+- `SYNAPSE_WIKI_UPLOAD_MAX_BYTES` (default: `15728640` / 15MB)
 
 ## Endpoints
 
 - `GET /health`
 - `GET /v1/auth/mode`
+- `GET /v1/enterprise/rbac/decisions?project_id=...&decision=deny&path_prefix=/v1/wiki/&limit=100` (compliance audit stream for RBAC/tenancy policy decisions)
 - `POST /v1/auth/session`
 - `GET /v1/auth/session`
 - `DELETE /v1/auth/session`
@@ -47,15 +49,48 @@ Environment:
 - `GET /v1/adoption/source-ownership?project_id=...`
 - `PUT /v1/adoption/source-ownership`
 - `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
-- `GET /v1/wiki/pages/search?project_id=...&q=...`
+- `GET /v1/wiki/pages/search?project_id=...&q=...` (includes `meta` debug payload: scope, filters, page/draft status counters)
+- `GET /v1/wiki/pages?project_id=...&status=published&updated_by=ops_manager&with_open_drafts=true&q=...&sort_by=activity&sort_dir=desc&limit=200&offset=0` (page index for wiki tree; includes draft counters per page, plus actor/open-draft filters)
+- `GET /v1/wiki/stats?project_id=...` (page/draft status counters and latest update timestamps)
+- `GET /v1/wiki/routing/metrics?project_id=...&window_days=30` (routing quality counters/rates: precision@1, manual reassign rate, new-page false positives, conflict/ambiguity rates)
+- `GET /v1/wiki/routing/recommendations?project_id=...&window_days=30` (threshold tuning recommendations for `threshold_mid` / `new_page_margin` / `ambiguity_gap`)
 - `GET /v1/mcp/retrieval/explain?project_id=...&q=...&limit=10&related_entity_key=...&context_policy_mode=enforced&min_retrieval_confidence=0.45` (MCP-compatible retrieval diagnostics with score/confidence breakdown, reason traces, and context-injection policy controls)
 - `POST /v1/wiki/pages` (guided/manual page create with initial version + optional sections/statements from markdown)
+- `PUT /v1/wiki/pages/{slug}` (direct human page edit, new page version + statement re-index + snapshot)
+- `PUT /v1/wiki/pages/{slug}/move` (move/rename page slug, optional subtree move, alias back-compat, and snapshot invalidation)
+- `PUT /v1/wiki/pages/{slug}/reparent` (explicit parent-child operation: move page under target parent slug, optional leaf rename + subtree move)
+- `PUT /v1/wiki/pages/{slug}/archive` (archive page lifecycle state; optional subtree status transition)
+- `PUT /v1/wiki/pages/{slug}/restore` (restore archived page lifecycle state to `published`/`draft`; optional subtree transition)
+- `GET /v1/wiki/pages/{slug}/aliases?project_id=...`
+- `POST /v1/wiki/pages/{slug}/aliases`
+- `DELETE /v1/wiki/pages/{slug}/aliases/{alias_text}?project_id=...&deleted_by=...`
+- `GET /v1/wiki/pages/{slug}/comments?project_id=...&limit=100`
+- `POST /v1/wiki/pages/{slug}/comments`
+- `DELETE /v1/wiki/pages/{slug}/comments/{comment_id}`
+- `GET /v1/wiki/pages/{slug}/watchers?project_id=...`
+- `PUT /v1/wiki/pages/{slug}/watchers`
+- `GET /v1/wiki/pages/{slug}/review-assignments?project_id=...&status=open|resolved`
+- `PUT /v1/wiki/pages/{slug}/review-assignments`
+- `POST /v1/wiki/pages/{slug}/review-assignments/{assignment_id}/resolve`
+- `GET /v1/wiki/spaces/{space_key}/policy?project_id=...`
+- `PUT /v1/wiki/spaces/{space_key}/policy`
+- `GET /v1/wiki/spaces/{space_key}/owners?project_id=...`
+- `PUT /v1/wiki/spaces/{space_key}/owners`
+- `GET /v1/wiki/pages/{slug}/owners?project_id=...`
+- `PUT /v1/wiki/pages/{slug}/owners`
+- `GET /v1/wiki/notifications?project_id=...&recipient=...&status=all|unread|read`
+- `POST /v1/wiki/notifications/{notification_id}/read`
+- `POST /v1/wiki/notifications/read-all`
+- `POST /v1/wiki/uploads` (multipart upload with policy enforcement + markdown snippet generation)
+- `GET /v1/wiki/uploads?project_id=...&page_slug=...`
+- `GET /v1/wiki/uploads/{upload_id}/content?project_id=...&download=false`
 - `GET /v1/wiki/pages/{slug}?project_id=...`
 - `GET /v1/wiki/pages/{slug}/history?project_id=...&limit=20&include_markdown=true`
 - `GET /v1/wiki/drafts?project_id=...&status=pending_review`
 - `GET /v1/wiki/drafts/{draft_id}?project_id=...`
 - `GET /v1/wiki/drafts/{draft_id}/conflicts/explain?project_id=...` (MCP `explain_conflicts` compatible enrichment for UI conflict resolver)
 - `POST /v1/wiki/auto-publish/run` (policy-driven auto-approve runner for eligible drafts; supports `dry_run`)
+- `POST /v1/wiki/drafts/bootstrap-approve/run` (trusted-source migration helper: confidence/conflict/source-gated bulk approve with `dry_run`)
 - `GET /v1/wiki/moderation/throughput?project_id=...&window_hours=24&top_reviewers=5` (core moderation throughput/backlog/latency analytics)
 - `POST /v1/wiki/drafts/{draft_id}/approve`
 - `POST /v1/wiki/drafts/{draft_id}/reject`
@@ -127,6 +162,12 @@ Environment:
 - `PUT /v1/legacy-import/sources`
 - `POST /v1/legacy-import/sources/{source_id}/sync`
 - `GET /v1/legacy-import/runs?project_id=...`
+
+Legacy source types for `PUT /v1/legacy-import/sources`:
+- `local_dir`
+- `notion_root_page`
+- `notion_database`
+- `postgres_sql` (query-based pull from existing Postgres memory schema)
 - `POST /v1/simulator/runs`
 - `GET /v1/simulator/runs?project_id=...`
 - `GET /v1/simulator/runs/{run_id}?project_id=...&findings_limit=50`
@@ -249,6 +290,13 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Agent Simulator read endpoints depend on migration `013_agent_simulator.sql`.
 - Agent Simulator async queue status + API enqueue flow depends on migration `014_agent_simulator_queue_status.sql`.
 - Legacy sync source/run orchestration endpoints depend on migration `015_legacy_sync_orchestration.sql`.
+- `postgres_sql` legacy source type support depends on migration `040_legacy_sync_postgres_sql_source.sql`.
+- wiki collaboration surfaces (comments/watchers) depend on migration `041_wiki_collaboration.sql`.
+- wiki review assignment surfaces depend on migration `042_wiki_review_assignments.sql`.
+- wiki governance + notifications surfaces (space/page ownership, policy, inbox) depend on migration `043_wiki_policy_notifications.sql`.
+- wiki upload storage surfaces depend on migration `044_wiki_uploads.sql`.
+- reviewed wiki-page status lifecycle support depends on migration `045_wiki_reviewed_status.sql`.
+- RBAC/tenancy decision audit stream endpoint depends on migration `046_access_policy_decisions.sql`.
 - Queue incident auto-ticket hooks + incident lifecycle endpoints depend on migration `028_gatekeeper_calibration_queue_incident_hooks.sql`.
 - Incident provider adapters (webhook + PagerDuty + Jira presets with `provider_config`) depend on migration `029_gatekeeper_calibration_queue_incident_provider_adapters.sql`.
 - Alert-to-incident policy templates depend on migration `030_gatekeeper_calibration_queue_incident_policies.sql`.

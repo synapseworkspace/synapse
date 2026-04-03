@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 from app.db import get_conn
 from app.wiki_engine import WikiSynthesisEngine
@@ -13,12 +14,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=50, help="Maximum queued claim proposals per cycle.")
     parser.add_argument("--extract-limit", type=int, default=200, help="Maximum memory_backfill events to extract per cycle.")
     parser.add_argument("--cycles", type=int, default=1, help="How many consecutive cycles to execute.")
+    parser.add_argument(
+        "--threshold-high",
+        type=float,
+        default=float(str(os.getenv("SYNAPSE_ROUTING_THRESHOLD_HIGH", "0.82")).strip() or "0.82"),
+        help="High-confidence page routing threshold (env: SYNAPSE_ROUTING_THRESHOLD_HIGH).",
+    )
+    parser.add_argument(
+        "--threshold-mid",
+        type=float,
+        default=float(str(os.getenv("SYNAPSE_ROUTING_THRESHOLD_MID", "0.55")).strip() or "0.55"),
+        help="Mid-confidence page routing threshold (env: SYNAPSE_ROUTING_THRESHOLD_MID).",
+    )
+    parser.add_argument(
+        "--threshold-new-page-margin",
+        type=float,
+        default=float(str(os.getenv("SYNAPSE_ROUTING_NEW_PAGE_MARGIN", "0.08")).strip() or "0.08"),
+        help="Near-threshold margin to reduce false new-page creation (env: SYNAPSE_ROUTING_NEW_PAGE_MARGIN).",
+    )
+    parser.add_argument(
+        "--threshold-route-ambiguity-gap",
+        type=float,
+        default=float(str(os.getenv("SYNAPSE_ROUTING_AMBIGUITY_GAP", "0.06")).strip() or "0.06"),
+        help="Top1-top2 score gap for ambiguity guard (env: SYNAPSE_ROUTING_AMBIGUITY_GAP).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    engine = WikiSynthesisEngine()
+    engine = WikiSynthesisEngine(
+        threshold_high=args.threshold_high,
+        threshold_mid=args.threshold_mid,
+        threshold_new_page_margin=args.threshold_new_page_margin,
+        threshold_route_ambiguity_gap=args.threshold_route_ambiguity_gap,
+    )
     total = {
         "backfill_events_picked": 0,
         "backfill_events_completed": 0,

@@ -22,7 +22,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -169,6 +169,45 @@ class TenantProjectUpsertRequest(BaseModel):
     updated_by: str | None = Field(default=None, min_length=1, max_length=256)
 
 
+class EnterpriseIdpConnectionUpsertRequest(BaseModel):
+    tenant_id: UUID | None = None
+    provider: str = Field(pattern="^(oidc|saml)$")
+    name: str = Field(default="default", min_length=1, max_length=128)
+    status: str = Field(default="active", pattern="^(active|disabled)$")
+    config: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class EnterpriseScimTokenCreateRequest(BaseModel):
+    tenant_id: UUID
+    name: str = Field(min_length=1, max_length=128)
+    scopes: list[str] = Field(default_factory=lambda: ["users:read", "users:write"], max_length=16)
+    expires_at: datetime | None = None
+    metadata: dict[str, Any] | None = None
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class ScimEmailValue(BaseModel):
+    value: str = Field(min_length=3, max_length=512)
+    primary: bool | None = None
+
+
+class ScimRoleValue(BaseModel):
+    value: str = Field(min_length=1, max_length=128)
+
+
+class ScimUserWriteRequest(BaseModel):
+    schemas: list[str] | None = None
+    externalId: str | None = Field(default=None, min_length=1, max_length=512)
+    userName: str = Field(min_length=1, max_length=256)
+    displayName: str | None = Field(default=None, max_length=256)
+    active: bool = True
+    emails: list[ScimEmailValue] | None = Field(default=None, max_length=16)
+    roles: list[ScimRoleValue] | None = Field(default=None, max_length=32)
+    metadata: dict[str, Any] | None = None
+
+
 class DraftSectionEdit(BaseModel):
     section_key: str = Field(min_length=1, max_length=128)
     heading: str | None = Field(default=None, min_length=1, max_length=256)
@@ -220,6 +259,18 @@ class WikiAutoPublishRunRequest(BaseModel):
     limit_per_project: int = Field(default=50, ge=1, le=500)
     reviewed_by: str = Field(default="synapse_autopublisher", min_length=1, max_length=256)
     dry_run: bool = False
+
+
+class WikiBootstrapApproveRunRequest(BaseModel):
+    project_id: str
+    reviewed_by: str = Field(default="synapse_bootstrap_migration", min_length=1, max_length=256)
+    source_system: str = Field(default="bootstrap_migration", min_length=1, max_length=128)
+    limit: int = Field(default=200, ge=1, le=2000)
+    sample_size: int = Field(default=15, ge=1, le=200)
+    min_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+    require_conflict_free: bool = True
+    trusted_source_systems: list[str] | None = None
+    dry_run: bool = True
 
 
 class SourceOwnershipRuleUpsert(BaseModel):
@@ -610,7 +661,7 @@ class SimulatorRunCreateRequest(BaseModel):
 
 class LegacyImportSourceUpsertRequest(BaseModel):
     project_id: str
-    source_type: str = Field(pattern="^(local_dir|notion_root_page|notion_database)$")
+    source_type: str = Field(pattern="^(local_dir|notion_root_page|notion_database|postgres_sql)$")
     source_ref: str = Field(min_length=1, max_length=2000)
     enabled: bool = True
     sync_interval_minutes: int = Field(default=1440, ge=15, le=10080)
@@ -671,10 +722,121 @@ class WikiPageCreateRequest(BaseModel):
     slug: str | None = Field(default=None, min_length=1, max_length=512)
     entity_key: str | None = Field(default=None, min_length=1, max_length=512)
     page_type: str = Field(default="operations", min_length=1, max_length=128)
-    status: str = Field(default="published", pattern="^(draft|published)$")
+    status: str = Field(default="published", pattern="^(draft|reviewed|published)$")
     initial_markdown: str | None = Field(default=None, min_length=1, max_length=100000)
     change_summary: str | None = Field(default=None, max_length=4000)
     allow_existing: bool = False
+
+
+class WikiPageUpdateRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    markdown: str = Field(min_length=1, max_length=200000)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    page_type: str | None = Field(default=None, min_length=1, max_length=128)
+    status: str | None = Field(default=None, pattern="^(draft|reviewed|published|archived)$")
+    change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class WikiPageMoveRequest(BaseModel):
+    project_id: str
+    moved_by: str = Field(min_length=1, max_length=256)
+    new_slug: str = Field(min_length=1, max_length=512)
+    new_title: str | None = Field(default=None, min_length=1, max_length=500)
+    include_descendants: bool = True
+    change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class WikiPageReparentRequest(BaseModel):
+    project_id: str
+    moved_by: str = Field(min_length=1, max_length=256)
+    new_parent_slug: str | None = Field(default=None, min_length=1, max_length=512)
+    new_slug_leaf: str | None = Field(default=None, min_length=1, max_length=256)
+    new_title: str | None = Field(default=None, min_length=1, max_length=500)
+    include_descendants: bool = True
+    change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class WikiPageStatusTransitionRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    include_descendants: bool = False
+    restore_status: str = Field(default="published", pattern="^(draft|reviewed|published)$")
+    change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class WikiPageAliasCreateRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(min_length=1, max_length=256)
+    alias_text: str = Field(min_length=1, max_length=512)
+
+
+class WikiPageCommentCreateRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(min_length=1, max_length=256)
+    body: str = Field(min_length=1, max_length=20000)
+    metadata: dict[str, Any] | None = None
+
+
+class WikiPageCommentDeleteRequest(BaseModel):
+    project_id: str
+    deleted_by: str = Field(min_length=1, max_length=256)
+
+
+class WikiPageWatcherUpsertRequest(BaseModel):
+    project_id: str
+    actor: str = Field(min_length=1, max_length=256)
+    watcher: str = Field(min_length=1, max_length=256)
+    active: bool = True
+    metadata: dict[str, Any] | None = None
+
+
+class WikiPageReviewAssignmentUpsertRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(min_length=1, max_length=256)
+    assignee: str = Field(min_length=1, max_length=256)
+    role: str = Field(default="reviewer", min_length=1, max_length=64)
+    note: str | None = Field(default=None, max_length=4000)
+    due_at: datetime | None = None
+
+
+class WikiPageReviewAssignmentResolveRequest(BaseModel):
+    project_id: str
+    resolved_by: str = Field(min_length=1, max_length=256)
+    resolution_note: str | None = Field(default=None, max_length=4000)
+
+
+class WikiSpacePolicyUpsertRequest(BaseModel):
+    project_id: str
+    space_key: str = Field(min_length=1, max_length=256)
+    updated_by: str = Field(min_length=1, max_length=256)
+    write_mode: str = Field(default="open", pattern="^(open|owners_only)$")
+    comment_mode: str = Field(default="open", pattern="^(open|owners_only)$")
+    review_assignment_required: bool = False
+    metadata: dict[str, Any] | None = None
+
+
+class WikiSpaceOwnerUpsertRequest(BaseModel):
+    project_id: str
+    actor: str = Field(min_length=1, max_length=256)
+    owner: str = Field(min_length=1, max_length=256)
+    role: str = Field(default="owner", min_length=1, max_length=64)
+    active: bool = True
+    metadata: dict[str, Any] | None = None
+
+
+class WikiPageOwnerUpsertRequest(BaseModel):
+    project_id: str
+    actor: str = Field(min_length=1, max_length=256)
+    owner: str = Field(min_length=1, max_length=256)
+    role: str = Field(default="editor", min_length=1, max_length=64)
+    active: bool = True
+    metadata: dict[str, Any] | None = None
+
+
+class WikiNotificationReadRequest(BaseModel):
+    project_id: str
+    recipient: str = Field(min_length=1, max_length=256)
 
 
 class OpenClawProvenanceVerifyRequest(BaseModel):
@@ -762,6 +924,350 @@ def _extract_sections_from_markdown(markdown: str) -> list[dict[str, Any]]:
                 }
             )
     return sections
+
+
+def _resolve_wiki_page_row_by_slug_or_alias(
+    cur: Any,
+    *,
+    project_id: str,
+    slug_or_alias: str,
+    for_update: bool = False,
+) -> tuple[Any, ...] | None:
+    lock_clause = " FOR UPDATE OF p" if for_update else ""
+    cur.execute(
+        f"""
+        SELECT
+          p.id,
+          p.title,
+          p.slug,
+          p.entity_key,
+          p.page_type,
+          p.status,
+          p.current_version,
+          CASE
+            WHEN p.slug = %s THEN 'slug'
+            ELSE 'alias'
+          END AS resolution_mode
+        FROM wiki_pages p
+        WHERE p.project_id = %s
+          AND (
+            p.slug = %s
+            OR EXISTS (
+              SELECT 1
+              FROM wiki_page_aliases a
+              WHERE a.page_id = p.id
+                AND a.alias_text = %s
+            )
+          )
+        ORDER BY
+          CASE WHEN p.slug = %s THEN 0 ELSE 1 END,
+          p.updated_at DESC
+        LIMIT 1
+        {lock_clause}
+        """,
+        (slug_or_alias, project_id, slug_or_alias, slug_or_alias, slug_or_alias),
+    )
+    return cur.fetchone()
+
+
+_WIKI_MENTION_PATTERN = re.compile(r"(?<![\w@])@([a-zA-Z0-9][a-zA-Z0-9_.:-]{1,63})")
+_WIKI_UPLOAD_MAX_BYTES = max(
+    1,
+    int(str(os.getenv("SYNAPSE_WIKI_UPLOAD_MAX_BYTES", "15728640") or "15728640")),
+)
+_WIKI_UPLOAD_ALLOWED_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".avif",
+    ".bmp",
+    ".pdf",
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".jsonl",
+    ".xlsx",
+    ".xls",
+    ".docx",
+    ".pptx",
+    ".zip",
+    ".log",
+}
+
+
+def _wiki_feature_table_exists(cur: Any, table_name: str) -> bool:
+    cur.execute("SELECT to_regclass(%s)", (table_name,))
+    row = cur.fetchone()
+    return bool(row and row[0] is not None)
+
+
+def _sanitize_wiki_upload_filename(raw_name: str | None) -> str:
+    value = str(raw_name or "").strip()
+    if not value:
+        return "attachment.bin"
+    value = value.replace("\\", "/").split("/")[-1].strip()
+    value = re.sub(r"[^\w.\-() ]+", "_", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:240] if value else "attachment.bin"
+
+
+def _wiki_upload_extension_allowed(filename: str) -> bool:
+    lower = filename.lower()
+    idx = lower.rfind(".")
+    if idx <= 0:
+        return False
+    return lower[idx:] in _WIKI_UPLOAD_ALLOWED_EXTENSIONS
+
+
+def _wiki_upload_is_image(filename: str, content_type: str | None) -> bool:
+    content_type_value = str(content_type or "").strip().lower()
+    if content_type_value.startswith("image/"):
+        return True
+    lower = filename.lower()
+    return any(lower.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp"))
+
+
+def _wiki_space_key_from_slug(slug: str | None) -> str:
+    normalized = str(slug or "").strip().lower().replace("\\", "/")
+    if not normalized:
+        return "general"
+    first = normalized.split("/", 1)[0].strip()
+    return _slugify_segment(first or "general")
+
+
+def _extract_wiki_mentions(text: str) -> list[str]:
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in _WIKI_MENTION_PATTERN.finditer(str(text or "")):
+        actor = str(match.group(1) or "").strip()
+        if not actor:
+            continue
+        key = actor.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        mentions.append(actor)
+    return mentions
+
+
+def _load_wiki_space_policy(cur: Any, *, project_id: str, space_key: str) -> dict[str, Any]:
+    default_policy = {
+        "project_id": project_id,
+        "space_key": space_key,
+        "write_mode": "open",
+        "comment_mode": "open",
+        "review_assignment_required": False,
+        "metadata": {},
+        "exists": False,
+    }
+    if not _wiki_feature_table_exists(cur, "public.wiki_space_policies"):
+        return default_policy
+    cur.execute(
+        """
+        SELECT write_mode, comment_mode, review_assignment_required, metadata
+        FROM wiki_space_policies
+        WHERE project_id = %s
+          AND space_key = %s
+        LIMIT 1
+        """,
+        (project_id, space_key),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return default_policy
+    return {
+        "project_id": project_id,
+        "space_key": space_key,
+        "write_mode": str(row[0] or "open"),
+        "comment_mode": str(row[1] or "open"),
+        "review_assignment_required": bool(row[2]),
+        "metadata": row[3] if isinstance(row[3], dict) else {},
+        "exists": True,
+    }
+
+
+def _wiki_actor_is_owner(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    actor: str,
+    page_id: str | None = None,
+) -> bool:
+    normalized_actor = str(actor or "").strip()
+    if not normalized_actor:
+        return False
+    actor_lower = normalized_actor.lower()
+    if page_id and _wiki_feature_table_exists(cur, "public.wiki_page_owners"):
+        cur.execute(
+            """
+            SELECT 1
+            FROM wiki_page_owners
+            WHERE project_id = %s
+              AND page_id::text = %s
+              AND lower(owner) = %s
+            LIMIT 1
+            """,
+            (project_id, page_id, actor_lower),
+        )
+        if cur.fetchone() is not None:
+            return True
+    if _wiki_feature_table_exists(cur, "public.wiki_space_owners"):
+        cur.execute(
+            """
+            SELECT 1
+            FROM wiki_space_owners
+            WHERE project_id = %s
+              AND space_key = %s
+              AND lower(owner) = %s
+            LIMIT 1
+            """,
+            (project_id, space_key, actor_lower),
+        )
+        if cur.fetchone() is not None:
+            return True
+    return False
+
+
+def _wiki_space_owner_count(cur: Any, *, project_id: str, space_key: str) -> int:
+    if not _wiki_feature_table_exists(cur, "public.wiki_space_owners"):
+        return 0
+    cur.execute(
+        """
+        SELECT COUNT(*)::int
+        FROM wiki_space_owners
+        WHERE project_id = %s
+          AND space_key = %s
+        """,
+        (project_id, space_key),
+    )
+    row = cur.fetchone()
+    return int(row[0] if row and row[0] is not None else 0)
+
+
+def _wiki_page_owner_count(cur: Any, *, project_id: str, page_id: str) -> int:
+    if not _wiki_feature_table_exists(cur, "public.wiki_page_owners"):
+        return 0
+    cur.execute(
+        """
+        SELECT COUNT(*)::int
+        FROM wiki_page_owners
+        WHERE project_id = %s
+          AND page_id::text = %s
+        """,
+        (project_id, page_id),
+    )
+    row = cur.fetchone()
+    return int(row[0] if row and row[0] is not None else 0)
+
+
+def _check_wiki_policy_access(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    actor: str,
+    action: str,
+    page_id: str | None = None,
+) -> dict[str, Any]:
+    policy = _load_wiki_space_policy(cur, project_id=project_id, space_key=space_key)
+    actor_is_owner = _wiki_actor_is_owner(
+        cur,
+        project_id=project_id,
+        space_key=space_key,
+        actor=actor,
+        page_id=page_id,
+    )
+    mode = policy["write_mode"] if action == "write" else policy["comment_mode"]
+    if mode == "owners_only" and not actor_is_owner:
+        return {
+            "allowed": False,
+            "reason": "owners_only",
+            "space_key": space_key,
+            "action": action,
+            "policy": policy,
+            "actor_is_owner": actor_is_owner,
+        }
+    return {
+        "allowed": True,
+        "reason": "allowed",
+        "space_key": space_key,
+        "action": action,
+        "policy": policy,
+        "actor_is_owner": actor_is_owner,
+    }
+
+
+def _wiki_notifications_enabled(cur: Any) -> bool:
+    return _wiki_feature_table_exists(cur, "public.wiki_notifications")
+
+
+def _collect_wiki_page_watchers(cur: Any, *, project_id: str, page_id: str) -> list[str]:
+    if not _wiki_feature_table_exists(cur, "public.wiki_page_watchers"):
+        return []
+    cur.execute(
+        """
+        SELECT watcher
+        FROM wiki_page_watchers
+        WHERE project_id = %s
+          AND page_id::text = %s
+        ORDER BY watcher ASC
+        """,
+        (project_id, page_id),
+    )
+    rows = cur.fetchall()
+    return [str(row[0]) for row in rows if row and row[0]]
+
+
+def _insert_wiki_notifications(
+    cur: Any,
+    *,
+    project_id: str,
+    recipients: set[str],
+    actor: str | None,
+    kind: str,
+    title: str,
+    body: str | None,
+    link: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> list[str]:
+    if not recipients or not _wiki_notifications_enabled(cur):
+        return []
+    actor_value = str(actor or "").strip() or None
+    actor_lower = actor_value.lower() if actor_value else None
+    inserted: list[str] = []
+    for recipient in sorted(recipients):
+        recipient_value = str(recipient or "").strip()
+        if not recipient_value:
+            continue
+        if actor_lower and recipient_value.lower() == actor_lower:
+            continue
+        notification_id = str(uuid4())
+        cur.execute(
+            """
+            INSERT INTO wiki_notifications (
+              id, project_id, recipient, actor, kind, title, body, link, metadata, status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'unread')
+            """,
+            (
+                notification_id,
+                project_id,
+                recipient_value,
+                actor_value,
+                kind,
+                title[:500],
+                (body or "")[:2000] if body is not None else None,
+                (link or "")[:1000] if link is not None else None,
+                Jsonb(metadata or {}),
+            ),
+        )
+        inserted.append(notification_id)
+    return inserted
 
 
 def _inject_statement_into_markdown(markdown: str, section_heading: str, statement_text: str) -> str:
@@ -1045,6 +1551,10 @@ def _insert_task_event(
 _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS: bool | None = None
 _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS: bool | None = None
 _SOURCE_OWNERSHIP_TABLE_EXISTS: bool | None = None
+_ACCESS_POLICY_DECISIONS_TABLE_EXISTS: bool | None = None
+_ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS: bool | None = None
+_SCIM_API_TOKENS_TABLE_EXISTS: bool | None = None
+_SCIM_DIRECTORY_USERS_TABLE_EXISTS: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
 
 
@@ -1118,6 +1628,108 @@ def _source_ownership_table_exists(conn) -> bool:
         if exists:
             _SOURCE_OWNERSHIP_TABLE_EXISTS = True
     return exists
+
+
+def _access_policy_decisions_table_exists(conn) -> bool:
+    global _ACCESS_POLICY_DECISIONS_TABLE_EXISTS
+    if _ACCESS_POLICY_DECISIONS_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'access_policy_decisions'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _ACCESS_POLICY_DECISIONS_TABLE_EXISTS = True
+    return exists
+
+
+def _extract_error_code_from_detail(detail: Any) -> str | None:
+    if isinstance(detail, dict):
+        value = str(detail.get("code") or "").strip().lower()
+        if value:
+            return value[:128]
+    text = str(detail or "").strip().lower()
+    if not text:
+        return None
+    return text[:128]
+
+
+def _record_access_policy_decision(
+    conn,
+    *,
+    settings: enterprise.EnterpriseSettings,
+    identity: enterprise.AccessIdentity,
+    method: str,
+    path: str,
+    route_policy: dict[str, Any],
+    project_ids: set[str],
+    decision: str,
+    deny_code: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if decision not in {"allow", "deny", "bypass"}:
+        return
+    if not _access_policy_decisions_table_exists(conn):
+        return
+    required_roles = [str(item).strip().lower() for item in (route_policy.get("required_roles") or []) if str(item).strip()]
+    actor_roles = [str(item).strip().lower() for item in (identity.roles or []) if str(item).strip()]
+    normalized_projects = sorted({str(item).strip() for item in project_ids if str(item).strip()})[:200]
+    route_action = str(route_policy.get("action") or "").strip() or None
+    detail_payload = dict(metadata or {})
+    detail_payload["route_policy_source"] = str(route_policy.get("source") or "unknown")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO access_policy_decisions (
+              id,
+              subject,
+              email,
+              tenant_id,
+              auth_source,
+              session_id,
+              method,
+              path,
+              route_action,
+              project_ids,
+              decision,
+              deny_code,
+              required_roles,
+              actor_roles,
+              rbac_mode,
+              tenancy_mode,
+              metadata
+            )
+            VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            (
+                uuid4(),
+                (identity.subject or "anonymous")[:256],
+                (identity.email or "")[:320] or None,
+                (identity.tenant_id or "")[:64] or None,
+                (identity.auth_source or "unknown")[:64],
+                (identity.session_id or "")[:128] or None,
+                method.upper().strip()[:16] or "GET",
+                path[:512],
+                route_action[:128] if route_action else None,
+                normalized_projects,
+                decision,
+                (deny_code or "")[:128] or None,
+                required_roles,
+                actor_roles,
+                settings.rbac_mode,
+                settings.tenancy_mode,
+                Jsonb(detail_payload),
+            ),
+        )
 
 
 def _normalize_source_system(value: Any, *, default: str = "unknown") -> str:
@@ -9850,7 +10462,17 @@ async def enterprise_guard_middleware(request: Request, call_next):  # type: ign
             query_params=dict(request.query_params),
             body_payload=body_payload,
         )
+        route_policy = enterprise.describe_route_policy(method, path)
         with get_conn() as conn:
+            identity = enterprise.AccessIdentity(
+                subject="anonymous",
+                email=None,
+                tenant_id=None,
+                roles=tuple(),
+                auth_source="unknown",
+                claims={},
+                session_id=None,
+            )
             try:
                 identity = enterprise.resolve_identity(
                     conn=conn,
@@ -9865,7 +10487,40 @@ async def enterprise_guard_middleware(request: Request, call_next):  # type: ign
                 enterprise.enforce_rbac(settings, identity, method=method, path=path)
                 enterprise.enforce_tenancy(settings, identity, conn=conn, project_ids=project_ids)
             except HTTPException as exc:
+                try:
+                    _record_access_policy_decision(
+                        conn,
+                        settings=settings,
+                        identity=identity,
+                        method=method,
+                        path=path,
+                        route_policy=route_policy,
+                        project_ids=project_ids,
+                        decision="deny",
+                        deny_code=_extract_error_code_from_detail(exc.detail),
+                        metadata={
+                            "http_status": exc.status_code,
+                        },
+                    )
+                except Exception:
+                    pass
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            try:
+                _record_access_policy_decision(
+                    conn,
+                    settings=settings,
+                    identity=identity,
+                    method=method,
+                    path=path,
+                    route_policy=route_policy,
+                    project_ids=project_ids,
+                    decision="allow",
+                    metadata={
+                        "http_status": 200,
+                    },
+                )
+            except Exception:
+                pass
         request.state.synapse_access = identity.to_dict()
     else:
         request.state.synapse_access = enterprise.AccessIdentity(
@@ -9916,6 +10571,134 @@ def _normalize_roles_list(values: list[str] | None) -> list[str]:
 @app.get("/v1/auth/mode")
 def get_auth_mode() -> dict[str, Any]:
     return enterprise.auth_mode_payload(enterprise.get_enterprise_settings())
+
+
+@app.get("/v1/enterprise/rbac/decisions")
+def list_access_policy_decisions(
+    project_id: str | None = Query(default=None),
+    subject: str | None = Query(default=None),
+    decision: str | None = Query(default=None),
+    path_prefix: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=50000),
+) -> dict[str, Any]:
+    normalized_project_id = str(project_id or "").strip()
+    normalized_subject = str(subject or "").strip()
+    normalized_decision = str(decision or "").strip().lower()
+    normalized_path_prefix = str(path_prefix or "").strip()
+    if normalized_decision and normalized_decision not in {"allow", "deny", "bypass"}:
+        raise HTTPException(status_code=422, detail="rbac_audit_decision_invalid")
+
+    filters: list[str] = []
+    params: list[Any] = []
+    if normalized_project_id:
+        filters.append("%s = ANY(project_ids)")
+        params.append(normalized_project_id)
+    if normalized_subject:
+        filters.append("subject ILIKE %s")
+        params.append(f"%{normalized_subject[:256]}%")
+    if normalized_decision:
+        filters.append("decision = %s")
+        params.append(normalized_decision)
+    if normalized_path_prefix:
+        filters.append("path ILIKE %s")
+        params.append(f"{normalized_path_prefix[:256]}%")
+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+    normalized_limit = normalize_limit_value(limit, default=100, minimum=1, maximum=500)
+    normalized_offset = max(0, int(offset))
+
+    with get_conn() as conn:
+        if not _access_policy_decisions_table_exists(conn):
+            raise HTTPException(status_code=503, detail="rbac_audit_table_missing")
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)::bigint
+                FROM access_policy_decisions
+                {where_sql}
+                """,
+                tuple(params),
+            )
+            total_row = cur.fetchone()
+            total = int(total_row[0] if total_row and total_row[0] is not None else 0)
+            cur.execute(
+                f"""
+                SELECT
+                  id::text,
+                  created_at,
+                  subject,
+                  email,
+                  tenant_id,
+                  auth_source,
+                  method,
+                  path,
+                  route_action,
+                  project_ids,
+                  decision,
+                  deny_code,
+                  required_roles,
+                  actor_roles,
+                  rbac_mode,
+                  tenancy_mode,
+                  metadata
+                FROM access_policy_decisions
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (*params, normalized_limit, normalized_offset),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                f"""
+                SELECT decision, COUNT(*)::bigint
+                FROM access_policy_decisions
+                {where_sql}
+                GROUP BY decision
+                """,
+                tuple(params),
+            )
+            by_decision_rows = cur.fetchall()
+
+    items = [
+        {
+            "id": str(row[0]),
+            "created_at": row[1].isoformat() if row[1] is not None else None,
+            "subject": str(row[2] or ""),
+            "email": str(row[3]) if row[3] is not None else None,
+            "tenant_id": str(row[4]) if row[4] is not None else None,
+            "auth_source": str(row[5] or ""),
+            "method": str(row[6] or ""),
+            "path": str(row[7] or ""),
+            "route_action": str(row[8]) if row[8] is not None else None,
+            "project_ids": [str(item) for item in (row[9] or [])],
+            "decision": str(row[10] or ""),
+            "deny_code": str(row[11]) if row[11] is not None else None,
+            "required_roles": [str(item) for item in (row[12] or [])],
+            "actor_roles": [str(item) for item in (row[13] or [])],
+            "rbac_mode": str(row[14] or "open"),
+            "tenancy_mode": str(row[15] or "open"),
+            "metadata": dict(row[16]) if isinstance(row[16], dict) else {},
+        }
+        for row in rows
+    ]
+    by_decision = {str(row[0]): int(row[1]) for row in by_decision_rows}
+    return {
+        "decisions": items,
+        "meta": {
+            "filters_applied": {
+                "project_id": normalized_project_id or None,
+                "subject": normalized_subject or None,
+                "decision": normalized_decision or None,
+                "path_prefix": normalized_path_prefix or None,
+                "limit": normalized_limit,
+                "offset": normalized_offset,
+            },
+            "total": total,
+            "returned": len(items),
+            "counts_by_decision": by_decision,
+        },
+    }
 
 
 @app.post("/v1/auth/session", response_model=None)
@@ -10945,6 +11728,7 @@ def create_wiki_page(
             try:
                 title = payload.title.strip()
                 slug = _normalize_wiki_slug(payload.slug, title)
+                space_key = _wiki_space_key_from_slug(slug)
                 entity_key = (payload.entity_key or "").strip() or slug
                 page_type = re.sub(r"[^a-z0-9_/-]+", "_", payload.page_type.strip().lower() or "operations").strip("_")
                 if not page_type:
@@ -10958,6 +11742,52 @@ def create_wiki_page(
                 change_summary = (
                     payload.change_summary.strip() if isinstance(payload.change_summary, str) and payload.change_summary.strip() else None
                 ) or f"Page created by {payload.created_by}"
+                policy_check = _check_wiki_policy_access(
+                    cur,
+                    project_id=payload.project_id,
+                    space_key=space_key,
+                    actor=payload.created_by,
+                    action="write",
+                    page_id=None,
+                )
+                if not policy_check["allowed"]:
+                    response = {
+                        "error": "wiki_policy_denied",
+                        "project_id": payload.project_id,
+                        "slug": slug,
+                        "space_key": space_key,
+                        "action": "write",
+                        "reason": policy_check["reason"],
+                        "policy": policy_check["policy"],
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=403,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=403, content=response)
+                if (
+                    status == "published"
+                    and bool(policy_check["policy"].get("review_assignment_required"))
+                    and not bool(policy_check["actor_is_owner"])
+                ):
+                    response = {
+                        "error": "wiki_review_assignment_required",
+                        "project_id": payload.project_id,
+                        "slug": slug,
+                        "space_key": space_key,
+                        "detail": "Published creation requires owner or prior review assignment for this space policy.",
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=403,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=403, content=response)
 
                 cur.execute(
                     """
@@ -11139,6 +11969,1371 @@ def create_wiki_page(
                 raise
 
 
+@app.put("/v1/wiki/pages/{slug}", response_model=None)
+def update_wiki_page(
+    slug: str,
+    payload: WikiPageUpdateRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}"
+    request_payload = {"slug": normalized_slug, **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.updated_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {
+                            "error": "wiki_page_not_found",
+                            "project_id": payload.project_id,
+                            "slug": normalized_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+
+                    page_id: UUID = page_row[0]
+                    existing_title = str(page_row[1] or "").strip() or normalized_slug
+                    existing_slug = str(page_row[2] or normalized_slug).strip() or normalized_slug
+                    space_key = _wiki_space_key_from_slug(existing_slug)
+                    entity_key = str(page_row[3] or existing_slug).strip() or existing_slug
+                    existing_page_type = str(page_row[4] or "operations").strip() or "operations"
+                    existing_status = str(page_row[5] or "published").strip() or "published"
+                    current_version = int(page_row[6] or 0)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.updated_by,
+                        action="write",
+                        page_id=str(page_id),
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": existing_slug,
+                            "space_key": space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+
+                    next_title = (
+                        payload.title.strip()
+                        if isinstance(payload.title, str) and payload.title.strip()
+                        else existing_title
+                    )
+                    if payload.page_type is not None:
+                        next_page_type = (
+                            re.sub(r"[^a-z0-9_/-]+", "_", payload.page_type.strip().lower()).strip("_") or existing_page_type
+                        )
+                    else:
+                        next_page_type = existing_page_type
+                    next_status = payload.status or existing_status
+                    markdown = payload.markdown.strip()
+                    if not markdown:
+                        raise HTTPException(status_code=409, detail="empty_markdown_not_allowed")
+                    if not markdown.endswith("\n"):
+                        markdown = f"{markdown}\n"
+                    change_summary = (
+                        payload.change_summary.strip()
+                        if isinstance(payload.change_summary, str) and payload.change_summary.strip()
+                        else None
+                    ) or f"Page edited by {payload.updated_by}"
+
+                    cur.execute(
+                        """
+                        SELECT markdown
+                        FROM wiki_page_versions
+                        WHERE page_id = %s
+                          AND version = %s
+                        LIMIT 1
+                        """,
+                        (page_id, current_version),
+                    )
+                    latest_row = cur.fetchone()
+                    latest_markdown = str(latest_row[0]) if latest_row and latest_row[0] is not None else ""
+                    if (
+                        latest_markdown.strip() == markdown.strip()
+                        and next_title == existing_title
+                        and next_page_type == existing_page_type
+                        and next_status == existing_status
+                    ):
+                        response = {
+                            "status": "no_change",
+                            "page": {
+                                "id": str(page_id),
+                                "title": existing_title,
+                                "slug": existing_slug,
+                                "entity_key": entity_key,
+                                "page_type": existing_page_type,
+                                "status": existing_status,
+                                "current_version": current_version,
+                            },
+                        }
+                        if source_ownership_advisories > 0:
+                            response["source_ownership_advisories"] = source_ownership_advisories
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+
+                    if (
+                        next_status == "published"
+                        and bool(policy_check["policy"].get("review_assignment_required"))
+                        and not bool(policy_check["actor_is_owner"])
+                        and _wiki_feature_table_exists(cur, "public.wiki_page_review_assignments")
+                    ):
+                        cur.execute(
+                            """
+                            SELECT COUNT(*)::int
+                            FROM wiki_page_review_assignments
+                            WHERE project_id = %s
+                              AND page_id = %s
+                              AND status = 'resolved'
+                            """,
+                            (payload.project_id, page_id),
+                        )
+                        resolved_count_row = cur.fetchone()
+                        resolved_count = int(resolved_count_row[0] if resolved_count_row and resolved_count_row[0] is not None else 0)
+                        if resolved_count <= 0:
+                            response = {
+                                "error": "wiki_review_assignment_required",
+                                "project_id": payload.project_id,
+                                "slug": existing_slug,
+                                "space_key": space_key,
+                                "detail": "At least one resolved review assignment is required before publish in this space.",
+                            }
+                            mark_request_completed(
+                                conn,
+                                endpoint=endpoint,
+                                idempotency_key=idempotency_key,
+                                status_code=403,
+                                response_body=response,
+                            )
+                            return JSONResponse(status_code=403, content=response)
+
+                    next_version = current_version + 1
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_page_versions (
+                          id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 'human', %s, %s)
+                        """,
+                        (
+                            uuid4(),
+                            page_id,
+                            next_version,
+                            markdown,
+                            Jsonb([]),
+                            payload.updated_by,
+                            change_summary,
+                        ),
+                    )
+
+                    cur.execute(
+                        """
+                        UPDATE wiki_statements
+                        SET status = 'superseded',
+                            valid_to = COALESCE(valid_to, NOW()),
+                            updated_at = NOW(),
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                        WHERE page_id = %s
+                          AND status = 'active'
+                        """,
+                        (
+                            Jsonb(
+                                {
+                                    "superseded_by": payload.updated_by,
+                                    "superseded_by_version": next_version,
+                                }
+                            ),
+                            page_id,
+                        ),
+                    )
+                    superseded_statements = int(cur.rowcount)
+
+                    sections = _extract_sections_from_markdown(markdown)
+                    inserted_statement_ids: list[str] = []
+                    section_keys: list[str] = []
+                    for index, section in enumerate(sections):
+                        section_key = str(section.get("section_key") or f"section_{index + 1}").strip() or f"section_{index + 1}"
+                        heading = str(section.get("heading") or _section_heading_from_key(section_key)).strip()
+                        statements = [str(item).strip() for item in (section.get("statements") or []) if str(item).strip()]
+                        section_keys.append(section_key)
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (page_id, section_key) DO UPDATE
+                            SET heading = EXCLUDED.heading,
+                                order_index = EXCLUDED.order_index,
+                                statement_count = EXCLUDED.statement_count
+                            """,
+                            (
+                                page_id,
+                                section_key,
+                                heading or _section_heading_from_key(section_key),
+                                index,
+                                len(statements),
+                            ),
+                        )
+                        for statement_text in statements:
+                            statement_id = uuid4()
+                            fingerprint = _compute_claim_fingerprint(
+                                payload.project_id,
+                                entity_key,
+                                next_page_type,
+                                statement_text,
+                            )
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_statements (
+                                  id, project_id, page_id, section_key, statement_text, normalized_text,
+                                  claim_fingerprint, status, metadata, valid_from
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                                """,
+                                (
+                                    statement_id,
+                                    payload.project_id,
+                                    page_id,
+                                    section_key,
+                                    statement_text,
+                                    _normalize_statement_text(statement_text),
+                                    fingerprint,
+                                    Jsonb(
+                                        {
+                                            "source": "manual_page_edit",
+                                            "updated_by": payload.updated_by,
+                                            "page_version": next_version,
+                                        }
+                                    ),
+                                ),
+                            )
+                            inserted_statement_ids.append(str(statement_id))
+
+                    cur.execute(
+                        """
+                        DELETE FROM wiki_sections
+                        WHERE page_id = %s
+                          AND NOT (section_key = ANY(%s::text[]))
+                        """,
+                        (page_id, section_keys),
+                    )
+
+                    cur.execute(
+                        """
+                        UPDATE wiki_pages
+                        SET title = %s,
+                            page_type = %s,
+                            status = %s,
+                            current_version = %s,
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            next_title,
+                            next_page_type,
+                            next_status,
+                            next_version,
+                            Jsonb(
+                                {
+                                    "updated_by": payload.updated_by,
+                                    "last_change_summary": change_summary,
+                                }
+                            ),
+                            page_id,
+                        ),
+                    )
+
+                    snapshot_id = uuid4()
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (snapshot_id, payload.project_id, payload.updated_by, change_summary),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                        VALUES (%s, %s, %s)
+                        """,
+                        (snapshot_id, page_id, next_version),
+                    )
+
+                    response = {
+                        "status": "updated",
+                        "page": {
+                            "id": str(page_id),
+                            "title": next_title,
+                            "slug": existing_slug,
+                            "entity_key": entity_key,
+                            "page_type": next_page_type,
+                            "status": next_status,
+                            "current_version": next_version,
+                        },
+                        "latest_version": {
+                            "version": next_version,
+                            "markdown": markdown,
+                            "source": "human",
+                            "created_by": payload.updated_by,
+                            "change_summary": change_summary,
+                        },
+                        "snapshot_id": str(snapshot_id),
+                        "superseded_statements": superseded_statements,
+                        "inserted_statements": len(inserted_statement_ids),
+                    }
+                    notification_ids = _insert_wiki_notifications(
+                        cur,
+                        project_id=payload.project_id,
+                        recipients=set(_collect_wiki_page_watchers(cur, project_id=payload.project_id, page_id=str(page_id))),
+                        actor=payload.updated_by,
+                        kind="wiki.page_updated",
+                        title=f"Page updated: {existing_slug}",
+                        body=change_summary,
+                        link=f"/wiki/{existing_slug}",
+                        metadata={
+                            "page_id": str(page_id),
+                            "slug": existing_slug,
+                            "version": next_version,
+                            "change_summary": change_summary,
+                        },
+                    )
+                    if notification_ids:
+                        response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.put("/v1/wiki/pages/{slug}/move", response_model=None)
+def move_wiki_page(
+    slug: str,
+    payload: WikiPageMoveRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    normalized_new_slug = _normalize_wiki_slug(payload.new_slug, payload.new_slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/move"
+    request_payload = {
+        "slug": normalized_slug,
+        "new_slug": normalized_new_slug,
+        **payload.model_dump(mode="json"),
+    }
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.moved_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    root_page = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if root_page is None:
+                        response = {
+                            "error": "wiki_page_not_found",
+                            "project_id": payload.project_id,
+                            "slug": normalized_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+
+                    root_slug = str(root_page[2] or normalized_slug).strip() or normalized_slug
+                    space_key = _wiki_space_key_from_slug(root_slug)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.moved_by,
+                        action="write",
+                        page_id=str(root_page[0]),
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": root_slug,
+                            "space_key": space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+                    if payload.include_descendants and normalized_new_slug.startswith(f"{root_slug}/"):
+                        response = {
+                            "error": "wiki_page_move_invalid_descendant_target",
+                            "slug": root_slug,
+                            "new_slug": normalized_new_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=409,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=409, content=response)
+                    include_descendants = bool(payload.include_descendants)
+                    if include_descendants:
+                        cur.execute(
+                            """
+                            SELECT id::text, title, slug, entity_key, current_version
+                            FROM wiki_pages
+                            WHERE project_id = %s
+                              AND (slug = %s OR slug LIKE %s)
+                            ORDER BY LENGTH(slug) ASC, slug ASC
+                            FOR UPDATE
+                            """,
+                            (payload.project_id, root_slug, f"{root_slug}/%"),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT id::text, title, slug, entity_key, current_version
+                            FROM wiki_pages
+                            WHERE project_id = %s
+                              AND slug = %s
+                            ORDER BY slug ASC
+                            FOR UPDATE
+                            """,
+                            (payload.project_id, root_slug),
+                        )
+                    affected_rows = cur.fetchall()
+                    if not affected_rows:
+                        response = {
+                            "error": "wiki_page_not_found",
+                            "project_id": payload.project_id,
+                            "slug": normalized_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+
+                    mappings: list[dict[str, Any]] = []
+                    for row in affected_rows:
+                        page_id = str(row[0])
+                        old_title = str(row[1] or "").strip() or str(row[2])
+                        old_slug = str(row[2] or "").strip()
+                        old_entity_key = str(row[3] or "").strip()
+                        current_version = int(row[4] or 0)
+                        if old_slug == root_slug:
+                            new_slug = normalized_new_slug
+                        elif include_descendants and old_slug.startswith(f"{root_slug}/"):
+                            suffix = old_slug[len(root_slug) :]
+                            new_slug = f"{normalized_new_slug}{suffix}"
+                        else:
+                            new_slug = old_slug
+                        mappings.append(
+                            {
+                                "id": page_id,
+                                "old_slug": old_slug,
+                                "new_slug": new_slug,
+                                "old_title": old_title,
+                                "old_entity_key": old_entity_key,
+                                "current_version": current_version,
+                            }
+                        )
+
+                    target_slugs = [str(item["new_slug"]) for item in mappings]
+                    if len(set(target_slugs)) != len(target_slugs):
+                        response = {
+                            "error": "wiki_page_move_slug_conflict",
+                            "detail": "duplicate_target_slugs",
+                            "slug": normalized_slug,
+                            "new_slug": normalized_new_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=409,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=409, content=response)
+
+                    affected_ids = [str(item["id"]) for item in mappings]
+                    cur.execute(
+                        """
+                        SELECT id::text, slug
+                        FROM wiki_pages
+                        WHERE project_id = %s
+                          AND slug = ANY(%s)
+                          AND NOT (id::text = ANY(%s))
+                        LIMIT 50
+                        """,
+                        (payload.project_id, target_slugs, affected_ids),
+                    )
+                    collisions = cur.fetchall()
+                    if collisions:
+                        response = {
+                            "error": "wiki_page_move_slug_conflict",
+                            "slug": normalized_slug,
+                            "new_slug": normalized_new_slug,
+                            "collisions": [{"id": str(row[0]), "slug": str(row[1])} for row in collisions],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=409,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=409, content=response)
+
+                    root_title = str(root_page[1] or "").strip() or root_slug
+                    requested_root_title = (
+                        payload.new_title.strip()
+                        if isinstance(payload.new_title, str) and payload.new_title.strip()
+                        else root_title
+                    )
+                    has_any_slug_change = any(str(item["old_slug"]) != str(item["new_slug"]) for item in mappings)
+                    has_title_change = requested_root_title != root_title
+                    if not has_any_slug_change and not has_title_change:
+                        response = {
+                            "status": "no_change",
+                            "page": {
+                                "id": str(root_page[0]),
+                                "title": root_title,
+                                "slug": root_slug,
+                                "entity_key": root_page[3],
+                                "page_type": root_page[4],
+                                "status": root_page[5],
+                                "current_version": int(root_page[6]) if root_page[6] is not None else None,
+                            },
+                            "moved_pages": [],
+                        }
+                        if source_ownership_advisories > 0:
+                            response["source_ownership_advisories"] = source_ownership_advisories
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+
+                    update_targets = mappings
+                    if not has_any_slug_change:
+                        update_targets = [item for item in mappings if str(item["old_slug"]) == root_slug]
+
+                    snapshot_id = uuid4()
+                    change_summary = (
+                        payload.change_summary.strip()
+                        if isinstance(payload.change_summary, str) and payload.change_summary.strip()
+                        else None
+                    ) or f"Page moved by {payload.moved_by}: {root_slug} -> {normalized_new_slug}"
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (snapshot_id, payload.project_id, payload.moved_by, change_summary),
+                    )
+                    moved_pages: list[dict[str, Any]] = []
+                    now_iso = datetime.now(UTC).isoformat()
+                    for item in update_targets:
+                        page_id = str(item["id"])
+                        old_slug = str(item["old_slug"])
+                        new_slug = str(item["new_slug"])
+                        old_title = str(item["old_title"])
+                        old_entity_key = str(item["old_entity_key"])
+                        current_version = int(item["current_version"])
+                        next_title = requested_root_title if old_slug == root_slug else old_title
+                        next_entity_key = new_slug if old_entity_key == old_slug else old_entity_key
+                        cur.execute(
+                            """
+                            UPDATE wiki_pages
+                            SET slug = %s,
+                                title = %s,
+                                entity_key = %s,
+                                metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                                updated_at = NOW()
+                            WHERE id::text = %s
+                            """,
+                            (
+                                new_slug,
+                                next_title,
+                                next_entity_key,
+                                Jsonb(
+                                    {
+                                        "last_move": {
+                                            "moved_by": payload.moved_by,
+                                            "from_slug": old_slug,
+                                            "to_slug": new_slug,
+                                            "at": now_iso,
+                                        }
+                                    }
+                                ),
+                                page_id,
+                            ),
+                        )
+                        if old_slug != new_slug:
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_page_aliases (page_id, alias_text)
+                                VALUES (%s, %s)
+                                ON CONFLICT (page_id, alias_text) DO NOTHING
+                                """,
+                                (page_id, old_slug),
+                            )
+                        if old_slug == normalized_slug and next_title != old_title:
+                            cur.execute(
+                                """
+                                INSERT INTO wiki_page_aliases (page_id, alias_text)
+                                VALUES (%s, %s)
+                                ON CONFLICT (page_id, alias_text) DO NOTHING
+                                """,
+                                (page_id, old_title),
+                            )
+                        cur.execute(
+                            """
+                            INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (snapshot_id, page_id) DO NOTHING
+                            """,
+                            (snapshot_id, page_id, current_version),
+                        )
+                        moved_pages.append(
+                            {
+                                "id": page_id,
+                                "old_slug": old_slug,
+                                "new_slug": new_slug,
+                                "old_title": old_title,
+                                "new_title": next_title,
+                            }
+                        )
+
+                    response = {
+                        "status": "moved",
+                        "page": {
+                                "id": str(root_page[0]),
+                                "title": requested_root_title,
+                                "slug": normalized_new_slug,
+                                "entity_key": normalized_new_slug if str(root_page[3] or "") == root_slug else root_page[3],
+                                "page_type": root_page[4],
+                                "status": root_page[5],
+                                "current_version": int(root_page[6]) if root_page[6] is not None else None,
+                        },
+                        "include_descendants": include_descendants,
+                        "moved_pages": moved_pages,
+                        "snapshot_id": str(snapshot_id),
+                    }
+                    move_watchers: set[str] = set()
+                    for item in moved_pages:
+                        move_watchers.update(
+                            _collect_wiki_page_watchers(
+                                cur,
+                                project_id=payload.project_id,
+                                page_id=str(item["id"]),
+                            )
+                        )
+                    notification_ids = _insert_wiki_notifications(
+                        cur,
+                        project_id=payload.project_id,
+                        recipients=move_watchers,
+                        actor=payload.moved_by,
+                        kind="wiki.page_moved",
+                        title=f"Page moved: {root_slug} -> {normalized_new_slug}",
+                        body=change_summary,
+                        link=f"/wiki/{normalized_new_slug}",
+                        metadata={
+                            "root_slug": root_slug,
+                            "new_slug": normalized_new_slug,
+                            "include_descendants": include_descendants,
+                            "moved_pages": moved_pages,
+                        },
+                    )
+                    if notification_ids:
+                        response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.put("/v1/wiki/pages/{slug}/reparent", response_model=None)
+def reparent_wiki_page(
+    slug: str,
+    payload: WikiPageReparentRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    old_segments = [segment for segment in normalized_slug.split("/") if segment]
+    default_leaf = old_segments[-1] if old_segments else _slugify_segment(normalized_slug)
+    new_leaf = _slugify_segment(payload.new_slug_leaf or default_leaf)
+    parent_slug_raw = str(payload.new_parent_slug or "").strip()
+    if parent_slug_raw:
+        normalized_parent_slug = _normalize_wiki_slug(parent_slug_raw, parent_slug_raw)
+        target_slug = f"{normalized_parent_slug}/{new_leaf}"
+    else:
+        target_slug = new_leaf
+    move_payload = WikiPageMoveRequest(
+        project_id=payload.project_id,
+        moved_by=payload.moved_by,
+        new_slug=target_slug,
+        new_title=payload.new_title,
+        include_descendants=payload.include_descendants,
+        change_summary=payload.change_summary,
+    )
+    return move_wiki_page(
+        slug=normalized_slug,
+        payload=move_payload,
+        request=request,
+        idempotency_key=idempotency_key,
+    )
+
+
+@app.put("/v1/wiki/pages/{slug}/archive", response_model=None)
+def archive_wiki_page(
+    slug: str,
+    payload: WikiPageStatusTransitionRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/archive"
+    request_payload = {"slug": normalized_slug, **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.updated_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    root_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if root_row is None:
+                        response = {
+                            "error": "wiki_page_not_found",
+                            "project_id": payload.project_id,
+                            "slug": normalized_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    root_slug = str(root_row[2] or normalized_slug).strip() or normalized_slug
+                    space_key = _wiki_space_key_from_slug(root_slug)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.updated_by,
+                        action="write",
+                        page_id=str(root_row[0]),
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": root_slug,
+                            "space_key": space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+
+                    if payload.include_descendants:
+                        cur.execute(
+                            """
+                            SELECT id::text, title, slug, status, current_version
+                            FROM wiki_pages
+                            WHERE project_id = %s
+                              AND (slug = %s OR slug LIKE %s)
+                            ORDER BY LENGTH(slug) ASC, slug ASC
+                            FOR UPDATE
+                            """,
+                            (payload.project_id, root_slug, f"{root_slug}/%"),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT id::text, title, slug, status, current_version
+                            FROM wiki_pages
+                            WHERE project_id = %s
+                              AND slug = %s
+                            ORDER BY slug ASC
+                            FOR UPDATE
+                            """,
+                            (payload.project_id, root_slug),
+                        )
+                    rows = cur.fetchall()
+                    by_slug = {str(row[2]): row for row in rows}
+                    root_row = by_slug.get(root_slug) or rows[0]
+                    changed_rows = [row for row in rows if str(row[3]) != "archived"]
+                    if not changed_rows:
+                        response = {
+                            "status": "no_change",
+                            "page": {
+                                "id": str(root_row[0]),
+                                "title": str(root_row[1] or root_row[2]),
+                                "slug": str(root_row[2]),
+                                "status": str(root_row[3]),
+                                "current_version": int(root_row[4]) if root_row[4] is not None else None,
+                            },
+                            "changed_pages": [],
+                        }
+                        if source_ownership_advisories > 0:
+                            response["source_ownership_advisories"] = source_ownership_advisories
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+
+                    changed_ids = [str(row[0]) for row in changed_rows]
+                    change_summary = (
+                        payload.change_summary.strip()
+                        if isinstance(payload.change_summary, str) and payload.change_summary.strip()
+                        else None
+                    ) or f"Page archived by {payload.updated_by}"
+                    cur.execute(
+                        """
+                        UPDATE wiki_pages
+                        SET status = 'archived',
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                            updated_at = NOW()
+                        WHERE id::text = ANY(%s)
+                        """,
+                        (
+                            Jsonb(
+                                {
+                                    "status_transition": {
+                                        "updated_by": payload.updated_by,
+                                        "to_status": "archived",
+                                        "summary": change_summary,
+                                        "at": datetime.now(UTC).isoformat(),
+                                    }
+                                }
+                            ),
+                            changed_ids,
+                        ),
+                    )
+
+                    snapshot_id = uuid4()
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (snapshot_id, payload.project_id, payload.updated_by, change_summary),
+                    )
+                    for row in changed_rows:
+                        cur.execute(
+                            """
+                            INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (snapshot_id, page_id) DO NOTHING
+                            """,
+                            (
+                                snapshot_id,
+                                str(row[0]),
+                                int(row[4]) if row[4] is not None else 0,
+                            ),
+                        )
+
+                    changed_pages = [
+                        {
+                            "id": str(row[0]),
+                            "title": str(row[1] or row[2]),
+                            "slug": str(row[2]),
+                            "previous_status": str(row[3]),
+                            "status": "archived",
+                        }
+                        for row in changed_rows
+                    ]
+                    response = {
+                        "status": "updated",
+                        "page": {
+                            "id": str(root_row[0]),
+                            "title": str(root_row[1] or root_row[2]),
+                            "slug": str(root_row[2]),
+                            "status": "archived",
+                            "current_version": int(root_row[4]) if root_row[4] is not None else None,
+                        },
+                        "include_descendants": bool(payload.include_descendants),
+                        "changed_pages": changed_pages,
+                        "snapshot_id": str(snapshot_id),
+                    }
+                    archive_watchers: set[str] = set()
+                    for row in changed_rows:
+                        archive_watchers.update(
+                            _collect_wiki_page_watchers(
+                                cur,
+                                project_id=payload.project_id,
+                                page_id=str(row[0]),
+                            )
+                        )
+                    notification_ids = _insert_wiki_notifications(
+                        cur,
+                        project_id=payload.project_id,
+                        recipients=archive_watchers,
+                        actor=payload.updated_by,
+                        kind="wiki.page_archived",
+                        title=f"Page archived: {root_slug}",
+                        body=change_summary,
+                        link=f"/wiki/{root_slug}",
+                        metadata={
+                            "root_slug": root_slug,
+                            "include_descendants": bool(payload.include_descendants),
+                            "changed_pages": changed_pages,
+                        },
+                    )
+                    if notification_ids:
+                        response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.put("/v1/wiki/pages/{slug}/restore", response_model=None)
+def restore_wiki_page(
+    slug: str,
+    payload: WikiPageStatusTransitionRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/restore"
+    request_payload = {"slug": normalized_slug, **payload.model_dump(mode="json")}
+    target_status = payload.restore_status
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.updated_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    root_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if root_row is None:
+                        response = {
+                            "error": "wiki_page_not_found",
+                            "project_id": payload.project_id,
+                            "slug": normalized_slug,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    root_slug = str(root_row[2] or normalized_slug).strip() or normalized_slug
+                    space_key = _wiki_space_key_from_slug(root_slug)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.updated_by,
+                        action="write",
+                        page_id=str(root_row[0]),
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": root_slug,
+                            "space_key": space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+
+                    if payload.include_descendants:
+                        cur.execute(
+                            """
+                            SELECT id::text, title, slug, status, current_version
+                            FROM wiki_pages
+                            WHERE project_id = %s
+                              AND (slug = %s OR slug LIKE %s)
+                            ORDER BY LENGTH(slug) ASC, slug ASC
+                            FOR UPDATE
+                            """,
+                            (payload.project_id, root_slug, f"{root_slug}/%"),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT id::text, title, slug, status, current_version
+                            FROM wiki_pages
+                            WHERE project_id = %s
+                              AND slug = %s
+                            ORDER BY slug ASC
+                            FOR UPDATE
+                            """,
+                            (payload.project_id, root_slug),
+                        )
+                    rows = cur.fetchall()
+                    by_slug = {str(row[2]): row for row in rows}
+                    root_row = by_slug.get(root_slug) or rows[0]
+                    changed_rows = [row for row in rows if str(row[3]) != target_status]
+                    if not changed_rows:
+                        response = {
+                            "status": "no_change",
+                            "page": {
+                                "id": str(root_row[0]),
+                                "title": str(root_row[1] or root_row[2]),
+                                "slug": str(root_row[2]),
+                                "status": str(root_row[3]),
+                                "current_version": int(root_row[4]) if root_row[4] is not None else None,
+                            },
+                            "changed_pages": [],
+                        }
+                        if source_ownership_advisories > 0:
+                            response["source_ownership_advisories"] = source_ownership_advisories
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+
+                    changed_ids = [str(row[0]) for row in changed_rows]
+                    change_summary = (
+                        payload.change_summary.strip()
+                        if isinstance(payload.change_summary, str) and payload.change_summary.strip()
+                        else None
+                    ) or f"Page restored by {payload.updated_by} to {target_status}"
+                    cur.execute(
+                        """
+                        UPDATE wiki_pages
+                        SET status = %s,
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                            updated_at = NOW()
+                        WHERE id::text = ANY(%s)
+                        """,
+                        (
+                            target_status,
+                            Jsonb(
+                                {
+                                    "status_transition": {
+                                        "updated_by": payload.updated_by,
+                                        "to_status": target_status,
+                                        "summary": change_summary,
+                                        "at": datetime.now(UTC).isoformat(),
+                                    }
+                                }
+                            ),
+                            changed_ids,
+                        ),
+                    )
+
+                    snapshot_id = uuid4()
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (snapshot_id, payload.project_id, payload.updated_by, change_summary),
+                    )
+                    for row in changed_rows:
+                        cur.execute(
+                            """
+                            INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                            VALUES (%s, %s, %s)
+                            ON CONFLICT (snapshot_id, page_id) DO NOTHING
+                            """,
+                            (
+                                snapshot_id,
+                                str(row[0]),
+                                int(row[4]) if row[4] is not None else 0,
+                            ),
+                        )
+
+                    changed_pages = [
+                        {
+                            "id": str(row[0]),
+                            "title": str(row[1] or row[2]),
+                            "slug": str(row[2]),
+                            "previous_status": str(row[3]),
+                            "status": target_status,
+                        }
+                        for row in changed_rows
+                    ]
+                    response = {
+                        "status": "updated",
+                        "page": {
+                            "id": str(root_row[0]),
+                            "title": str(root_row[1] or root_row[2]),
+                            "slug": str(root_row[2]),
+                            "status": target_status if str(root_row[3]) != target_status else str(root_row[3]),
+                            "current_version": int(root_row[4]) if root_row[4] is not None else None,
+                        },
+                        "include_descendants": bool(payload.include_descendants),
+                        "changed_pages": changed_pages,
+                        "snapshot_id": str(snapshot_id),
+                    }
+                    restore_watchers: set[str] = set()
+                    for row in changed_rows:
+                        restore_watchers.update(
+                            _collect_wiki_page_watchers(
+                                cur,
+                                project_id=payload.project_id,
+                                page_id=str(row[0]),
+                            )
+                        )
+                    notification_ids = _insert_wiki_notifications(
+                        cur,
+                        project_id=payload.project_id,
+                        recipients=restore_watchers,
+                        actor=payload.updated_by,
+                        kind="wiki.page_restored",
+                        title=f"Page restored: {root_slug}",
+                        body=change_summary,
+                        link=f"/wiki/{root_slug}",
+                        metadata={
+                            "root_slug": root_slug,
+                            "target_status": target_status,
+                            "include_descendants": bool(payload.include_descendants),
+                            "changed_pages": changed_pages,
+                        },
+                    )
+                    if notification_ids:
+                        response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
 @app.get("/v1/wiki/pages/search")
 def search_wiki_pages(
     project_id: str,
@@ -11189,6 +13384,26 @@ def search_wiki_pages(
                 (needle, needle, like, like, project_id, needle, needle, like, like, limit),
             )
             rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT status, COUNT(*)::bigint
+                FROM wiki_pages
+                WHERE project_id = %s
+                GROUP BY status
+                """,
+                (project_id,),
+            )
+            page_count_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT status, COUNT(*)::bigint
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                GROUP BY status
+                """,
+                (project_id,),
+            )
+            draft_count_rows = cur.fetchall()
     results = [
         {
             "id": row[0],
@@ -11201,7 +13416,474 @@ def search_wiki_pages(
         }
         for row in rows
     ]
-    return {"results": results}
+    pages_by_status = {str(row[0]): int(row[1]) for row in page_count_rows}
+    drafts_by_status = {str(row[0]): int(row[1]) for row in draft_count_rows}
+    published_count = int(pages_by_status.get("published", 0))
+    drafts_total = int(sum(drafts_by_status.values()))
+    response: dict[str, Any] = {
+        "results": results,
+        "meta": {
+            "searched_scope": {
+                "project_id": project_id,
+                "tables": ["wiki_pages", "wiki_page_aliases"],
+            },
+            "filters_applied": {
+                "query": q.strip(),
+                "normalized_query": needle,
+                "limit": int(limit),
+            },
+            "counts": {
+                "results": len(results),
+                "pages_by_status": pages_by_status,
+                "drafts_by_status": drafts_by_status,
+                "published_count": published_count,
+                "draft_count": drafts_total,
+            },
+        },
+    }
+    if not results:
+        response["meta"]["debug_hint"] = (
+            "No wiki page match. Check `project_id`, moderation status, or whether imported claims were approved into pages."
+        )
+    return response
+
+
+@app.get("/v1/wiki/pages")
+def list_wiki_pages(
+    project_id: str,
+    status: str | None = Query(default=None),
+    updated_by: str | None = Query(default=None, min_length=1, max_length=256),
+    with_open_drafts: bool | None = Query(default=None),
+    q: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0, le=50000),
+    sort_by: str = Query(default="activity"),
+    sort_dir: str = Query(default="desc"),
+) -> dict[str, Any]:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"draft", "reviewed", "published", "archived"}:
+        raise HTTPException(status_code=422, detail="wiki_page_status_invalid")
+
+    normalized_updated_by = str(updated_by or "").strip()
+    normalized_query = str(q or "").strip()
+    normalized_limit = normalize_limit_value(limit, default=200, minimum=1, maximum=1000)
+    normalized_offset = max(0, int(offset))
+    normalized_sort_by = str(sort_by or "activity").strip().lower()
+    normalized_sort_dir = str(sort_dir or "desc").strip().lower()
+    if normalized_sort_dir not in {"asc", "desc"}:
+        raise HTTPException(status_code=422, detail="wiki_page_sort_dir_invalid")
+    direction_sql = "ASC" if normalized_sort_dir == "asc" else "DESC"
+    sort_sql = {
+        "activity": "COALESCE(dm.latest_draft_at, p.updated_at, p.created_at)",
+        "title": "LOWER(p.title)",
+        "slug": "LOWER(p.slug)",
+        "updated_at": "p.updated_at",
+        "created_at": "p.created_at",
+        "open_drafts": "COALESCE(dm.open_count, 0)",
+    }.get(normalized_sort_by)
+    if sort_sql is None:
+        raise HTTPException(status_code=422, detail="wiki_page_sort_by_invalid")
+
+    filters: list[str] = ["p.project_id = %s"]
+    filter_params: list[Any] = [project_id]
+    if normalized_status:
+        filters.append("p.status = %s")
+        filter_params.append(normalized_status)
+    if normalized_updated_by:
+        filters.append(
+            """
+            LOWER(COALESCE(NULLIF(TRIM(p.metadata ->> 'updated_by'), ''), NULLIF(TRIM(p.metadata ->> 'created_by'), ''), ''))
+            = LOWER(%s)
+            """.strip()
+        )
+        filter_params.append(normalized_updated_by[:256])
+    if with_open_drafts is True:
+        filters.append(
+            """
+            EXISTS (
+              SELECT 1
+              FROM wiki_draft_changes wd
+              WHERE wd.project_id = p.project_id
+                AND wd.page_id = p.id
+                AND wd.status IN ('pending_review', 'blocked_conflict')
+            )
+            """.strip()
+        )
+    elif with_open_drafts is False:
+        filters.append(
+            """
+            NOT EXISTS (
+              SELECT 1
+              FROM wiki_draft_changes wd
+              WHERE wd.project_id = p.project_id
+                AND wd.page_id = p.id
+                AND wd.status IN ('pending_review', 'blocked_conflict')
+            )
+            """.strip()
+        )
+    if normalized_query:
+        needle = f"%{normalized_query[:250]}%"
+        filters.append("(p.title ILIKE %s OR p.slug ILIKE %s OR COALESCE(p.entity_key, '') ILIKE %s)")
+        filter_params.extend([needle, needle, needle])
+    where_sql = f"WHERE {' AND '.join(filters)}"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*)::bigint
+                FROM wiki_pages p
+                {where_sql}
+                """,
+                tuple(filter_params),
+            )
+            total_row = cur.fetchone()
+            total = int(total_row[0] if total_row else 0)
+
+            cur.execute(
+                f"""
+                WITH draft_metrics AS (
+                  SELECT
+                    page_id,
+                    COUNT(*)::bigint AS draft_count,
+                    COUNT(*) FILTER (WHERE status IN ('pending_review', 'blocked_conflict'))::bigint AS open_count,
+                    MAX(created_at) AS latest_draft_at
+                  FROM wiki_draft_changes
+                  WHERE project_id = %s
+                  GROUP BY page_id
+                )
+                SELECT
+                  p.id::text,
+                  p.title,
+                  p.slug,
+                  p.entity_key,
+                  p.page_type,
+                  p.status,
+                  p.current_version,
+                  p.created_at,
+                  p.updated_at,
+                  COALESCE(dm.draft_count, 0)::bigint,
+                  COALESCE(dm.open_count, 0)::bigint,
+                  dm.latest_draft_at
+                FROM wiki_pages p
+                LEFT JOIN draft_metrics dm ON dm.page_id = p.id
+                {where_sql}
+                ORDER BY {sort_sql} {direction_sql} NULLS LAST, LOWER(p.slug) ASC
+                LIMIT %s OFFSET %s
+                """,
+                (project_id, *filter_params, normalized_limit, normalized_offset),
+            )
+            rows = cur.fetchall()
+
+    pages = [
+        {
+            "id": row[0],
+            "title": row[1],
+            "slug": row[2],
+            "entity_key": row[3],
+            "page_type": row[4],
+            "status": row[5],
+            "current_version": int(row[6]) if row[6] is not None else None,
+            "created_at": row[7].isoformat() if row[7] is not None else None,
+            "updated_at": row[8].isoformat() if row[8] is not None else None,
+            "draft_count": int(row[9]),
+            "open_draft_count": int(row[10]),
+            "latest_draft_at": row[11].isoformat() if row[11] is not None else None,
+        }
+        for row in rows
+    ]
+    return {
+        "pages": pages,
+        "meta": {
+            "project_id": project_id,
+            "filters_applied": {
+                "status": normalized_status or None,
+                "updated_by": normalized_updated_by or None,
+                "with_open_drafts": with_open_drafts,
+                "query": normalized_query or None,
+                "limit": normalized_limit,
+                "offset": normalized_offset,
+                "sort_by": normalized_sort_by,
+                "sort_dir": normalized_sort_dir,
+            },
+            "total": total,
+            "returned": len(pages),
+        },
+    }
+
+
+def _compute_wiki_routing_metrics(conn, *, project_id: str, window_days: int) -> dict[str, Any]:
+    normalized_window_days = max(1, min(180, int(window_days)))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              COUNT(*)::bigint,
+              COUNT(*) FILTER (WHERE decision = 'new_page')::bigint,
+              COUNT(*) FILTER (WHERE decision = 'new_statement')::bigint,
+              COUNT(*) FILTER (WHERE decision = 'new_section')::bigint,
+              COUNT(*) FILTER (WHERE decision = 'conflict')::bigint,
+              COUNT(*) FILTER (WHERE rationale ILIKE 'ambiguous route near new-page threshold%%')::bigint,
+              COUNT(*) FILTER (WHERE rationale ILIKE 'weak page match%%')::bigint
+            FROM wiki_draft_changes
+            WHERE project_id = %s
+              AND created_at >= NOW() - (%s::text || ' days')::interval
+            """,
+            (project_id, normalized_window_days),
+        )
+        draft_row = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0)
+
+        cur.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE action_type = 'approve')::bigint,
+              COUNT(*) FILTER (
+                WHERE action_type = 'approve'
+                  AND decision_before IS NOT NULL
+                  AND decision_after IS NOT NULL
+                  AND decision_before <> decision_after
+              )::bigint,
+              COUNT(*) FILTER (
+                WHERE action_type = 'approve'
+                  AND decision_before = 'new_page'
+              )::bigint,
+              COUNT(*) FILTER (
+                WHERE action_type = 'approve'
+                  AND decision_before = 'new_page'
+                  AND COALESCE(decision_after, '') <> 'new_page'
+              )::bigint
+            FROM moderation_actions
+            WHERE project_id = %s
+              AND created_at >= NOW() - (%s::text || ' days')::interval
+            """,
+            (project_id, normalized_window_days),
+        )
+        moderation_row = cur.fetchone() or (0, 0, 0, 0)
+
+        cur.execute(
+            """
+            SELECT
+              percentile_cont(0.5) WITHIN GROUP (
+                ORDER BY EXTRACT(EPOCH FROM (ma.created_at - d.created_at)) / 3600.0
+              ) AS p50_hours,
+              percentile_cont(0.9) WITHIN GROUP (
+                ORDER BY EXTRACT(EPOCH FROM (ma.created_at - d.created_at)) / 3600.0
+              ) AS p90_hours
+            FROM moderation_actions ma
+            JOIN wiki_draft_changes d ON d.id = ma.draft_id
+            WHERE ma.project_id = %s
+              AND ma.action_type = 'approve'
+              AND ma.created_at >= NOW() - (%s::text || ' days')::interval
+            """,
+            (project_id, normalized_window_days),
+        )
+        latency_row = cur.fetchone() or (None, None)
+
+    drafts_total = int(draft_row[0] or 0)
+    new_page_proposed = int(draft_row[1] or 0)
+    new_statement_proposed = int(draft_row[2] or 0)
+    new_section_proposed = int(draft_row[3] or 0)
+    conflicts_total = int(draft_row[4] or 0)
+    ambiguous_total = int(draft_row[5] or 0)
+    weak_match_total = int(draft_row[6] or 0)
+
+    approvals_total = int(moderation_row[0] or 0)
+    manual_reassign_total = int(moderation_row[1] or 0)
+    new_page_approved_total = int(moderation_row[2] or 0)
+    new_page_false_positive_total = int(moderation_row[3] or 0)
+
+    conflict_rate = (float(conflicts_total) / float(drafts_total)) if drafts_total > 0 else 0.0
+    ambiguous_rate = (float(ambiguous_total) / float(drafts_total)) if drafts_total > 0 else 0.0
+    weak_match_rate = (float(weak_match_total) / float(drafts_total)) if drafts_total > 0 else 0.0
+    manual_reassign_rate = (float(manual_reassign_total) / float(approvals_total)) if approvals_total > 0 else 0.0
+    route_precision_at_1 = max(0.0, 1.0 - manual_reassign_rate)
+    new_page_false_positive_rate = (
+        float(new_page_false_positive_total) / float(new_page_approved_total)
+        if new_page_approved_total > 0
+        else 0.0
+    )
+    decision_latency_p50_hours = float(latency_row[0]) if latency_row and latency_row[0] is not None else None
+    decision_latency_p90_hours = float(latency_row[1]) if latency_row and latency_row[1] is not None else None
+
+    return {
+        "project_id": project_id,
+        "window_days": normalized_window_days,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "counts": {
+            "drafts_total": drafts_total,
+            "new_page_proposed": new_page_proposed,
+            "new_statement_proposed": new_statement_proposed,
+            "new_section_proposed": new_section_proposed,
+            "conflicts_total": conflicts_total,
+            "ambiguous_routes_total": ambiguous_total,
+            "weak_matches_total": weak_match_total,
+            "approvals_total": approvals_total,
+            "manual_reassign_total": manual_reassign_total,
+            "new_page_approved_total": new_page_approved_total,
+            "new_page_false_positive_total": new_page_false_positive_total,
+        },
+        "rates": {
+            "route_precision_at_1": round(route_precision_at_1, 4),
+            "new_page_false_positive_rate": round(new_page_false_positive_rate, 4),
+            "manual_reassign_rate": round(manual_reassign_rate, 4),
+            "conflict_rate": round(conflict_rate, 4),
+            "ambiguous_route_rate": round(ambiguous_rate, 4),
+            "weak_match_rate": round(weak_match_rate, 4),
+        },
+        "latency": {
+            "decision_latency_p50_hours": round(decision_latency_p50_hours, 3)
+            if decision_latency_p50_hours is not None
+            else None,
+            "decision_latency_p90_hours": round(decision_latency_p90_hours, 3)
+            if decision_latency_p90_hours is not None
+            else None,
+        },
+    }
+
+
+@app.get("/v1/wiki/routing/metrics")
+def get_wiki_routing_metrics(
+    project_id: str,
+    window_days: int = Query(default=30, ge=1, le=180),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        return _compute_wiki_routing_metrics(conn, project_id=project_id, window_days=window_days)
+
+
+@app.get("/v1/wiki/routing/recommendations")
+def get_wiki_routing_recommendations(
+    project_id: str,
+    window_days: int = Query(default=30, ge=1, le=180),
+    threshold_high: float = Query(default=0.82, ge=0.0, le=1.0),
+    threshold_mid: float = Query(default=0.55, ge=0.0, le=1.0),
+    new_page_margin: float = Query(default=0.08, ge=0.0, le=0.3),
+    ambiguity_gap: float = Query(default=0.06, ge=0.0, le=1.0),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        metrics = _compute_wiki_routing_metrics(conn, project_id=project_id, window_days=window_days)
+
+    rates = metrics.get("rates") or {}
+    counts = metrics.get("counts") or {}
+    fp_rate = float(rates.get("new_page_false_positive_rate") or 0.0)
+    conflict_rate = float(rates.get("conflict_rate") or 0.0)
+    ambiguous_rate = float(rates.get("ambiguous_route_rate") or 0.0)
+    new_page_approved_total = int(counts.get("new_page_approved_total") or 0)
+    drafts_total = int(counts.get("drafts_total") or 0)
+
+    suggested_mid = float(threshold_mid)
+    suggested_margin = float(new_page_margin)
+    suggested_gap = float(ambiguity_gap)
+    reasons: list[str] = []
+
+    if new_page_approved_total >= 10:
+        if fp_rate >= 0.2:
+            suggested_margin += 0.03
+            reasons.append("Increase new-page margin due to elevated new_page false-positive rate (>=0.20).")
+        if fp_rate >= 0.35:
+            suggested_margin += 0.03
+            reasons.append("Further increase new-page margin due to severe new_page false-positive rate (>=0.35).")
+    if drafts_total >= 30 and conflict_rate >= 0.25:
+        suggested_mid += 0.01
+        suggested_margin -= 0.03
+        suggested_gap -= 0.01
+        reasons.append("Raise routing strictness and reduce ambiguity window due to high conflict rate (>=0.25).")
+    if drafts_total >= 30 and ambiguous_rate > 0.35 and conflict_rate < 0.12:
+        suggested_margin += 0.01
+        reasons.append("Slightly increase ambiguity margin to reduce borderline new-page proposals.")
+
+    suggested_mid = max(0.0, min(0.99, suggested_mid))
+    suggested_margin = max(0.0, min(0.3, suggested_margin))
+    suggested_gap = max(0.0, min(1.0, suggested_gap))
+    if not reasons:
+        reasons.append("Current routing metrics do not indicate a strong threshold adjustment signal.")
+
+    return {
+        "project_id": project_id,
+        "window_days": int(window_days),
+        "current": {
+            "threshold_high": float(threshold_high),
+            "threshold_mid": float(threshold_mid),
+            "new_page_margin": float(new_page_margin),
+            "ambiguity_gap": float(ambiguity_gap),
+        },
+        "suggested": {
+            "threshold_high": float(threshold_high),
+            "threshold_mid": round(suggested_mid, 4),
+            "new_page_margin": round(suggested_margin, 4),
+            "ambiguity_gap": round(suggested_gap, 4),
+        },
+        "metrics": metrics,
+        "reasons": reasons,
+    }
+
+
+@app.get("/v1/wiki/stats")
+def get_wiki_stats(project_id: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT status, COUNT(*)::bigint
+                FROM wiki_pages
+                WHERE project_id = %s
+                GROUP BY status
+                """,
+                (project_id,),
+            )
+            page_count_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT status, COUNT(*)::bigint
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                GROUP BY status
+                """,
+                (project_id,),
+            )
+            draft_count_rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT
+                  MAX(CASE WHEN status = 'published' THEN updated_at END),
+                  MAX(created_at)
+                FROM wiki_pages
+                WHERE project_id = %s
+                """,
+                (project_id,),
+            )
+            page_time_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT
+                  MAX(created_at),
+                  MAX(updated_at)
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                """,
+                (project_id,),
+            )
+            draft_time_row = cur.fetchone()
+
+    pages_by_status = {str(row[0]): int(row[1]) for row in page_count_rows}
+    drafts_by_status = {str(row[0]): int(row[1]) for row in draft_count_rows}
+    published_count = int(pages_by_status.get("published", 0))
+    draft_total = int(sum(drafts_by_status.values()))
+    return {
+        "project_id": project_id,
+        "pages": {
+            "by_status": pages_by_status,
+            "total": int(sum(pages_by_status.values())),
+            "published": published_count,
+            "last_published_at": page_time_row[0].isoformat() if page_time_row and page_time_row[0] is not None else None,
+            "last_updated_at": page_time_row[1].isoformat() if page_time_row and page_time_row[1] is not None else None,
+        },
+        "drafts": {
+            "by_status": drafts_by_status,
+            "total": draft_total,
+            "last_created_at": draft_time_row[0].isoformat() if draft_time_row and draft_time_row[0] is not None else None,
+            "last_updated_at": draft_time_row[1].isoformat() if draft_time_row and draft_time_row[1] is not None else None,
+        },
+    }
 
 
 @app.get("/v1/mcp/retrieval/explain")
@@ -11366,19 +14048,29 @@ def explain_mcp_retrieval(
 
 @app.get("/v1/wiki/pages/{slug}")
 def get_wiki_page(slug: str, project_id: str) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, title, entity_key, page_type, status, current_version
-                FROM wiki_pages
-                WHERE project_id = %s
-                  AND slug = %s
-                LIMIT 1
-                """,
-                (project_id, slug),
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
             )
-            page = cur.fetchone()
+            page = None
+            resolution_mode = "slug"
+            canonical_slug = normalized_slug
+            if page_row is not None:
+                page = (
+                    page_row[0],
+                    page_row[1],
+                    page_row[3],
+                    page_row[4],
+                    page_row[5],
+                    page_row[6],
+                )
+                canonical_slug = str(page_row[2])
+                resolution_mode = str(page_row[7] or "slug")
             if page is None:
                 return JSONResponse(status_code=404, content={"error": "page_not_found"})
 
@@ -11424,11 +14116,15 @@ def get_wiki_page(slug: str, project_id: str) -> Any:
         "page": {
             "id": str(page[0]),
             "title": page[1],
-            "slug": slug,
+            "slug": canonical_slug,
             "entity_key": page[2],
             "page_type": page[3],
             "status": page[4],
             "current_version": page[5],
+        },
+        "resolved_from": {
+            "requested_slug": normalized_slug,
+            "resolution_mode": resolution_mode,
         },
         "latest_version": None
         if latest_version is None
@@ -11470,19 +14166,29 @@ def get_wiki_page_history(
     limit: int = Query(default=20, ge=1, le=100),
     include_markdown: bool = Query(default=True),
 ) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, title, entity_key, page_type, status, current_version
-                FROM wiki_pages
-                WHERE project_id = %s
-                  AND slug = %s
-                LIMIT 1
-                """,
-                (project_id, slug),
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
             )
-            page = cur.fetchone()
+            page = None
+            resolution_mode = "slug"
+            canonical_slug = normalized_slug
+            if page_row is not None:
+                page = (
+                    page_row[0],
+                    page_row[1],
+                    page_row[3],
+                    page_row[4],
+                    page_row[5],
+                    page_row[6],
+                )
+                canonical_slug = str(page_row[2])
+                resolution_mode = str(page_row[7] or "slug")
             if page is None:
                 return JSONResponse(status_code=404, content={"error": "page_not_found"})
 
@@ -11516,14 +14222,1964 @@ def get_wiki_page_history(
         "page": {
             "id": str(page[0]),
             "title": page[1],
-            "slug": slug,
+            "slug": canonical_slug,
             "entity_key": page[2],
             "page_type": page[3],
             "status": page[4],
             "current_version": int(page[5]) if page[5] is not None else None,
         },
+        "resolved_from": {
+            "requested_slug": normalized_slug,
+            "resolution_mode": resolution_mode,
+        },
         "versions": versions,
     }
+
+
+@app.get("/v1/wiki/pages/{slug}/aliases")
+def list_wiki_page_aliases(slug: str, project_id: str) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+            page_id = str(page_row[0])
+            canonical_slug = str(page_row[2])
+            cur.execute(
+                """
+                SELECT alias_text, created_at
+                FROM wiki_page_aliases
+                WHERE page_id = %s
+                ORDER BY alias_text ASC
+                """,
+                (page_id,),
+            )
+            aliases = cur.fetchall()
+    return {
+        "page": {
+            "id": page_id,
+            "slug": canonical_slug,
+            "requested_slug": normalized_slug,
+        },
+        "aliases": [
+            {
+                "alias_text": str(row[0]),
+                "created_at": row[1].isoformat() if row[1] is not None else None,
+            }
+            for row in aliases
+        ],
+    }
+
+
+@app.post("/v1/wiki/pages/{slug}/aliases", response_model=None)
+def create_wiki_page_alias(
+    slug: str,
+    payload: WikiPageAliasCreateRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    normalized_alias = _normalize_wiki_slug(payload.alias_text, payload.alias_text)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/aliases"
+    request_payload = {"slug": normalized_slug, "alias_text": normalized_alias, **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.created_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": payload.project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    if normalized_alias == canonical_slug:
+                        response = {
+                            "status": "no_change",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "alias_text": normalized_alias,
+                        }
+                        if source_ownership_advisories > 0:
+                            response["source_ownership_advisories"] = source_ownership_advisories
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=200,
+                            response_body=response,
+                        )
+                        return response
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_page_aliases (page_id, alias_text)
+                        VALUES (%s, %s)
+                        ON CONFLICT (page_id, alias_text) DO NOTHING
+                        """,
+                        (page_id, normalized_alias),
+                    )
+                    inserted = cur.rowcount > 0
+                    response = {
+                        "status": "created" if inserted else "existing",
+                        "page": {"id": page_id, "slug": canonical_slug},
+                        "alias_text": normalized_alias,
+                    }
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.delete("/v1/wiki/pages/{slug}/aliases/{alias_text}", response_model=None)
+def delete_wiki_page_alias(
+    slug: str,
+    alias_text: str,
+    project_id: str,
+    deleted_by: str = Query(min_length=1, max_length=256),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    normalized_alias = _normalize_wiki_slug(alias_text, alias_text)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/aliases/{normalized_alias}"
+    request_payload = {
+        "slug": normalized_slug,
+        "alias_text": normalized_alias,
+        "project_id": project_id,
+        "deleted_by": deleted_by,
+    }
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    space_key = _wiki_space_key_from_slug(canonical_slug)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.resolved_by,
+                        action="write",
+                        page_id=page_id,
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": canonical_slug,
+                            "space_key": space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+                    cur.execute(
+                        """
+                        DELETE FROM wiki_page_aliases
+                        WHERE page_id = %s
+                          AND alias_text = %s
+                        """,
+                        (page_id, normalized_alias),
+                    )
+                    deleted = cur.rowcount > 0
+                    response = {
+                        "status": "deleted" if deleted else "no_change",
+                        "page": {"id": page_id, "slug": canonical_slug},
+                        "alias_text": normalized_alias,
+                        "deleted_by": deleted_by,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/wiki/pages/{slug}/comments")
+def list_wiki_page_comments(
+    slug: str,
+    project_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    normalized_limit = normalize_limit_value(limit, default=100, minimum=1, maximum=500)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+            page_id = str(page_row[0])
+            canonical_slug = str(page_row[2])
+            cur.execute(
+                """
+                SELECT id::text, author, body, metadata, created_at, updated_at
+                FROM wiki_page_comments
+                WHERE project_id = %s
+                  AND page_id::text = %s
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (project_id, page_id, normalized_limit),
+            )
+            rows = cur.fetchall()
+    return {
+        "page": {"id": page_id, "slug": canonical_slug, "requested_slug": normalized_slug},
+        "comments": [
+            {
+                "id": str(row[0]),
+                "author": str(row[1]),
+                "body": str(row[2]),
+                "metadata": row[3] if isinstance(row[3], dict) else {},
+                "created_at": row[4].isoformat() if row[4] is not None else None,
+                "updated_at": row[5].isoformat() if row[5] is not None else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.post("/v1/wiki/pages/{slug}/comments", response_model=None)
+def create_wiki_page_comment(
+    slug: str,
+    payload: WikiPageCommentCreateRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/comments"
+    request_payload = {"slug": normalized_slug, **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.created_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": payload.project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    space_key = _wiki_space_key_from_slug(canonical_slug)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.created_by,
+                        action="comment",
+                        page_id=page_id,
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": canonical_slug,
+                            "space_key": space_key,
+                            "action": "comment",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+                    comment_id = str(uuid4())
+                    comment_body = payload.body.strip()
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_page_comments (
+                          id, project_id, page_id, author, body, metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING created_at, updated_at
+                        """,
+                        (
+                            comment_id,
+                            payload.project_id,
+                            page_id,
+                            payload.created_by,
+                            comment_body,
+                            Jsonb(payload.metadata or {}),
+                        ),
+                    )
+                    row = cur.fetchone()
+                    mention_recipients = set(_extract_wiki_mentions(comment_body))
+                    watcher_recipients = set(_collect_wiki_page_watchers(cur, project_id=payload.project_id, page_id=page_id))
+                    notification_recipients = mention_recipients | watcher_recipients
+                    notification_ids = _insert_wiki_notifications(
+                        cur,
+                        project_id=payload.project_id,
+                        recipients=notification_recipients,
+                        actor=payload.created_by,
+                        kind="wiki.comment",
+                        title=f"New comment on {canonical_slug}",
+                        body=comment_body,
+                        link=f"/wiki/{canonical_slug}",
+                        metadata={
+                            "page_id": page_id,
+                            "slug": canonical_slug,
+                            "comment_id": comment_id,
+                            "mentions": sorted(mention_recipients),
+                        },
+                    )
+                    response = {
+                        "status": "created",
+                        "page": {"id": page_id, "slug": canonical_slug},
+                        "comment": {
+                            "id": comment_id,
+                            "author": payload.created_by,
+                            "body": comment_body,
+                            "metadata": payload.metadata or {},
+                            "created_at": row[0].isoformat() if row and row[0] is not None else None,
+                            "updated_at": row[1].isoformat() if row and row[1] is not None else None,
+                        },
+                    }
+                    if notification_ids:
+                        response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.delete("/v1/wiki/pages/{slug}/comments/{comment_id}", response_model=None)
+def delete_wiki_page_comment(
+    slug: str,
+    comment_id: UUID,
+    payload: WikiPageCommentDeleteRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/comments/{comment_id}"
+    request_payload = {"slug": normalized_slug, "comment_id": str(comment_id), **payload.model_dump(mode="json")}
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": payload.project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    cur.execute(
+                        """
+                        UPDATE wiki_page_comments
+                        SET deleted_at = NOW(),
+                            updated_at = NOW(),
+                            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                        WHERE id = %s
+                          AND project_id = %s
+                          AND page_id::text = %s
+                          AND deleted_at IS NULL
+                        """,
+                        (
+                            Jsonb({"deleted_by": payload.deleted_by}),
+                            comment_id,
+                            payload.project_id,
+                            page_id,
+                        ),
+                    )
+                    deleted = cur.rowcount > 0
+                    response = {
+                        "status": "deleted" if deleted else "no_change",
+                        "page": {"id": page_id, "slug": canonical_slug},
+                        "comment_id": str(comment_id),
+                        "deleted_by": payload.deleted_by,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/wiki/pages/{slug}/watchers")
+def list_wiki_page_watchers(slug: str, project_id: str) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+            page_id = str(page_row[0])
+            canonical_slug = str(page_row[2])
+            cur.execute(
+                """
+                SELECT watcher, metadata, created_at
+                FROM wiki_page_watchers
+                WHERE project_id = %s
+                  AND page_id::text = %s
+                ORDER BY watcher ASC
+                """,
+                (project_id, page_id),
+            )
+            rows = cur.fetchall()
+    return {
+        "page": {"id": page_id, "slug": canonical_slug, "requested_slug": normalized_slug},
+        "watchers": [
+            {
+                "watcher": str(row[0]),
+                "metadata": row[1] if isinstance(row[1], dict) else {},
+                "created_at": row[2].isoformat() if row[2] is not None else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.put("/v1/wiki/pages/{slug}/watchers", response_model=None)
+def upsert_wiki_page_watcher(
+    slug: str,
+    payload: WikiPageWatcherUpsertRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/watchers"
+    request_payload = {"slug": normalized_slug, **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.actor or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": payload.project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    watcher = payload.watcher.strip()
+                    if payload.active:
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_page_watchers (page_id, project_id, watcher, metadata)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (page_id, watcher) DO UPDATE
+                            SET metadata = EXCLUDED.metadata
+                            RETURNING created_at
+                            """,
+                            (page_id, payload.project_id, watcher, Jsonb(payload.metadata or {"actor": payload.actor})),
+                        )
+                        row = cur.fetchone()
+                        response = {
+                            "status": "watching",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "watcher": watcher,
+                            "created_at": row[0].isoformat() if row and row[0] is not None else None,
+                        }
+                    else:
+                        cur.execute(
+                            """
+                            DELETE FROM wiki_page_watchers
+                            WHERE page_id::text = %s
+                              AND project_id = %s
+                              AND watcher = %s
+                            """,
+                            (page_id, payload.project_id, watcher),
+                        )
+                        response = {
+                            "status": "unwatched" if cur.rowcount > 0 else "no_change",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "watcher": watcher,
+                        }
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/wiki/pages/{slug}/review-assignments")
+def list_wiki_page_review_assignments(
+    slug: str,
+    project_id: str,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"open", "resolved"}:
+        return JSONResponse(status_code=422, content={"error": "review_assignment_status_invalid"})
+    normalized_limit = normalize_limit_value(limit, default=100, minimum=1, maximum=500)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+            page_id = str(page_row[0])
+            canonical_slug = str(page_row[2])
+            if normalized_status:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      assignee,
+                      role,
+                      status,
+                      note,
+                      due_at,
+                      created_by,
+                      resolved_by,
+                      resolution_note,
+                      created_at,
+                      resolved_at
+                    FROM wiki_page_review_assignments
+                    WHERE project_id = %s
+                      AND page_id::text = %s
+                      AND status = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, page_id, normalized_status, normalized_limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      assignee,
+                      role,
+                      status,
+                      note,
+                      due_at,
+                      created_by,
+                      resolved_by,
+                      resolution_note,
+                      created_at,
+                      resolved_at
+                    FROM wiki_page_review_assignments
+                    WHERE project_id = %s
+                      AND page_id::text = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, page_id, normalized_limit),
+                )
+            rows = cur.fetchall()
+    return {
+        "page": {"id": page_id, "slug": canonical_slug, "requested_slug": normalized_slug},
+        "assignments": [
+            {
+                "id": str(row[0]),
+                "assignee": str(row[1]),
+                "role": str(row[2]),
+                "status": str(row[3]),
+                "note": row[4],
+                "due_at": row[5].isoformat() if row[5] is not None else None,
+                "created_by": str(row[6]),
+                "resolved_by": row[7],
+                "resolution_note": row[8],
+                "created_at": row[9].isoformat() if row[9] is not None else None,
+                "resolved_at": row[10].isoformat() if row[10] is not None else None,
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.put("/v1/wiki/pages/{slug}/review-assignments", response_model=None)
+def upsert_wiki_page_review_assignment(
+    slug: str,
+    payload: WikiPageReviewAssignmentUpsertRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/review-assignments"
+    request_payload = {"slug": normalized_slug, **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.created_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": payload.project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    space_key = _wiki_space_key_from_slug(canonical_slug)
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=payload.project_id,
+                        space_key=space_key,
+                        actor=payload.created_by,
+                        action="write",
+                        page_id=page_id,
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": payload.project_id,
+                            "slug": canonical_slug,
+                            "space_key": space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+                    assignee = payload.assignee.strip()
+                    role = payload.role.strip() or "reviewer"
+                    cur.execute(
+                        """
+                        SELECT id::text
+                        FROM wiki_page_review_assignments
+                        WHERE project_id = %s
+                          AND page_id::text = %s
+                          AND assignee = %s
+                          AND role = %s
+                          AND status = 'open'
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        """,
+                        (payload.project_id, page_id, assignee, role),
+                    )
+                    existing = cur.fetchone()
+                    if existing is not None:
+                        assignment_id = str(existing[0])
+                        cur.execute(
+                            """
+                            UPDATE wiki_page_review_assignments
+                            SET note = %s,
+                                due_at = %s
+                            WHERE id::text = %s
+                            RETURNING created_at
+                            """,
+                            (
+                                payload.note.strip() if isinstance(payload.note, str) and payload.note.strip() else None,
+                                payload.due_at,
+                                assignment_id,
+                            ),
+                        )
+                        created_row = cur.fetchone()
+                        response = {
+                            "status": "updated",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "assignment": {
+                                "id": assignment_id,
+                                "assignee": assignee,
+                                "role": role,
+                                "status": "open",
+                                "note": payload.note.strip() if isinstance(payload.note, str) and payload.note.strip() else None,
+                                "due_at": payload.due_at.isoformat() if payload.due_at is not None else None,
+                                "created_by": payload.created_by,
+                                "created_at": created_row[0].isoformat() if created_row and created_row[0] is not None else None,
+                            },
+                        }
+                    else:
+                        assignment_id = str(uuid4())
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_page_review_assignments (
+                              id, project_id, page_id, assignee, role, status, note, due_at, created_by
+                            )
+                            VALUES (%s, %s, %s, %s, %s, 'open', %s, %s, %s)
+                            RETURNING created_at
+                            """,
+                            (
+                                assignment_id,
+                                payload.project_id,
+                                page_id,
+                                assignee,
+                                role,
+                                payload.note.strip() if isinstance(payload.note, str) and payload.note.strip() else None,
+                                payload.due_at,
+                                payload.created_by,
+                            ),
+                        )
+                        created_row = cur.fetchone()
+                        response = {
+                            "status": "created",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "assignment": {
+                                "id": assignment_id,
+                                "assignee": assignee,
+                                "role": role,
+                                "status": "open",
+                                "note": payload.note.strip() if isinstance(payload.note, str) and payload.note.strip() else None,
+                                "due_at": payload.due_at.isoformat() if payload.due_at is not None else None,
+                                "created_by": payload.created_by,
+                                "created_at": created_row[0].isoformat() if created_row and created_row[0] is not None else None,
+                            },
+                        }
+                    notification_ids = _insert_wiki_notifications(
+                        cur,
+                        project_id=payload.project_id,
+                        recipients={assignee},
+                        actor=payload.created_by,
+                        kind="wiki.review_assignment",
+                        title=f"Review assigned for {canonical_slug}",
+                        body=payload.note.strip() if isinstance(payload.note, str) and payload.note.strip() else None,
+                        link=f"/wiki/{canonical_slug}",
+                        metadata={
+                            "page_id": page_id,
+                            "slug": canonical_slug,
+                            "assignee": assignee,
+                            "role": role,
+                        },
+                    )
+                    if notification_ids:
+                        response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.post("/v1/wiki/pages/{slug}/review-assignments/{assignment_id}/resolve", response_model=None)
+def resolve_wiki_page_review_assignment(
+    slug: str,
+    assignment_id: UUID,
+    payload: WikiPageReviewAssignmentResolveRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    endpoint = f"/v1/wiki/pages/{normalized_slug}/review-assignments/{assignment_id}/resolve"
+    request_payload = {"slug": normalized_slug, "assignment_id": str(assignment_id), **payload.model_dump(mode="json")}
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, payload.project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=payload.resolved_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                        cur,
+                        project_id=payload.project_id,
+                        slug_or_alias=normalized_slug,
+                        for_update=True,
+                    )
+                    if page_row is None:
+                        response = {"error": "page_not_found", "slug": normalized_slug, "project_id": payload.project_id}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=404,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=404, content=response)
+                    page_id = str(page_row[0])
+                    canonical_slug = str(page_row[2])
+                    cur.execute(
+                        """
+                        UPDATE wiki_page_review_assignments
+                        SET status = 'resolved',
+                            resolved_by = %s,
+                            resolution_note = %s,
+                            resolved_at = NOW()
+                        WHERE id = %s
+                          AND project_id = %s
+                          AND page_id::text = %s
+                          AND status = 'open'
+                        RETURNING assignee, role, note, due_at, created_by, created_at, resolved_at
+                        """,
+                        (
+                            payload.resolved_by,
+                            payload.resolution_note.strip()
+                            if isinstance(payload.resolution_note, str) and payload.resolution_note.strip()
+                            else None,
+                            assignment_id,
+                            payload.project_id,
+                            page_id,
+                        ),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        response = {
+                            "status": "no_change",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "assignment_id": str(assignment_id),
+                        }
+                    else:
+                        response = {
+                            "status": "resolved",
+                            "page": {"id": page_id, "slug": canonical_slug},
+                            "assignment": {
+                                "id": str(assignment_id),
+                                "assignee": str(row[0]),
+                                "role": str(row[1]),
+                                "status": "resolved",
+                                "note": row[2],
+                                "due_at": row[3].isoformat() if row[3] is not None else None,
+                                "created_by": str(row[4]),
+                                "created_at": row[5].isoformat() if row[5] is not None else None,
+                                "resolved_by": payload.resolved_by,
+                                "resolution_note": payload.resolution_note,
+                                "resolved_at": row[6].isoformat() if row[6] is not None else None,
+                            },
+                        }
+                        notify_recipients = {str(row[0]), str(row[4])}
+                        notification_ids = _insert_wiki_notifications(
+                            cur,
+                            project_id=payload.project_id,
+                            recipients=notify_recipients,
+                            actor=payload.resolved_by,
+                            kind="wiki.review_resolved",
+                            title=f"Review resolved for {canonical_slug}",
+                            body=payload.resolution_note.strip()
+                            if isinstance(payload.resolution_note, str) and payload.resolution_note.strip()
+                            else None,
+                            link=f"/wiki/{canonical_slug}",
+                            metadata={
+                                "page_id": page_id,
+                                "slug": canonical_slug,
+                                "assignment_id": str(assignment_id),
+                                "resolved_by": payload.resolved_by,
+                            },
+                        )
+                        if notification_ids:
+                            response["notifications"] = {"inserted": len(notification_ids)}
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/wiki/spaces/{space_key}/policy")
+def get_wiki_space_policy(space_key: str, project_id: str) -> Any:
+    normalized_space_key = _slugify_segment(space_key)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            policy = _load_wiki_space_policy(cur, project_id=project_id, space_key=normalized_space_key)
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space_key,
+        "policy": {
+            "write_mode": policy["write_mode"],
+            "comment_mode": policy["comment_mode"],
+            "review_assignment_required": bool(policy["review_assignment_required"]),
+            "metadata": policy["metadata"],
+            "exists": bool(policy["exists"]),
+        },
+    }
+
+
+@app.put("/v1/wiki/spaces/{space_key}/policy", response_model=None)
+def upsert_wiki_space_policy(space_key: str, payload: WikiSpacePolicyUpsertRequest) -> Any:
+    normalized_space_key = _slugify_segment(space_key)
+    if normalized_space_key != _slugify_segment(payload.space_key):
+        return JSONResponse(status_code=422, content={"error": "space_key_mismatch"})
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_space_policies"):
+                return JSONResponse(status_code=503, content={"error": "wiki_space_policies_unavailable"})
+            owner_count = _wiki_space_owner_count(cur, project_id=payload.project_id, space_key=normalized_space_key)
+            actor_is_owner = _wiki_actor_is_owner(
+                cur,
+                project_id=payload.project_id,
+                space_key=normalized_space_key,
+                actor=payload.updated_by,
+                page_id=None,
+            )
+            if owner_count > 0 and not actor_is_owner:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "wiki_policy_denied",
+                        "space_key": normalized_space_key,
+                        "reason": "space_owner_required_for_policy_update",
+                    },
+                )
+            cur.execute(
+                """
+                INSERT INTO wiki_space_policies (
+                  project_id, space_key, write_mode, comment_mode, review_assignment_required, metadata, updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, space_key) DO UPDATE
+                SET write_mode = EXCLUDED.write_mode,
+                    comment_mode = EXCLUDED.comment_mode,
+                    review_assignment_required = EXCLUDED.review_assignment_required,
+                    metadata = EXCLUDED.metadata,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+                RETURNING created_at, updated_at
+                """,
+                (
+                    payload.project_id,
+                    normalized_space_key,
+                    payload.write_mode,
+                    payload.comment_mode,
+                    bool(payload.review_assignment_required),
+                    Jsonb(payload.metadata or {}),
+                    payload.updated_by,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "updated",
+        "project_id": payload.project_id,
+        "space_key": normalized_space_key,
+        "policy": {
+            "write_mode": payload.write_mode,
+            "comment_mode": payload.comment_mode,
+            "review_assignment_required": bool(payload.review_assignment_required),
+            "metadata": payload.metadata or {},
+            "updated_by": payload.updated_by,
+            "created_at": row[0].isoformat() if row and row[0] is not None else None,
+            "updated_at": row[1].isoformat() if row and row[1] is not None else None,
+        },
+    }
+
+
+@app.get("/v1/wiki/spaces/{space_key}/owners")
+def list_wiki_space_owners(space_key: str, project_id: str) -> Any:
+    normalized_space_key = _slugify_segment(space_key)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_space_owners"):
+                return {
+                    "project_id": project_id,
+                    "space_key": normalized_space_key,
+                    "owners": [],
+                    "available": False,
+                }
+            cur.execute(
+                """
+                SELECT owner, role, metadata, created_at
+                FROM wiki_space_owners
+                WHERE project_id = %s
+                  AND space_key = %s
+                ORDER BY created_at ASC, owner ASC
+                """,
+                (project_id, normalized_space_key),
+            )
+            rows = cur.fetchall()
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space_key,
+        "owners": [
+            {
+                "owner": str(row[0]),
+                "role": str(row[1] or "owner"),
+                "metadata": row[2] if isinstance(row[2], dict) else {},
+                "created_at": row[3].isoformat() if row[3] is not None else None,
+            }
+            for row in rows
+        ],
+        "available": True,
+    }
+
+
+@app.put("/v1/wiki/spaces/{space_key}/owners", response_model=None)
+def upsert_wiki_space_owner(space_key: str, payload: WikiSpaceOwnerUpsertRequest) -> Any:
+    normalized_space_key = _slugify_segment(space_key)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_space_owners"):
+                return JSONResponse(status_code=503, content={"error": "wiki_space_owners_unavailable"})
+            owner_count = _wiki_space_owner_count(cur, project_id=payload.project_id, space_key=normalized_space_key)
+            actor_is_owner = _wiki_actor_is_owner(
+                cur,
+                project_id=payload.project_id,
+                space_key=normalized_space_key,
+                actor=payload.actor,
+                page_id=None,
+            )
+            if owner_count > 0 and not actor_is_owner:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "wiki_policy_denied",
+                        "space_key": normalized_space_key,
+                        "reason": "space_owner_required_for_owner_update",
+                    },
+                )
+            owner_value = payload.owner.strip()
+            if payload.active:
+                cur.execute(
+                    """
+                    INSERT INTO wiki_space_owners (project_id, space_key, owner, role, metadata)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id, space_key, owner) DO UPDATE
+                    SET role = EXCLUDED.role,
+                        metadata = EXCLUDED.metadata
+                    RETURNING created_at
+                    """,
+                    (
+                        payload.project_id,
+                        normalized_space_key,
+                        owner_value,
+                        payload.role.strip() or "owner",
+                        Jsonb(payload.metadata or {}),
+                    ),
+                )
+                row = cur.fetchone()
+                status = "active"
+            else:
+                cur.execute(
+                    """
+                    DELETE FROM wiki_space_owners
+                    WHERE project_id = %s
+                      AND space_key = %s
+                      AND owner = %s
+                    """,
+                    (payload.project_id, normalized_space_key, owner_value),
+                )
+                row = None
+                status = "removed" if cur.rowcount > 0 else "no_change"
+    return {
+        "status": status,
+        "project_id": payload.project_id,
+        "space_key": normalized_space_key,
+        "owner": owner_value,
+        "role": payload.role,
+        "created_at": row[0].isoformat() if row and row[0] is not None else None,
+    }
+
+
+@app.get("/v1/wiki/pages/{slug}/owners")
+def list_wiki_page_owners(slug: str, project_id: str) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+            page_id = str(page_row[0])
+            canonical_slug = str(page_row[2])
+            if not _wiki_feature_table_exists(cur, "public.wiki_page_owners"):
+                return {
+                    "page": {"id": page_id, "slug": canonical_slug},
+                    "owners": [],
+                    "available": False,
+                }
+            cur.execute(
+                """
+                SELECT owner, role, metadata, created_at
+                FROM wiki_page_owners
+                WHERE project_id = %s
+                  AND page_id::text = %s
+                ORDER BY created_at ASC, owner ASC
+                """,
+                (project_id, page_id),
+            )
+            rows = cur.fetchall()
+    return {
+        "page": {"id": page_id, "slug": canonical_slug},
+        "owners": [
+            {
+                "owner": str(row[0]),
+                "role": str(row[1] or "editor"),
+                "metadata": row[2] if isinstance(row[2], dict) else {},
+                "created_at": row[3].isoformat() if row[3] is not None else None,
+            }
+            for row in rows
+        ],
+        "available": True,
+    }
+
+
+@app.put("/v1/wiki/pages/{slug}/owners", response_model=None)
+def upsert_wiki_page_owner(slug: str, payload: WikiPageOwnerUpsertRequest) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_page_owners"):
+                return JSONResponse(status_code=503, content={"error": "wiki_page_owners_unavailable"})
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=payload.project_id,
+                slug_or_alias=normalized_slug,
+                for_update=True,
+            )
+            if page_row is None:
+                return JSONResponse(status_code=404, content={"error": "page_not_found"})
+            page_id = str(page_row[0])
+            canonical_slug = str(page_row[2])
+            space_key = _wiki_space_key_from_slug(canonical_slug)
+            owner_scope_count = _wiki_space_owner_count(cur, project_id=payload.project_id, space_key=space_key) + _wiki_page_owner_count(
+                cur,
+                project_id=payload.project_id,
+                page_id=page_id,
+            )
+            actor_is_owner = _wiki_actor_is_owner(
+                cur,
+                project_id=payload.project_id,
+                space_key=space_key,
+                actor=payload.actor,
+                page_id=page_id,
+            )
+            if owner_scope_count > 0 and not actor_is_owner:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "wiki_policy_denied",
+                        "slug": canonical_slug,
+                        "reason": "page_or_space_owner_required_for_owner_update",
+                    },
+                )
+            owner_value = payload.owner.strip()
+            if payload.active:
+                cur.execute(
+                    """
+                    INSERT INTO wiki_page_owners (project_id, page_id, owner, role, metadata)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (page_id, owner) DO UPDATE
+                    SET role = EXCLUDED.role,
+                        metadata = EXCLUDED.metadata
+                    RETURNING created_at
+                    """,
+                    (
+                        payload.project_id,
+                        page_id,
+                        owner_value,
+                        payload.role.strip() or "editor",
+                        Jsonb(payload.metadata or {}),
+                    ),
+                )
+                row = cur.fetchone()
+                status = "active"
+            else:
+                cur.execute(
+                    """
+                    DELETE FROM wiki_page_owners
+                    WHERE project_id = %s
+                      AND page_id::text = %s
+                      AND owner = %s
+                    """,
+                    (payload.project_id, page_id, owner_value),
+                )
+                row = None
+                status = "removed" if cur.rowcount > 0 else "no_change"
+    return {
+        "status": status,
+        "page": {"id": page_id, "slug": canonical_slug},
+        "owner": owner_value,
+        "role": payload.role,
+        "created_at": row[0].isoformat() if row and row[0] is not None else None,
+    }
+
+
+@app.get("/v1/wiki/notifications")
+def list_wiki_notifications(
+    project_id: str,
+    recipient: str = Query(min_length=1, max_length=256),
+    status: str = Query(default="unread"),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Any:
+    normalized_status = str(status or "unread").strip().lower()
+    if normalized_status not in {"all", "unread", "read"}:
+        return JSONResponse(status_code=422, content={"error": "notification_status_invalid"})
+    normalized_limit = normalize_limit_value(limit, default=50, minimum=1, maximum=200)
+    recipient_value = recipient.strip()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_notifications_enabled(cur):
+                return {
+                    "project_id": project_id,
+                    "recipient": recipient_value,
+                    "status": normalized_status,
+                    "notifications": [],
+                    "meta": {"unread_count": 0, "available": False},
+                }
+            if normalized_status == "all":
+                cur.execute(
+                    """
+                    SELECT id::text, recipient, actor, kind, title, body, link, metadata, status, created_at, read_at
+                    FROM wiki_notifications
+                    WHERE project_id = %s
+                      AND recipient = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, recipient_value, normalized_limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id::text, recipient, actor, kind, title, body, link, metadata, status, created_at, read_at
+                    FROM wiki_notifications
+                    WHERE project_id = %s
+                      AND recipient = %s
+                      AND status = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, recipient_value, normalized_status, normalized_limit),
+                )
+            rows = cur.fetchall()
+            cur.execute(
+                """
+                SELECT COUNT(*)::int
+                FROM wiki_notifications
+                WHERE project_id = %s
+                  AND recipient = %s
+                  AND status = 'unread'
+                """,
+                (project_id, recipient_value),
+            )
+            unread_row = cur.fetchone()
+    return {
+        "project_id": project_id,
+        "recipient": recipient_value,
+        "status": normalized_status,
+        "notifications": [
+            {
+                "id": str(row[0]),
+                "recipient": str(row[1]),
+                "actor": row[2],
+                "kind": str(row[3]),
+                "title": str(row[4]),
+                "body": row[5],
+                "link": row[6],
+                "metadata": row[7] if isinstance(row[7], dict) else {},
+                "status": str(row[8]),
+                "created_at": row[9].isoformat() if row[9] is not None else None,
+                "read_at": row[10].isoformat() if row[10] is not None else None,
+            }
+            for row in rows
+        ],
+        "meta": {
+            "unread_count": int(unread_row[0] if unread_row and unread_row[0] is not None else 0),
+            "available": True,
+        },
+    }
+
+
+@app.post("/v1/wiki/notifications/{notification_id}/read", response_model=None)
+def mark_wiki_notification_read(notification_id: UUID, payload: WikiNotificationReadRequest) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_notifications_enabled(cur):
+                return JSONResponse(status_code=503, content={"error": "wiki_notifications_unavailable"})
+            cur.execute(
+                """
+                UPDATE wiki_notifications
+                SET status = 'read',
+                    read_at = NOW()
+                WHERE id = %s
+                  AND project_id = %s
+                  AND recipient = %s
+                  AND status = 'unread'
+                RETURNING read_at
+                """,
+                (notification_id, payload.project_id, payload.recipient.strip()),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return {
+            "status": "no_change",
+            "notification_id": str(notification_id),
+            "project_id": payload.project_id,
+            "recipient": payload.recipient.strip(),
+        }
+    return {
+        "status": "read",
+        "notification_id": str(notification_id),
+        "project_id": payload.project_id,
+        "recipient": payload.recipient.strip(),
+        "read_at": row[0].isoformat() if row[0] is not None else None,
+    }
+
+
+@app.post("/v1/wiki/notifications/read-all", response_model=None)
+def mark_all_wiki_notifications_read(payload: WikiNotificationReadRequest) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_notifications_enabled(cur):
+                return JSONResponse(status_code=503, content={"error": "wiki_notifications_unavailable"})
+            cur.execute(
+                """
+                UPDATE wiki_notifications
+                SET status = 'read',
+                    read_at = NOW()
+                WHERE project_id = %s
+                  AND recipient = %s
+                  AND status = 'unread'
+                """,
+                (payload.project_id, payload.recipient.strip()),
+            )
+            updated = int(cur.rowcount)
+    return {
+        "status": "updated",
+        "project_id": payload.project_id,
+        "recipient": payload.recipient.strip(),
+        "updated_count": updated,
+    }
+
+
+@app.post("/v1/wiki/uploads", response_model=None)
+async def create_wiki_upload(
+    request: Request,
+    project_id: str = Form(..., min_length=1, max_length=256),
+    uploaded_by: str = Form(..., min_length=1, max_length=256),
+    page_slug: str | None = Form(default=None),
+    space_key: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/wiki/uploads"
+    sanitized_filename = _sanitize_wiki_upload_filename(file.filename)
+    if not _wiki_upload_extension_allowed(sanitized_filename):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "wiki_upload_extension_not_allowed",
+                "filename": sanitized_filename,
+                "allowed_extensions": sorted(_WIKI_UPLOAD_ALLOWED_EXTENSIONS),
+            },
+        )
+    payload_bytes = await file.read(_WIKI_UPLOAD_MAX_BYTES + 1)
+    size_bytes = len(payload_bytes)
+    if size_bytes > _WIKI_UPLOAD_MAX_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": "wiki_upload_too_large",
+                "max_bytes": _WIKI_UPLOAD_MAX_BYTES,
+                "size_bytes": size_bytes,
+            },
+        )
+    checksum_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    normalized_page_slug = _normalize_wiki_slug(page_slug, page_slug) if str(page_slug or "").strip() else None
+    normalized_space_key = _slugify_segment(space_key or "general")
+    request_payload = {
+        "project_id": project_id,
+        "uploaded_by": uploaded_by,
+        "page_slug": normalized_page_slug,
+        "space_key": normalized_space_key,
+        "filename": sanitized_filename,
+        "content_type": str(file.content_type or "").strip() or None,
+        "size_bytes": size_bytes,
+        "checksum_sha256": checksum_sha256,
+    }
+    source_ownership_advisories = 0
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, project_id)
+            check = _enforce_source_ownership_write(
+                policies_by_domain=policies,
+                project_id=project_id,
+                domain="synapse_wiki",
+                source_system=_resolve_request_source_system(request, fallback=uploaded_by or "human_editor"),
+                endpoint=endpoint,
+            )
+            if check.get("status") == "advisory":
+                source_ownership_advisories += 1
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                with conn.transaction():
+                    if not _wiki_feature_table_exists(cur, "public.wiki_uploads"):
+                        response = {"error": "wiki_uploads_unavailable"}
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=503,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=503, content=response)
+
+                    resolved_page_id: str | None = None
+                    resolved_page_slug: str | None = None
+                    effective_space_key = normalized_space_key
+                    if normalized_page_slug:
+                        page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                            cur,
+                            project_id=project_id,
+                            slug_or_alias=normalized_page_slug,
+                            for_update=True,
+                        )
+                        if page_row is None:
+                            response = {
+                                "error": "page_not_found",
+                                "project_id": project_id,
+                                "slug": normalized_page_slug,
+                            }
+                            mark_request_completed(
+                                conn,
+                                endpoint=endpoint,
+                                idempotency_key=idempotency_key,
+                                status_code=404,
+                                response_body=response,
+                            )
+                            return JSONResponse(status_code=404, content=response)
+                        resolved_page_id = str(page_row[0])
+                        resolved_page_slug = str(page_row[2])
+                        effective_space_key = _wiki_space_key_from_slug(resolved_page_slug)
+
+                    policy_check = _check_wiki_policy_access(
+                        cur,
+                        project_id=project_id,
+                        space_key=effective_space_key,
+                        actor=uploaded_by,
+                        action="write",
+                        page_id=resolved_page_id,
+                    )
+                    if not policy_check["allowed"]:
+                        response = {
+                            "error": "wiki_policy_denied",
+                            "project_id": project_id,
+                            "space_key": effective_space_key,
+                            "action": "write",
+                            "reason": policy_check["reason"],
+                            "policy": policy_check["policy"],
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=403,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=403, content=response)
+
+                    upload_id = str(uuid4())
+                    content_type = str(file.content_type or "").strip() or "application/octet-stream"
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_uploads (
+                          id, project_id, page_id, filename, content_type, size_bytes, checksum_sha256, storage, metadata, created_by
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING created_at
+                        """,
+                        (
+                            upload_id,
+                            project_id,
+                            resolved_page_id,
+                            sanitized_filename,
+                            content_type,
+                            size_bytes,
+                            checksum_sha256,
+                            payload_bytes,
+                            Jsonb(
+                                {
+                                    "space_key": effective_space_key,
+                                    "requested_page_slug": normalized_page_slug,
+                                    "resolved_page_slug": resolved_page_slug,
+                                }
+                            ),
+                            uploaded_by,
+                        ),
+                    )
+                    created_row = cur.fetchone()
+                    content_url = f"/v1/wiki/uploads/{upload_id}/content?project_id={quote(project_id)}"
+                    content_url_absolute = f"{str(request.base_url).rstrip('/')}{content_url}"
+                    markdown_snippet = (
+                        f"![{sanitized_filename}]({content_url})"
+                        if _wiki_upload_is_image(sanitized_filename, content_type)
+                        else f"[{sanitized_filename}]({content_url})"
+                    )
+                    response = {
+                        "status": "created",
+                        "upload": {
+                            "id": upload_id,
+                            "project_id": project_id,
+                            "page_id": resolved_page_id,
+                            "page_slug": resolved_page_slug,
+                            "space_key": effective_space_key,
+                            "filename": sanitized_filename,
+                            "content_type": content_type,
+                            "size_bytes": size_bytes,
+                            "checksum_sha256": checksum_sha256,
+                            "created_by": uploaded_by,
+                            "created_at": created_row[0].isoformat() if created_row and created_row[0] is not None else None,
+                            "content_url": content_url,
+                            "content_url_absolute": content_url_absolute,
+                            "markdown_snippet": markdown_snippet,
+                        },
+                    }
+                    if source_ownership_advisories > 0:
+                        response["source_ownership_advisories"] = source_ownership_advisories
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=200,
+                        response_body=response,
+                    )
+                    return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/wiki/uploads")
+def list_wiki_uploads(
+    request: Request,
+    project_id: str,
+    page_slug: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    normalized_limit = normalize_limit_value(limit, default=100, minimum=1, maximum=500)
+    normalized_page_slug = _normalize_wiki_slug(page_slug, page_slug) if str(page_slug or "").strip() else None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_uploads"):
+                return {
+                    "project_id": project_id,
+                    "uploads": [],
+                    "meta": {"available": False},
+                }
+            resolved_page_id: str | None = None
+            resolved_page_slug: str | None = None
+            if normalized_page_slug:
+                page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                    cur,
+                    project_id=project_id,
+                    slug_or_alias=normalized_page_slug,
+                    for_update=False,
+                )
+                if page_row is None:
+                    return JSONResponse(status_code=404, content={"error": "page_not_found"})
+                resolved_page_id = str(page_row[0])
+                resolved_page_slug = str(page_row[2])
+            if resolved_page_id:
+                cur.execute(
+                    """
+                    SELECT id::text, page_id::text, filename, content_type, size_bytes, checksum_sha256, created_by, created_at
+                    FROM wiki_uploads
+                    WHERE project_id = %s
+                      AND page_id::text = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, resolved_page_id, normalized_limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id::text, page_id::text, filename, content_type, size_bytes, checksum_sha256, created_by, created_at
+                    FROM wiki_uploads
+                    WHERE project_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, normalized_limit),
+                )
+            rows = cur.fetchall()
+    return {
+        "project_id": project_id,
+        "page_slug": resolved_page_slug,
+        "uploads": [
+            {
+                "id": str(row[0]),
+                "page_id": row[1],
+                "filename": str(row[2]),
+                "content_type": row[3],
+                "size_bytes": int(row[4] or 0),
+                "checksum_sha256": str(row[5]),
+                "created_by": str(row[6]),
+                "created_at": row[7].isoformat() if row[7] is not None else None,
+                "content_url": f"/v1/wiki/uploads/{row[0]}/content?project_id={quote(project_id)}",
+                "content_url_absolute": f"{str(request.base_url).rstrip('/')}/v1/wiki/uploads/{row[0]}/content?project_id={quote(project_id)}",
+            }
+            for row in rows
+        ],
+        "meta": {"available": True, "limit": normalized_limit},
+    }
+
+
+@app.get("/v1/wiki/uploads/{upload_id}/content")
+def get_wiki_upload_content(
+    upload_id: UUID,
+    project_id: str,
+    download: bool = Query(default=False),
+) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_uploads"):
+                return JSONResponse(status_code=503, content={"error": "wiki_uploads_unavailable"})
+            cur.execute(
+                """
+                SELECT filename, content_type, storage
+                FROM wiki_uploads
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (upload_id, project_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return JSONResponse(status_code=404, content={"error": "upload_not_found"})
+    filename = _sanitize_wiki_upload_filename(str(row[0] or "attachment.bin"))
+    media_type = str(row[1] or "application/octet-stream")
+    payload = bytes(row[2] or b"")
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
 
 
 @app.get("/v1/wiki/drafts")
@@ -13018,6 +17674,201 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
         "projects": project_results,
         "generated_at": datetime.now(UTC).isoformat(),
     }
+
+
+@app.post("/v1/wiki/drafts/bootstrap-approve/run")
+def run_wiki_bootstrap_approve(payload: WikiBootstrapApproveRunRequest) -> dict[str, Any]:
+    trusted_sources = _normalize_source_system_list(payload.trusted_source_systems or [])
+    with get_conn() as conn:
+        source_ownership_advisories = 0
+        if _source_ownership_table_exists(conn):
+            ownership_policies = _load_source_ownership_policies(conn, payload.project_id)
+            ownership_check = _enforce_source_ownership_write(
+                policies_by_domain=ownership_policies,
+                project_id=payload.project_id,
+                domain="synapse_wiki",
+                source_system=_normalize_source_system(payload.source_system),
+                endpoint="/v1/wiki/drafts/bootstrap-approve/run",
+            )
+            if ownership_check.get("status") == "advisory":
+                source_ownership_advisories += 1
+
+        with conn.cursor() as cur:
+            if trusted_sources:
+                cur.execute(
+                    """
+                    SELECT
+                      d.id::text,
+                      d.claim_id::text,
+                      d.page_id::text,
+                      d.section_key,
+                      d.decision,
+                      d.confidence,
+                      d.created_at
+                    FROM wiki_draft_changes d
+                    WHERE d.project_id = %s
+                      AND d.status = 'pending_review'
+                      AND d.decision IN ('new_page', 'new_section', 'new_statement')
+                      AND d.confidence >= %s
+                      AND (
+                        %s::bool = FALSE
+                        OR NOT EXISTS (
+                          SELECT 1
+                          FROM wiki_conflicts wc
+                          WHERE wc.claim_id = d.claim_id
+                            AND wc.resolution_status = 'open'
+                        )
+                      )
+                      AND EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(COALESCE(d.evidence, '[]'::jsonb)) ev
+                        WHERE lower(
+                          COALESCE(
+                            NULLIF(ev->>'source_system', ''),
+                            NULLIF(ev->'metadata'->>'source_system', ''),
+                            NULLIF(ev->'metadata'->>'source', '')
+                          )
+                        ) = ANY(%s::text[])
+                      )
+                    ORDER BY d.confidence DESC, d.created_at ASC
+                    LIMIT %s
+                    """,
+                    (
+                        payload.project_id,
+                        float(payload.min_confidence),
+                        bool(payload.require_conflict_free),
+                        trusted_sources,
+                        int(payload.limit),
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      d.id::text,
+                      d.claim_id::text,
+                      d.page_id::text,
+                      d.section_key,
+                      d.decision,
+                      d.confidence,
+                      d.created_at
+                    FROM wiki_draft_changes d
+                    WHERE d.project_id = %s
+                      AND d.status = 'pending_review'
+                      AND d.decision IN ('new_page', 'new_section', 'new_statement')
+                      AND d.confidence >= %s
+                      AND (
+                        %s::bool = FALSE
+                        OR NOT EXISTS (
+                          SELECT 1
+                          FROM wiki_conflicts wc
+                          WHERE wc.claim_id = d.claim_id
+                            AND wc.resolution_status = 'open'
+                        )
+                      )
+                    ORDER BY d.confidence DESC, d.created_at ASC
+                    LIMIT %s
+                    """,
+                    (
+                        payload.project_id,
+                        float(payload.min_confidence),
+                        bool(payload.require_conflict_free),
+                        int(payload.limit),
+                    ),
+                )
+            rows = cur.fetchall() or []
+
+    candidates = [
+        {
+            "draft_id": row[0],
+            "claim_id": row[1],
+            "page_id": row[2],
+            "section_key": row[3],
+            "decision": row[4],
+            "confidence": float(row[5]),
+            "created_at": row[6].isoformat() if row[6] is not None else None,
+        }
+        for row in rows
+    ]
+    sample = candidates[: max(1, int(payload.sample_size))]
+    if payload.dry_run:
+        response: dict[str, Any] = {
+            "status": "ok",
+            "dry_run": True,
+            "project_id": payload.project_id,
+            "reviewed_by": payload.reviewed_by,
+            "source_system": _normalize_source_system(payload.source_system),
+            "selection": {
+                "limit": int(payload.limit),
+                "min_confidence": float(payload.min_confidence),
+                "require_conflict_free": bool(payload.require_conflict_free),
+                "trusted_source_systems": trusted_sources,
+            },
+            "summary": {
+                "candidates": len(candidates),
+                "sample_size": len(sample),
+                "source_ownership_advisories": source_ownership_advisories,
+            },
+            "sample": sample,
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+        if source_ownership_advisories > 0:
+            response["source_ownership_advisories"] = source_ownership_advisories
+        return response
+
+    approved = 0
+    failed = 0
+    items: list[dict[str, Any]] = []
+    for item in candidates:
+        draft_id_text = str(item["draft_id"])
+        try:
+            approve_wiki_draft(
+                UUID(draft_id_text),
+                DraftApproveRequest(
+                    project_id=payload.project_id,
+                    reviewed_by=payload.reviewed_by,
+                    note=(
+                        "Bootstrap migration approval (trusted source flow). "
+                        f"min_confidence={float(payload.min_confidence):.2f}; "
+                        f"require_conflict_free={bool(payload.require_conflict_free)}"
+                    ),
+                ),
+                source_system=payload.source_system,
+                idempotency_key=f"bootstrap-approve:{draft_id_text}",
+            )
+            approved += 1
+            items.append({**item, "outcome": "approved"})
+        except HTTPException as exc:
+            failed += 1
+            items.append({**item, "outcome": "failed", "reason": f"http_{exc.status_code}:{exc.detail}"})
+        except Exception as exc:  # pragma: no cover
+            failed += 1
+            items.append({**item, "outcome": "failed", "reason": f"error:{exc}"})
+
+    response = {
+        "status": "ok",
+        "dry_run": False,
+        "project_id": payload.project_id,
+        "reviewed_by": payload.reviewed_by,
+        "source_system": _normalize_source_system(payload.source_system),
+        "selection": {
+            "limit": int(payload.limit),
+            "min_confidence": float(payload.min_confidence),
+            "require_conflict_free": bool(payload.require_conflict_free),
+            "trusted_source_systems": trusted_sources,
+        },
+        "summary": {
+            "candidates": len(candidates),
+            "approved": approved,
+            "failed": failed,
+            "source_ownership_advisories": source_ownership_advisories,
+        },
+        "items": items,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if source_ownership_advisories > 0:
+        response["source_ownership_advisories"] = source_ownership_advisories
+    return response
 
 
 @app.get("/v1/wiki/moderation/actions")

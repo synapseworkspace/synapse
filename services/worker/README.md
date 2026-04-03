@@ -30,6 +30,22 @@ Run locally:
 PYTHONPATH=services/worker python services/worker/scripts/run_wiki_synthesis.py --extract-limit 200 --limit 100 --cycles 1
 ```
 
+Optional routing controls for page assignment/new-page policy:
+
+```bash
+PYTHONPATH=services/worker python services/worker/scripts/run_wiki_synthesis.py \
+  --threshold-high 0.82 \
+  --threshold-mid 0.55 \
+  --threshold-new-page-margin 0.08 \
+  --threshold-route-ambiguity-gap 0.06
+```
+
+Equivalent env vars (used by worker loop):
+- `SYNAPSE_ROUTING_THRESHOLD_HIGH`
+- `SYNAPSE_ROUTING_THRESHOLD_MID`
+- `SYNAPSE_ROUTING_NEW_PAGE_MARGIN`
+- `SYNAPSE_ROUTING_AMBIGUITY_GAP`
+
 Auto-publish policy runner (hybrid human/autonomous publication):
 
 ```bash
@@ -360,6 +376,18 @@ PYTHONPATH=services/worker python services/worker/scripts/run_legacy_import.py \
   --api-url http://localhost:8080
 ```
 
+Import from PostgreSQL SQL query (existing custom memory schema):
+
+```bash
+export LEGACY_SQL_DSN='postgresql://user:pass@host:5432/app'
+PYTHONPATH=services/worker python services/worker/scripts/run_legacy_import.py \
+  --sql-query "SELECT id::text AS source_id, note AS content, entity_key, category, updated_at AS observed_at, metadata FROM ops_kb_items ORDER BY updated_at DESC LIMIT 5000" \
+  --sql-dsn-env LEGACY_SQL_DSN \
+  --project-id omega_demo \
+  --api-url http://localhost:8080 \
+  --source-system postgres_sql_import
+```
+
 Dry-run parser preview without upload:
 
 ```bash
@@ -392,6 +420,13 @@ Per-source `config` supports seed-orchestration knobs:
 - `seed_space_key`
 - `seed_group_mode` (`entity|category|category_entity`)
 - `seed_section_overrides`
+
+SQL source (`source_type=postgres_sql`) also supports:
+- `sql_dsn` or `sql_dsn_env`
+- `sql_query` or `sql_query_file`
+- `sql_mapping`
+- `sql_query_params`
+- `sql_cursor_param`, `sql_cursor_column`, `sql_cursor_start`, `sql_cursor_state_key` (incremental polling cursor persisted in source `config`)
 
 Queue-only mode:
 
