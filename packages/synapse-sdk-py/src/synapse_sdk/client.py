@@ -16,6 +16,7 @@ from synapse_sdk.extractors import ExtractedInsight, Extractor, InsightContext, 
 from synapse_sdk.synthesizers import SynthesisContext, Synthesizer, default_synthesizers
 from synapse_sdk.transports.http import HttpTransport
 from synapse_sdk.types import (
+    AdoptionMode,
     BootstrapMemoryInput,
     BootstrapMemoryOptions,
     Claim,
@@ -1551,8 +1552,13 @@ class Synapse(SynapseClient):
         capture_results: bool = True,
         capture_stream_items: bool = True,
         max_stream_items: int = 25,
+        adoption_mode: AdoptionMode | str | None = None,
         openclaw_hook_events: Sequence[str] | None = None,
-        openclaw_register_tools: bool = True,
+        openclaw_capture_hook_events: bool | None = None,
+        openclaw_register_tools: bool | None = None,
+        openclaw_register_search_tool: bool | None = None,
+        openclaw_register_propose_tool: bool | None = None,
+        openclaw_register_task_tools: bool | None = None,
         openclaw_tool_prefix: str = "synapse",
         openclaw_search_knowledge: Callable[..., Any] | None = None,
         bootstrap_memory: BootstrapMemoryOptions | None = None,
@@ -1565,12 +1571,16 @@ class Synapse(SynapseClient):
         openclaw_auto_bootstrap: bool = True,
     ) -> Any:
         resolved_integration = integration or self._detect_integration(target)
+        resolved_adoption_mode = _normalize_adoption_mode(
+            _coerce_str_or_none(adoption_mode) or _coerce_str_or_none(os.getenv("SYNAPSE_ADOPTION_MODE"))
+        )
         self._emit_debug(
             "attach_started",
             {
                 "integration": resolved_integration,
                 "target_type": type(target).__name__,
                 "auto_bootstrap_enabled": bool(openclaw_auto_bootstrap),
+                "adoption_mode": resolved_adoption_mode,
             },
         )
         resolved_bootstrap_memory = bootstrap_memory
@@ -1637,13 +1647,51 @@ class Synapse(SynapseClient):
                         "reason": "target_is_not_openclaw_runtime",
                     },
                 )
-        self._run_attach_bootstrap(
-            target=target,
-            integration=resolved_integration,
-            bootstrap_memory=resolved_bootstrap_memory,
-            agent_id=agent_id,
-            session_id=session_id,
-        )
+        openclaw_capture_hooks = openclaw_capture_hook_events
+        openclaw_register_tools_resolved = openclaw_register_tools
+        openclaw_register_search_tool_resolved = openclaw_register_search_tool
+        openclaw_register_propose_tool_resolved = openclaw_register_propose_tool
+        openclaw_register_task_tools_resolved = openclaw_register_task_tools
+        if resolved_integration == "openclaw" and self._looks_like_openclaw_runtime(target):
+            if openclaw_capture_hooks is None:
+                openclaw_capture_hooks = resolved_adoption_mode != "retrieve_only"
+            if openclaw_register_tools_resolved is None:
+                openclaw_register_tools_resolved = resolved_adoption_mode != "observe_only"
+            if openclaw_register_search_tool_resolved is None:
+                openclaw_register_search_tool_resolved = resolved_adoption_mode in {"full_loop", "retrieve_only"}
+            if openclaw_register_propose_tool_resolved is None:
+                openclaw_register_propose_tool_resolved = resolved_adoption_mode in {"full_loop", "draft_only"}
+            if openclaw_register_task_tools_resolved is None:
+                openclaw_register_task_tools_resolved = resolved_adoption_mode == "full_loop"
+        if resolved_adoption_mode == "retrieve_only":
+            if resolved_integration == "openclaw" and self._looks_like_openclaw_runtime(target):
+                self._emit_debug(
+                    "attach_bootstrap_skipped",
+                    {
+                        "integration": resolved_integration,
+                        "reason": "adoption_mode_retrieve_only",
+                        "adoption_mode": resolved_adoption_mode,
+                    },
+                )
+            else:
+                self._emit_debug(
+                    "attach_completed",
+                    {
+                        "integration": resolved_integration,
+                        "mode": "noop_retrieve_only",
+                        "bootstrap_requested": resolved_bootstrap_memory is not None,
+                        "adoption_mode": resolved_adoption_mode,
+                    },
+                )
+                return target
+        else:
+            self._run_attach_bootstrap(
+                target=target,
+                integration=resolved_integration,
+                bootstrap_memory=resolved_bootstrap_memory,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
         if resolved_integration == "openclaw" and self._looks_like_openclaw_runtime(target):
             from synapse_sdk.integrations.openclaw import DEFAULT_OPENCLAW_EVENTS, OpenClawConnector
 
@@ -1655,9 +1703,12 @@ class Synapse(SynapseClient):
             )
             connector.attach(
                 target,
-                hook_events=openclaw_hook_events or DEFAULT_OPENCLAW_EVENTS,
-                register_tools=openclaw_register_tools,
+                hook_events=(openclaw_hook_events or DEFAULT_OPENCLAW_EVENTS) if bool(openclaw_capture_hooks) else (),
+                register_tools=bool(openclaw_register_tools_resolved),
                 tool_prefix=openclaw_tool_prefix,
+                register_search_tool=bool(openclaw_register_search_tool_resolved),
+                register_propose_tool=bool(openclaw_register_propose_tool_resolved),
+                register_task_tools=bool(openclaw_register_task_tools_resolved),
             )
             self._emit_debug(
                 "attach_completed",
@@ -1666,6 +1717,12 @@ class Synapse(SynapseClient):
                     "mode": "openclaw_connector",
                     "registered_tools": list(connector.last_registered_tools),
                     "bootstrap_requested": resolved_bootstrap_memory is not None,
+                    "adoption_mode": resolved_adoption_mode,
+                    "capture_hooks": bool(openclaw_capture_hooks),
+                    "register_tools": bool(openclaw_register_tools_resolved),
+                    "register_search_tool": bool(openclaw_register_search_tool_resolved),
+                    "register_propose_tool": bool(openclaw_register_propose_tool_resolved),
+                    "register_task_tools": bool(openclaw_register_task_tools_resolved),
                     "search_mode": (
                         "callback"
                         if openclaw_search_knowledge is not None
@@ -1693,6 +1750,7 @@ class Synapse(SynapseClient):
                 "integration": resolved_integration,
                 "mode": "monitor",
                 "bootstrap_requested": resolved_bootstrap_memory is not None,
+                "adoption_mode": resolved_adoption_mode,
             },
         )
         return monitored
@@ -1933,6 +1991,20 @@ def _normalize_degradation_mode(value: str | None) -> str:
     normalized = str(value or "buffer").strip().lower()
     if normalized not in {"buffer", "drop", "sync_flush"}:
         raise ValueError(f"invalid degradation mode: {value!r}")
+    return normalized
+
+
+def _normalize_adoption_mode(value: str | None) -> str:
+    normalized = str(value or "full_loop").strip().lower()
+    aliases = {
+        "full": "full_loop",
+        "observe": "observe_only",
+        "draft": "draft_only",
+        "retrieve": "retrieve_only",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"full_loop", "observe_only", "draft_only", "retrieve_only"}:
+        raise ValueError(f"invalid adoption mode: {value!r}")
     return normalized
 
 

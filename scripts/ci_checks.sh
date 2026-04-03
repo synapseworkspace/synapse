@@ -1055,8 +1055,45 @@ with tempfile.TemporaryDirectory(prefix="synapse-cli-init-") as tmp:
     snippet = str(connect_payload.get("snippet") or "")
     assert "synapse.attach(" in snippet, snippet
     assert "default_context_policy_profile" in snippet, snippet
+    assert "adoption_mode=" in snippet, snippet
     assert "runtime," in snippet, snippet
+    sample_path = Path(tmp) / "memory_export.jsonl"
+    sample_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"source_id": "m1", "content": "BC Omega gate requires card", "entity_key": "bc_omega", "category": "access"}),
+                json.dumps({"source_id": "m2", "content": "Warehouse #1 is closed after 19:00", "entity_key": "warehouse_1", "category": "operations"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    adopt_out = subprocess.check_output(
+        [
+            "python",
+            "-m",
+            "synapse_sdk.cli",
+            "adopt",
+            "--dir",
+            tmp,
+            "--env-file",
+            ".env.synapse",
+            "--sample-file",
+            str(sample_path),
+            "--adoption-mode",
+            "observe_only",
+            "--json",
+        ],
+        text=True,
+    )
+    adopt_payload = json.loads(adopt_out)
+    assert adopt_payload["status"] == "ok", adopt_payload
+    assert adopt_payload["target"] == "existing_memory_adoption", adopt_payload
+    assert adopt_payload["adoption_mode"] == "observe_only", adopt_payload
+    assert isinstance(adopt_payload.get("rollout_plan"), list) and adopt_payload["rollout_plan"], adopt_payload
+    adopt_snippet = str(adopt_payload.get("snippet") or "")
+    assert 'adoption_mode="observe_only"' in adopt_snippet, adopt_snippet
 print("synapse-cli connect openclaw smoke ok")
+print("synapse-cli adopt smoke ok")
 print("synapse-cli init smoke ok")
 PY
 

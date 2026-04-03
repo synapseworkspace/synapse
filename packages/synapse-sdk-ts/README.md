@@ -105,9 +105,16 @@ OpenClaw day-0 preset shortcut:
 const attachedOpenClaw = synapse.attach(openclawRuntime, {
   integration: "openclaw",
   openclawBootstrapPreset: "hybrid", // runtime_memory | event_log | hybrid
+  adoptionMode: "observe_only", // full_loop | observe_only | draft_only | retrieve_only
   openclawBootstrapMaxRecords: 2000
 });
 ```
+
+`adoptionMode` rollout behavior:
+- `observe_only`: capture/ingest only, no runtime tools.
+- `draft_only`: propose facts, keep retrieval behavior unchanged.
+- `retrieve_only`: retrieval tools only, no capture/bootstrap writes.
+- `full_loop`: full observe -> synthesize -> execute loop.
 
 When `integration: "openclaw"` is used with an OpenClaw-compatible runtime, `attach(...)` automatically:
 - registers lifecycle hooks (`tool:result`, `message:received`, `agent:completed`, `session:reset`);

@@ -59,47 +59,71 @@ class OpenClawConnector:
         hook_events: Sequence[str] = DEFAULT_OPENCLAW_EVENTS,
         register_tools: bool = True,
         tool_prefix: str = "synapse",
+        register_search_tool: bool = True,
+        register_propose_tool: bool = True,
+        register_task_tools: bool = True,
     ) -> None:
         self._attach_hooks(runtime, hook_events=hook_events)
         self.last_registered_tools = tuple()
         self.auto_search_enabled = False
         if register_tools:
-            tools = self.register_tools(runtime, tool_prefix=tool_prefix)
+            tools = self.register_tools(
+                runtime,
+                tool_prefix=tool_prefix,
+                register_search_tool=register_search_tool,
+                register_propose_tool=register_propose_tool,
+                register_task_tools=register_task_tools,
+            )
             self.last_registered_tools = tuple(tools)
 
-    def register_tools(self, runtime: Any, *, tool_prefix: str = "synapse") -> list[str]:
+    def register_tools(
+        self,
+        runtime: Any,
+        *,
+        tool_prefix: str = "synapse",
+        register_search_tool: bool = True,
+        register_propose_tool: bool = True,
+        register_task_tools: bool = True,
+    ) -> list[str]:
         register_tool = self._resolve_tool_registrar(runtime)
         registered: list[str] = []
-        resolver = self._resolve_search_knowledge()
-        if resolver is not None:
+        resolver = self._resolve_search_knowledge() if register_search_tool else None
+        if register_search_tool and resolver is not None:
+            tool_name = f"{tool_prefix}_search_wiki"
             register_tool(
-                f"{tool_prefix}_search_wiki",
+                tool_name,
                 self.search_wiki,
                 "Search approved Synapse knowledge for the current task.",
             )
-            registered.append(f"{tool_prefix}_search_wiki")
+            registered.append(tool_name)
         else:
             self._emit_debug(
                 "attach_openclaw_search_disabled",
                 {
-                    "reason": "missing_callback_and_auto_search",
+                    "reason": (
+                        "disabled_by_policy"
+                        if not register_search_tool
+                        else "missing_callback_and_auto_search"
+                    ),
                     "tool": f"{tool_prefix}_search_wiki",
                 },
             )
-        register_tool(
-            f"{tool_prefix}_propose_to_wiki",
-            self.propose_to_wiki,
-            "Propose a new fact to Synapse for human review.",
-        )
-        registered.append(f"{tool_prefix}_propose_to_wiki")
-        if self._can_list_tasks():
+        if register_propose_tool:
+            tool_name = f"{tool_prefix}_propose_to_wiki"
+            register_tool(
+                tool_name,
+                self.propose_to_wiki,
+                "Propose a new fact to Synapse for human review.",
+            )
+            registered.append(tool_name)
+        if register_task_tools and self._can_list_tasks():
             register_tool(
                 f"{tool_prefix}_get_open_tasks",
                 self.get_open_tasks,
                 "List active Synapse tasks relevant for the current operation.",
             )
             registered.append(f"{tool_prefix}_get_open_tasks")
-        if self._can_update_task_status():
+        if register_task_tools and self._can_update_task_status():
             register_tool(
                 f"{tool_prefix}_update_task_status",
                 self.set_task_status,

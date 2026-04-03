@@ -1,5 +1,6 @@
 export type SchemaVersion = "v1";
 export type DegradationMode = "buffer" | "drop" | "sync_flush";
+export type AdoptionMode = "full_loop" | "observe_only" | "draft_only" | "retrieve_only";
 
 export interface EvidenceRef {
   source_type: "dialog" | "tool_output" | "file" | "human_note" | "external_event";
@@ -74,6 +75,7 @@ export interface MonitorOptions {
   captureResults?: boolean;
   captureStreamItems?: boolean;
   maxStreamItems?: number;
+  adoptionMode?: AdoptionMode | string;
   bootstrapMemory?: AttachBootstrapMemoryOptions;
   openclawBootstrapPreset?: OpenClawBootstrapPreset | string;
   openclawBootstrapMaxRecords?: number;
@@ -82,7 +84,11 @@ export interface MonitorOptions {
   openclawBootstrapCursor?: string;
   openclawBootstrapChunkSize?: number;
   openclawHookEvents?: string[];
+  openclawCaptureHookEvents?: boolean;
   openclawRegisterTools?: boolean;
+  openclawRegisterSearchTool?: boolean;
+  openclawRegisterProposeTool?: boolean;
+  openclawRegisterTaskTools?: boolean;
   openclawToolPrefix?: string;
   openclawSearchKnowledge?: OpenClawSearchKnowledgeResolver;
   openclawListTasks?: OpenClawListTasksResolver;

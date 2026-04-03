@@ -158,6 +158,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Bootstrap preset (runtime_memory|event_log|hybrid).",
     )
+    connect_openclaw.add_argument(
+        "--adoption-mode",
+        default=None,
+        help="Attach coexistence mode (full_loop|observe_only|draft_only|retrieve_only).",
+    )
     connect_openclaw.add_argument("--tool-prefix", default="synapse", help="OpenClaw tool prefix.")
     connect_openclaw.add_argument("--agent-id", default=None, help="Default agent id to annotate captured events.")
     connect_openclaw.add_argument("--session-id", default=None, help="Default session id to annotate captured events.")
@@ -174,6 +179,71 @@ def _build_parser() -> argparse.ArgumentParser:
     connect_openclaw.add_argument("--no-mcp", action="store_true", help="Generate snippet without MCP callback wiring.")
     connect_openclaw.add_argument("--json", action="store_true", help="Render connect output as JSON.")
     connect_openclaw.set_defaults(func=_cmd_connect_openclaw)
+
+    adopt = subparsers.add_parser(
+        "adopt",
+        help="Generate coexistence rollout plan for integrating Synapse into existing agent memory stacks.",
+    )
+    adopt.add_argument("--dir", default=".", help="Workspace directory for env-file resolution.")
+    adopt.add_argument(
+        "--env-file",
+        default=".env.synapse",
+        help="Env file path to read defaults from (default: .env.synapse).",
+    )
+    adopt.add_argument("--api-url", default=None, help="Override Synapse API URL.")
+    adopt.add_argument("--project-id", default=None, help="Override Synapse project id.")
+    adopt.add_argument(
+        "--memory-system",
+        default="existing_memory",
+        help="Current canonical memory system label (for report metadata).",
+    )
+    adopt.add_argument(
+        "--memory-source",
+        default="hybrid",
+        help="Primary source shape (runtime_memory|event_log|hybrid|external_kb).",
+    )
+    adopt.add_argument(
+        "--adoption-mode",
+        default="observe_only",
+        help="Attach coexistence mode (full_loop|observe_only|draft_only|retrieve_only).",
+    )
+    adopt.add_argument(
+        "--sample-file",
+        default=None,
+        help="Optional JSON/JSONL file with existing memory records for quality/risk analysis.",
+    )
+    adopt.add_argument(
+        "--max-sample-records",
+        type=int,
+        default=5000,
+        help="Maximum records to load from --sample-file.",
+    )
+    adopt.add_argument(
+        "--context-policy-profile",
+        default=None,
+        help="MCP context policy profile (advisory|enforced|strict_enforced|off).",
+    )
+    adopt.add_argument(
+        "--openclaw-bootstrap-preset",
+        default=None,
+        help="Bootstrap preset (runtime_memory|event_log|hybrid).",
+    )
+    adopt.add_argument("--tool-prefix", default="synapse", help="OpenClaw tool prefix for snippet.")
+    adopt.add_argument(
+        "--runtime-var",
+        default="openclaw_runtime",
+        help="Variable name for OpenClaw runtime object in generated snippet.",
+    )
+    adopt.add_argument("--agent-id", default=None, help="Default agent id in generated snippet.")
+    adopt.add_argument("--session-id", default=None, help="Default session id in generated snippet.")
+    adopt.add_argument(
+        "--entity-key",
+        default=None,
+        help="Optional default entity_key filter for MCP search callback.",
+    )
+    adopt.add_argument("--no-mcp", action="store_true", help="Generate snippet without MCP callback wiring.")
+    adopt.add_argument("--json", action="store_true", help="Render adoption plan as JSON.")
+    adopt.set_defaults(func=_cmd_adopt_existing_memory)
 
     verify = subparsers.add_parser("verify", help="Run end-to-end verification helpers")
     verify_subparsers = verify.add_subparsers(dest="verify_target")
@@ -573,6 +643,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "SYNAPSE_API_KEY=",
         f"SYNAPSE_CONTEXT_POLICY_PROFILE={policy_profile}",
         f"SYNAPSE_OPENCLAW_BOOTSTRAP_PRESET={bootstrap_preset}",
+        "SYNAPSE_ADOPTION_MODE=full_loop",
         "",
     ]
     rendered = "\n".join(content_lines)
@@ -692,6 +763,19 @@ def _cmd_connect_openclaw(args: argparse.Namespace) -> int:
         )
         return 2
 
+    try:
+        resolved_adoption_mode = _normalize_adoption_mode_value(
+            _resolve_setting(
+                explicit=_coerce_text(args.adoption_mode),
+                env_key="SYNAPSE_ADOPTION_MODE",
+                env_file_values=env_values,
+                fallback="full_loop",
+            )
+        )
+    except ValueError as exc:
+        print(f"[synapse-cli] {exc}", file=sys.stderr)
+        return 2
+
     tool_prefix = _sanitize_simple_key(args.tool_prefix, fallback="synapse")
     agent_id = _coerce_text(args.agent_id)
     session_id = _coerce_text(args.session_id)
@@ -710,6 +794,7 @@ def _cmd_connect_openclaw(args: argparse.Namespace) -> int:
         entity_key=entity_key,
         agent_id=agent_id,
         session_id=session_id,
+        adoption_mode=resolved_adoption_mode,
     )
 
     quickstart: list[str] = []
@@ -737,6 +822,7 @@ def _cmd_connect_openclaw(args: argparse.Namespace) -> int:
         "project_id": project_id,
         "context_policy_profile": resolved_profile,
         "openclaw_bootstrap_preset": resolved_bootstrap_preset,
+        "adoption_mode": resolved_adoption_mode,
         "tool_prefix": tool_prefix,
         "include_mcp": include_mcp,
         "snippet": snippet,
@@ -751,10 +837,232 @@ def _cmd_connect_openclaw(args: argparse.Namespace) -> int:
         print(f"- api_url: {api_url}")
         print(f"- context_policy_profile: {resolved_profile}")
         print(f"- openclaw_bootstrap_preset: {resolved_bootstrap_preset}")
+        print(f"- adoption_mode: {resolved_adoption_mode}")
         print("Python snippet:")
         print(snippet)
         print("Next:")
         for command in quickstart:
+            print(f"- {command}")
+    return 0
+
+
+def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
+    workspace_dir = Path(str(args.dir or ".")).expanduser().resolve()
+    if not workspace_dir.exists() or not workspace_dir.is_dir():
+        print(f"[synapse-cli] --dir is not a valid directory: {workspace_dir}", file=sys.stderr)
+        return 2
+
+    env_file_raw = str(args.env_file or ".env.synapse").strip() or ".env.synapse"
+    env_path = Path(env_file_raw).expanduser()
+    if not env_path.is_absolute():
+        env_path = (workspace_dir / env_path).resolve()
+    env_values = _read_env_file(env_path) if env_path.exists() else {}
+
+    api_url = _resolve_setting(
+        explicit=_coerce_text(args.api_url),
+        env_key="SYNAPSE_API_URL",
+        env_file_values=env_values,
+        fallback="http://localhost:8080",
+    ).rstrip("/")
+    if not api_url:
+        print("[synapse-cli] resolved API URL is empty", file=sys.stderr)
+        return 2
+
+    project_id = _sanitize_project_id(
+        _resolve_setting(
+            explicit=_coerce_text(args.project_id),
+            env_key="SYNAPSE_PROJECT_ID",
+            env_file_values=env_values,
+            fallback=_infer_project_id_from_dir(workspace_dir),
+        )
+    )
+    if not project_id:
+        print("[synapse-cli] resolved project_id is empty", file=sys.stderr)
+        return 2
+
+    from synapse_sdk.integrations.openclaw import list_openclaw_bootstrap_presets
+    from synapse_sdk.mcp import list_context_policy_profiles
+
+    allowed_profiles = {str(item.get("profile")) for item in list_context_policy_profiles()}
+    resolved_profile = _sanitize_simple_key(
+        _resolve_setting(
+            explicit=_coerce_text(args.context_policy_profile),
+            env_key="SYNAPSE_CONTEXT_POLICY_PROFILE",
+            env_file_values=env_values,
+            fallback="enforced",
+        ),
+        fallback="enforced",
+    )
+    if resolved_profile not in allowed_profiles:
+        allowed = ", ".join(sorted(allowed_profiles))
+        print(
+            f"[synapse-cli] unsupported context policy profile `{resolved_profile}` (allowed: {allowed})",
+            file=sys.stderr,
+        )
+        return 2
+
+    allowed_presets = {str(item.get("preset")) for item in list_openclaw_bootstrap_presets()}
+    resolved_bootstrap_preset = _sanitize_simple_key(
+        _resolve_setting(
+            explicit=_coerce_text(args.openclaw_bootstrap_preset),
+            env_key="SYNAPSE_OPENCLAW_BOOTSTRAP_PRESET",
+            env_file_values=env_values,
+            fallback="hybrid",
+        ),
+        fallback="hybrid",
+    )
+    if resolved_bootstrap_preset not in allowed_presets:
+        allowed = ", ".join(sorted(allowed_presets))
+        print(
+            f"[synapse-cli] unsupported OpenClaw bootstrap preset `{resolved_bootstrap_preset}` (allowed: {allowed})",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        resolved_adoption_mode = _normalize_adoption_mode_value(
+            _resolve_setting(
+                explicit=_coerce_text(args.adoption_mode),
+                env_key="SYNAPSE_ADOPTION_MODE",
+                env_file_values=env_values,
+                fallback="observe_only",
+            ),
+            fallback="observe_only",
+        )
+    except ValueError as exc:
+        print(f"[synapse-cli] {exc}", file=sys.stderr)
+        return 2
+    memory_system = _sanitize_simple_key(args.memory_system, fallback="existing_memory")
+    memory_source = _sanitize_simple_key(args.memory_source, fallback="hybrid")
+    tool_prefix = _sanitize_simple_key(args.tool_prefix, fallback="synapse")
+    runtime_var = _sanitize_python_identifier(args.runtime_var, fallback="openclaw_runtime")
+    include_mcp = not bool(args.no_mcp)
+    agent_id = _coerce_text(args.agent_id)
+    session_id = _coerce_text(args.session_id)
+    entity_key = _sanitize_simple_key(args.entity_key, fallback="") if _coerce_text(args.entity_key) else None
+
+    sample_report: dict[str, Any] | None = None
+    sample_file = _coerce_text(args.sample_file)
+    if sample_file:
+        sample_path = Path(sample_file).expanduser().resolve()
+        if not sample_path.exists() or not sample_path.is_file():
+            print(f"[synapse-cli] --sample-file does not exist: {sample_path}", file=sys.stderr)
+            return 2
+        sample_report = _analyze_adoption_memory_sample(sample_path, max_records=max(1, int(args.max_sample_records)))
+
+    snippet = _build_openclaw_connect_snippet(
+        api_url=api_url,
+        project_id=project_id,
+        runtime_var=runtime_var,
+        tool_prefix=tool_prefix,
+        bootstrap_preset=resolved_bootstrap_preset,
+        adoption_mode=resolved_adoption_mode,
+        context_policy_profile=resolved_profile,
+        include_mcp=include_mcp,
+        entity_key=entity_key,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+    ownership_policy = {
+        "runtime_memory": {
+            "write_master": memory_system,
+            "synapse_role": "observe_and_synthesize",
+        },
+        "ops_kb_static": {
+            "write_master": memory_system,
+            "synapse_role": "reference_or_mirror",
+        },
+        "synapse_wiki": {
+            "write_master": "synapse",
+            "synapse_role": "human_or_policy_gated_canonical",
+        },
+    }
+    rollout = [
+        {
+            "phase": "observe_only",
+            "goal": "Ingest existing memory and validate draft quality without behavior impact.",
+            "exit": "Draft precision and conflict-rate are acceptable for first production slice.",
+        },
+        {
+            "phase": "draft_only",
+            "goal": "Enable proposal path while keeping retrieval behavior unchanged.",
+            "exit": "Moderation throughput and approval latency meet team target.",
+        },
+        {
+            "phase": "retrieve_only_shadow",
+            "goal": "Evaluate retrieval quality using Synapse in shadow/non-blocking mode.",
+            "exit": "Top-k relevance and conflict explainability pass acceptance checks.",
+        },
+        {
+            "phase": "full_loop",
+            "goal": "Enable policy-driven publish/retrieval for selected categories.",
+            "exit": "SLO, audit, and operator workflows are stable over production load.",
+        },
+    ]
+    risks: list[str] = [
+        "Dual source of truth if both existing KB and Synapse Wiki are writable for the same domain.",
+        "Source provenance drift if source_id is unstable across retries/import batches.",
+        "Behavior regressions if retrieval is enabled before moderation quality is calibrated.",
+    ]
+    if sample_report is not None:
+        for item in sample_report.get("risks", []):
+            text = str(item).strip()
+            if text:
+                risks.append(text)
+
+    quickstart_commands = [
+        f"synapse-cli doctor --api-url {api_url} --project-id {project_id}",
+        (
+            "synapse-cli connect openclaw "
+            f"--dir {workspace_dir} --env-file {env_path.name} "
+            f"--api-url {api_url} --project-id {project_id} --adoption-mode {resolved_adoption_mode}"
+        ),
+        (
+            "python -m synapse_sdk.cli verify core-loop "
+            f"--project-id {project_id} --dry-run"
+        ),
+    ]
+
+    result = {
+        "status": "ok",
+        "target": "existing_memory_adoption",
+        "workspace_dir": str(workspace_dir),
+        "env_path": str(env_path),
+        "env_file_found": bool(env_path.exists()),
+        "api_url": api_url,
+        "project_id": project_id,
+        "memory_system": memory_system,
+        "memory_source": memory_source,
+        "context_policy_profile": resolved_profile,
+        "openclaw_bootstrap_preset": resolved_bootstrap_preset,
+        "adoption_mode": resolved_adoption_mode,
+        "ownership_policy": ownership_policy,
+        "rollout_plan": rollout,
+        "risks": risks,
+        "sample_report": sample_report,
+        "snippet": snippet,
+        "quickstart_commands": quickstart_commands,
+    }
+    if bool(args.json):
+        _print_json(result, pretty=True)
+    else:
+        print("Synapse Adoption Plan")
+        print(f"- project_id: {project_id}")
+        print(f"- memory_system: {memory_system}")
+        print(f"- memory_source: {memory_source}")
+        print(f"- adoption_mode: {resolved_adoption_mode}")
+        if sample_report is not None:
+            print(
+                "- sample: "
+                f"records={sample_report.get('records_total', 0)} "
+                f"risk={sample_report.get('risk_level')} "
+                f"missing_source_id={sample_report.get('missing_source_id', 0)}"
+            )
+        print("Python snippet:")
+        print(snippet)
+        print("Next:")
+        for command in quickstart_commands:
             print(f"- {command}")
     return 0
 
@@ -1250,6 +1558,181 @@ def _print_doctor_report(report: dict[str, Any]) -> None:
             print(f"  hint: {item.get('hint')}")
 
 
+def _normalize_adoption_mode_value(value: Any, *, fallback: str = "full_loop") -> str:
+    normalized = _sanitize_simple_key(value, fallback=fallback)
+    aliases = {
+        "full": "full_loop",
+        "observe": "observe_only",
+        "draft": "draft_only",
+        "retrieve": "retrieve_only",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"full_loop", "observe_only", "draft_only", "retrieve_only"}:
+        raise ValueError(f"unsupported adoption mode: {value}")
+    return normalized
+
+
+def _analyze_adoption_memory_sample(path: Path, *, max_records: int) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    suffix = path.suffix.lower()
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {
+            "path": str(path),
+            "records_total": 0,
+            "records_loaded": 0,
+            "risk_level": "low",
+            "risks": ["Sample file is empty."],
+        }
+
+    if suffix == ".jsonl":
+        for line_no, line in enumerate(raw.splitlines(), start=1):
+            if len(records) >= max_records:
+                break
+            payload = line.strip()
+            if not payload:
+                continue
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            record = _coerce_adoption_memory_record(parsed, index=len(records))
+            if record is not None:
+                record["_line_no"] = line_no
+                records.append(record)
+    else:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = []
+        candidates: list[Any]
+        if isinstance(parsed, list):
+            candidates = parsed
+        elif isinstance(parsed, dict) and isinstance(parsed.get("records"), list):
+            candidates = list(parsed.get("records") or [])
+        elif isinstance(parsed, dict):
+            candidates = [parsed]
+        else:
+            candidates = []
+        for item in candidates[:max_records]:
+            record = _coerce_adoption_memory_record(item, index=len(records))
+            if record is not None:
+                records.append(record)
+
+    categories: Counter[str] = Counter()
+    missing_source_id = 0
+    missing_entity_key = 0
+    missing_category = 0
+    duplicate_content = 0
+    source_id_conflicts = 0
+    source_content_by_id: dict[str, str] = {}
+    content_counts: Counter[str] = Counter()
+    topic_buckets: dict[tuple[str, str], set[str]] = {}
+
+    for row in records:
+        source_id = str(row.get("source_id") or "").strip()
+        content = str(row.get("content") or "").strip()
+        entity_key = str(row.get("entity_key") or "").strip()
+        category = str(row.get("category") or "").strip().lower()
+        if not source_id:
+            missing_source_id += 1
+        if not entity_key:
+            missing_entity_key += 1
+        if not category:
+            missing_category += 1
+            category = "uncategorized"
+        categories[category] += 1
+
+        normalized_content = re.sub(r"\s+", " ", content).strip().lower()
+        if normalized_content:
+            content_counts[normalized_content] += 1
+            if content_counts[normalized_content] > 1:
+                duplicate_content += 1
+
+        if source_id and normalized_content:
+            prev = source_content_by_id.get(source_id)
+            if prev is None:
+                source_content_by_id[source_id] = normalized_content
+            elif prev != normalized_content:
+                source_id_conflicts += 1
+
+        bucket_key = (entity_key.lower() or "unknown_entity", category)
+        topic = topic_buckets.setdefault(bucket_key, set())
+        if normalized_content:
+            topic.add(normalized_content)
+
+    topic_collisions = sum(1 for values in topic_buckets.values() if len(values) > 1)
+    total = len(records)
+    score = 0
+    if total > 0:
+        if missing_source_id / total >= 0.25:
+            score += 2
+        if missing_category / total >= 0.3:
+            score += 1
+        if source_id_conflicts > 0:
+            score += 2
+        if topic_collisions > max(3, int(total * 0.05)):
+            score += 1
+    risk_level = "low" if score <= 1 else ("medium" if score <= 3 else "high")
+
+    risks: list[str] = []
+    if missing_source_id > 0:
+        risks.append(f"{missing_source_id} records have missing source_id; idempotency/dedup can degrade.")
+    if source_id_conflicts > 0:
+        risks.append(f"{source_id_conflicts} source_id collisions map to different content.")
+    if topic_collisions > 0:
+        risks.append(f"{topic_collisions} entity/category buckets contain multiple divergent statements.")
+    if not risks:
+        risks.append("No high-signal structural conflicts found in sample records.")
+
+    return {
+        "path": str(path),
+        "records_total": total,
+        "records_loaded": total,
+        "records_limit": max_records,
+        "missing_source_id": missing_source_id,
+        "missing_entity_key": missing_entity_key,
+        "missing_category": missing_category,
+        "duplicate_content_count": duplicate_content,
+        "source_id_conflicts": source_id_conflicts,
+        "topic_collisions": topic_collisions,
+        "top_categories": categories.most_common(8),
+        "risk_level": risk_level,
+        "risks": risks,
+    }
+
+
+def _coerce_adoption_memory_record(payload: Any, *, index: int) -> dict[str, Any] | None:
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return None
+        return {
+            "source_id": f"sample_{index + 1}",
+            "content": text,
+            "entity_key": "",
+            "category": "",
+        }
+    if not isinstance(payload, dict):
+        return None
+    content = _coerce_text(
+        payload.get("content")
+        or payload.get("text")
+        or payload.get("fact")
+        or payload.get("message")
+        or payload.get("summary")
+    )
+    if not content:
+        return None
+    source_id = _coerce_text(payload.get("source_id") or payload.get("id") or payload.get("key")) or f"sample_{index + 1}"
+    return {
+        "source_id": source_id,
+        "content": content,
+        "entity_key": _coerce_text(payload.get("entity_key") or payload.get("entity")) or "",
+        "category": _coerce_text(payload.get("category")) or "",
+    }
+
+
 def _sanitize_project_id(value: Any) -> str:
     text = _coerce_text(value) or ""
     if not text:
@@ -1329,6 +1812,7 @@ def _build_openclaw_connect_snippet(
     runtime_var: str,
     tool_prefix: str,
     bootstrap_preset: str,
+    adoption_mode: str,
     context_policy_profile: str,
     include_mcp: bool,
     entity_key: str | None,
@@ -1387,6 +1871,7 @@ def _build_openclaw_connect_snippet(
             '    integration="openclaw",',
             f'    openclaw_tool_prefix="{tool_prefix}",',
             f'    openclaw_bootstrap_preset="{bootstrap_preset}",',
+            f'    adoption_mode="{adoption_mode}",',
         ]
     )
     if include_mcp:

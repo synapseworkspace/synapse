@@ -38,6 +38,7 @@ Owner: Core team
 11. Enterprise foundation kickoff: tenancy model, SSO path, and unified RBAC design.
 12. Framework GTM integrations (LangGraph / LangChain / CrewAI) with contract-level CI checks.
 13. Reliability + SLO guardrails (latency, quality, observability, release gating).
+14. Existing-memory adoption layer (coexistence modes, migration wizard, source-ownership policy).
 
 ## Milestones
 
@@ -376,11 +377,38 @@ Progress:
 - [x] Add rolling error-budget policy and release-blocking gate.
 - [x] Add degraded-dependency/load-profile reliability drills.
 
+## M14: Existing-Memory Adoption (Weeks 34-36)
+
+Status: `in_progress`
+
+Scope:
+- Add first-class coexistence modes for integrating Synapse into mature stacks without replacing existing memory stores.
+- Provide an adoption wizard with dry-run analysis for legacy memory exports.
+- Establish explicit source-ownership policy to prevent dual source-of-truth drift.
+- Ship rollout playbook from `observe_only` to controlled `full_loop`.
+
+Exit criteria:
+- Team can start integration in `observe_only` with no behavior regression.
+- Adoption plan can be generated automatically from sample memory export.
+- SDK attach contracts document and enforce coexistence modes.
+
+Progress:
+- [x] Added SDK attach coexistence mode controls (`full_loop|observe_only|draft_only|retrieve_only`) in Python and TypeScript.
+- [x] Added OpenClaw tool/hook gating by mode (capture hooks and search/propose/task tools can be policy-driven per attach).
+- [x] Added CLI adoption wizard (`synapse-cli adopt`) with sample memory analysis, rollout plan, and ready-to-paste integration snippet.
+- [x] Extended CLI connect flow with explicit adoption mode (`--adoption-mode`) and snippet emission.
+- [x] Added CI smoke coverage for adoption wizard flow in `scripts/ci_checks.sh`.
+- [ ] Add API-level source ownership registry and enforcement (`write-master` by domain/category).
+- [ ] Add shadow retrieval evaluation command (`synapse-cli adopt --shadow-retrieval-check`) with quality diff report.
+- [x] Publish dedicated migration playbook doc (`docs/adoption-existing-memory.md`) with anti-corruption layer patterns.
+
 ## Next Up (Execution Queue)
 
-1. Add per-resource RBAC policy-decision audit stream for compliance-grade access reviews.
-2. Add SAML/SCIM bridge on top of OIDC baseline for enterprise IdP provisioning.
-3. Upgrade reliability drills from fixture mode to automated pre-prod chaos runs.
+1. M14: Add API-level source ownership registry and enforce write-master boundaries.
+2. M14: Add shadow retrieval diff checker for safe `retrieve_only` rollout.
+3. Add per-resource RBAC policy-decision audit stream for compliance-grade access reviews.
+4. Add SAML/SCIM bridge on top of OIDC baseline for enterprise IdP provisioning.
+5. Upgrade reliability drills from fixture mode to automated pre-prod chaos runs.
 
 ## Risks to Watch
 
@@ -395,6 +423,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Started M14 existing-memory adoption track: added Python/TypeScript SDK coexistence modes (`full_loop|observe_only|draft_only|retrieve_only`) with OpenClaw hook/tool gating, shipped CLI migration wizard `synapse-cli adopt` (+ sample memory risk analysis + rollout plan), extended `synapse-cli connect openclaw` with `--adoption-mode`, and added CI smoke coverage for adoption flow.
 - 2026-04-03: Added hybrid publish-control business logic: Gatekeeper config now supports `publish_mode_default` + per-category overrides + conditional auto-publish thresholds (`auto_publish_min_score`, `auto_publish_min_sources`, `auto_publish_require_golden`, `auto_publish_allow_conflicts`); API endpoint `POST /v1/wiki/auto-publish/run` executes policy-driven approvals; worker loop now includes scheduled auto-publish job (`run_wiki_autopublish.py`).
 - 2026-04-03: Completed enterprise foundation closure (M11): shipped migration `037_enterprise_tenancy_auth_rbac.sql` with first-class `tenants`/`tenant_memberships`/`tenant_projects`/`auth_sessions`, added API auth session flow (`/v1/auth/mode`, `/v1/auth/session`), wired request middleware for OIDC + tenancy enforcement + unified RBAC deny-by-default modes, added web console auth-session controls/token propagation, and published governance export/runbook tooling (`scripts/export_enterprise_governance_pack.py`, `docs/enterprise-governance-pack.md`).
 - 2026-04-03: Completed reliability release-policy closure (M13): added rolling error-budget release gate (`scripts/check_release_error_budget.py`, `eval/reliability_error_budget_sample.jsonl`) and deterministic reliability drill suite (`scripts/run_reliability_drills.py`) with CI enforcement in `scripts/ci_checks.sh`.

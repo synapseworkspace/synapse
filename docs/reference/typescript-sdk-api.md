@@ -9,6 +9,7 @@ Canonical entrypoint: `import { ... } from "@synapseworkspace/sdk"`
 Source: `packages/synapse-sdk-ts/src/types.ts`
 
 Exports:
+- `AdoptionMode`
 - `AttachBootstrapMemoryOptions`
 - `AttachOptions`
 - `BindCrewAiOptions`

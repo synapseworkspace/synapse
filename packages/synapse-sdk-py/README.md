@@ -197,9 +197,16 @@ synapse.attach(
     openclaw_runtime,
     integration="openclaw",
     openclaw_bootstrap_preset="hybrid",  # runtime_memory | event_log | hybrid
+    adoption_mode="observe_only",  # full_loop | observe_only | draft_only | retrieve_only
     openclaw_bootstrap_max_records=2000,
 )
 ```
+
+`adoption_mode` helps safe rollout into mature stacks:
+- `observe_only`: capture/ingest only, no runtime tools.
+- `draft_only`: propose facts, keep retrieval behavior unchanged.
+- `retrieve_only`: retrieval tools only, no capture/bootstrap writes.
+- `full_loop`: full observe -> synthesize -> execute loop.
 
 Preset metadata helpers:
 
@@ -368,4 +375,8 @@ synapse-cli init --dir . --project-id omega_demo --api-url http://localhost:8080
 
 ```bash
 synapse-cli connect openclaw --dir . --env-file .env.synapse
+```
+
+```bash
+synapse-cli adopt --dir . --memory-system ops_kb_items --memory-source hybrid --adoption-mode observe_only --sample-file ./memory_export.jsonl
 ```

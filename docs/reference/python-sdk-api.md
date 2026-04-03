@@ -9,6 +9,7 @@ Canonical entrypoint: `from synapse_sdk import ...`
 | `SynapseClient` | `synapse_sdk.client` |
 | `Synapse` | `synapse_sdk.client` |
 | `SynapseConfig` | `synapse_sdk.types` |
+| `AdoptionMode` | `synapse_sdk.types` |
 | `DegradationMode` | `synapse_sdk.types` |
 | `RetryConfig` | `synapse_sdk.types` |
 | `Claim` | `synapse_sdk.types` |

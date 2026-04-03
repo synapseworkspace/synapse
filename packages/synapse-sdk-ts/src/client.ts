@@ -14,6 +14,7 @@ import type {
   DebugOptions,
   DebugRecord,
   DebugSink,
+  AdoptionMode,
   ExtractedInsight,
   InsightContext,
   InsightExtractor,
@@ -2054,19 +2055,41 @@ export class Synapse extends SynapseClient {
   attach<T extends object>(target: T, options: AttachOptions = {}): T {
     const integration = options.integration ?? detectIntegration(target);
     const optionsWithDefaults = this.applyAttachDefaults(target, integration, options);
+    const adoptionMode = normalizeAdoptionMode(
+      asOptionalString(optionsWithDefaults.adoptionMode) ?? readProcessEnv("SYNAPSE_ADOPTION_MODE")
+    );
     this.emitDebug("attach_started", {
       integration,
       target_type: getAttachTargetType(target),
       auto_bootstrap_enabled: optionsWithDefaults.openclawAutoBootstrapEnabled,
-      openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null
+      openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null,
+      adoption_mode: adoptionMode
     });
     const resolvedBootstrapMemory = this.resolveAttachBootstrapMemory(target, integration, optionsWithDefaults);
-    this.bootstrapMemoryOnAttach(target, integration, resolvedBootstrapMemory, {
-      agentId: optionsWithDefaults.agentId,
-      sessionId: optionsWithDefaults.sessionId
-    });
+    if (adoptionMode === "retrieve_only") {
+      this.emitDebug("attach_bootstrap_skipped", {
+        integration,
+        reason: "adoption_mode_retrieve_only",
+        adoption_mode: adoptionMode
+      });
+    } else {
+      this.bootstrapMemoryOnAttach(target, integration, resolvedBootstrapMemory, {
+        agentId: optionsWithDefaults.agentId,
+        sessionId: optionsWithDefaults.sessionId
+      });
+    }
     if (integration === "openclaw" && looksLikeOpenClawRuntime(target)) {
-      this.attachOpenClawRuntime(target, optionsWithDefaults, resolvedBootstrapMemory);
+      this.attachOpenClawRuntime(target, optionsWithDefaults, resolvedBootstrapMemory, adoptionMode);
+      return target;
+    }
+    if (adoptionMode === "retrieve_only") {
+      this.emitDebug("attach_completed", {
+        integration,
+        mode: "noop_retrieve_only",
+        bootstrap_requested: Boolean(resolvedBootstrapMemory),
+        openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null,
+        adoption_mode: adoptionMode
+      });
       return target;
     }
     const monitored = this.monitor(target, {
@@ -2077,7 +2100,8 @@ export class Synapse extends SynapseClient {
       integration,
       mode: "monitor",
       bootstrap_requested: Boolean(resolvedBootstrapMemory),
-      openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null
+      openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null,
+      adoption_mode: adoptionMode
     });
     return monitored;
   }
@@ -2085,23 +2109,35 @@ export class Synapse extends SynapseClient {
   private attachOpenClawRuntime(
     target: unknown,
     options: AttachOptions,
-    bootstrapMemory: AttachBootstrapMemoryOptions | undefined
+    bootstrapMemory: AttachBootstrapMemoryOptions | undefined,
+    adoptionMode: AdoptionMode
   ): void {
     if (!looksLikeOpenClawRuntime(target)) {
       return;
     }
     const runtime = target as OpenClawRuntime;
-    const hookEvents = Array.isArray(options.openclawHookEvents) && options.openclawHookEvents.length > 0
+    const captureHookEvents = options.openclawCaptureHookEvents ?? adoptionMode !== "retrieve_only";
+    const hookEvents = captureHookEvents && Array.isArray(options.openclawHookEvents) && options.openclawHookEvents.length > 0
       ? options.openclawHookEvents
-      : Array.from(DEFAULT_OPENCLAW_EVENTS);
-    const registerTools = options.openclawRegisterTools ?? true;
+      : captureHookEvents
+        ? Array.from(DEFAULT_OPENCLAW_EVENTS)
+        : [];
+    const registerTools = options.openclawRegisterTools ?? adoptionMode !== "observe_only";
+    const registerSearchTool = options.openclawRegisterSearchTool ?? (adoptionMode === "full_loop" || adoptionMode === "retrieve_only");
+    const registerProposeTool = options.openclawRegisterProposeTool ?? (adoptionMode === "full_loop" || adoptionMode === "draft_only");
+    const registerTaskTools = options.openclawRegisterTaskTools ?? adoptionMode === "full_loop";
     const toolPrefix = asOptionalString(options.openclawToolPrefix) ?? "synapse";
-    this.attachOpenClawHooks(runtime, hookEvents, {
-      agentId: options.agentId,
-      sessionId: options.sessionId
-    });
+    if (hookEvents.length > 0) {
+      this.attachOpenClawHooks(runtime, hookEvents, {
+        agentId: options.agentId,
+        sessionId: options.sessionId
+      });
+    }
     const connector = this.registerOpenClawTools(runtime, {
       registerTools,
+      registerSearchTool,
+      registerProposeTool,
+      registerTaskTools,
       toolPrefix,
       searchKnowledge: options.openclawSearchKnowledge,
       listTasks: options.openclawListTasks,
@@ -2119,6 +2155,12 @@ export class Synapse extends SynapseClient {
       mode: "openclaw_connector",
       registered_tools: connector.registeredTools,
       bootstrap_requested: Boolean(bootstrapMemory),
+      adoption_mode: adoptionMode,
+      capture_hooks: captureHookEvents,
+      register_tools: registerTools,
+      register_search_tool: registerSearchTool,
+      register_propose_tool: registerProposeTool,
+      register_task_tools: registerTaskTools,
       search_mode: searchMode
     });
   }
@@ -2377,6 +2419,9 @@ export class Synapse extends SynapseClient {
     runtime: OpenClawRuntime,
     options: {
       registerTools: boolean;
+      registerSearchTool: boolean;
+      registerProposeTool: boolean;
+      registerTaskTools: boolean;
       toolPrefix: string;
       searchKnowledge?: OpenClawSearchKnowledgeResolver;
       listTasks?: OpenClawListTasksResolver;
@@ -2393,6 +2438,9 @@ export class Synapse extends SynapseClient {
     let autoSearchEnabled = false;
 
     const resolveSearch = (): OpenClawSearchKnowledgeResolver | undefined => {
+      if (!options.registerSearchTool) {
+        return undefined;
+      }
       if (typeof options.searchKnowledge === "function") {
         return options.searchKnowledge;
       }
@@ -2437,87 +2485,89 @@ export class Synapse extends SynapseClient {
       registeredTools.push(searchToolName);
     } else {
       this.emitDebug("attach_openclaw_search_disabled", {
-        reason: "missing_callback_and_auto_search",
+        reason: options.registerSearchTool ? "missing_callback_and_auto_search" : "disabled_by_policy",
         tool: `${options.toolPrefix}_search_wiki`
       });
     }
 
-    const proposeToolName = `${options.toolPrefix}_propose_to_wiki`;
-    registerTool(
-      proposeToolName,
-      async (...args: unknown[]) => {
-        const normalized = this.normalizeOpenClawProposeArgs(args);
-        if (!normalized.claim_text.trim()) {
-          throw new Error("synapse_propose_to_wiki requires non-empty claim_text");
-        }
-        const claimId = makeId();
-        const observedAt = new Date().toISOString();
-        const provenance = await buildOpenClawProvenance({
-          phase: "propose_to_wiki",
-          observedAt,
-          payload: {
+    if (options.registerProposeTool) {
+      const proposeToolName = `${options.toolPrefix}_propose_to_wiki`;
+      registerTool(
+        proposeToolName,
+        async (...args: unknown[]) => {
+          const normalized = this.normalizeOpenClawProposeArgs(args);
+          if (!normalized.claim_text.trim()) {
+            throw new Error("synapse_propose_to_wiki requires non-empty claim_text");
+          }
+          const claimId = makeId();
+          const observedAt = new Date().toISOString();
+          const provenance = await buildOpenClawProvenance({
+            phase: "propose_to_wiki",
+            observedAt,
+            payload: {
+              project_id: this.projectId,
+              entity_key: normalized.entity_key,
+              category: normalized.category,
+              claim_text: normalized.claim_text,
+              source_id: normalized.source_id,
+              source_type: normalized.source_type,
+              agent_id: options.defaultAgentId ?? null,
+              session_id: options.defaultSessionId ?? null
+            },
+            defaultAgentId: options.defaultAgentId,
+            defaultSessionId: options.defaultSessionId
+          });
+          const claim: Claim = {
+            id: claimId,
+            schema_version: "v1",
             project_id: this.projectId,
             entity_key: normalized.entity_key,
             category: normalized.category,
             claim_text: normalized.claim_text,
-            source_id: normalized.source_id,
-            source_type: normalized.source_type,
-            agent_id: options.defaultAgentId ?? null,
-            session_id: options.defaultSessionId ?? null
-          },
-          defaultAgentId: options.defaultAgentId,
-          defaultSessionId: options.defaultSessionId
-        });
-        const claim: Claim = {
-          id: claimId,
-          schema_version: "v1",
-          project_id: this.projectId,
-          entity_key: normalized.entity_key,
-          category: normalized.category,
-          claim_text: normalized.claim_text,
-          status: "draft",
-          confidence: normalized.confidence,
-          metadata: {
-            ...normalized.metadata,
-            synapse_provenance: provenance
-          },
-          evidence: [
-            {
-              source_type: normalized.source_type,
-              source_id: normalized.source_id,
-              observed_at: observedAt,
-              provenance
-            }
-          ]
-        };
-        await this.proposeFact(claim);
-        this.capture({
-          event_type: "fact_proposed",
-          payload: {
-            integration: "openclaw",
-            phase: "propose_to_wiki",
-            claim_id: claimId,
-            entity_key: normalized.entity_key,
-            category: normalized.category,
-            provenance: {
-              signature_alg: provenance.signature_alg,
-              signature: provenance.signature,
-              key_id: provenance.key_id ?? null,
-              mode: provenance.mode,
-              payload_sha256: provenance.payload_sha256
-            }
-          },
-          agent_id: options.defaultAgentId,
-          session_id: options.defaultSessionId,
-          tags: ["integration:openclaw", "tool:propose_to_wiki"]
-        });
-        return { status: "queued", claim_id: claimId };
-      },
-      "Propose a new fact to Synapse for human review."
-    );
-    registeredTools.push(proposeToolName);
+            status: "draft",
+            confidence: normalized.confidence,
+            metadata: {
+              ...normalized.metadata,
+              synapse_provenance: provenance
+            },
+            evidence: [
+              {
+                source_type: normalized.source_type,
+                source_id: normalized.source_id,
+                observed_at: observedAt,
+                provenance
+              }
+            ]
+          };
+          await this.proposeFact(claim);
+          this.capture({
+            event_type: "fact_proposed",
+            payload: {
+              integration: "openclaw",
+              phase: "propose_to_wiki",
+              claim_id: claimId,
+              entity_key: normalized.entity_key,
+              category: normalized.category,
+              provenance: {
+                signature_alg: provenance.signature_alg,
+                signature: provenance.signature,
+                key_id: provenance.key_id ?? null,
+                mode: provenance.mode,
+                payload_sha256: provenance.payload_sha256
+              }
+            },
+            agent_id: options.defaultAgentId,
+            session_id: options.defaultSessionId,
+            tags: ["integration:openclaw", "tool:propose_to_wiki"]
+          });
+          return { status: "queued", claim_id: claimId };
+        },
+        "Propose a new fact to Synapse for human review."
+      );
+      registeredTools.push(proposeToolName);
+    }
 
-    const canListTasks = typeof options.listTasks === "function" || this.transportSupportsTaskApi();
+    const canListTasks = options.registerTaskTools && (typeof options.listTasks === "function" || this.transportSupportsTaskApi());
     if (canListTasks) {
       const getTasksToolName = `${options.toolPrefix}_get_open_tasks`;
       registerTool(
@@ -2562,7 +2612,7 @@ export class Synapse extends SynapseClient {
       registeredTools.push(getTasksToolName);
     }
 
-    const canUpdateTaskStatus = typeof options.updateTaskStatus === "function" || this.transportSupportsTaskApi();
+    const canUpdateTaskStatus = options.registerTaskTools && (typeof options.updateTaskStatus === "function" || this.transportSupportsTaskApi());
     if (canUpdateTaskStatus) {
       const updateStatusToolName = `${options.toolPrefix}_update_task_status`;
       registerTool(
@@ -3186,6 +3236,26 @@ function normalizeDegradationMode(value?: string): DegradationMode {
   const normalized = (value ?? "buffer").trim().toLowerCase();
   if (normalized !== "buffer" && normalized !== "drop" && normalized !== "sync_flush") {
     throw new Error(`invalid degradation mode: ${String(value)}`);
+  }
+  return normalized;
+}
+
+function normalizeAdoptionMode(value?: string): AdoptionMode {
+  const raw = (value ?? "full_loop").trim().toLowerCase();
+  const aliases: Record<string, AdoptionMode> = {
+    full: "full_loop",
+    observe: "observe_only",
+    draft: "draft_only",
+    retrieve: "retrieve_only"
+  };
+  const normalized = aliases[raw] ?? (raw as AdoptionMode);
+  if (
+    normalized !== "full_loop" &&
+    normalized !== "observe_only" &&
+    normalized !== "draft_only" &&
+    normalized !== "retrieve_only"
+  ) {
+    throw new Error(`invalid adoption mode: ${String(value)}`);
   }
   return normalized;
 }

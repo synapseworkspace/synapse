@@ -41,6 +41,7 @@ from synapse_sdk.integrations import (
     monitor_openclaw_runtime,
 )
 from synapse_sdk.types import (
+    AdoptionMode,
     Claim,
     BootstrapMemoryOptions,
     DegradationMode,
@@ -59,6 +60,7 @@ __all__ = [
     "SynapseClient",
     "Synapse",
     "SynapseConfig",
+    "AdoptionMode",
     "DegradationMode",
     "RetryConfig",
     "Claim",

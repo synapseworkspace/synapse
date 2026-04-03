@@ -68,6 +68,12 @@ synapse = Synapse.from_env()
 synapse.attach(openclaw_runtime, integration="openclaw")
 ```
 
+For existing stacks with their own memory/KB, use coexistence mode first:
+
+```python
+synapse.attach(openclaw_runtime, integration="openclaw", adoption_mode="observe_only")
+```
+
 Your runtime gets OpenClaw tools:
 - `synapse_search_wiki`
 - `synapse_propose_to_wiki`
@@ -94,6 +100,10 @@ import { Synapse } from "@synapseworkspace/sdk";
 
 const synapse = Synapse.fromEnv();
 synapse.attach(openclawRuntime, { integration: "openclaw" });
+```
+
+```ts
+synapse.attach(openclawRuntime, { integration: "openclaw", adoptionMode: "observe_only" });
 ```
 
 Optional advanced runtime-embedding package: `@synapseworkspace/openclaw-plugin`  
@@ -164,6 +174,7 @@ export VITE_SYNAPSE_UI_PROFILE=core-only
 - Getting started: [docs/getting-started.md](docs/getting-started.md)
 - OpenClaw 5-minute quickstart: [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
 - OpenClaw integration: [docs/openclaw-integration.md](docs/openclaw-integration.md)
+- Existing-memory adoption playbook: [docs/adoption-existing-memory.md](docs/adoption-existing-memory.md)
 - Framework integrations: [docs/framework-integrations.md](docs/framework-integrations.md)
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
 - MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
