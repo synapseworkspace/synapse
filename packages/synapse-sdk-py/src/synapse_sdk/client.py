@@ -652,6 +652,31 @@ class SynapseClient:
 
         return monitor_openclaw_runtime(self, runtime, **kwargs)
 
+    def langchain_callback_handler(self, **kwargs: Any) -> Any:
+        from synapse_sdk.integrations.native import create_langchain_callback_handler
+
+        return create_langchain_callback_handler(self, **kwargs)
+
+    def build_langchain_config(self, handler: Any) -> dict[str, list[Any]]:
+        from synapse_sdk.integrations.native import build_langchain_config
+
+        return build_langchain_config(handler)
+
+    def bind_langchain(self, target: Any, **kwargs: Any) -> Any:
+        from synapse_sdk.integrations.native import bind_langchain
+
+        return bind_langchain(self, target, **kwargs)
+
+    def bind_langgraph(self, target: Any, **kwargs: Any) -> Any:
+        from synapse_sdk.integrations.native import bind_langgraph
+
+        return bind_langgraph(self, target, **kwargs)
+
+    def bind_crewai(self, target: Any, **kwargs: Any) -> Any:
+        from synapse_sdk.integrations.native import bind_crewai
+
+        return bind_crewai(self, target, **kwargs)
+
     def register_extractor(self, extractor: Extractor, *, replace: bool = True) -> None:
         if not replace and extractor.name in self._extractors:
             raise ValueError(f"extractor already registered: {extractor.name}")

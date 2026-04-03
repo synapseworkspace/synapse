@@ -40,6 +40,13 @@ Canonical entrypoint: `from synapse_sdk import ...`
 | `monitor_langchain` | `synapse_sdk.integrations` |
 | `monitor_crewai` | `synapse_sdk.integrations` |
 | `monitor_openclaw_runtime` | `synapse_sdk.integrations` |
+| `SynapseLangChainCallbackHandler` | `synapse_sdk.integrations` |
+| `create_langchain_callback_handler` | `synapse_sdk.integrations` |
+| `build_langchain_config` | `synapse_sdk.integrations` |
+| `bind_langchain` | `synapse_sdk.integrations` |
+| `bind_langgraph` | `synapse_sdk.integrations` |
+| `bind_crewai` | `synapse_sdk.integrations` |
+| `DEFAULT_CREWAI_EVENTS` | `synapse_sdk.integrations` |
 | `OpenClawConnector` | `synapse_sdk.integrations` |
 | `OPENCLAW_BOOTSTRAP_PRESETS` | `synapse_sdk.integrations` |
 | `build_openclaw_bootstrap_options` | `synapse_sdk.integrations` |

@@ -53,6 +53,22 @@ monitored_crew = synapse.monitor_crewai(crew)
 result = monitored_crew.kickoff()
 ```
 
+Native binding helpers (callbacks/event hooks):
+
+```python
+# LangChain: native callback handler + bind
+handler = synapse.langchain_callback_handler(session_id="langchain-session-1")
+chain = synapse.bind_langchain(chain, handler=handler, fallback_monitor=True)
+
+# LangGraph: same native callback pipeline with langgraph integration tag
+graph = synapse.bind_langgraph(graph, fallback_monitor=True)
+
+# CrewAI: register native event/step hooks + optional monitor wrapper
+crew = synapse.bind_crewai(crew, monitor_runtime=True)
+```
+
+If native surfaces are not available on target runtime, `bind_langchain(..., fallback_monitor=True)` falls back to monitor wrappers.
+
 You can also use a generic adapter:
 
 ```python

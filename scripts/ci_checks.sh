@@ -48,6 +48,7 @@ python3 -m py_compile scripts/eval_legacy_seed_regression.py
 python3 -m py_compile scripts/check_openclaw_docs_canonical.py
 python3 -m py_compile scripts/check_cookbook_snapshots.py
 python3 -m py_compile scripts/check_framework_adapter_contracts.py
+python3 -m py_compile scripts/check_framework_native_bindings.py
 python3 -m py_compile scripts/check_core_slo_guardrails.py
 python3 -m py_compile scripts/check_operational_slo_guardrails.py
 python3 -m py_compile scripts/capture_operational_slo_snapshots.py
@@ -766,6 +767,9 @@ PY
 
 echo "[5.05/6] Framework adapter contracts (offline)"
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python3 scripts/check_framework_adapter_contracts.py >/dev/null
+
+echo "[5.06/6] Framework native bindings contracts (offline)"
+PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python3 scripts/check_framework_native_bindings.py >/dev/null
 
 echo "[5.1/6] OpenClaw x MCP e2e (offline stdio)"
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python3 scripts/integration_openclaw_mcp_runtime.py --check

@@ -9,9 +9,9 @@ This page tracks integration maturity for major agent frameworks.
 | Framework | Status | Notes |
 | --- | --- | --- |
 | OpenClaw | Production path | Native runtime connector, tool wiring, bootstrap presets, provenance chain. |
-| LangGraph | Supported | Monitor/attach wrappers with trace propagation and stream capture. |
-| CrewAI | Supported | Monitor/attach wrappers with lifecycle capture. |
-| LangChain | Supported (adapter layer) | Auto-detection + monitor wrappers for runnable-like interfaces (`invoke`/`call`/`stream`/`batch`). |
+| LangGraph | Supported | Monitor/attach wrappers plus native callback binding helpers (`bind_langgraph`). |
+| CrewAI | Supported | Monitor/attach wrappers plus native event/step hook helpers (`bind_crewai`). |
+| LangChain | Supported | Auto-detection + monitor wrappers, plus native callback binding (`langchain_callback_handler`, `bind_langchain`). |
 
 Cookbook-backed examples:
 - OpenClaw: `demos/cookbook/openclaw_playbook_sync.py`
@@ -38,6 +38,7 @@ These ranges describe compatibility targets for Synapse adapter surfaces (hook/m
 4. Integration contracts are validated in CI with offline smoke checks:
    - TypeScript attach/detection smoke in `scripts/ci_checks.sh`.
    - Python adapter contract check: `scripts/check_framework_adapter_contracts.py`.
+   - Python native binding contract check: `scripts/check_framework_native_bindings.py`.
 
 ## Python Quick Examples
 

@@ -350,6 +350,7 @@ Progress:
 - [x] Added framework integration status doc (`docs/framework-integrations.md`) and linked it from README.
 - [x] Added dedicated LangChain + CrewAI cookbook demos with golden output snapshots (`demos/cookbook/*`, `scripts/check_cookbook_snapshots.py`).
 - [x] Added integration-version compatibility table by framework major versions (`docs/framework-integrations.md`).
+- [x] Added Python native framework bindings: LangChain/LangGraph callback handler path and CrewAI event/step hook path (`synapse_sdk.integrations.native`, `scripts/check_framework_native_bindings.py`).
 
 ## M13: Reliability & SLO Control (Weeks 30-33)
 
@@ -376,7 +377,7 @@ Progress:
 
 ## Next Up (Execution Queue)
 
-1. Implement M12 compatibility depth: add framework major-version compatibility matrix and contract checks by version set.
+1. Implement M12 compatibility depth: add framework-version-set contracts against real installed framework packages (not only fixtures).
 2. Implement M13 release policy depth: add rolling error-budget gate and release-blocking policy checks.
 3. Continue M11/E1 tenancy foundation (tenant entities, tenant-to-project mapping, guarded API query path).
 
@@ -393,6 +394,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Added native framework SDK path for Python: shipped LangChain/LangGraph callback binding helpers (`langchain_callback_handler`, `bind_langchain`, `bind_langgraph`) and CrewAI native hook helper (`bind_crewai`) with new CI contract gate (`scripts/check_framework_native_bindings.py`), plus docs/reference updates.
 - 2026-04-03: Completed framework + operational SLO depth pass: added dedicated LangChain/CrewAI cookbook demos with golden snapshots (`demos/cookbook/langchain_playbook_sync.py`, `demos/cookbook/crewai_playbook_sync.py`, `scripts/check_cookbook_snapshots.py`), published framework major-version compatibility matrix (`docs/framework-integrations.md`), added API ingest throughput endpoint (`GET /v1/events/throughput`), shipped operational SLO tooling (`scripts/capture_operational_slo_snapshots.py`, `scripts/check_operational_slo_guardrails.py`, `eval/operational_slo_snapshot_sample.json`), and wired all new checks into `scripts/ci_checks.sh`.
 - 2026-04-03: Started framework + reliability execution track: added LangChain integration auto-detection/wrappers (Python+TypeScript), added offline framework contract checker (`scripts/check_framework_adapter_contracts.py`) and CI enforcement, added baseline SLO guardrail checker (`scripts/check_core_slo_guardrails.py`) with CI smoke, and published docs (`docs/framework-integrations.md`, `docs/reliability-slo.md`).
 - 2026-04-03: Added explicit enterprise capability status page (`docs/enterprise-readiness.md`) with factual coverage matrix (tenancy/SSO/RBAC/audit/secrets) and phased E1-E4 implementation plan.

@@ -31,7 +31,7 @@ This matrix captures runtime support and current CI coverage for OSS packages.
 | OpenClaw plugin package (`@synapseworkspace/openclaw-plugin`) | Supported | Runtime fixture tests + CI package test |
 | OpenClaw connector | Supported | `scripts/integration_openclaw_mcp_runtime.py`, `scripts/integration_openclaw_runtime_contract.py` |
 | MCP context injection helpers | Supported | SDK offline smoke + MCP integration script |
-| LangGraph / LangChain / CrewAI wrappers | Supported (adapter level) | SDK compile + monitor smoke + cookbook snapshot contracts |
+| LangGraph / LangChain / CrewAI wrappers + native hooks | Supported | SDK compile + monitor/native smoke + cookbook snapshot contracts |
 
 ## Notes
 
