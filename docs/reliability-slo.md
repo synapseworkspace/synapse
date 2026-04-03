@@ -76,8 +76,32 @@ python3 scripts/capture_operational_slo_snapshots.py \
 
 This gives deterministic pass/fail enforcement on latency/quality budgets in contributor flow.
 
+Release error-budget gate (rolling policy):
+
+```bash
+python3 scripts/check_release_error_budget.py \
+  --history-jsonl eval/reliability_error_budget_sample.jsonl \
+  --window-days 7 \
+  --min-samples 4 \
+  --max-failure-rate 0.20 \
+  --max-consecutive-failures 2
+```
+
+Degraded/load-profile drills:
+
+```bash
+python3 scripts/run_reliability_drills.py \
+  --snapshot-json eval/operational_slo_snapshot_sample.json \
+  --burst-latency-multiplier 1.35
+```
+
+`run_reliability_drills.py` includes:
+- steady profile validation,
+- burst load synthetic stress profile,
+- degraded dependency detection profile.
+
 ## Next Reliability Steps
 
-1. Add error-budget policy (rolling 7d) and promotion gates.
-2. Add load profile checks (steady, burst, degraded dependency scenarios).
-3. Add incident runbooks linked to SLO violation codes.
+1. Expand release gate from fixture-backed checks to auto-appended live history snapshots per environment.
+2. Add incident runbooks linked to SLO violation codes.
+3. Add chaos-style dependency fault injection in pre-prod.

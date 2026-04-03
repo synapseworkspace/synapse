@@ -1,6 +1,6 @@
 # Core vs Enterprise Scope
 
-Last updated: 2026-04-02
+Last updated: 2026-04-03
 
 This page clarifies what is currently in open-source core vs what is typically packaged as enterprise/governance add-ons.
 
@@ -15,10 +15,10 @@ This page clarifies what is currently in open-source core vs what is typically p
 | OpenClaw integration + bootstrap memory | Yes | Yes |
 | Task tracker core | Yes | Yes |
 | Conflict explain + semantic diff basics | Yes | Yes |
-| Multi-tenant isolation (hard tenancy boundaries) | Limited | Full |
-| SSO / enterprise IAM | No | Planned |
-| Fine-grained RBAC administration | Partial | Full |
-| Compliance-grade audit exports | Partial | Full |
+| Multi-tenant isolation (hard tenancy boundaries) | Baseline available (`tenants`, memberships, project mapping + enforce mode) | Full |
+| SSO / enterprise IAM | OIDC baseline available (JWT/JWKS + web sessions) | Full (SAML/SCIM/extensions) |
+| Fine-grained RBAC administration | Deny-by-default route-level baseline | Full |
+| Compliance-grade audit exports | Governance export pack baseline | Full |
 | SLA-backed hosted operations | No | Planned |
 
 ## Why This Distinction Exists

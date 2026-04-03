@@ -52,6 +52,9 @@ python3 -m py_compile scripts/check_framework_native_bindings.py
 python3 -m py_compile scripts/check_core_slo_guardrails.py
 python3 -m py_compile scripts/check_operational_slo_guardrails.py
 python3 -m py_compile scripts/capture_operational_slo_snapshots.py
+python3 -m py_compile scripts/check_release_error_budget.py
+python3 -m py_compile scripts/run_reliability_drills.py
+python3 -m py_compile scripts/export_enterprise_governance_pack.py
 
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
@@ -353,6 +356,25 @@ python3 scripts/check_repo_hygiene.py >/dev/null
 
 echo "[4.5/6] OpenClaw docs canonical references"
 python3 scripts/check_openclaw_docs_canonical.py >/dev/null
+
+echo "[4.6/6] Release error-budget policy gate"
+python3 scripts/check_release_error_budget.py \
+  --history-jsonl eval/reliability_error_budget_sample.jsonl \
+  --window-days 7 \
+  --min-samples 4 \
+  --max-failure-rate 0.2 \
+  --max-consecutive-failures 2 >/dev/null
+
+echo "[4.7/6] Reliability drill profiles"
+python3 scripts/run_reliability_drills.py \
+  --snapshot-json eval/operational_slo_snapshot_sample.json \
+  --max-steady-ingest-p95-ms 1200 \
+  --max-steady-moderation-p90-minutes 720 \
+  --burst-latency-multiplier 1.35 \
+  --max-burst-ingest-p95-ms 1700 \
+  --max-burst-moderation-open-backlog 60 \
+  --degraded-ingest-events-max 0 \
+  --degraded-ingest-p99-min-ms 3000 >/dev/null
 
 echo "[5/6] Python monitor/openclaw smoke (offline)"
 python3 -m venv /tmp/synapse-ci-venv

@@ -308,7 +308,7 @@ Progress:
 
 ## M11: Enterprise Foundation (Weeks 23-26)
 
-Status: `in_progress`
+Status: `done`
 
 Scope:
 - Introduce first-class tenancy model and migration path from project-only isolation.
@@ -323,14 +323,14 @@ Exit criteria:
 
 Progress:
 - [x] Added enterprise status baseline with explicit “implemented vs missing” matrix and phased delivery plan (`docs/enterprise-readiness.md`).
-- [ ] Add tenant entities and membership mapping in DB/API.
-- [ ] Implement OIDC auth mode for API + web session flow.
-- [ ] Add unified RBAC policy evaluator with deny-by-default mode.
-- [ ] Add governance export/runbook pack for enterprise operations.
+- [x] Add tenant entities and membership mapping in DB/API.
+- [x] Implement OIDC auth mode for API + web session flow.
+- [x] Add unified RBAC policy evaluator with deny-by-default mode.
+- [x] Add governance export/runbook pack for enterprise operations.
 
 ## M12: Framework Integrations (Weeks 27-29)
 
-Status: `in_progress`
+Status: `done`
 
 Scope:
 - Make LangGraph/LangChain/CrewAI integrations first-class alongside OpenClaw.
@@ -355,7 +355,7 @@ Progress:
 
 ## M13: Reliability & SLO Control (Weeks 30-33)
 
-Status: `in_progress`
+Status: `done`
 
 Scope:
 - Formalize runtime SLO budgets for latency and retrieval quality.
@@ -373,14 +373,14 @@ Progress:
 - [x] Added `scripts/check_core_slo_guardrails.py` (benchmark-based latency/quality gate).
 - [x] Wired SLO guardrail smoke checks into `scripts/ci_checks.sh`.
 - [x] Added ingest latency + moderation latency SLO checks from API snapshots (`/v1/events/throughput`, `scripts/check_operational_slo_guardrails.py`).
-- [ ] Add rolling error-budget policy and release-blocking gate.
-- [ ] Add degraded-dependency/load-profile reliability drills.
+- [x] Add rolling error-budget policy and release-blocking gate.
+- [x] Add degraded-dependency/load-profile reliability drills.
 
 ## Next Up (Execution Queue)
 
-1. Implement M12 compatibility depth: add framework-version-set contracts against real installed framework packages (not only fixtures).
-2. Implement M13 release policy depth: add rolling error-budget gate and release-blocking policy checks.
-3. Continue M11/E1 tenancy foundation (tenant entities, tenant-to-project mapping, guarded API query path).
+1. Add per-resource RBAC policy-decision audit stream for compliance-grade access reviews.
+2. Add SAML/SCIM bridge on top of OIDC baseline for enterprise IdP provisioning.
+3. Upgrade reliability drills from fixture mode to automated pre-prod chaos runs.
 
 ## Risks to Watch
 
@@ -395,6 +395,9 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-03: Completed enterprise foundation closure (M11): shipped migration `037_enterprise_tenancy_auth_rbac.sql` with first-class `tenants`/`tenant_memberships`/`tenant_projects`/`auth_sessions`, added API auth session flow (`/v1/auth/mode`, `/v1/auth/session`), wired request middleware for OIDC + tenancy enforcement + unified RBAC deny-by-default modes, added web console auth-session controls/token propagation, and published governance export/runbook tooling (`scripts/export_enterprise_governance_pack.py`, `docs/enterprise-governance-pack.md`).
+- 2026-04-03: Completed reliability release-policy closure (M13): added rolling error-budget release gate (`scripts/check_release_error_budget.py`, `eval/reliability_error_budget_sample.jsonl`) and deterministic reliability drill suite (`scripts/run_reliability_drills.py`) with CI enforcement in `scripts/ci_checks.sh`.
+- 2026-04-03: Closed framework milestone status sync (M12): all listed LangChain/LangGraph/CrewAI native adapter and contract tasks are complete and milestone status moved to `done`.
 - 2026-04-03: Added TypeScript native framework binding parity: shipped SDK helpers (`langchainCallbackHandler`, `buildLangchainConfig`, `bindLangchain`, `bindLanggraph`, `bindCrewAi`), extended TS smoke contracts in `scripts/ci_checks.sh`, and updated framework/docs references.
 - 2026-04-03: Added native framework SDK path for Python: shipped LangChain/LangGraph callback binding helpers (`langchain_callback_handler`, `bind_langchain`, `bind_langgraph`) and CrewAI native hook helper (`bind_crewai`) with new CI contract gate (`scripts/check_framework_native_bindings.py`), plus docs/reference updates.
 - 2026-04-03: Completed framework + operational SLO depth pass: added dedicated LangChain/CrewAI cookbook demos with golden snapshots (`demos/cookbook/langchain_playbook_sync.py`, `demos/cookbook/crewai_playbook_sync.py`, `scripts/check_cookbook_snapshots.py`), published framework major-version compatibility matrix (`docs/framework-integrations.md`), added API ingest throughput endpoint (`GET /v1/events/throughput`), shipped operational SLO tooling (`scripts/capture_operational_slo_snapshots.py`, `scripts/check_operational_slo_guardrails.py`, `eval/operational_slo_snapshot_sample.json`), and wired all new checks into `scripts/ci_checks.sh`.

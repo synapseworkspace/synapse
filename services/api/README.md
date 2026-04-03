@@ -18,10 +18,27 @@ Environment:
 - `IDEMPOTENCY_IN_PROGRESS_WAIT_SECONDS` (default: `5.0`)
 - `IDEMPOTENCY_CLEANUP_INTERVAL_SECONDS` (default: `60.0`)
 - `IDEMPOTENCY_CLEANUP_BATCH_SIZE` (default: `1000`)
+- `SYNAPSE_AUTH_MODE` (`open|oidc`, default: `open`)
+- `SYNAPSE_RBAC_MODE` (`open|enforce`, default: `open`)
+- `SYNAPSE_TENANCY_MODE` (`open|enforce`, default: `open`)
+- `SYNAPSE_OIDC_ISSUER_URL` (required in `SYNAPSE_AUTH_MODE=oidc`)
+- `SYNAPSE_OIDC_AUDIENCE` (optional audience validation)
+- `SYNAPSE_OIDC_ROLES_CLAIM` (default: `roles`)
+- `SYNAPSE_OIDC_TENANT_CLAIM` (default: `tenant_id`)
+- `SYNAPSE_OIDC_EMAIL_CLAIM` (default: `email`)
 
 ## Endpoints
 
 - `GET /health`
+- `GET /v1/auth/mode`
+- `POST /v1/auth/session`
+- `GET /v1/auth/session`
+- `DELETE /v1/auth/session`
+- `POST /v1/tenants`
+- `GET /v1/tenants`
+- `GET /v1/tenants/{tenant_id}`
+- `PUT /v1/tenants/{tenant_id}/memberships`
+- `PUT /v1/tenants/{tenant_id}/projects`
 - `POST /v1/events` (idempotent by `event.id`, plus request-level idempotency via `Idempotency-Key`)
 - `GET /v1/events/throughput?project_id=...&window_hours=24&event_type=tool_result` (ingest latency + throughput SLO metrics)
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
@@ -229,6 +246,7 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Incident preflight preset storage and run endpoints depend on migration `033_gatekeeper_calibration_queue_incident_preflight_presets.sql`.
 - Incident sync preflight enforcement settings depend on migration `034_gatekeeper_calibration_queue_incident_sync_enforcement.sql`.
 - Incident sync schedule persistence and due-run execution depend on migration `035_gatekeeper_calibration_queue_incident_sync_schedules.sql`.
+- Enterprise tenancy/auth/session baseline depends on migration `037_enterprise_tenancy_auth_rbac.sql`.
 - Backfill dedup uses deterministic event id per `batch_id + source_id`; keep `source_id` stable and unique inside a batch.
 - `/v1/events` accepts optional tracing fields (`trace_id`, `span_id`, `parent_span_id`) and stores them in payload metadata (`_synapse.*`).
 - `GET /v1/wiki/pages/{slug}` returns only currently valid active statements (`valid_from <= now <= valid_to`, with open bounds support).

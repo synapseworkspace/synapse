@@ -12,6 +12,7 @@ import {
   HoverCard,
   Kbd,
   Loader,
+  PasswordInput,
   Paper,
   ScrollArea,
   Select,
@@ -359,6 +360,40 @@ type ModerationThroughputPayload = {
     approvals: number;
     rejections: number;
   }>;
+};
+
+type AuthModePayload = {
+  auth_mode: string;
+  rbac_mode: string;
+  tenancy_mode: string;
+  oidc: {
+    issuer_configured: boolean;
+    audience_configured: boolean;
+    roles_claim: string;
+    tenant_claim: string;
+    email_claim: string;
+    session_ttl_minutes_default: number;
+    session_ttl_minutes_max: number;
+  };
+};
+
+type AuthSessionPayload = {
+  status: string;
+  session: {
+    id: string;
+    session_token?: string;
+    subject: string;
+    email: string | null;
+    tenant_id: string | null;
+    roles: string[];
+    issued_at: string | null;
+    expires_at: string | null;
+    auth_source?: string;
+    auth_provider?: string;
+    active?: boolean;
+    last_seen_at?: string | null;
+    revoked_at?: string | null;
+  };
 };
 
 type WikiPageNode = {
@@ -767,17 +802,33 @@ async function apiFetch<T>(
   apiUrl: string,
   path: string,
   options?: {
-    method?: "GET" | "POST";
+    method?: "GET" | "POST" | "PUT" | "DELETE";
     body?: Record<string, unknown>;
     idempotencyKey?: string;
+    extraHeaders?: Record<string, string>;
   },
 ): Promise<T> {
   const root = apiUrl.replace(/\/+$/, "");
+  let sessionHeader: Record<string, string> = {};
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { sessionToken?: string };
+      const token = String(parsed.sessionToken || "").trim();
+      if (token) {
+        sessionHeader = { "X-Synapse-Session": token };
+      }
+    }
+  } catch {
+    sessionHeader = {};
+  }
   const response = await fetch(`${root}${path}`, {
     method: options?.method ?? "GET",
     headers: {
       "Content-Type": "application/json",
       ...(options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
+      ...sessionHeader,
+      ...(options?.extraHeaders || {}),
     },
     body: options?.body ? JSON.stringify(options.body) : undefined,
   });
@@ -844,6 +895,11 @@ export default function App() {
   const [apiUrl, setApiUrl] = useState("http://localhost:8080");
   const [projectId, setProjectId] = useState("");
   const [reviewer, setReviewer] = useState("ops_manager");
+  const [authMode, setAuthMode] = useState<AuthModePayload | null>(null);
+  const [oidcToken, setOidcToken] = useState("");
+  const [sessionToken, setSessionToken] = useState("");
+  const [sessionSummary, setSessionSummary] = useState<AuthSessionPayload["session"] | null>(null);
+  const [authActionLoading, setAuthActionLoading] = useState(false);
   const [uiMode, setUiMode] = useState<UiMode>("core");
   const [coreExpertControls, setCoreExpertControls] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -1134,6 +1190,7 @@ export default function App() {
         apiUrl?: string;
         projectId?: string;
         reviewer?: string;
+        sessionToken?: string;
         uiMode?: UiMode;
         coreExpertControls?: boolean;
         status?: string | null;
@@ -1149,6 +1206,7 @@ export default function App() {
       if (parsed.apiUrl) setApiUrl(parsed.apiUrl);
       if (parsed.projectId) setProjectId(parsed.projectId);
       if (parsed.reviewer) setReviewer(parsed.reviewer);
+      if (parsed.sessionToken) setSessionToken(parsed.sessionToken);
       if (CAN_ACCESS_ADVANCED_MODE && (parsed.uiMode === "core" || parsed.uiMode === "advanced")) {
         setUiMode(parsed.uiMode);
       }
@@ -1210,6 +1268,7 @@ export default function App() {
         apiUrl,
         projectId,
         reviewer,
+        sessionToken,
         uiMode: effectiveUiMode,
         coreExpertControls: CAN_ACCESS_ADVANCED_MODE ? coreExpertControls : false,
         status,
@@ -1231,6 +1290,7 @@ export default function App() {
     pinnedPageSlugs,
     projectId,
     reviewer,
+    sessionToken,
     reviewQueuePreset,
     reviewSlaHours,
     savedViews,
@@ -1239,6 +1299,124 @@ export default function App() {
     status,
     effectiveUiMode,
   ]);
+
+  const authHeaders: Record<string, string> = {};
+  if (sessionToken.trim()) {
+    authHeaders["X-Synapse-Session"] = sessionToken.trim();
+  }
+
+  const loadAuthMode = useCallback(async () => {
+    try {
+      const payload = await apiFetch<AuthModePayload>(apiUrl, "/v1/auth/mode", { extraHeaders: authHeaders });
+      setAuthMode(payload);
+    } catch {
+      setAuthMode(null);
+    }
+  }, [apiUrl, authHeaders]);
+
+  const createWebSessionFromOidc = useCallback(async () => {
+    const token = oidcToken.trim();
+    if (!token) {
+      notifications.show({
+        color: "red",
+        title: "OIDC token required",
+        message: "Paste an OIDC bearer token before creating a session.",
+      });
+      return;
+    }
+    setAuthActionLoading(true);
+    try {
+      const payload = await apiFetch<AuthSessionPayload>(apiUrl, "/v1/auth/session", {
+        method: "POST",
+        body: {},
+        extraHeaders: { Authorization: `Bearer ${token}` },
+      });
+      const tokenValue = String(payload.session.session_token || "").trim();
+      if (tokenValue) {
+        setSessionToken(tokenValue);
+      }
+      setSessionSummary(payload.session);
+      notifications.show({
+        color: "teal",
+        title: "Session created",
+        message: `Authenticated as ${payload.session.subject}.`,
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Session create failed",
+        message: String(error),
+      });
+    } finally {
+      setAuthActionLoading(false);
+    }
+  }, [apiUrl, oidcToken]);
+
+  const validateSession = useCallback(async () => {
+    const token = sessionToken.trim();
+    if (!token) {
+      setSessionSummary(null);
+      return;
+    }
+    setAuthActionLoading(true);
+    try {
+      const payload = await apiFetch<AuthSessionPayload>(apiUrl, "/v1/auth/session", {
+        extraHeaders: { "X-Synapse-Session": token },
+      });
+      setSessionSummary(payload.session);
+    } catch (error) {
+      setSessionSummary(null);
+      notifications.show({
+        color: "orange",
+        title: "Session invalid",
+        message: String(error),
+      });
+    } finally {
+      setAuthActionLoading(false);
+    }
+  }, [apiUrl, sessionToken]);
+
+  const revokeSession = useCallback(async () => {
+    const token = sessionToken.trim();
+    if (!token) {
+      setSessionSummary(null);
+      return;
+    }
+    setAuthActionLoading(true);
+    try {
+      await apiFetch<{ status: string; revoked: boolean }>(apiUrl, "/v1/auth/session", {
+        method: "DELETE",
+        extraHeaders: { "X-Synapse-Session": token },
+      });
+      setSessionToken("");
+      setSessionSummary(null);
+      notifications.show({
+        color: "teal",
+        title: "Session revoked",
+        message: "Web session token has been revoked.",
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Session revoke failed",
+        message: String(error),
+      });
+    } finally {
+      setAuthActionLoading(false);
+    }
+  }, [apiUrl, sessionToken]);
+
+  useEffect(() => {
+    void loadAuthMode();
+  }, [loadAuthMode]);
+
+  useEffect(() => {
+    if (!sessionToken.trim()) {
+      setSessionSummary(null);
+      return;
+    }
+    void validateSession();
+  }, [sessionToken, validateSession]);
 
   const loadModerationThroughput = useCallback(async () => {
     const project = projectId.trim();
@@ -2742,6 +2920,55 @@ export default function App() {
               Refresh Inbox
             </Button>
           </SimpleGrid>
+
+          <Paper mt="md" withBorder radius="lg" p="md">
+            <Stack gap="sm">
+              <Group justify="space-between" align="center" wrap="wrap">
+                <Text fw={700}>Auth Session</Text>
+                <Group gap={8}>
+                  <Badge variant="light" color={authMode?.auth_mode === "oidc" ? "teal" : "gray"}>
+                    auth: {authMode?.auth_mode || "unknown"}
+                  </Badge>
+                  <Badge variant="light" color={authMode?.rbac_mode === "enforce" ? "orange" : "gray"}>
+                    rbac: {authMode?.rbac_mode || "unknown"}
+                  </Badge>
+                  <Badge variant="light" color={authMode?.tenancy_mode === "enforce" ? "violet" : "gray"}>
+                    tenancy: {authMode?.tenancy_mode || "unknown"}
+                  </Badge>
+                </Group>
+              </Group>
+              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+                <PasswordInput
+                  label="OIDC Bearer Token"
+                  value={oidcToken}
+                  onChange={(event) => setOidcToken(event.currentTarget.value)}
+                  placeholder="Paste token only (without Bearer prefix)"
+                />
+                <TextInput
+                  label="Session Token"
+                  value={sessionToken}
+                  onChange={(event) => setSessionToken(event.currentTarget.value)}
+                  placeholder="syns_..."
+                />
+              </SimpleGrid>
+              <Group gap="xs" wrap="wrap">
+                <Button size="xs" variant="light" loading={authActionLoading} onClick={() => void createWebSessionFromOidc()}>
+                  Create Session
+                </Button>
+                <Button size="xs" variant="light" loading={authActionLoading} onClick={() => void validateSession()}>
+                  Validate Session
+                </Button>
+                <Button size="xs" color="red" variant="light" loading={authActionLoading} onClick={() => void revokeSession()}>
+                  Revoke Session
+                </Button>
+              </Group>
+              <Text size="xs" c="dimmed">
+                {sessionSummary
+                  ? `Session actor: ${sessionSummary.subject} (${(sessionSummary.roles || []).join(", ") || "no roles"})`
+                  : "No active session loaded."}
+              </Text>
+            </Stack>
+          </Paper>
 
           <Paper mt="md" withBorder radius="lg" p="md" className="hotkey-panel">
             <Group justify="space-between" align="center" wrap="wrap">

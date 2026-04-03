@@ -170,6 +170,7 @@ export VITE_SYNAPSE_UI_PROFILE=core-only
 - Reliability and SLO guardrails: [docs/reliability-slo.md](docs/reliability-slo.md)
 - Core vs enterprise scope: [docs/core-vs-enterprise.md](docs/core-vs-enterprise.md)
 - Enterprise readiness status: [docs/enterprise-readiness.md](docs/enterprise-readiness.md)
+- Enterprise governance export/runbook pack: [docs/enterprise-governance-pack.md](docs/enterprise-governance-pack.md)
 - Legacy import and sync: [docs/legacy-import.md](docs/legacy-import.md), [docs/legacy-sync-orchestration.md](docs/legacy-sync-orchestration.md)
 - Tutorials: [docs/tutorials/README.md](docs/tutorials/README.md)
 - SDK API reference: [docs/reference/README.md](docs/reference/README.md)

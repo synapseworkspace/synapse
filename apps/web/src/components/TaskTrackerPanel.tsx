@@ -129,16 +129,30 @@ async function apiFetch<T>(
   apiUrl: string,
   path: string,
   options?: {
-    method?: "GET" | "POST";
+    method?: "GET" | "POST" | "PUT" | "DELETE";
     body?: Record<string, unknown>;
     idempotencyKey?: string;
   },
 ): Promise<T> {
   const root = apiUrl.replace(/\/+$/, "");
+  let sessionHeader: Record<string, string> = {};
+  try {
+    const raw = window.localStorage.getItem("synapse_web_console_v4");
+    if (raw) {
+      const parsed = JSON.parse(raw) as { sessionToken?: string };
+      const token = String(parsed.sessionToken || "").trim();
+      if (token) {
+        sessionHeader = { "X-Synapse-Session": token };
+      }
+    }
+  } catch {
+    sessionHeader = {};
+  }
   const response = await fetch(`${root}${path}`, {
     method: options?.method ?? "GET",
     headers: {
       "Content-Type": "application/json",
+      ...sessionHeader,
       ...(options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}),
     },
     body: options?.body ? JSON.stringify(options.body) : undefined,

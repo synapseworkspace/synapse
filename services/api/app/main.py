@@ -22,13 +22,14 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from psycopg.types.json import Jsonb
 
 from app.db import get_conn
+from app import enterprise
 from app.idempotency import (
     acquire_request_slot,
     mark_request_completed,
@@ -136,6 +137,36 @@ class MemoryBackfillBatchIn(BaseModel):
 
 class MemoryBackfillRequest(BaseModel):
     batch: MemoryBackfillBatchIn
+
+
+class AuthSessionCreateRequest(BaseModel):
+    session_ttl_minutes: int | None = Field(default=None, ge=15, le=43200)
+    metadata: dict[str, Any] | None = None
+
+
+class TenantCreateRequest(BaseModel):
+    slug: str = Field(min_length=2, max_length=128, pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+    name: str = Field(min_length=1, max_length=256)
+    status: str = Field(default="active", pattern="^(active|disabled|archived)$")
+    metadata: dict[str, Any] | None = None
+    created_by: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class TenantMembershipUpsertRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=256)
+    email: str | None = Field(default=None, max_length=512)
+    display_name: str | None = Field(default=None, max_length=256)
+    roles: list[str] = Field(default_factory=list, max_length=32)
+    status: str = Field(default="active", pattern="^(active|disabled|invited)$")
+    metadata: dict[str, Any] | None = None
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class TenantProjectUpsertRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=256)
+    status: str = Field(default="active", pattern="^(active|disabled)$")
+    metadata: dict[str, Any] | None = None
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class DraftSectionEdit(BaseModel):
@@ -3466,6 +3497,16 @@ def _parse_incident_actor_roles(value: str | None) -> set[str]:
             continue
         out.add(role[:64])
     return out
+
+
+def _request_incident_actor_roles(request: Request, explicit_roles_header: str | None) -> set[str]:
+    role_set = _parse_incident_actor_roles(explicit_roles_header)
+    identity = _request_access_identity(request)
+    for role in identity.roles:
+        normalized = str(role or "").strip().lower()
+        if normalized:
+            role_set.add(normalized[:64])
+    return role_set
 
 
 def _incident_secret_can_edit(*, required_roles: list[str], actor_roles: set[str]) -> bool:
@@ -9460,6 +9501,96 @@ app.add_middleware(
 )
 
 
+def _request_access_identity(request: Request) -> enterprise.AccessIdentity:
+    payload = getattr(request.state, "synapse_access", None)
+    if isinstance(payload, dict):
+        subject = str(payload.get("subject") or "anonymous").strip() or "anonymous"
+        email = str(payload.get("email") or "").strip() or None
+        tenant_id = str(payload.get("tenant_id") or "").strip() or None
+        roles_raw = payload.get("roles")
+        roles: tuple[str, ...]
+        if isinstance(roles_raw, list):
+            roles = tuple(str(item or "").strip().lower() for item in roles_raw if str(item or "").strip())
+        else:
+            roles = tuple()
+        claims = payload.get("claims")
+        return enterprise.AccessIdentity(
+            subject=subject,
+            email=email,
+            tenant_id=tenant_id,
+            roles=roles,
+            auth_source=str(payload.get("auth_source") or "unknown"),
+            claims=dict(claims) if isinstance(claims, dict) else {},
+            session_id=str(payload.get("session_id") or "").strip() or None,
+        )
+    return enterprise.AccessIdentity(
+        subject="anonymous",
+        email=None,
+        tenant_id=None,
+        roles=tuple(),
+        auth_source="none",
+        claims={},
+        session_id=None,
+    )
+
+
+def _request_actor(request: Request, fallback: str = "system") -> str:
+    identity = _request_access_identity(request)
+    actor = identity.subject or identity.email or ""
+    return actor.strip() or fallback
+
+
+@app.middleware("http")
+async def enterprise_guard_middleware(request: Request, call_next):  # type: ignore[override]
+    path = str(request.url.path or "")
+    method = str(request.method or "GET").upper()
+    settings = enterprise.get_enterprise_settings()
+
+    if not enterprise.should_skip_guard(path, method):
+        body_payload = await enterprise.parse_json_body_safe(request)
+        project_ids = enterprise.collect_request_project_ids(
+            query_params=dict(request.query_params),
+            body_payload=body_payload,
+        )
+        with get_conn() as conn:
+            try:
+                identity = enterprise.resolve_identity(
+                    conn=conn,
+                    settings=settings,
+                    authorization=request.headers.get("Authorization"),
+                    x_synapse_session=request.headers.get("X-Synapse-Session"),
+                    x_synapse_user=request.headers.get("X-Synapse-User"),
+                    x_synapse_email=request.headers.get("X-Synapse-Email"),
+                    x_synapse_tenant_id=request.headers.get("X-Synapse-Tenant-Id"),
+                    x_synapse_roles=request.headers.get("X-Synapse-Roles"),
+                )
+                enterprise.enforce_rbac(settings, identity, method=method, path=path)
+                enterprise.enforce_tenancy(settings, identity, conn=conn, project_ids=project_ids)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        request.state.synapse_access = identity.to_dict()
+    else:
+        request.state.synapse_access = enterprise.AccessIdentity(
+            subject="anonymous",
+            email=None,
+            tenant_id=None,
+            roles=tuple(),
+            auth_source="public",
+            claims={},
+        ).to_dict()
+
+    response = await call_next(request)
+    response.headers["X-Synapse-Auth-Mode"] = settings.auth_mode
+    response.headers["X-Synapse-Rbac-Mode"] = settings.rbac_mode
+    response.headers["X-Synapse-Tenancy-Mode"] = settings.tenancy_mode
+    access_payload = getattr(request.state, "synapse_access", None)
+    if isinstance(access_payload, dict):
+        tenant_id = str(access_payload.get("tenant_id") or "").strip()
+        if tenant_id:
+            response.headers["X-Synapse-Tenant-Id"] = tenant_id
+    return response
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     try:
@@ -9470,6 +9601,452 @@ def health() -> dict[str, str]:
     except Exception:
         return {"status": "degraded"}
     return {"status": "ok"}
+
+
+def _normalize_roles_list(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        role = str(raw or "").strip().lower()
+        if not role or role in seen:
+            continue
+        seen.add(role)
+        out.append(role[:64])
+    return out[:32]
+
+
+@app.get("/v1/auth/mode")
+def get_auth_mode() -> dict[str, Any]:
+    return enterprise.auth_mode_payload(enterprise.get_enterprise_settings())
+
+
+@app.post("/v1/auth/session", response_model=None)
+def create_auth_session(
+    payload: AuthSessionCreateRequest,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Any:
+    settings = enterprise.get_enterprise_settings()
+    with get_conn() as conn:
+        session = enterprise.create_oidc_session(
+            conn=conn,
+            settings=settings,
+            authorization=authorization,
+            requested_ttl_minutes=payload.session_ttl_minutes,
+            metadata=payload.metadata,
+        )
+    return {"status": "ok", "session": session}
+
+
+@app.get("/v1/auth/session")
+def get_auth_session(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    x_synapse_session: str | None = Header(default=None, alias="X-Synapse-Session"),
+) -> dict[str, Any]:
+    token = enterprise.extract_session_token(x_synapse_session, authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail={"code": "session_token_required"})
+    with get_conn() as conn:
+        session = enterprise.get_session_payload(conn, token)
+    return {"status": "ok", "session": session}
+
+
+@app.delete("/v1/auth/session", response_model=None)
+def delete_auth_session(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    x_synapse_session: str | None = Header(default=None, alias="X-Synapse-Session"),
+) -> Any:
+    token = enterprise.extract_session_token(x_synapse_session, authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail={"code": "session_token_required"})
+    with get_conn() as conn:
+        deleted = enterprise.revoke_session(conn, token)
+    return {"status": "ok", "revoked": bool(deleted)}
+
+
+@app.post("/v1/tenants", response_model=None)
+def create_tenant(payload: TenantCreateRequest, request: Request) -> Any:
+    tenant_id = uuid4()
+    actor = payload.created_by or _request_actor(request)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO tenants (
+                  id, slug, name, status, metadata, created_by, updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (slug)
+                DO UPDATE
+                  SET name = EXCLUDED.name,
+                      status = EXCLUDED.status,
+                      metadata = EXCLUDED.metadata,
+                      updated_by = EXCLUDED.updated_by,
+                      updated_at = NOW()
+                RETURNING id::text, slug, name, status, metadata, created_by, updated_by, created_at, updated_at
+                """,
+                (
+                    tenant_id,
+                    payload.slug,
+                    payload.name,
+                    payload.status,
+                    Jsonb(dict(payload.metadata or {})),
+                    actor,
+                    actor,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "tenant": {
+            "id": str(row[0]),
+            "slug": str(row[1]),
+            "name": str(row[2]),
+            "status": str(row[3]),
+            "metadata": dict(row[4] or {}) if isinstance(row[4], dict) else {},
+            "created_by": None if row[5] is None else str(row[5]),
+            "updated_by": None if row[6] is None else str(row[6]),
+            "created_at": None if row[7] is None else row[7].isoformat(),
+            "updated_at": None if row[8] is None else row[8].isoformat(),
+        },
+    }
+
+
+@app.get("/v1/tenants")
+def list_tenants(
+    include_memberships: bool = Query(default=False),
+    include_projects: bool = Query(default=False),
+) -> dict[str, Any]:
+    tenants: list[dict[str, Any]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, slug, name, status, metadata, created_by, updated_by, created_at, updated_at
+                FROM tenants
+                ORDER BY created_at DESC
+                """
+            )
+            rows = cur.fetchall() or []
+            for row in rows:
+                tenants.append(
+                    {
+                        "id": str(row[0]),
+                        "slug": str(row[1]),
+                        "name": str(row[2]),
+                        "status": str(row[3]),
+                        "metadata": dict(row[4] or {}) if isinstance(row[4], dict) else {},
+                        "created_by": None if row[5] is None else str(row[5]),
+                        "updated_by": None if row[6] is None else str(row[6]),
+                        "created_at": None if row[7] is None else row[7].isoformat(),
+                        "updated_at": None if row[8] is None else row[8].isoformat(),
+                    }
+                )
+    if not tenants:
+        return {"tenants": []}
+
+    if include_memberships:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      tenant_id::text,
+                      user_id,
+                      email,
+                      display_name,
+                      roles,
+                      status,
+                      metadata,
+                      created_by,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM tenant_memberships
+                    ORDER BY created_at DESC
+                    """
+                )
+                membership_rows = cur.fetchall() or []
+        by_tenant: dict[str, list[dict[str, Any]]] = {}
+        for item in membership_rows:
+            tenant_key = str(item[1])
+            by_tenant.setdefault(tenant_key, []).append(
+                {
+                    "id": str(item[0]),
+                    "tenant_id": tenant_key,
+                    "user_id": str(item[2]),
+                    "email": None if item[3] is None else str(item[3]),
+                    "display_name": None if item[4] is None else str(item[4]),
+                    "roles": _normalize_roles_list(item[5] if isinstance(item[5], list) else []),
+                    "status": str(item[6]),
+                    "metadata": dict(item[7] or {}) if isinstance(item[7], dict) else {},
+                    "created_by": None if item[8] is None else str(item[8]),
+                    "updated_by": None if item[9] is None else str(item[9]),
+                    "created_at": None if item[10] is None else item[10].isoformat(),
+                    "updated_at": None if item[11] is None else item[11].isoformat(),
+                }
+            )
+        for tenant in tenants:
+            tenant["memberships"] = by_tenant.get(str(tenant["id"]), [])
+
+    if include_projects:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      tenant_id::text,
+                      project_id,
+                      status,
+                      metadata,
+                      created_by,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM tenant_projects
+                    ORDER BY created_at DESC
+                    """
+                )
+                project_rows = cur.fetchall() or []
+        by_tenant_projects: dict[str, list[dict[str, Any]]] = {}
+        for item in project_rows:
+            tenant_key = str(item[1])
+            by_tenant_projects.setdefault(tenant_key, []).append(
+                {
+                    "id": str(item[0]),
+                    "tenant_id": tenant_key,
+                    "project_id": str(item[2]),
+                    "status": str(item[3]),
+                    "metadata": dict(item[4] or {}) if isinstance(item[4], dict) else {},
+                    "created_by": None if item[5] is None else str(item[5]),
+                    "updated_by": None if item[6] is None else str(item[6]),
+                    "created_at": None if item[7] is None else item[7].isoformat(),
+                    "updated_at": None if item[8] is None else item[8].isoformat(),
+                }
+            )
+        for tenant in tenants:
+            tenant["projects"] = by_tenant_projects.get(str(tenant["id"]), [])
+
+    return {"tenants": tenants}
+
+
+@app.get("/v1/tenants/{tenant_id}")
+def get_tenant(
+    tenant_id: UUID,
+    include_memberships: bool = Query(default=True),
+    include_projects: bool = Query(default=True),
+) -> dict[str, Any]:
+    tenant_payload: dict[str, Any] | None = None
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id::text, slug, name, status, metadata, created_by, updated_by, created_at, updated_at
+                FROM tenants
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail={"code": "tenant_not_found", "tenant_id": str(tenant_id)})
+            tenant_payload = {
+                "id": str(row[0]),
+                "slug": str(row[1]),
+                "name": str(row[2]),
+                "status": str(row[3]),
+                "metadata": dict(row[4] or {}) if isinstance(row[4], dict) else {},
+                "created_by": None if row[5] is None else str(row[5]),
+                "updated_by": None if row[6] is None else str(row[6]),
+                "created_at": None if row[7] is None else row[7].isoformat(),
+                "updated_at": None if row[8] is None else row[8].isoformat(),
+            }
+            if include_memberships:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text, user_id, email, display_name, roles, status, metadata, created_by, updated_by, created_at, updated_at
+                    FROM tenant_memberships
+                    WHERE tenant_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (tenant_id,),
+                )
+                tenant_payload["memberships"] = [
+                    {
+                        "id": str(item[0]),
+                        "tenant_id": str(tenant_id),
+                        "user_id": str(item[1]),
+                        "email": None if item[2] is None else str(item[2]),
+                        "display_name": None if item[3] is None else str(item[3]),
+                        "roles": _normalize_roles_list(item[4] if isinstance(item[4], list) else []),
+                        "status": str(item[5]),
+                        "metadata": dict(item[6] or {}) if isinstance(item[6], dict) else {},
+                        "created_by": None if item[7] is None else str(item[7]),
+                        "updated_by": None if item[8] is None else str(item[8]),
+                        "created_at": None if item[9] is None else item[9].isoformat(),
+                        "updated_at": None if item[10] is None else item[10].isoformat(),
+                    }
+                    for item in (cur.fetchall() or [])
+                ]
+            if include_projects:
+                cur.execute(
+                    """
+                    SELECT id::text, project_id, status, metadata, created_by, updated_by, created_at, updated_at
+                    FROM tenant_projects
+                    WHERE tenant_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (tenant_id,),
+                )
+                tenant_payload["projects"] = [
+                    {
+                        "id": str(item[0]),
+                        "tenant_id": str(tenant_id),
+                        "project_id": str(item[1]),
+                        "status": str(item[2]),
+                        "metadata": dict(item[3] or {}) if isinstance(item[3], dict) else {},
+                        "created_by": None if item[4] is None else str(item[4]),
+                        "updated_by": None if item[5] is None else str(item[5]),
+                        "created_at": None if item[6] is None else item[6].isoformat(),
+                        "updated_at": None if item[7] is None else item[7].isoformat(),
+                    }
+                    for item in (cur.fetchall() or [])
+                ]
+    return {"tenant": tenant_payload}
+
+
+@app.put("/v1/tenants/{tenant_id}/memberships", response_model=None)
+def upsert_tenant_membership(
+    tenant_id: UUID,
+    payload: TenantMembershipUpsertRequest,
+    request: Request,
+) -> Any:
+    membership_id = uuid4()
+    actor = payload.updated_by or _request_actor(request)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO tenant_memberships (
+                  id,
+                  tenant_id,
+                  user_id,
+                  email,
+                  display_name,
+                  roles,
+                  status,
+                  metadata,
+                  created_by,
+                  updated_by
+                )
+                VALUES (
+                  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (tenant_id, user_id)
+                DO UPDATE
+                  SET email = EXCLUDED.email,
+                      display_name = EXCLUDED.display_name,
+                      roles = EXCLUDED.roles,
+                      status = EXCLUDED.status,
+                      metadata = EXCLUDED.metadata,
+                      updated_by = EXCLUDED.updated_by,
+                      updated_at = NOW()
+                RETURNING id::text, tenant_id::text, user_id, email, display_name, roles, status, metadata, created_by, updated_by, created_at, updated_at
+                """,
+                (
+                    membership_id,
+                    tenant_id,
+                    payload.user_id,
+                    payload.email,
+                    payload.display_name,
+                    _normalize_roles_list(payload.roles),
+                    payload.status,
+                    Jsonb(dict(payload.metadata or {})),
+                    actor,
+                    actor,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "membership": {
+            "id": str(row[0]),
+            "tenant_id": str(row[1]),
+            "user_id": str(row[2]),
+            "email": None if row[3] is None else str(row[3]),
+            "display_name": None if row[4] is None else str(row[4]),
+            "roles": _normalize_roles_list(row[5] if isinstance(row[5], list) else []),
+            "status": str(row[6]),
+            "metadata": dict(row[7] or {}) if isinstance(row[7], dict) else {},
+            "created_by": None if row[8] is None else str(row[8]),
+            "updated_by": None if row[9] is None else str(row[9]),
+            "created_at": None if row[10] is None else row[10].isoformat(),
+            "updated_at": None if row[11] is None else row[11].isoformat(),
+        },
+    }
+
+
+@app.put("/v1/tenants/{tenant_id}/projects", response_model=None)
+def upsert_tenant_project(
+    tenant_id: UUID,
+    payload: TenantProjectUpsertRequest,
+    request: Request,
+) -> Any:
+    relation_id = uuid4()
+    actor = payload.updated_by or _request_actor(request)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO tenant_projects (
+                  id,
+                  tenant_id,
+                  project_id,
+                  status,
+                  metadata,
+                  created_by,
+                  updated_by
+                )
+                VALUES (
+                  %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (project_id)
+                DO UPDATE
+                  SET tenant_id = EXCLUDED.tenant_id,
+                      status = EXCLUDED.status,
+                      metadata = EXCLUDED.metadata,
+                      updated_by = EXCLUDED.updated_by,
+                      updated_at = NOW()
+                RETURNING id::text, tenant_id::text, project_id, status, metadata, created_by, updated_by, created_at, updated_at
+                """,
+                (
+                    relation_id,
+                    tenant_id,
+                    payload.project_id,
+                    payload.status,
+                    Jsonb(dict(payload.metadata or {})),
+                    actor,
+                    actor,
+                ),
+            )
+            row = cur.fetchone()
+    return {
+        "status": "ok",
+        "project": {
+            "id": str(row[0]),
+            "tenant_id": str(row[1]),
+            "project_id": str(row[2]),
+            "status": str(row[3]),
+            "metadata": dict(row[4] or {}) if isinstance(row[4], dict) else {},
+            "created_by": None if row[5] is None else str(row[5]),
+            "updated_by": None if row[6] is None else str(row[6]),
+            "created_at": None if row[7] is None else row[7].isoformat(),
+            "updated_at": None if row[8] is None else row[8].isoformat(),
+        },
+    }
 
 
 @app.post("/v1/openclaw/provenance/verify")
@@ -14278,12 +14855,13 @@ def upsert_gatekeeper_calibration_operation_queue_ownership(
 
 @app.get("/v1/gatekeeper/calibration/operations/incidents/hooks")
 def list_gatekeeper_calibration_operation_queue_incident_hooks(
+    request: Request,
     project_id: str | None = Query(default=None),
     project_ids: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=200),
     x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
 ) -> dict[str, Any]:
-    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    actor_roles = _request_incident_actor_roles(request, x_synapse_roles)
     requested = _parse_csv_tokens(project_ids)
     if project_id is not None and project_id.strip():
         requested = [project_id.strip(), *requested]
@@ -14302,12 +14880,13 @@ def list_gatekeeper_calibration_operation_queue_incident_hooks(
 
 @app.get("/v1/gatekeeper/calibration/operations/incidents/policies")
 def list_gatekeeper_calibration_operation_queue_incident_policies(
+    request: Request,
     project_id: str | None = Query(default=None),
     project_ids: str | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=1000),
     x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
 ) -> dict[str, Any]:
-    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    actor_roles = _request_incident_actor_roles(request, x_synapse_roles)
     requested = _parse_csv_tokens(project_ids)
     if project_id is not None and project_id.strip():
         requested = [project_id.strip(), *requested]
@@ -14325,10 +14904,11 @@ def list_gatekeeper_calibration_operation_queue_incident_policies(
 
 @app.put("/v1/gatekeeper/calibration/operations/incidents/policies")
 def upsert_gatekeeper_calibration_operation_queue_incident_policy(
+    request: Request,
     payload: GatekeeperCalibrationQueueIncidentPolicyUpsertRequest,
     x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
 ) -> dict[str, Any]:
-    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    actor_roles = _request_incident_actor_roles(request, x_synapse_roles)
     policy = _upsert_operation_queue_incident_policy(
         project_id=payload.project_id,
         alert_code=payload.alert_code,
@@ -14435,10 +15015,11 @@ def upsert_gatekeeper_calibration_operation_queue_incident_preflight_preset(
 
 @app.post("/v1/gatekeeper/calibration/operations/incidents/preflight/run")
 def run_gatekeeper_calibration_operation_queue_incident_preflight(
+    request: Request,
     payload: GatekeeperCalibrationQueueIncidentPreflightRunRequest,
     x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
 ) -> dict[str, Any]:
-    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    actor_roles = _request_incident_actor_roles(request, x_synapse_roles)
     requested = payload.project_ids or []
     if payload.project_id is not None and payload.project_id.strip():
         requested = [payload.project_id.strip(), *requested]
@@ -14456,10 +15037,11 @@ def run_gatekeeper_calibration_operation_queue_incident_preflight(
 
 @app.post("/v1/gatekeeper/calibration/operations/incidents/policies/simulate")
 def simulate_gatekeeper_calibration_operation_queue_incident_policy(
+    request: Request,
     payload: GatekeeperCalibrationQueueIncidentPolicySimulationRequest,
     x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
 ) -> dict[str, Any]:
-    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    actor_roles = _request_incident_actor_roles(request, x_synapse_roles)
     return _simulate_operation_queue_incident_policy_route(
         project_id=payload.project_id,
         alert_code=payload.alert_code,
@@ -14473,10 +15055,11 @@ def simulate_gatekeeper_calibration_operation_queue_incident_policy(
 
 @app.put("/v1/gatekeeper/calibration/operations/incidents/hooks")
 def upsert_gatekeeper_calibration_operation_queue_incident_hook(
+    request: Request,
     payload: GatekeeperCalibrationQueueIncidentHookUpsertRequest,
     x_synapse_roles: str | None = Header(default=None, alias="X-Synapse-Roles"),
 ) -> dict[str, Any]:
-    actor_roles = _parse_incident_actor_roles(x_synapse_roles)
+    actor_roles = _request_incident_actor_roles(request, x_synapse_roles)
     hook = _upsert_operation_queue_incident_hook(
         project_id=payload.project_id,
         enabled=payload.enabled,
