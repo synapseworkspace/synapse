@@ -1,6 +1,6 @@
 {
   "name": "@synapseworkspace/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Synapse universal TypeScript SDK",
   "license": "Apache-2.0",
@@ -13,7 +13,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "sideEffects": false,
   "repository": {
     "type": "git",
@@ -23,7 +25,14 @@
   "bugs": {
     "url": "https://github.com/synapseworkspace/synapse/issues"
   },
-  "keywords": ["ai", "agents", "mcp", "knowledge", "observability", "sdk"],
+  "keywords": [
+    "ai",
+    "agents",
+    "mcp",
+    "knowledge",
+    "observability",
+    "sdk"
+  ],
   "engines": {
     "node": ">=18"
   },

@@ -8,6 +8,16 @@ The format is inspired by Keep a Changelog and Semantic Versioning.
 
 ### Added
 
+- (none yet)
+
+### Changed
+
+- (none yet)
+
+## [0.1.1] - 2026-04-03
+
+### Added
+
 - `synapse-cli verify core-loop` command for one-command end-to-end acceptance (`ingest -> draft -> approve -> MCP retrieval`) with script auto-discovery, dry-run preview, JSON reporting, and offline CI smoke coverage.
 - `synapse-cli quickstart` command as one-command onboarding orchestrator (`init -> doctor -> connect`, optional `verify core-loop`) with JSON step report and offline CI smoke coverage.
 - OSS governance docs baseline: added `MAINTAINERS.md`, `SUPPORT.md`, and `DEPRECATION_POLICY.md` with contributor ownership/support/deprecation contracts.
