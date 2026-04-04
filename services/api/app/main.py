@@ -865,9 +865,10 @@ def _slugify_segment(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text or "")
     ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
     lowered = ascii_text.strip().lower()
-    lowered = lowered.replace("_", "-")
-    lowered = re.sub(r"[^a-z0-9-]+", "-", lowered)
+    # Keep underscores to stay compatible with worker-generated slugs like `bc_omega`.
+    lowered = re.sub(r"[^a-z0-9_-]+", "-", lowered)
     lowered = re.sub(r"-{2,}", "-", lowered).strip("-")
+    lowered = re.sub(r"_{2,}", "_", lowered).strip("_")
     return lowered or "page"
 
 
