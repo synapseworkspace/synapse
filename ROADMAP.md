@@ -125,8 +125,7 @@ Checklist:
    - track TTFV, time-to-first-publish, and click-depth to open/publish.
 
 Next Up (execution order):
-1. Sticky page toolbar (`History`, `Watching`, `...`) for closer wiki parity in core mode.
-2. Optional publish checklist presets per space (for policy-heavy teams).
+1. Optional publish checklist presets per space (for policy-heavy teams).
 
 ## Confluence-Like Wiki Track (Q2-Q3 2026)
 
@@ -559,6 +558,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Completed sticky page toolbar in core wiki view (`History`, `Watch/Watching`, `Share`, `Drafts`, `Edit`, `More`) with real actions wired to existing page flows, added smooth jump-to-revisions anchor (`#wiki-context-revisions`), and reduced header action clutter to keep page view wiki-first.
 - 2026-04-04: Completed User-Friendly Wiki UX 12-point track (`done`): finalized slash-first rich editor parity (undo/redo), added stronger revision diff preview in core wiki context, cleaned core-mode language (`Workspace`, `Your name`, `Sync`), shipped friendly roles modal (`Viewer/Editor/Approver/Admin`) plus docs (`docs/wiki-ux-roles-metrics.md`), and added UX funnel telemetry badges (TTFV, first publish time, click-depth) persisted per project in browser storage.
 - 2026-04-04: Closed remaining Knowledge Compiler roadmap items: added claim `assertion_class` typing (`policy|preference|incident|event|fact`) in Gatekeeper features/claim metadata, enabled assertion-class-aware publish control via `routing_policy.publish_mode_by_assertion_class`, introduced retrieval feedback loop APIs (`POST /v1/mcp/retrieval/feedback`, `GET /v1/mcp/retrieval/feedback/stats`) with new migration `050_retrieval_feedback_loop.sql`, and wired auto-publish guardrails to block autonomous publish when recent claim-level retrieval feedback is strongly negative.
 - 2026-04-04: Added Knowledge Compiler v1 hardening: worker now suppresses low-signal backfill event records before claim enqueue, Gatekeeper routing adds `source_id` deny checks plus durable knowledge-signal thresholds and payload key/value density detection, API routing-policy normalization includes new knobs, and new worker unit tests cover noisy snapshot demotion vs valid policy/preference retention (`services/worker/tests/test_wiki_engine_routing.py`).

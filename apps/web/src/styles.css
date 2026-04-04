@@ -113,6 +113,15 @@ body {
   background: #fff;
 }
 
+.wiki-page-sticky-toolbar {
+  position: sticky;
+  top: 8px;
+  z-index: 12;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(250, 253, 255, 0.96));
+  border-color: #d6e1f2;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
 .confluence-create-panel {
   border-color: #d6e4ff;
   background: #f8fbff;
@@ -139,6 +148,10 @@ body {
 
   .confluence-layout {
     grid-template-columns: 1fr;
+  }
+
+  .wiki-page-sticky-toolbar {
+    top: 4px;
   }
 }
 

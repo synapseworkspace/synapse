@@ -8168,6 +8168,152 @@ export default function App() {
               )}
               {selectedPageSlug && selectedPageDetail && (
                 <Stack gap="sm">
+                  <Paper withBorder p="xs" radius="md" className="wiki-page-sticky-toolbar">
+                    <Group justify="space-between" align="center" wrap="wrap">
+                      <Group gap={6} wrap="wrap">
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="indigo"
+                          leftSection={<IconHistory size={14} />}
+                          onClick={() => {
+                            if (!selectedPageSlug) return;
+                            void loadPageHistory(selectedPageSlug);
+                            window.requestAnimationFrame(() => {
+                              document.getElementById("wiki-context-revisions")?.scrollIntoView({
+                                behavior: "smooth",
+                                block: "start",
+                              });
+                            });
+                          }}
+                        >
+                          History
+                        </Button>
+                        <Button
+                          size="compact-xs"
+                          variant={currentReviewerWatchingPage ? "light" : "subtle"}
+                          color={currentReviewerWatchingPage ? "gray" : "teal"}
+                          leftSection={<IconBell size={14} />}
+                          loading={savingPageWatcher}
+                          disabled={!reviewer.trim()}
+                          onClick={() => void upsertPageWatcher(reviewer.trim(), !currentReviewerWatchingPage)}
+                        >
+                          {currentReviewerWatchingPage ? "Watching" : "Watch"}
+                        </Button>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="blue"
+                          leftSection={<IconLink size={14} />}
+                          onClick={() => void shareCurrentPage()}
+                        >
+                          Share
+                        </Button>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="cyan"
+                          onClick={() => setCoreWorkspaceTab("drafts")}
+                        >
+                          Drafts ({selectedPageOpenDrafts.length})
+                        </Button>
+                      </Group>
+                      <Group gap={6} wrap="wrap">
+                        {!pageEditMode && !pageMoveMode && (
+                          <Button
+                            size="compact-xs"
+                            variant="light"
+                            color="indigo"
+                            onClick={() => {
+                              setPageMoveMode(false);
+                              setPageEditMode(true);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                        )}
+                        {pageEditMode && (
+                          <>
+                            <Button
+                              size="compact-xs"
+                              variant="subtle"
+                              color="gray"
+                              onClick={() => setPageEditMode(false)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="compact-xs"
+                              color="teal"
+                              loading={savingPageEdit}
+                              onClick={() => void saveWikiPageEdit()}
+                            >
+                              Save
+                            </Button>
+                          </>
+                        )}
+                        {pageMoveMode && (
+                          <>
+                            <Button
+                              size="compact-xs"
+                              variant="subtle"
+                              color="gray"
+                              onClick={() => setPageMoveMode(false)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="compact-xs"
+                              color="violet"
+                              loading={movingPage}
+                              onClick={() => void moveWikiPage()}
+                            >
+                              Apply Move
+                            </Button>
+                          </>
+                        )}
+                        <Menu withinPortal position="bottom-end">
+                          <Menu.Target>
+                            <Button size="compact-xs" variant="subtle" color="gray" rightSection={<IconDots size={14} />}>
+                              More
+                            </Button>
+                          </Menu.Target>
+                          <Menu.Dropdown>
+                            <Menu.Item
+                              onClick={() => {
+                                if (!selectedPageSlug) return;
+                                void loadPageDetail(selectedPageSlug);
+                                void loadPageHistory(selectedPageSlug);
+                                void loadPageAliases(selectedPageSlug);
+                                void loadPageComments(selectedPageSlug);
+                                void loadPageWatchers(selectedPageSlug);
+                                void loadPageReviewAssignments(selectedPageSlug);
+                              }}
+                            >
+                              Refresh page
+                            </Menu.Item>
+                            <Menu.Item
+                              onClick={() => {
+                                setPageEditMode(false);
+                                setPageMoveMode(true);
+                              }}
+                            >
+                              Move / Rename
+                            </Menu.Item>
+                            {selectedPageDetail.page.status !== "archived" ? (
+                              <Menu.Item color="red" onClick={() => void transitionWikiPageStatus("archive")}>
+                                Archive
+                              </Menu.Item>
+                            ) : (
+                              <Menu.Item color="teal" onClick={() => void transitionWikiPageStatus("restore")}>
+                                Restore
+                              </Menu.Item>
+                            )}
+                          </Menu.Dropdown>
+                        </Menu>
+                      </Group>
+                    </Group>
+                  </Paper>
                   <Paper withBorder p="xs" radius="md" className="wiki-page-header-card">
                     <Stack gap={6}>
                       <Group justify="space-between" align="flex-start" wrap="wrap">
@@ -8225,119 +8371,6 @@ export default function App() {
                         <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
                           delta +{pageRevisionDelta.addedTokens} / -{pageRevisionDelta.removedTokens}
                         </Badge>
-                      </Group>
-                      <Group gap="xs" wrap="wrap">
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          onClick={() => {
-                            if (!selectedPageSlug) return;
-                            void loadPageDetail(selectedPageSlug);
-                            void loadPageHistory(selectedPageSlug);
-                            void loadPageAliases(selectedPageSlug);
-                            void loadPageComments(selectedPageSlug);
-                            void loadPageWatchers(selectedPageSlug);
-                            void loadPageReviewAssignments(selectedPageSlug);
-                          }}
-                        >
-                          Refresh Page
-                        </Button>
-                        <Button
-                          size="compact-xs"
-                          variant="subtle"
-                          color="cyan"
-                          onClick={() => setCoreWorkspaceTab("drafts")}
-                        >
-                          Open Page Drafts ({selectedPageOpenDrafts.length})
-                        </Button>
-                        {!pageEditMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            color="indigo"
-                            onClick={() => {
-                              setPageMoveMode(false);
-                              setPageEditMode(true);
-                            }}
-                          >
-                            Edit Page
-                          </Button>
-                        )}
-                        {!pageMoveMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            color="violet"
-                            onClick={() => {
-                              setPageEditMode(false);
-                              setPageMoveMode(true);
-                            }}
-                          >
-                            Move/Rename
-                          </Button>
-                        )}
-                        {selectedPageDetail.page.status !== "archived" && !pageEditMode && !pageMoveMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            color="red"
-                            loading={movingPage}
-                            onClick={() => void transitionWikiPageStatus("archive")}
-                          >
-                            Archive
-                          </Button>
-                        )}
-                        {selectedPageDetail.page.status === "archived" && !pageEditMode && !pageMoveMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            color="teal"
-                            loading={movingPage}
-                            onClick={() => void transitionWikiPageStatus("restore")}
-                          >
-                            Restore
-                          </Button>
-                        )}
-                        {pageEditMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            color="gray"
-                            onClick={() => setPageEditMode(false)}
-                          >
-                            Cancel Edit
-                          </Button>
-                        )}
-                        {pageEditMode && (
-                          <Button
-                            size="compact-xs"
-                            color="teal"
-                            loading={savingPageEdit}
-                            onClick={() => void saveWikiPageEdit()}
-                          >
-                            Save Page
-                          </Button>
-                        )}
-                        {pageMoveMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            color="gray"
-                            onClick={() => setPageMoveMode(false)}
-                          >
-                            Cancel Move
-                          </Button>
-                        )}
-                        {pageMoveMode && (
-                          <Button
-                            size="compact-xs"
-                            color="violet"
-                            loading={movingPage}
-                            onClick={() => void moveWikiPage()}
-                          >
-                            Apply Move
-                          </Button>
-                        )}
                       </Group>
                     </Stack>
                   </Paper>
@@ -8534,7 +8567,7 @@ export default function App() {
                       </Stack>
                     )}
                   </Paper>
-                  <Paper withBorder p="xs" radius="md">
+                  <Paper withBorder p="xs" radius="md" id="wiki-context-revisions">
                     <Text size="xs" fw={700} mb={6}>
                       Latest revisions
                     </Text>
