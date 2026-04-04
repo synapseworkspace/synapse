@@ -41,6 +41,7 @@ Owner: Core team
 14. Existing-memory adoption layer (coexistence modes, migration wizard, source-ownership policy).
 15. Process Playbook Intelligence (if/then runbooks, instruction capture, operator-outcome loops).
 16. Agent Directory & Operations Intelligence (AI orgchart, agent folders, daily worklogs, provenance).
+17. Public Launch & Positioning (package publication, onboarding KPI, Cognitive State Layer messaging).
 
 ## Recovery Plan: Wiki-First UX + Draft Quality (April 2026)
 
@@ -612,10 +613,46 @@ Progress:
 - [x] Add shadow retrieval evaluation command (`synapse-cli adopt --shadow-retrieval-check`) with quality diff report.
 - [x] Publish dedicated migration playbook doc (`docs/adoption-existing-memory.md`) with anti-corruption layer patterns.
 
+## M15: Public Launch & Positioning (Weeks 37-40)
+
+Status: `planned`
+
+Scope:
+- remove “not published yet” friction by shipping registry-verified package installs;
+- make Agentic Onboarding the primary GTM story with measurable time-to-value;
+- keep OpenClaw strength while making LangGraph/LangChain/CrewAI entry equally first-class;
+- reframe messaging from “wiki UI” to “Cognitive State Layer (L2 for AI agents)” without losing wiki UX clarity.
+
+Exit criteria:
+- clean-machine install works with registry packages (`pip install synapseworkspace-sdk`, `npm install @synapseworkspace/sdk`);
+- onboarding benchmark is documented and reproducible (`time-to-first-useful-draft`, `time-to-first-publish`);
+- top-level docs/README consistently present Synapse as L2 cognitive layer with Agentic Wiki as operational interface.
+
+Checklist:
+1. `planned` Kill “Not Published Yet” docs state:
+   - complete trusted publishing for PyPI/npm and verify first successful public releases;
+   - replace “not published yet” language with versioned install docs and troubleshooting.
+2. `planned` Registry install verification matrix:
+   - add clean-room install checks on Linux/macOS for Python + Node in CI release path;
+   - capture publish provenance and signed artifact references in release notes.
+3. `planned` Agentic Onboarding benchmark kit:
+   - ship one-command benchmark scenario for “new support agent day-0” with before/after metrics;
+   - surface KPI cards in docs (`first useful answer`, `first approved draft`, `first policy-safe publish`).
+4. `planned` Multi-framework onboarding parity:
+   - add canonical quickstarts for OpenClaw, LangGraph, LangChain, CrewAI with same 5-minute structure;
+   - enforce parity via docs lint + smoke contracts.
+5. `planned` Positioning refresh (L2 narrative):
+   - update README/docs hero language to “Cognitive State Layer (L2)” + “Agentic Wiki interface”;
+   - keep dual framing: infra buyers (L2 reliability/quality) + operators (wiki governance UI).
+6. `planned` Buyer-facing packaging:
+   - add concise “Why now / ROI / rollout modes” one-pager and architecture slide-ready diagram pack;
+   - include side-by-side “raw RAG vs Synapse L2” operational comparison.
+
 ## Next Up (Execution Queue)
 
-1. Expand release gate from fixture-backed checks to auto-appended live reliability history snapshots per environment.
-2. Add incident runbooks linked to SLO violation codes for faster operator triage.
+1. M15.1: complete first fully verified public package release path and remove “not published yet” language from onboarding docs.
+2. M15.3: ship Agentic Onboarding benchmark kit with reproducible metrics and demo dataset.
+3. M15.5: complete positioning refresh to “Cognitive State Layer (L2)” across README/docs.
 
 ## Risks to Watch
 
@@ -630,6 +667,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Added roadmap milestone `M15: Public Launch & Positioning` to operationalize GTM feedback: eliminate “not published yet” friction via registry-verified releases, make Agentic Onboarding a measurable primary narrative, enforce OpenClaw/LangGraph/LangChain/CrewAI onboarding parity, and refresh product framing to “Cognitive State Layer (L2)” with wiki as the governance interface.
 - 2026-04-04: Added new roadmap track `Agent Directory & Operations Intelligence` with phased delivery (`MVP -> Scale -> Governance`): AI orgchart index, attach-time self-profile updates, standard agent folder scaffold, agent-authored page index, daily worklog synthesis, capability/handoff maps, agent scorecards, provenance+rollback, and risk-tiered publish guardrails.
 - 2026-04-04: Added new roadmap track `Process Playbook Intelligence (Support Ops Focus)` to move Synapse from fact-only wiki toward process-aware operational documentation; queued operator decision capture, template-first playbook pages, process-quality gatekeeper routing, risk-tiered auto-publish with rollback, intent-aware context injection, auto onboarding packs, ticket/outcome linkage, provenance for process steps, and pre-publish process simulation checks.
 - 2026-04-04: Completed sticky page toolbar in core wiki view (`History`, `Watch/Watching`, `Share`, `Drafts`, `Edit`, `More`) with real actions wired to existing page flows, added smooth jump-to-revisions anchor (`#wiki-context-revisions`), and reduced header action clutter to keep page view wiki-first.
