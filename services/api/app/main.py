@@ -272,6 +272,18 @@ class WikiAutoPublishRunRequest(BaseModel):
     dry_run: bool = False
 
 
+class RetrievalFeedbackWriteRequest(BaseModel):
+    project_id: str
+    feedback: str = Field(pattern="^(positive|negative|neutral)$")
+    claim_id: UUID | None = None
+    page_slug: str | None = Field(default=None, max_length=256)
+    session_id: str | None = Field(default=None, max_length=256)
+    query: str | None = Field(default=None, max_length=2000)
+    source_system: str | None = Field(default=None, max_length=128)
+    usefulness_score: float | None = Field(default=None, ge=-1.0, le=1.0)
+    metadata: dict[str, Any] | None = None
+
+
 class WikiBootstrapApproveRunRequest(BaseModel):
     project_id: str
     reviewed_by: str = Field(default="synapse_bootstrap_migration", min_length=1, max_length=256)
@@ -1578,6 +1590,7 @@ _ACCESS_POLICY_DECISIONS_TABLE_EXISTS: bool | None = None
 _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS: bool | None = None
 _SCIM_API_TOKENS_TABLE_EXISTS: bool | None = None
 _SCIM_DIRECTORY_USERS_TABLE_EXISTS: bool | None = None
+_WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
 
 _DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS = [
@@ -1686,6 +1699,17 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "event_stream_min_kv_hits": 2,
     "min_durable_signal_hits": 1,
     "min_durable_signal_hits_for_backfill": 1,
+    "publish_mode_by_assertion_class": {
+        "policy": "conditional",
+        "preference": "auto_publish",
+        "incident": "human_required",
+        "event": "human_required",
+        "fact": "conditional",
+    },
+    "retrieval_feedback_window_days": 30,
+    "retrieval_feedback_min_events": 3,
+    "retrieval_feedback_block_negative_ratio": 0.7,
+    "retrieval_feedback_block_balance": 2,
     "require_multi_source_for_wiki": True,
     "min_sources_for_wiki_candidate": 2,
     "min_evidence_for_wiki_candidate": 2,
@@ -1944,6 +1968,26 @@ def _scim_directory_users_table_exists(conn) -> bool:
         exists = cur.fetchone() is not None
         if exists:
             _SCIM_DIRECTORY_USERS_TABLE_EXISTS = True
+    return exists
+
+
+def _wiki_retrieval_feedback_table_exists(conn) -> bool:
+    global _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS
+    if _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'wiki_retrieval_feedback'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS = True
     return exists
 
 
@@ -2540,6 +2584,11 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         value.get("durable_signal_keywords"),
         fallback=list(base["durable_signal_keywords"]),
     )
+    normalized["publish_mode_by_assertion_class"] = _normalize_publish_mode_map(
+        value.get("publish_mode_by_assertion_class")
+    )
+    if not normalized["publish_mode_by_assertion_class"]:
+        normalized["publish_mode_by_assertion_class"] = dict(base["publish_mode_by_assertion_class"])
     normalized["event_stream_min_numeric_token_ratio"] = max(
         0.0,
         min(1.0, _coerce_float(value.get("event_stream_min_numeric_token_ratio"), 0.45)),
@@ -2559,6 +2608,22 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     normalized["min_durable_signal_hits_for_backfill"] = max(
         0,
         min(20, _coerce_int(value.get("min_durable_signal_hits_for_backfill"), 1)),
+    )
+    normalized["retrieval_feedback_window_days"] = max(
+        1,
+        min(365, _coerce_int(value.get("retrieval_feedback_window_days"), 30)),
+    )
+    normalized["retrieval_feedback_min_events"] = max(
+        1,
+        min(200, _coerce_int(value.get("retrieval_feedback_min_events"), 3)),
+    )
+    normalized["retrieval_feedback_block_negative_ratio"] = max(
+        0.0,
+        min(1.0, _coerce_float(value.get("retrieval_feedback_block_negative_ratio"), 0.7)),
+    )
+    normalized["retrieval_feedback_block_balance"] = max(
+        1,
+        min(500, _coerce_int(value.get("retrieval_feedback_block_balance"), 2)),
     )
     normalized["require_multi_source_for_wiki"] = _coerce_bool(value.get("require_multi_source_for_wiki"), True)
     normalized["min_sources_for_wiki_candidate"] = max(
@@ -2584,9 +2649,15 @@ def _resolve_publish_mode_for_category(
     *,
     default_mode: str,
     category_map: dict[str, str],
+    assertion_class_map: dict[str, str] | None,
+    assertion_class: str | None,
     category: str | None,
     page_type: str | None,
 ) -> str:
+    normalized_assertion_class = str(assertion_class or "").strip().lower()
+    class_map = assertion_class_map if isinstance(assertion_class_map, dict) else {}
+    if normalized_assertion_class and normalized_assertion_class in class_map:
+        return _normalize_publish_mode(class_map.get(normalized_assertion_class), default=default_mode)
     normalized_category = str(category or "").strip().lower()
     normalized_page_type = str(page_type or "").strip().lower()
     for key in (
@@ -2613,6 +2684,74 @@ def _extract_source_diversity(features: dict[str, Any]) -> int:
         except Exception:
             continue
     return 0
+
+
+def _extract_assertion_class(features: dict[str, Any], *, category: str | None, page_type: str | None) -> str:
+    value = str(features.get("assertion_class") or "").strip().lower()
+    if value in {"policy", "preference", "incident", "event", "fact"}:
+        return value
+    normalized_page_type = str(page_type or "").strip().lower()
+    normalized_category = str(category or "").strip().lower()
+    if normalized_page_type in {"access", "operations"}:
+        return "policy"
+    if normalized_page_type == "incident":
+        return "incident"
+    if normalized_page_type == "customer":
+        return "preference"
+    if any(token in normalized_category for token in ("incident", "error", "сбой", "инцидент")):
+        return "incident"
+    if any(token in normalized_category for token in ("customer", "client", "preference", "клиент", "предпочт")):
+        return "preference"
+    if any(token in normalized_category for token in ("policy", "rule", "process", "процесс", "правило")):
+        return "policy"
+    return "fact"
+
+
+def _load_retrieval_feedback_summary(
+    conn,
+    *,
+    project_id: str,
+    claim_ids: list[str],
+    window_days: int,
+) -> dict[str, dict[str, int | float]]:
+    if not claim_ids or not _wiki_retrieval_feedback_table_exists(conn):
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              claim_id::text,
+              SUM(CASE WHEN feedback = 'positive' THEN 1 ELSE 0 END) AS positive_count,
+              SUM(CASE WHEN feedback = 'negative' THEN 1 ELSE 0 END) AS negative_count,
+              SUM(CASE WHEN feedback = 'neutral' THEN 1 ELSE 0 END) AS neutral_count
+            FROM wiki_retrieval_feedback
+            WHERE project_id = %s
+              AND claim_id = ANY(%s::uuid[])
+              AND created_at >= NOW() - make_interval(days => %s)
+            GROUP BY claim_id
+            """,
+            (project_id, claim_ids, int(window_days)),
+        )
+        rows = cur.fetchall() or []
+    out: dict[str, dict[str, int | float]] = {}
+    for row in rows:
+        claim_id = str(row[0] or "").strip()
+        if not claim_id:
+            continue
+        positive = int(row[1] or 0)
+        negative = int(row[2] or 0)
+        neutral = int(row[3] or 0)
+        total = positive + negative + neutral
+        negative_ratio = (float(negative) / float(total)) if total > 0 else 0.0
+        out[claim_id] = {
+            "positive": positive,
+            "negative": negative,
+            "neutral": neutral,
+            "total": total,
+            "negative_ratio": round(negative_ratio, 4),
+            "negative_balance": negative - positive,
+        }
+    return out
 
 
 def _extract_calibration_holdout_metrics(calibration_report: dict[str, Any] | None) -> dict[str, float | None]:
@@ -15310,6 +15449,142 @@ def explain_mcp_retrieval(
     }
 
 
+@app.post("/v1/mcp/retrieval/feedback")
+def write_mcp_retrieval_feedback(payload: RetrievalFeedbackWriteRequest) -> dict[str, Any]:
+    project_id = payload.project_id.strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        if not _wiki_retrieval_feedback_table_exists(conn):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "retrieval_feedback_not_available",
+                    "hint": "apply migration 050_retrieval_feedback_loop.sql",
+                },
+            )
+        page_id: str | None = None
+        if payload.page_slug:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id::text
+                    FROM wiki_pages
+                    WHERE project_id = %s
+                      AND slug = %s
+                    LIMIT 1
+                    """,
+                    (project_id, _normalize_wiki_slug(payload.page_slug, payload.page_slug)),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    page_id = str(row[0])
+        feedback_id = uuid4()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO wiki_retrieval_feedback (
+                  id,
+                  project_id,
+                  claim_id,
+                  page_id,
+                  feedback,
+                  usefulness_score,
+                  query_text,
+                  session_id,
+                  source_system,
+                  metadata
+                )
+                VALUES (
+                  %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    feedback_id,
+                    project_id,
+                    payload.claim_id,
+                    page_id,
+                    payload.feedback,
+                    payload.usefulness_score,
+                    payload.query.strip() if isinstance(payload.query, str) and payload.query.strip() else None,
+                    payload.session_id.strip() if isinstance(payload.session_id, str) and payload.session_id.strip() else None,
+                    _normalize_source_system(payload.source_system, default="unknown"),
+                    Jsonb(payload.metadata or {}),
+                ),
+            )
+    return {
+        "status": "ok",
+        "feedback_id": str(feedback_id),
+        "project_id": project_id,
+        "feedback": payload.feedback,
+        "claim_id": str(payload.claim_id) if payload.claim_id is not None else None,
+        "page_id": page_id,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/mcp/retrieval/feedback/stats")
+def get_mcp_retrieval_feedback_stats(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        if not _wiki_retrieval_feedback_table_exists(conn):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "retrieval_feedback_not_available",
+                    "hint": "apply migration 050_retrieval_feedback_loop.sql",
+                },
+            )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  COALESCE(claim_id::text, '') AS claim_id,
+                  SUM(CASE WHEN feedback = 'positive' THEN 1 ELSE 0 END) AS positive_count,
+                  SUM(CASE WHEN feedback = 'negative' THEN 1 ELSE 0 END) AS negative_count,
+                  SUM(CASE WHEN feedback = 'neutral' THEN 1 ELSE 0 END) AS neutral_count,
+                  COUNT(*)::bigint AS total_count,
+                  MAX(created_at) AS last_feedback_at
+                FROM wiki_retrieval_feedback
+                WHERE project_id = %s
+                  AND created_at >= NOW() - make_interval(days => %s)
+                GROUP BY COALESCE(claim_id::text, '')
+                ORDER BY COUNT(*) DESC, MAX(created_at) DESC
+                LIMIT %s
+                """,
+                (project_id, int(days), int(limit)),
+            )
+            rows = cur.fetchall() or []
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        positive = int(row[1] or 0)
+        negative = int(row[2] or 0)
+        neutral = int(row[3] or 0)
+        total = int(row[4] or 0)
+        negative_ratio = (float(negative) / float(total)) if total > 0 else 0.0
+        items.append(
+            {
+                "claim_id": str(row[0]) or None,
+                "positive_count": positive,
+                "negative_count": negative,
+                "neutral_count": neutral,
+                "total_count": total,
+                "negative_ratio": round(negative_ratio, 4),
+                "negative_balance": negative - positive,
+                "last_feedback_at": row[5].isoformat() if row[5] is not None else None,
+            }
+        )
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "items": items,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 @app.get("/v1/wiki/pages/{slug}")
 def get_wiki_page(slug: str, project_id: str) -> Any:
     normalized_slug = _normalize_wiki_slug(slug, slug)
@@ -18799,6 +19074,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
     total_source_ownership_advisories = 0
 
     for project_id in dedup_projects:
+        feedback_by_claim: dict[str, dict[str, int | float]] = {}
         with get_conn() as conn:
             source_ownership_advisories = 0
             if _source_ownership_table_exists(conn):
@@ -18813,6 +19089,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                 if ownership_check.get("status") == "advisory":
                     source_ownership_advisories += 1
             has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
+            has_routing_policy_column = _gatekeeper_config_has_routing_policy_column(conn)
             policy = {
                 "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
@@ -18820,9 +19097,38 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                 "auto_publish_min_sources": 3,
                 "auto_publish_require_golden": True,
                 "auto_publish_allow_conflicts": False,
+                "routing_policy": _normalize_gatekeeper_routing_policy(None),
             }
             with conn.cursor() as cur:
-                if has_publish_columns:
+                if has_publish_columns and has_routing_policy_column:
+                    cur.execute(
+                        """
+                        SELECT
+                          publish_mode_default,
+                          publish_mode_by_category,
+                          auto_publish_min_score,
+                          auto_publish_min_sources,
+                          auto_publish_require_golden,
+                          auto_publish_allow_conflicts,
+                          routing_policy
+                        FROM gatekeeper_project_configs
+                        WHERE project_id = %s
+                        LIMIT 1
+                        """,
+                        (project_id,),
+                    )
+                    policy_row = cur.fetchone()
+                    if policy_row is not None:
+                        policy = {
+                            "publish_mode_default": _normalize_publish_mode(policy_row[0]),
+                            "publish_mode_by_category": _normalize_publish_mode_map(policy_row[1]),
+                            "auto_publish_min_score": float(policy_row[2]),
+                            "auto_publish_min_sources": int(policy_row[3]),
+                            "auto_publish_require_golden": bool(policy_row[4]),
+                            "auto_publish_allow_conflicts": bool(policy_row[5]),
+                            "routing_policy": _normalize_gatekeeper_routing_policy(policy_row[6]),
+                        }
+                elif has_publish_columns:
                     cur.execute(
                         """
                         SELECT
@@ -18847,6 +19153,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                             "auto_publish_min_sources": int(policy_row[3]),
                             "auto_publish_require_golden": bool(policy_row[4]),
                             "auto_publish_allow_conflicts": bool(policy_row[5]),
+                            "routing_policy": _normalize_gatekeeper_routing_policy(None),
                         }
 
                 cur.execute(
@@ -18880,6 +19187,18 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     (project_id, payload.limit_per_project),
                 )
                 rows = cur.fetchall() or []
+                feedback_policy = policy["routing_policy"] if isinstance(policy.get("routing_policy"), dict) else {}
+                claim_ids = [
+                    str(row[1])
+                    for row in rows
+                    if row[1] is not None and str(row[1]).strip()
+                ]
+                feedback_by_claim = _load_retrieval_feedback_summary(
+                    conn,
+                    project_id=project_id,
+                    claim_ids=claim_ids,
+                    window_days=int(feedback_policy.get("retrieval_feedback_window_days", 30)),
+                )
 
         scanned = len(rows)
         eligible = 0
@@ -18898,10 +19217,17 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
             features = row[9] if isinstance(row[9], dict) else {}
             has_open_conflict = bool(row[10])
             source_diversity = _extract_source_diversity(features)
+            assertion_class = _extract_assertion_class(features, category=category, page_type=page_type)
 
             mode = _resolve_publish_mode_for_category(
                 default_mode=str(policy["publish_mode_default"]),
                 category_map=policy["publish_mode_by_category"] if isinstance(policy["publish_mode_by_category"], dict) else {},
+                assertion_class_map=(
+                    policy.get("routing_policy", {}).get("publish_mode_by_assertion_class")
+                    if isinstance(policy.get("routing_policy"), dict)
+                    else None
+                ),
+                assertion_class=assertion_class,
                 category=category,
                 page_type=page_type,
             )
@@ -18938,6 +19264,28 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                         reason = "conditional_policy_matched"
                 else:
                     reason = "auto_publish_policy_matched"
+
+                if eligible_for_auto:
+                    feedback_policy = policy["routing_policy"] if isinstance(policy.get("routing_policy"), dict) else {}
+                    feedback = feedback_by_claim.get(claim_id_text) or {}
+                    feedback_total = int(feedback.get("total", 0))
+                    feedback_negative_ratio = float(feedback.get("negative_ratio", 0.0))
+                    feedback_negative_balance = int(feedback.get("negative_balance", 0))
+                    feedback_min_events = int(feedback_policy.get("retrieval_feedback_min_events", 3))
+                    feedback_ratio_limit = float(feedback_policy.get("retrieval_feedback_block_negative_ratio", 0.7))
+                    feedback_balance_limit = int(feedback_policy.get("retrieval_feedback_block_balance", 2))
+                    if (
+                        feedback_total >= feedback_min_events
+                        and (
+                            feedback_negative_ratio >= feedback_ratio_limit
+                            or feedback_negative_balance >= feedback_balance_limit
+                        )
+                    ):
+                        eligible_for_auto = False
+                        reason = (
+                            "retrieval_feedback_negative_bias:"
+                            f"ratio={feedback_negative_ratio:.3f},balance={feedback_negative_balance},total={feedback_total}"
+                        )
 
             if eligible_for_auto:
                 eligible += 1
@@ -18978,6 +19326,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     "claim_id": claim_id_text,
                     "category": category,
                     "page_type": page_type,
+                    "assertion_class": assertion_class,
                     "decision": decision,
                     "tier": tier or None,
                     "score": score,
@@ -18986,6 +19335,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     "has_open_conflict": has_open_conflict,
                     "outcome": outcome,
                     "reason": reason,
+                    "retrieval_feedback": feedback_by_claim.get(claim_id_text) or None,
                 }
             )
 

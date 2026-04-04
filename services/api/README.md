@@ -67,6 +67,8 @@ Environment:
 - `GET /v1/wiki/routing/metrics?project_id=...&window_days=30` (routing quality counters/rates: precision@1, manual reassign rate, new-page false positives, conflict/ambiguity rates)
 - `GET /v1/wiki/routing/recommendations?project_id=...&window_days=30` (threshold tuning recommendations for `threshold_mid` / `new_page_margin` / `ambiguity_gap`)
 - `GET /v1/mcp/retrieval/explain?project_id=...&q=...&limit=10&related_entity_key=...&context_policy_mode=enforced&min_retrieval_confidence=0.45` (MCP-compatible retrieval diagnostics with score/confidence breakdown, reason traces, and context-injection policy controls)
+- `POST /v1/mcp/retrieval/feedback` (runtime usefulness feedback for retrieved context; positive/negative/neutral)
+- `GET /v1/mcp/retrieval/feedback/stats?project_id=...&days=30` (feedback aggregates by claim for policy tuning)
 - `POST /v1/wiki/pages` (guided/manual page create with initial version + optional sections/statements from markdown)
 - `PUT /v1/wiki/pages/{slug}` (direct human page edit, new page version + statement re-index + snapshot)
 - `PUT /v1/wiki/pages/{slug}/move` (move/rename page slug, optional subtree move, alias back-compat, and snapshot invalidation)
@@ -111,7 +113,7 @@ Environment:
 - `GET /v1/gatekeeper/decisions?project_id=...&tier=golden_candidate`
 - `GET /v1/gatekeeper/config?project_id=...`
 - `PUT /v1/gatekeeper/config`
-- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, deny keywords for category/source-system/source-type/entity/source_id, durable knowledge-signal thresholds, minimum independent evidence rules, and backfill policy gating before wiki routing).
+- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, deny keywords for category/source-system/source-type/entity/source_id, durable knowledge-signal thresholds, assertion-class publish-mode map, retrieval-feedback guardrails, minimum independent evidence rules, and backfill policy gating before wiki routing).
 - `GET /v1/gatekeeper/config/snapshots?project_id=...&source=calibration_cycle&limit=20`
 - `POST /v1/gatekeeper/config/snapshots`
 - `GET /v1/gatekeeper/calibration/trends?project_id=...&limit=24`
@@ -304,6 +306,7 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Gatekeeper calibration schedule endpoints depend on migration `018_gatekeeper_calibration_schedules.sql`.
 - Gatekeeper alert target/attempt endpoints depend on migration `019_gatekeeper_alert_delivery.sql`.
 - Gatekeeper routing-policy fields depend on migration `049_gatekeeper_routing_policy.sql`.
+- Retrieval-feedback endpoints and retrieval-governance policy feedback loop depend on migration `050_retrieval_feedback_loop.sql`.
 - Rollback approval workflow endpoints depend on migration `020_gatekeeper_rollback_requests.sql`.
 - Calibration run-history endpoints depend on migration `021_gatekeeper_calibration_run_history.sql`.
 - Agent Simulator read endpoints depend on migration `013_agent_simulator.sql`.

@@ -58,6 +58,7 @@ Phase 1 (now):
 - deterministic Utility Gate hardening;
 - source-id + payload-shape suppression;
 - unit tests for noisy backfill and valid policy facts.
+- assertion class tagging in Gatekeeper output (`policy|preference|incident|event|fact`).
 
 Phase 2:
 - assertion classes (`policy`, `preference`, `incident`, `event`);
@@ -66,6 +67,11 @@ Phase 2:
 Phase 3:
 - retrieval feedback loop (accepted/rejected context usefulness);
 - adaptive policy suggestions from real usage.
+
+Current implementation status:
+- Phase 1: done.
+- Phase 2: done baseline (`publish_mode_by_assertion_class` in routing policy + auto-publish resolver support).
+- Phase 3: done baseline (retrieval feedback ingest/stats APIs + auto-publish negative-feedback guardrails), adaptive suggestions remain iterative.
 
 ## Success Metrics
 

@@ -200,6 +200,17 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "event_stream_min_kv_hits": 2,
     "min_durable_signal_hits": 1,
     "min_durable_signal_hits_for_backfill": 1,
+    "publish_mode_by_assertion_class": {
+        "policy": "conditional",
+        "preference": "auto_publish",
+        "incident": "human_required",
+        "event": "human_required",
+        "fact": "conditional",
+    },
+    "retrieval_feedback_window_days": 30,
+    "retrieval_feedback_min_events": 3,
+    "retrieval_feedback_block_negative_ratio": 0.7,
+    "retrieval_feedback_block_balance": 2,
     "require_multi_source_for_wiki": True,
     "min_sources_for_wiki_candidate": 2,
     "min_evidence_for_wiki_candidate": 2,
@@ -1102,10 +1113,12 @@ class WikiSynthesisEngine:
         fingerprint = self._claim_fingerprint(claim)
         gate = self._gatekeeper_decide(conn, claim, fingerprint)
         self._record_gatekeeper_decision(conn, claim, gate)
+        assertion_class = str((gate.features or {}).get("assertion_class") or "fact").strip().lower() or "fact"
         self._upsert_claim(
             conn,
             claim,
             gate_tier=gate.tier,
+            assertion_class=assertion_class,
             valid_from=valid_from,
             valid_to=valid_to,
             temporal_source=temporal_source,
@@ -1256,6 +1269,7 @@ class WikiSynthesisEngine:
         claim: ClaimInput,
         *,
         gate_tier: str,
+        assertion_class: str,
         valid_from: datetime | None,
         valid_to: datetime | None,
         temporal_source: str,
@@ -1266,6 +1280,7 @@ class WikiSynthesisEngine:
             "evidence_count": len(claim.evidence),
             "source_ids": source_ids,
             "gate_tier": gate_tier,
+            "assertion_class": assertion_class,
             "temporal_source": temporal_source,
         }
         if valid_from is not None:
@@ -1396,6 +1411,9 @@ class WikiSynthesisEngine:
         min_evidence_for_wiki_candidate = int(routing_policy.get("min_evidence_for_wiki_candidate", 2))
         allow_policy_or_incident_override = bool(routing_policy.get("allow_policy_or_incident_override", True))
         backfill_requires_policy_signal = bool(routing_policy.get("backfill_requires_policy_signal", True))
+        publish_mode_by_assertion_class = self._normalize_publish_mode_map(
+            routing_policy.get("publish_mode_by_assertion_class")
+        )
         operational_verbs = {
             "sent",
             "send",
@@ -1423,6 +1441,22 @@ class WikiSynthesisEngine:
         has_operational_pattern = bool(token_set & operational_verbs)
         policy_words = {"must", "required", "only", "forbidden", "until", "closed", "open", "policy", "quarantine"}
         has_policy_signal = bool(token_set & policy_words)
+        preference_words = {
+            "prefer",
+            "prefers",
+            "preference",
+            "contact",
+            "customer",
+            "client",
+            "slack",
+            "email",
+            "call",
+            "клиент",
+            "предпочт",
+            "контакт",
+            "звонить",
+        }
+        has_preference_signal = bool(token_set & preference_words)
         high_priority_words = {
             "blocked",
             "outage",
@@ -1521,6 +1555,15 @@ class WikiSynthesisEngine:
             has_policy_signal
             or has_high_priority_signal
             or durable_signal_hits >= min_durable_signal_hits
+        )
+        assertion_class = self._infer_assertion_class(
+            category_hint=category_hint,
+            has_policy_signal=has_policy_signal,
+            has_preference_signal=has_preference_signal,
+            has_high_priority_signal=has_high_priority_signal,
+            has_event_stream_shape=has_event_stream_shape,
+            blocked_by_source_id=blocked_by_source_id,
+            blocked_by_source_type=blocked_by_source_type,
         )
         runtime_source_systems = {
             "runtime_memory",
@@ -1630,9 +1673,11 @@ class WikiSynthesisEngine:
                     "is_short": is_short,
                     "has_operational_pattern": has_operational_pattern,
                     "has_policy_signal": has_policy_signal,
+                    "has_preference_signal": has_preference_signal,
                     "has_recent_open_conflict": has_recent_open_conflict,
                     "heuristic_score": score,
                     "heuristic_tier": tier,
+                    "assertion_class": assertion_class,
                     "routing_hard_block": routing_hard_block,
                     "insufficient_support": insufficient_support,
                     "blocked_by_category": blocked_by_category,
@@ -1707,9 +1752,12 @@ class WikiSynthesisEngine:
             "is_short": is_short,
             "has_operational_pattern": has_operational_pattern,
             "has_policy_signal": has_policy_signal,
+            "has_preference_signal": has_preference_signal,
             "has_high_priority_signal": has_high_priority_signal,
             "has_override_signal": has_override_signal,
             "has_recent_open_conflict": has_recent_open_conflict,
+            "assertion_class": assertion_class,
+            "publish_mode_by_assertion_class": publish_mode_by_assertion_class,
             "gatekeeper_min_sources_for_golden": config.min_sources_for_golden,
             "gatekeeper_conflict_free_days": config.conflict_free_days,
             "gatekeeper_min_score_for_golden": config.min_score_for_golden,
@@ -1912,6 +1960,11 @@ class WikiSynthesisEngine:
             value.get("durable_signal_keywords"),
             fallback=list(base["durable_signal_keywords"]),
         )
+        normalized["publish_mode_by_assertion_class"] = self._normalize_publish_mode_map(
+            value.get("publish_mode_by_assertion_class")
+        )
+        if not normalized["publish_mode_by_assertion_class"]:
+            normalized["publish_mode_by_assertion_class"] = dict(base["publish_mode_by_assertion_class"])
         try:
             min_numeric_ratio = float(value.get("event_stream_min_numeric_token_ratio", 0.45))
         except Exception:
@@ -1937,6 +1990,26 @@ class WikiSynthesisEngine:
         except Exception:
             min_backfill_durable_hits = 1
         normalized["min_durable_signal_hits_for_backfill"] = max(0, min(20, min_backfill_durable_hits))
+        try:
+            feedback_window_days = int(value.get("retrieval_feedback_window_days", 30))
+        except Exception:
+            feedback_window_days = 30
+        normalized["retrieval_feedback_window_days"] = max(1, min(365, feedback_window_days))
+        try:
+            feedback_min_events = int(value.get("retrieval_feedback_min_events", 3))
+        except Exception:
+            feedback_min_events = 3
+        normalized["retrieval_feedback_min_events"] = max(1, min(200, feedback_min_events))
+        try:
+            feedback_negative_ratio = float(value.get("retrieval_feedback_block_negative_ratio", 0.7))
+        except Exception:
+            feedback_negative_ratio = 0.7
+        normalized["retrieval_feedback_block_negative_ratio"] = max(0.0, min(1.0, feedback_negative_ratio))
+        try:
+            feedback_balance = int(value.get("retrieval_feedback_block_balance", 2))
+        except Exception:
+            feedback_balance = 2
+        normalized["retrieval_feedback_block_balance"] = max(1, min(500, feedback_balance))
         normalized["require_multi_source_for_wiki"] = bool(value.get("require_multi_source_for_wiki", True))
         try:
             min_sources = int(value.get("min_sources_for_wiki_candidate", 2))
@@ -3245,6 +3318,27 @@ class WikiSynthesisEngine:
         if any(ch in normalized_keyword for ch in "_./:-"):
             return normalized_keyword in normalized_identifier
         return normalized_identifier == normalized_keyword
+
+    def _infer_assertion_class(
+        self,
+        *,
+        category_hint: str,
+        has_policy_signal: bool,
+        has_preference_signal: bool,
+        has_high_priority_signal: bool,
+        has_event_stream_shape: bool,
+        blocked_by_source_id: bool,
+        blocked_by_source_type: bool,
+    ) -> str:
+        if has_event_stream_shape or blocked_by_source_id or blocked_by_source_type:
+            return "event"
+        if has_high_priority_signal or category_hint == "incident":
+            return "incident"
+        if has_preference_signal or category_hint == "customer":
+            return "preference"
+        if has_policy_signal or category_hint in {"access", "operations"}:
+            return "policy"
+        return "fact"
 
     def _normalize_text(self, text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text).lower().strip()

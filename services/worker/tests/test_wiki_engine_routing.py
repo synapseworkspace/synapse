@@ -83,6 +83,7 @@ class WikiEngineRoutingTests(unittest.TestCase):
         )
         self.assertEqual(decision.tier, "operational_memory")
         self.assertTrue(bool(decision.features.get("routing_hard_block")))
+        self.assertEqual(str(decision.features.get("assertion_class")), "event")
         self.assertTrue(
             bool(decision.features.get("blocked_by_source_id"))
             or bool(decision.features.get("has_event_stream_shape"))
@@ -114,6 +115,34 @@ class WikiEngineRoutingTests(unittest.TestCase):
         )
         self.assertEqual(decision.tier, "insight_candidate")
         self.assertTrue(bool(decision.features.get("has_durable_signal")))
+        self.assertEqual(str(decision.features.get("assertion_class")), "preference")
+
+    def test_gatekeeper_marks_policy_assertion_class(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="warehouse_2",
+            category="access",
+            claim_text="Warehouse #2 entry policy: only physical key-card after 10:00.",
+            evidence=[
+                {
+                    "source_type": "tool_result",
+                    "source_id": "ops_note_1",
+                    "tool_name": "runtime_memory",
+                    "source_system": "ops_manual",
+                }
+            ],
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["ops_note_1"],
+            has_recent_open_conflict=False,
+        )
+        self.assertIn(decision.tier, {"insight_candidate", "golden_candidate"})
+        self.assertEqual(str(decision.features.get("assertion_class")), "policy")
 
 
 if __name__ == "__main__":

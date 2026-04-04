@@ -86,6 +86,7 @@ Before Step A, Gatekeeper triage decides whether claim is even eligible for wiki
 1. `operational_memory`: execution noise, not promoted to draft wiki pages.
 2. `insight_candidate`: useful but requires standard moderation.
 3. `golden_candidate`: high-value pattern/policy fact, prioritized in moderation queues.
+4. `assertion_class`: every claim is typed as `policy | preference | incident | event | fact` for routing clarity.
 
 Knowledge Utility Gate (default):
 1. deny-list checks by `category`, `source_system`, `source_type`, `entity_key`, and `source_id`;
@@ -94,6 +95,11 @@ Knowledge Utility Gate (default):
 4. backfill-specific guardrails (records without durable signal are held in `operational_memory`).
 
 This is what prevents `order_snapshot`/invoice/status streams from flooding wiki drafts.
+
+Assertion-class aware publication:
+1. project policy can define `publish_mode_by_assertion_class` in `routing_policy`;
+2. class mode is resolved before category fallback;
+3. typical default: `incident/event -> human_required`, `policy/fact -> conditional`, `preference -> auto_publish`.
 
 Auto-promotion from `insight_candidate` to `golden_candidate` can happen when:
 1. source diversity reaches configured threshold;
@@ -227,6 +233,13 @@ Business outcome:
 1. Team does not need to read full wiki to understand AI learning progress.
 2. Backlog and contradiction pressure become visible (`pending_drafts`, `open_conflicts`).
 3. "Knowledge Velocity" trend can be charted to show ROI of Synapse adoption.
+
+## 13. Retrieval Feedback Loop
+
+Synapse accepts runtime usefulness feedback for retrieved context:
+1. `POST /v1/mcp/retrieval/feedback` stores `positive|negative|neutral` signals per claim/page.
+2. `GET /v1/mcp/retrieval/feedback/stats` exposes aggregate quality by claim.
+3. Auto-publish policy can block autonomous approval when recent feedback is strongly negative (`retrieval_feedback_*` thresholds in routing policy).
 
 Delivery layer:
 1. `intelligence_delivery_targets` stores channel configs per project (`slack_webhook`, `email_smtp`).

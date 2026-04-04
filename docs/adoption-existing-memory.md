@@ -65,6 +65,11 @@ Tune via Gatekeeper config `routing_policy` (`GET/PUT /v1/gatekeeper/config`):
 - `event_stream_min_kv_hits`
 - `min_durable_signal_hits`
 - `min_durable_signal_hits_for_backfill`
+- `publish_mode_by_assertion_class` (`policy|preference|incident|event|fact`)
+- `retrieval_feedback_window_days`
+- `retrieval_feedback_min_events`
+- `retrieval_feedback_block_negative_ratio`
+- `retrieval_feedback_block_balance`
 - `require_multi_source_for_wiki`
 - `min_sources_for_wiki_candidate`
 - `min_evidence_for_wiki_candidate`

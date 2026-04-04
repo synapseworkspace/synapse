@@ -65,7 +65,7 @@ Workstreams:
 
 ## Knowledge Compiler Hardening (April 2026)
 
-Status: `in_progress`
+Status: `done`
 
 Goal:
 - stop raw operational/event streams from becoming wiki pages;
@@ -83,9 +83,9 @@ Checklist:
    - `GET/PUT /v1/gatekeeper/config` normalizes new `routing_policy` fields.
 4. `done` Regression tests for routing quality:
    - unit tests for snapshot-noise demotion + policy-fact retention.
-5. `planned` Assertion class contracts:
+5. `done` Assertion class contracts:
    - typed class labels (`policy`, `preference`, `incident`, `event`) to improve explainability.
-6. `planned` Retrieval-feedback loop:
+6. `done` Retrieval-feedback loop:
    - incorporate real runtime usefulness into draft priority and policy suggestions.
 
 ## User-Friendly Wiki UX (12-Point Track)
@@ -561,6 +561,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Closed remaining Knowledge Compiler roadmap items: added claim `assertion_class` typing (`policy|preference|incident|event|fact`) in Gatekeeper features/claim metadata, enabled assertion-class-aware publish control via `routing_policy.publish_mode_by_assertion_class`, introduced retrieval feedback loop APIs (`POST /v1/mcp/retrieval/feedback`, `GET /v1/mcp/retrieval/feedback/stats`) with new migration `050_retrieval_feedback_loop.sql`, and wired auto-publish guardrails to block autonomous publish when recent claim-level retrieval feedback is strongly negative.
 - 2026-04-04: Added Knowledge Compiler v1 hardening: worker now suppresses low-signal backfill event records before claim enqueue, Gatekeeper routing adds `source_id` deny checks plus durable knowledge-signal thresholds and payload key/value density detection, API routing-policy normalization includes new knobs, and new worker unit tests cover noisy snapshot demotion vs valid policy/preference retention (`services/worker/tests/test_wiki_engine_routing.py`).
 - 2026-04-04: Hardened universal wiki-ingestion routing against raw operational streams: routing policy now supports deny rules by `category`, `source_system`, `source_type`, and `entity_key`, plus backfill-specific policy gating (`backfill_requires_policy_signal`) and event-blob shape detection, preventing `order_snapshot`/invoice/status stream style memories from dominating wiki pages.
 - 2026-04-04: Added universal Gatekeeper routing-policy layer for wiki quality control: new DB migration (`049_gatekeeper_routing_policy.sql`), API support in `GET/PUT /v1/gatekeeper/config` (`routing_policy`), and worker-side enforcement that demotes raw event-stream style memory (orders/status/telemetry/log-like payloads) to `operational_memory` unless policy/incident override signals are present; also added minimum independent evidence/source guardrails before wiki routing.
