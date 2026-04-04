@@ -536,6 +536,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Hardened universal wiki-ingestion routing against raw operational streams: routing policy now supports deny rules by `category`, `source_system`, `source_type`, and `entity_key`, plus backfill-specific policy gating (`backfill_requires_policy_signal`) and event-blob shape detection, preventing `order_snapshot`/invoice/status stream style memories from dominating wiki pages.
 - 2026-04-04: Added universal Gatekeeper routing-policy layer for wiki quality control: new DB migration (`049_gatekeeper_routing_policy.sql`), API support in `GET/PUT /v1/gatekeeper/config` (`routing_policy`), and worker-side enforcement that demotes raw event-stream style memory (orders/status/telemetry/log-like payloads) to `operational_memory` unless policy/incident override signals are present; also added minimum independent evidence/source guardrails before wiki routing.
 - 2026-04-04: Upgraded existing-memory connector UX from dense inline form to guided setup wizard: Wiki Tree now shows a compact status card with “Open setup wizard”, and the wizard runs a clear 3-step flow (profile -> connector config -> review/launch) before queuing first sync.
 - 2026-04-04: Added user-friendly existing-memory onboarding in web core wiki workspace: new “Connect Existing Agent Memory” quickstart card (profile + DSN env + source ref + cadence), wired to native legacy-import APIs (`/v1/legacy-import/profiles`, `/v1/legacy-import/sources`, `/sync`) with one-click connect-and-first-sync flow, plus mock API parity for e2e/dev.

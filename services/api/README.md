@@ -111,7 +111,7 @@ Environment:
 - `GET /v1/gatekeeper/decisions?project_id=...&tier=golden_candidate`
 - `GET /v1/gatekeeper/config?project_id=...`
 - `PUT /v1/gatekeeper/config`
-- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, source/category deny keywords, and minimum independent evidence rules before wiki routing).
+- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, deny keywords for category/source-system/source-type/entity, minimum independent evidence rules, and backfill policy gating before wiki routing).
 - `GET /v1/gatekeeper/config/snapshots?project_id=...&source=calibration_cycle&limit=20`
 - `POST /v1/gatekeeper/config/snapshots`
 - `GET /v1/gatekeeper/calibration/trends?project_id=...&limit=24`

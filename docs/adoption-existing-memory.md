@@ -55,6 +55,8 @@ Tune via Gatekeeper config `routing_policy` (`GET/PUT /v1/gatekeeper/config`):
 
 - `blocked_category_keywords`
 - `blocked_source_system_keywords`
+- `blocked_source_type_keywords`
+- `blocked_entity_keywords`
 - `event_stream_token_keywords`
 - `event_stream_min_numeric_token_ratio`
 - `event_stream_min_token_hits`
@@ -62,6 +64,7 @@ Tune via Gatekeeper config `routing_policy` (`GET/PUT /v1/gatekeeper/config`):
 - `min_sources_for_wiki_candidate`
 - `min_evidence_for_wiki_candidate`
 - `allow_policy_or_incident_override`
+- `backfill_requires_policy_signal`
 
 ## Coexistence Modes
 

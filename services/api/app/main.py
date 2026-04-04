@@ -1626,6 +1626,20 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "webhook_events",
         "task_runtime",
     ],
+    "blocked_source_type_keywords": [
+        "external_event",
+        "webhook_event",
+        "event",
+        "trace_event",
+    ],
+    "blocked_entity_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "event_snapshot",
+        "raw_payload",
+        "order_event",
+        "invoice_event",
+    ],
     "event_stream_token_keywords": list(_DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS),
     "event_stream_min_numeric_token_ratio": 0.45,
     "event_stream_min_token_hits": 2,
@@ -1633,6 +1647,7 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "min_sources_for_wiki_candidate": 2,
     "min_evidence_for_wiki_candidate": 2,
     "allow_policy_or_incident_override": True,
+    "backfill_requires_policy_signal": True,
 }
 
 
@@ -2462,6 +2477,14 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         value.get("blocked_source_system_keywords"),
         fallback=list(base["blocked_source_system_keywords"]),
     )
+    normalized["blocked_source_type_keywords"] = _normalize_policy_keyword_list(
+        value.get("blocked_source_type_keywords"),
+        fallback=list(base["blocked_source_type_keywords"]),
+    )
+    normalized["blocked_entity_keywords"] = _normalize_policy_keyword_list(
+        value.get("blocked_entity_keywords"),
+        fallback=list(base["blocked_entity_keywords"]),
+    )
     normalized["event_stream_token_keywords"] = _normalize_policy_keyword_list(
         value.get("event_stream_token_keywords"),
         fallback=list(base["event_stream_token_keywords"]),
@@ -2485,6 +2508,10 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     )
     normalized["allow_policy_or_incident_override"] = _coerce_bool(
         value.get("allow_policy_or_incident_override"),
+        True,
+    )
+    normalized["backfill_requires_policy_signal"] = _coerce_bool(
+        value.get("backfill_requires_policy_signal"),
         True,
     )
     return normalized

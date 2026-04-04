@@ -118,6 +118,20 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "webhook_events",
         "task_runtime",
     ],
+    "blocked_source_type_keywords": [
+        "external_event",
+        "webhook_event",
+        "event",
+        "trace_event",
+    ],
+    "blocked_entity_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "event_snapshot",
+        "raw_payload",
+        "order_event",
+        "invoice_event",
+    ],
     "event_stream_token_keywords": [
         "order",
         "заказ",
@@ -147,6 +161,7 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "min_sources_for_wiki_candidate": 2,
     "min_evidence_for_wiki_candidate": 2,
     "allow_policy_or_incident_override": True,
+    "backfill_requires_policy_signal": True,
 }
 
 BACKFILL_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
@@ -1248,12 +1263,15 @@ class WikiSynthesisEngine:
         )
         blocked_category_keywords = list(routing_policy.get("blocked_category_keywords", []))
         blocked_source_system_keywords = list(routing_policy.get("blocked_source_system_keywords", []))
+        blocked_source_type_keywords = list(routing_policy.get("blocked_source_type_keywords", []))
+        blocked_entity_keywords = list(routing_policy.get("blocked_entity_keywords", []))
         event_stream_min_numeric_token_ratio = float(routing_policy.get("event_stream_min_numeric_token_ratio", 0.45))
         event_stream_min_token_hits = int(routing_policy.get("event_stream_min_token_hits", 2))
         require_multi_source_for_wiki = bool(routing_policy.get("require_multi_source_for_wiki", True))
         min_sources_for_wiki_candidate = int(routing_policy.get("min_sources_for_wiki_candidate", 2))
         min_evidence_for_wiki_candidate = int(routing_policy.get("min_evidence_for_wiki_candidate", 2))
         allow_policy_or_incident_override = bool(routing_policy.get("allow_policy_or_incident_override", True))
+        backfill_requires_policy_signal = bool(routing_policy.get("backfill_requires_policy_signal", True))
         operational_verbs = {
             "sent",
             "send",
@@ -1304,14 +1322,24 @@ class WikiSynthesisEngine:
         has_high_priority_signal = bool(token_set & high_priority_words)
         category_hint = self._category_to_page_type(claim.category)
         normalized_category = self._normalize_text(claim.category)
+        normalized_entity_key = self._normalize_text(claim.entity_key)
         incoming_source_systems = self._extract_source_systems(claim.evidence)
+        incoming_source_types = self._extract_source_types(claim.evidence)
+        incoming_tool_names = self._extract_tool_names(claim.evidence)
         source_diversity = max(historical_source_count, len(incoming_source_ids))
         source_system_blob = " ".join(incoming_source_systems)
+        source_type_blob = " ".join(incoming_source_types)
         blocked_by_category = any(keyword in normalized_category for keyword in blocked_category_keywords if keyword)
         blocked_by_source_system = any(keyword in source_system_blob for keyword in blocked_source_system_keywords if keyword)
+        blocked_by_source_type = any(keyword in source_type_blob for keyword in blocked_source_type_keywords if keyword)
+        blocked_by_entity = any(keyword in normalized_entity_key for keyword in blocked_entity_keywords if keyword)
         numeric_token_count = sum(1 for token in tokens if any(ch.isdigit() for ch in token))
         numeric_token_ratio = float(numeric_token_count) / float(max(len(tokens), 1))
         event_stream_token_hits = sum(1 for token in token_set if token in event_stream_token_keywords)
+        has_structured_event_blob = bool(
+            (text.count("{") >= 1 and text.count("}") >= 1 and text.count(":") >= 3)
+            or re.search(r"\b(id|order_id|invoice_id|status|created_at|updated_at)\s*[:=]", text)
+        )
         has_order_like_id_pattern = bool(
             re.search(
                 r"\b(order|заказ|task|event|ticket|shipment|delivery)[\s_:#-]{0,12}[a-z0-9_-]{3,}\b",
@@ -1320,10 +1348,28 @@ class WikiSynthesisEngine:
         )
         has_event_stream_shape = (
             event_stream_token_hits >= event_stream_min_token_hits
-            and (numeric_token_ratio >= event_stream_min_numeric_token_ratio or has_order_like_id_pattern)
+            and (numeric_token_ratio >= event_stream_min_numeric_token_ratio or has_order_like_id_pattern or has_structured_event_blob)
+        )
+        has_backfill_evidence = (
+            "external_event" in incoming_source_types
+            or "memory_backfill" in incoming_tool_names
+            or "backfill" in incoming_tool_names
         )
         has_override_signal = allow_policy_or_incident_override and (has_policy_signal or has_high_priority_signal)
-        routing_hard_block = (blocked_by_category or blocked_by_source_system or has_event_stream_shape) and not has_override_signal
+        backfill_without_policy_signal = (
+            backfill_requires_policy_signal
+            and has_backfill_evidence
+            and not has_override_signal
+            and (category_hint == "general" or source_diversity <= 1)
+        )
+        routing_hard_block = (
+            blocked_by_category
+            or blocked_by_source_system
+            or blocked_by_source_type
+            or blocked_by_entity
+            or has_event_stream_shape
+            or backfill_without_policy_signal
+        ) and not has_override_signal
         runtime_source_systems = {
             "runtime_memory",
             "sdk_monitor",
@@ -1435,6 +1481,12 @@ class WikiSynthesisEngine:
                     "heuristic_tier": tier,
                     "routing_hard_block": routing_hard_block,
                     "insufficient_support": insufficient_support,
+                    "blocked_by_category": blocked_by_category,
+                    "blocked_by_source_system": blocked_by_source_system,
+                    "blocked_by_source_type": blocked_by_source_type,
+                    "blocked_by_entity": blocked_by_entity,
+                    "has_event_stream_shape": has_event_stream_shape,
+                    "has_backfill_evidence": has_backfill_evidence,
                 },
             )
         llm_applied = False
@@ -1474,17 +1526,24 @@ class WikiSynthesisEngine:
             "incoming_source_count": len(incoming_source_ids),
             "source_diversity": source_diversity,
             "incoming_source_systems": incoming_source_systems,
+            "incoming_source_types": incoming_source_types,
+            "incoming_tool_names": incoming_tool_names,
             "all_runtime_sources": all_runtime_sources,
             "looks_like_runtime_noise": looks_like_runtime_noise,
             "routing_policy": routing_policy,
             "routing_hard_block": routing_hard_block,
             "blocked_by_category": blocked_by_category,
             "blocked_by_source_system": blocked_by_source_system,
+            "blocked_by_source_type": blocked_by_source_type,
+            "blocked_by_entity": blocked_by_entity,
             "has_event_stream_shape": has_event_stream_shape,
+            "has_structured_event_blob": has_structured_event_blob,
             "has_order_like_id_pattern": has_order_like_id_pattern,
             "event_stream_token_hits": event_stream_token_hits,
             "numeric_token_count": numeric_token_count,
             "numeric_token_ratio": round(numeric_token_ratio, 4),
+            "has_backfill_evidence": has_backfill_evidence,
+            "backfill_without_policy_signal": backfill_without_policy_signal,
             "insufficient_support": insufficient_support,
             "is_short": is_short,
             "has_operational_pattern": has_operational_pattern,
@@ -1674,6 +1733,14 @@ class WikiSynthesisEngine:
             value.get("blocked_source_system_keywords"),
             fallback=list(base["blocked_source_system_keywords"]),
         )
+        normalized["blocked_source_type_keywords"] = self._normalize_policy_keyword_list(
+            value.get("blocked_source_type_keywords"),
+            fallback=list(base["blocked_source_type_keywords"]),
+        )
+        normalized["blocked_entity_keywords"] = self._normalize_policy_keyword_list(
+            value.get("blocked_entity_keywords"),
+            fallback=list(base["blocked_entity_keywords"]),
+        )
         normalized["event_stream_token_keywords"] = self._normalize_policy_keyword_list(
             value.get("event_stream_token_keywords"),
             fallback=list(base["event_stream_token_keywords"]),
@@ -1700,6 +1767,7 @@ class WikiSynthesisEngine:
         normalized["min_sources_for_wiki_candidate"] = max(1, min(20, min_sources))
         normalized["min_evidence_for_wiki_candidate"] = max(1, min(20, min_evidence))
         normalized["allow_policy_or_incident_override"] = bool(value.get("allow_policy_or_incident_override", True))
+        normalized["backfill_requires_policy_signal"] = bool(value.get("backfill_requires_policy_signal", True))
         return normalized
 
     def _resolve_gatekeeper_config(self, conn, project_id: str) -> GatekeeperConfig:
@@ -2934,6 +3002,36 @@ class WikiSynthesisEngine:
             if value:
                 systems.add(value[:128])
         return sorted(systems)
+
+    def _extract_source_types(self, evidence: list[dict[str, Any]]) -> list[str]:
+        source_types: set[str] = set()
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("source_type")
+            value = str(candidate or "").strip().lower()
+            if not value:
+                continue
+            value = re.sub(r"[^a-z0-9_./:-]+", "_", value)
+            value = re.sub(r"_+", "_", value).strip("_")
+            if value:
+                source_types.add(value[:128])
+        return sorted(source_types)
+
+    def _extract_tool_names(self, evidence: list[dict[str, Any]]) -> list[str]:
+        tool_names: set[str] = set()
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("tool_name")
+            value = str(candidate or "").strip().lower()
+            if not value:
+                continue
+            value = re.sub(r"[^a-z0-9_./:-]+", "_", value)
+            value = re.sub(r"_+", "_", value).strip("_")
+            if value:
+                tool_names.add(value[:128])
+        return sorted(tool_names)
 
     def _normalize_text(self, text: str) -> str:
         normalized = unicodedata.normalize("NFKC", text).lower().strip()
