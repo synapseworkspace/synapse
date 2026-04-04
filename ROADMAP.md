@@ -39,6 +39,7 @@ Owner: Core team
 12. Framework GTM integrations (LangGraph / LangChain / CrewAI) with contract-level CI checks.
 13. Reliability + SLO guardrails (latency, quality, observability, release gating).
 14. Existing-memory adoption layer (coexistence modes, migration wizard, source-ownership policy).
+15. Process Playbook Intelligence (if/then runbooks, instruction capture, operator-outcome loops).
 
 ## Recovery Plan: Wiki-First UX + Draft Quality (April 2026)
 
@@ -126,6 +127,42 @@ Checklist:
 
 Next Up (execution order):
 1. Optional publish checklist presets per space (for policy-heavy teams).
+
+## Process Playbook Intelligence (Support Ops Focus)
+
+Status: `planned`
+
+Goal:
+- сделать Wiki не только хранилищем фактов, но и живым справочником процессов;
+- позволить агентам автоматически документировать “как работает операция” в формате шагов и условий.
+
+Checklist:
+1. `planned` Operator decision capture (online):
+   - ingest live operator decisions from chats/tickets/macros;
+   - normalize as `trigger -> action -> outcome` records.
+2. `planned` Template-first process pages:
+   - add canonical page templates (`Issue Playbook`, `Escalation Rule`, `Customer Exception`, `Known Incident`);
+   - auto-route extracted records into those templates.
+3. `planned` Gatekeeper process-quality routing:
+   - block event-stream noise from process wiki pages;
+   - promote only repeated/validated workflow signals.
+4. `planned` Risk-tiered publish + rollback:
+   - low-risk process updates can auto-publish;
+   - policy/financial/legal changes stay `human_required`;
+   - full rollback path remains mandatory.
+5. `planned` Intent-aware context injection:
+   - retrieval injects process steps by task intent, not by keyword-only matching;
+   - enforce top-k verified runbook snippets in runtime context.
+6. `planned` Auto onboarding packs:
+   - generate “day-0” role packs (critical playbooks, escalations, forbidden actions, fresh changes).
+7. `planned` Ticket/outcome linkage:
+   - attach process statements to ticket ids and resolution outcomes;
+   - prioritize process knowledge that demonstrably resolved incidents.
+8. `planned` Process instruction provenance:
+   - link each process step to source evidence (operator session, ticket, policy page);
+   - expose “why this step exists” in wiki UI and MCP retrieval explain.
+9. `planned` Process simulation safety check:
+   - run “what changes if we update this process step” simulation before broad publish.
 
 ## Confluence-Like Wiki Track (Q2-Q3 2026)
 
@@ -558,6 +595,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Added new roadmap track `Process Playbook Intelligence (Support Ops Focus)` to move Synapse from fact-only wiki toward process-aware operational documentation; queued operator decision capture, template-first playbook pages, process-quality gatekeeper routing, risk-tiered auto-publish with rollback, intent-aware context injection, auto onboarding packs, ticket/outcome linkage, provenance for process steps, and pre-publish process simulation checks.
 - 2026-04-04: Completed sticky page toolbar in core wiki view (`History`, `Watch/Watching`, `Share`, `Drafts`, `Edit`, `More`) with real actions wired to existing page flows, added smooth jump-to-revisions anchor (`#wiki-context-revisions`), and reduced header action clutter to keep page view wiki-first.
 - 2026-04-04: Completed User-Friendly Wiki UX 12-point track (`done`): finalized slash-first rich editor parity (undo/redo), added stronger revision diff preview in core wiki context, cleaned core-mode language (`Workspace`, `Your name`, `Sync`), shipped friendly roles modal (`Viewer/Editor/Approver/Admin`) plus docs (`docs/wiki-ux-roles-metrics.md`), and added UX funnel telemetry badges (TTFV, first publish time, click-depth) persisted per project in browser storage.
 - 2026-04-04: Closed remaining Knowledge Compiler roadmap items: added claim `assertion_class` typing (`policy|preference|incident|event|fact`) in Gatekeeper features/claim metadata, enabled assertion-class-aware publish control via `routing_policy.publish_mode_by_assertion_class`, introduced retrieval feedback loop APIs (`POST /v1/mcp/retrieval/feedback`, `GET /v1/mcp/retrieval/feedback/stats`) with new migration `050_retrieval_feedback_loop.sql`, and wired auto-publish guardrails to block autonomous publish when recent claim-level retrieval feedback is strongly negative.
