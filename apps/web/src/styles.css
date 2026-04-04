@@ -37,6 +37,111 @@ body {
   animation: fade-in 280ms ease-out;
 }
 
+.confluence-shell {
+  width: min(1840px, 98vw);
+  margin: 12px auto 16px;
+  min-height: calc(100vh - 24px);
+  display: grid;
+  grid-template-rows: 62px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.confluence-topbar {
+  border: 1px solid #d9e0ea;
+  border-radius: 10px;
+  background: #fff;
+  padding: 10px 14px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
+}
+
+.confluence-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr) 280px;
+  gap: 10px;
+}
+
+.confluence-left-rail,
+.confluence-main,
+.confluence-right-rail {
+  min-height: 0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.confluence-left-rail {
+  padding: 10px;
+}
+
+.confluence-main {
+  padding: 12px;
+}
+
+.confluence-right-rail {
+  padding: 10px;
+}
+
+.confluence-tree {
+  padding-right: 6px;
+}
+
+.confluence-tree-row {
+  min-height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.confluence-tree-row:hover {
+  background: #f5f8fd;
+}
+
+.confluence-tree-row.active {
+  background: #e9f2ff;
+  color: #0f3f82;
+}
+
+.confluence-tree-row.drop-target {
+  outline: 1px dashed #3b82f6;
+  outline-offset: -1px;
+  background: #eef5ff;
+}
+
+.confluence-page-view .wiki-canvas-card {
+  border: 1px solid #e4e9f1;
+  box-shadow: none;
+  background: #fff;
+}
+
+.confluence-create-panel {
+  border-color: #d6e4ff;
+  background: #f8fbff;
+}
+
+@media (max-width: 1280px) {
+  .confluence-layout {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .confluence-right-rail {
+    display: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .confluence-shell {
+    grid-template-rows: auto auto;
+  }
+
+  .confluence-topbar {
+    padding: 10px;
+  }
+
+  .confluence-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 .hero-card {
   backdrop-filter: blur(8px);
   background: linear-gradient(126deg, rgba(255, 255, 255, 0.94), rgba(244, 252, 255, 0.92));
@@ -179,6 +284,11 @@ body {
 
 .guided-page-card {
   background: linear-gradient(180deg, rgba(238, 247, 255, 0.72), rgba(255, 255, 255, 0.94));
+}
+
+.legacy-connect-card {
+  background: linear-gradient(180deg, rgba(234, 250, 245, 0.8), rgba(255, 255, 255, 0.95));
+  border-color: rgba(16, 185, 129, 0.2);
 }
 
 .retrieval-diagnostics-card {

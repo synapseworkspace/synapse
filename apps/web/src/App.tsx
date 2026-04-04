@@ -11,6 +11,8 @@ import {
   Group,
   Kbd,
   Loader,
+  Menu,
+  Modal,
   PasswordInput,
   Paper,
   ScrollArea,
@@ -36,11 +38,13 @@ import {
   IconChevronUp,
   IconCloudCog,
   IconDeviceFloppy,
+  IconDots,
   IconEditCircle,
   IconExclamationCircle,
   IconFilePlus,
   IconHistory,
   IconKeyboard,
+  IconLink,
   IconRefresh,
   IconSearch,
   IconSwords,
@@ -51,6 +55,7 @@ import { diffWords } from "diff";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 
 type DraftStatus = "pending_review" | "blocked_conflict" | "approved" | "rejected";
+type PublishMode = "human_required" | "conditional" | "auto_publish";
 
 type DraftSummary = {
   id: string;
@@ -337,6 +342,35 @@ type WikiSpacePolicyPayload = {
   };
 };
 
+type GatekeeperConfig = {
+  project_id: string;
+  min_sources_for_golden: number;
+  conflict_free_days: number;
+  min_score_for_golden: number;
+  operational_short_text_len: number;
+  operational_short_token_len: number;
+  llm_assist_enabled: boolean;
+  llm_provider: string;
+  llm_model: string;
+  llm_score_weight: number;
+  llm_min_confidence: number;
+  llm_timeout_ms: number;
+  publish_mode_default: PublishMode;
+  publish_mode_by_category: Record<string, PublishMode>;
+  auto_publish_min_score: number;
+  auto_publish_min_sources: number;
+  auto_publish_require_golden: boolean;
+  auto_publish_allow_conflicts: boolean;
+  updated_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  source: string;
+};
+
+type GatekeeperConfigPayload = {
+  config: GatekeeperConfig;
+};
+
 type WikiSpaceOwnerItem = {
   owner: string;
   role: string;
@@ -599,6 +633,43 @@ type BootstrapApproveRunPayload = {
   generated_at?: string;
 };
 
+type LegacyImportProfile = {
+  profile: string;
+  label: string;
+  description: string;
+  default_table?: string | null;
+  table_candidates?: string[];
+  default_source_id_prefix?: string | null;
+};
+
+type LegacyImportProfilesPayload = {
+  profiles: LegacyImportProfile[];
+};
+
+type LegacyImportSource = {
+  id: string;
+  project_id: string;
+  source_type: string;
+  source_ref: string;
+  enabled: boolean;
+  sync_interval_minutes: number;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+  config: Record<string, unknown>;
+};
+
+type LegacyImportSourcesPayload = {
+  sources: LegacyImportSource[];
+};
+
+type LegacyImportSourceUpsertPayload = {
+  status: string;
+  source: LegacyImportSource;
+};
+
 type WikiPageNode = {
   id?: string;
   slug: string;
@@ -806,15 +877,84 @@ const REVIEW_QUEUE_PRESETS: ReviewQueuePreset[] = [
   },
 ];
 
+const ONBOARDING_STORAGE_PREFIX = "synapse:onboarding_done:";
+const LAST_PAGE_STORAGE_PREFIX = "synapse:last_page:";
+const PAGE_EDIT_DRAFT_STORAGE_PREFIX = "synapse:page_edit_draft:";
+
 type UiMode = "core" | "advanced";
 type CoreWorkspaceTab = "wiki" | "drafts" | "tasks";
 
-const UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
+const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
+const REQUESTED_UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
   .trim()
   .toLowerCase();
-const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
-const ADVANCED_UI_PROFILES = new Set(["advanced", "admin", "ops-admin", "ops_admin", "control-center", "control_center"]);
-const CAN_ACCESS_ADVANCED_MODE = ADVANCED_UI_PROFILES.has(UI_PROFILE);
+// Legacy control-center workspace is removed from OSS UI.
+const CAN_ACCESS_ADVANCED_MODE = false;
+if (
+  REQUESTED_UI_PROFILE &&
+  !["core", "core-only", "wiki", "wiki-first"].includes(REQUESTED_UI_PROFILE) &&
+  typeof window !== "undefined"
+) {
+  // eslint-disable-next-line no-console
+  console.warn("[Synapse] VITE_SYNAPSE_UI_PROFILE is deprecated and ignored. UI is wiki-first only.");
+}
+
+type ParsedWikiPath = {
+  basePath: string;
+  pageSlug: string | null;
+};
+
+function parseWikiPath(pathname: string): ParsedWikiPath {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  const lower = normalized.toLowerCase();
+  const marker = "/wiki";
+  const markerWithSlash = "/wiki/";
+
+  if (lower.endsWith(marker)) {
+    const basePath = normalized.slice(0, normalized.length - marker.length) || "/";
+    return { basePath, pageSlug: null };
+  }
+
+  const markerIndex = lower.indexOf(markerWithSlash);
+  if (markerIndex >= 0) {
+    const basePath = normalized.slice(0, markerIndex) || "/";
+    const rawSlug = normalized.slice(markerIndex + markerWithSlash.length);
+    const decodedSlug = rawSlug
+      .split("/")
+      .map((segment) => {
+        try {
+          return decodeURIComponent(segment);
+        } catch {
+          return segment;
+        }
+      })
+      .filter((segment) => segment.trim().length > 0)
+      .join("/");
+    return { basePath, pageSlug: decodedSlug || null };
+  }
+
+  return { basePath: normalized, pageSlug: null };
+}
+
+function encodeWikiSlugForPath(slug: string | null): string {
+  if (!slug) return "";
+  return slug
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+function buildWikiPath(basePath: string, pageSlug: string | null): string {
+  const normalizedBase = (basePath || "/").replace(/\/+$/, "") || "/";
+  const wikiRoot = normalizedBase === "/" ? "/wiki" : `${normalizedBase}/wiki`;
+  const encodedSlug = encodeWikiSlugForPath(pageSlug);
+  if (!encodedSlug) {
+    return wikiRoot;
+  }
+  return `${wikiRoot}/${encodedSlug}`;
+}
 
 function fmtDate(value: string | null | undefined): string {
   if (!value) {
@@ -1212,6 +1352,7 @@ const LazyTaskTrackerPanel = lazy(() => import("./components/TaskTrackerPanel"))
 const LazyWikiPageCanvas = lazy(() => import("./components/WikiPageCanvas"));
 
 export default function App() {
+  const initialPathState = useMemo(() => parseWikiPath(window.location.pathname), []);
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
   const [projectId, setProjectId] = useState("");
   const [reviewer, setReviewer] = useState("ops_manager");
@@ -1220,10 +1361,10 @@ export default function App() {
   const [sessionToken, setSessionToken] = useState("");
   const [sessionSummary, setSessionSummary] = useState<AuthSessionPayload["session"] | null>(null);
   const [authActionLoading, setAuthActionLoading] = useState(false);
-  const [uiMode, setUiMode] = useState<UiMode>(CAN_ACCESS_ADVANCED_MODE ? "advanced" : "core");
+  const [uiMode, setUiMode] = useState<UiMode>("core");
   const [coreExpertControls, setCoreExpertControls] = useState(false);
   const [coreWorkspaceTab, setCoreWorkspaceTab] = useState<CoreWorkspaceTab>("wiki");
-  const [showOperationsNav, setShowOperationsNav] = useState(false);
+  const [wikiBasePath, setWikiBasePath] = useState(initialPathState.basePath);
   const [status, setStatus] = useState<string | null>(null);
   const [pageStatusFilter, setPageStatusFilter] = useState<string | null>(null);
   const [pageUpdatedByFilter, setPageUpdatedByFilter] = useState("");
@@ -1231,6 +1372,10 @@ export default function App() {
   const [wikiPages, setWikiPages] = useState<WikiPageListItem[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [selectedPageSlug, setSelectedPageSlug] = useState<string | null>(null);
+  const pageEditDraftStorageKey =
+    projectId.trim() && selectedPageSlug
+      ? `${PAGE_EDIT_DRAFT_STORAGE_PREFIX}${projectId.trim()}:${selectedPageSlug}`
+      : null;
   const [selectedSpaceKey, setSelectedSpaceKey] = useState<string | null>(null);
   const [pageFilter, setPageFilter] = useState("");
   const [draftFilter, setDraftFilter] = useState("");
@@ -1256,6 +1401,21 @@ export default function App() {
   const [showDraftOperationsTools, setShowDraftOperationsTools] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapApproveRunPayload | null>(null);
+  const [legacyProfiles, setLegacyProfiles] = useState<LegacyImportProfile[]>([]);
+  const [legacySources, setLegacySources] = useState<LegacyImportSource[]>([]);
+  const [loadingLegacyProfiles, setLoadingLegacyProfiles] = useState(false);
+  const [loadingLegacySources, setLoadingLegacySources] = useState(false);
+  const [connectingLegacySource, setConnectingLegacySource] = useState(false);
+  const [runningLegacySyncSourceId, setRunningLegacySyncSourceId] = useState<string | null>(null);
+  const [legacySourceRef, setLegacySourceRef] = useState("existing_memory");
+  const [legacySqlProfile, setLegacySqlProfile] = useState("ops_kb_items");
+  const [legacySqlDsnEnv, setLegacySqlDsnEnv] = useState("LEGACY_SQL_DSN");
+  const [legacySyncIntervalMinutes, setLegacySyncIntervalMinutes] = useState("5");
+  const [legacyMaxRecords] = useState("5000");
+  const [legacyChunkSize] = useState("100");
+  const [legacyAutoOpenMigrationMode, setLegacyAutoOpenMigrationMode] = useState(true);
+  const [showLegacySetupModal, setShowLegacySetupModal] = useState(false);
+  const [legacySetupStep, setLegacySetupStep] = useState(1);
   const [draftDetail, setDraftDetail] = useState<DraftDetailPayload | null>(null);
   const [selectedPageDetail, setSelectedPageDetail] = useState<WikiPageDetailPayload | null>(null);
   const [pageHistory, setPageHistory] = useState<WikiPageHistoryPayload | null>(null);
@@ -1267,6 +1427,9 @@ export default function App() {
   const [pageEditStatus, setPageEditStatus] = useState<"draft" | "reviewed" | "published" | "archived">("published");
   const [pageEditSummary, setPageEditSummary] = useState("Manual wiki page edit");
   const [pageEditMarkdown, setPageEditMarkdown] = useState("");
+  const [pageEditDraftState, setPageEditDraftState] = useState<"idle" | "saving" | "saved" | "restored">("idle");
+  const [pageEditDraftSavedAt, setPageEditDraftSavedAt] = useState<string | null>(null);
+  const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
   const [savingPageEdit, setSavingPageEdit] = useState(false);
   const [pageAssetFile, setPageAssetFile] = useState<File | null>(null);
   const [uploadingPageAsset, setUploadingPageAsset] = useState(false);
@@ -1277,6 +1440,8 @@ export default function App() {
   const [pageMoveSummary, setPageMoveSummary] = useState("Page move/rename");
   const [pageMoveIncludeDescendants, setPageMoveIncludeDescendants] = useState(true);
   const [movingPage, setMovingPage] = useState(false);
+  const [draggingPageSlug, setDraggingPageSlug] = useState<string | null>(null);
+  const [treeDropTargetSlug, setTreeDropTargetSlug] = useState<string | null>(null);
   const [pageAliases, setPageAliases] = useState<WikiPageAliasItem[]>([]);
   const [loadingPageAliases, setLoadingPageAliases] = useState(false);
   const [newPageAlias, setNewPageAlias] = useState("");
@@ -1300,6 +1465,10 @@ export default function App() {
   const [spaceWriteMode, setSpaceWriteMode] = useState<"open" | "owners_only">("open");
   const [spaceCommentMode, setSpaceCommentMode] = useState<"open" | "owners_only">("open");
   const [spaceReviewRequired, setSpaceReviewRequired] = useState(false);
+  const [gatekeeperConfig, setGatekeeperConfig] = useState<GatekeeperConfig | null>(null);
+  const [loadingGatekeeperConfig, setLoadingGatekeeperConfig] = useState(false);
+  const [savingPublishPolicy, setSavingPublishPolicy] = useState(false);
+  const [publishModeDefault, setPublishModeDefault] = useState<PublishMode>("auto_publish");
   const [spaceOwners, setSpaceOwners] = useState<WikiSpaceOwnerItem[]>([]);
   const [loadingSpaceOwners, setLoadingSpaceOwners] = useState(false);
   const [savingSpaceOwner, setSavingSpaceOwner] = useState(false);
@@ -1355,6 +1524,15 @@ export default function App() {
   const [moderationThroughput, setModerationThroughput] = useState<ModerationThroughputPayload | null>(null);
   const [loadingModerationThroughput, setLoadingModerationThroughput] = useState(false);
   const [creatingPage, setCreatingPage] = useState(false);
+  const [showCoreCreatePanel, setShowCoreCreatePanel] = useState(false);
+  const [showPublishModal, setShowPublishModal] = useState(false);
+  const [publishSummary, setPublishSummary] = useState("Publish page update");
+  const [showQuickNavModal, setShowQuickNavModal] = useState(false);
+  const [quickNavSlug, setQuickNavSlug] = useState<string | null>(null);
+  const [quickNavQuery, setQuickNavQuery] = useState("");
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(1);
+  const [selectedCreateTemplateKey, setSelectedCreateTemplateKey] = useState<string | null>(null);
   const [conflictExplain, setConflictExplain] = useState<ConflictExplainPayload | null>(null);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
   const [loadingPages, setLoadingPages] = useState(false);
@@ -1362,6 +1540,7 @@ export default function App() {
   const [loadingPageDetail, setLoadingPageDetail] = useState(false);
   const [loadingConflictExplain, setLoadingConflictExplain] = useState(false);
   const [runningAction, setRunningAction] = useState(false);
+  const [rollingBackVersion, setRollingBackVersion] = useState<number | null>(null);
   const [armedRiskActionKey, setArmedRiskActionKey] = useState<string | null>(null);
   const [approveForm, setApproveForm] = useState<ApproveFormState>(DEFAULT_APPROVE_FORM);
   const [rejectForm, setRejectForm] = useState<RejectFormState>(DEFAULT_REJECT_FORM);
@@ -1513,6 +1692,27 @@ export default function App() {
       })
       .slice(0, 5);
   }, [pageNodes, selectedSpaceKey]);
+
+  const legacyPostgresSources = useMemo(
+    () =>
+      legacySources
+        .filter((item) => String(item.source_type || "").trim().toLowerCase() === "postgres_sql")
+        .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""))),
+    [legacySources],
+  );
+
+  const legacyConnectedSource = useMemo(() => {
+    const normalizedSourceRef = legacySourceRef.trim().toLowerCase();
+    if (!normalizedSourceRef) return null;
+    return (
+      legacyPostgresSources.find((item) => String(item.source_ref || "").trim().toLowerCase() === normalizedSourceRef) || null
+    );
+  }, [legacyPostgresSources, legacySourceRef]);
+
+  const legacySelectedProfile = useMemo(
+    () => legacyProfiles.find((item) => item.profile === legacySqlProfile) || null,
+    [legacyProfiles, legacySqlProfile],
+  );
 
   const pinnedPages = useMemo(() => {
     return pinnedPageSlugs
@@ -1681,6 +1881,14 @@ export default function App() {
 
   useEffect(() => {
     try {
+      const pathState = parseWikiPath(window.location.pathname);
+      setWikiBasePath(pathState.basePath);
+      if (pathState.pageSlug) {
+        setSelectedPageSlug(pathState.pageSlug);
+        setSelectedSpaceKey(pageGroupKey(pathState.pageSlug));
+        setCoreWorkspaceTab("wiki");
+      }
+
       const params = new URLSearchParams(window.location.search);
       const projectParam = String(params.get("project") || "").trim();
       if (projectParam) {
@@ -1691,8 +1899,10 @@ export default function App() {
         setSelectedSpaceKey(spaceParam);
       }
       const pageParam = String(params.get("wiki_page") || "").trim();
-      if (pageParam) {
+      if (!pathState.pageSlug && pageParam) {
         setSelectedPageSlug(pageParam);
+        setSelectedSpaceKey(pageGroupKey(pageParam));
+        setCoreWorkspaceTab("wiki");
       }
       const pageStatusParam = String(params.get("wiki_status") || "").trim().toLowerCase();
       if (pageStatusParam && ["draft", "reviewed", "published", "archived"].includes(pageStatusParam)) {
@@ -1713,6 +1923,13 @@ export default function App() {
       const pageQueryParam = String(params.get("wiki_q") || "").trim();
       if (pageQueryParam) {
         setPageFilter(pageQueryParam);
+      }
+      if (projectParam) {
+        if (!params.has("wiki_space")) setSelectedSpaceKey(null);
+        if (!params.has("wiki_status")) setPageStatusFilter(null);
+        if (!params.has("wiki_updated_by")) setPageUpdatedByFilter("");
+        if (!params.has("wiki_with_open_drafts")) setOpenPagesOnly(false);
+        if (!params.has("wiki_q")) setPageFilter("");
       }
     } catch {
       // ignore invalid URL params
@@ -1742,12 +1959,23 @@ export default function App() {
     setOrDelete("wiki_q", pageFilter.trim() || null);
     const nextSearch = params.toString();
     const currentSearch = window.location.search.replace(/^\?/, "");
-    if (nextSearch === currentSearch) {
+    const nextPathname = buildWikiPath(wikiBasePath, selectedPageSlug);
+    if (nextSearch === currentSearch && window.location.pathname === nextPathname) {
       return;
     }
-    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+    const nextUrl = `${nextPathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
     window.history.replaceState({}, "", nextUrl);
-  }, [openPagesOnly, pageFilter, pageStatusFilter, pageUpdatedByFilter, projectId, selectedPageSlug, selectedSpaceKey, urlStateReady]);
+  }, [
+    openPagesOnly,
+    pageFilter,
+    pageStatusFilter,
+    pageUpdatedByFilter,
+    projectId,
+    selectedPageSlug,
+    selectedSpaceKey,
+    urlStateReady,
+    wikiBasePath,
+  ]);
 
   useEffect(() => {
     if (!CAN_ACCESS_ADVANCED_MODE) {
@@ -2251,6 +2479,236 @@ export default function App() {
     [apiUrl, projectId],
   );
 
+  const loadGatekeeperConfig = useCallback(async () => {
+    if (!projectId.trim()) {
+      setGatekeeperConfig(null);
+      setPublishModeDefault("auto_publish");
+      return;
+    }
+    setLoadingGatekeeperConfig(true);
+    try {
+      const payload = await apiFetch<GatekeeperConfigPayload>(
+        apiUrl,
+        `/v1/gatekeeper/config?project_id=${encodeURIComponent(projectId)}`,
+      );
+      const nextConfig = payload.config;
+      setGatekeeperConfig(nextConfig);
+      if (
+        nextConfig.publish_mode_default === "human_required" ||
+        nextConfig.publish_mode_default === "conditional" ||
+        nextConfig.publish_mode_default === "auto_publish"
+      ) {
+        setPublishModeDefault(nextConfig.publish_mode_default);
+      } else {
+        setPublishModeDefault("auto_publish");
+      }
+    } catch {
+      setGatekeeperConfig(null);
+      setPublishModeDefault("auto_publish");
+    } finally {
+      setLoadingGatekeeperConfig(false);
+    }
+  }, [apiUrl, projectId]);
+
+  const loadLegacyImportProfiles = useCallback(async () => {
+    setLoadingLegacyProfiles(true);
+    try {
+      const payload = await apiFetch<LegacyImportProfilesPayload>(
+        apiUrl,
+        "/v1/legacy-import/profiles?source_type=postgres_sql",
+      );
+      const nextProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+      setLegacyProfiles(nextProfiles);
+      if (nextProfiles.length > 0) {
+        const hasCurrent = nextProfiles.some((item) => item.profile === legacySqlProfile);
+        if (!hasCurrent) {
+          setLegacySqlProfile(nextProfiles[0].profile);
+        }
+      }
+    } catch {
+      setLegacyProfiles([]);
+    } finally {
+      setLoadingLegacyProfiles(false);
+    }
+  }, [apiUrl, legacySqlProfile]);
+
+  const loadLegacyImportSources = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setLegacySources([]);
+      return;
+    }
+    setLoadingLegacySources(true);
+    try {
+      const payload = await apiFetch<LegacyImportSourcesPayload>(
+        apiUrl,
+        `/v1/legacy-import/sources?project_id=${encodeURIComponent(project)}&enabled=true&limit=200`,
+      );
+      setLegacySources(Array.isArray(payload.sources) ? payload.sources : []);
+    } catch {
+      setLegacySources([]);
+    } finally {
+      setLoadingLegacySources(false);
+    }
+  }, [apiUrl, projectId]);
+
+  const runLegacySourceSync = useCallback(
+    async (sourceId: string) => {
+      const project = projectId.trim();
+      if (!project || !sourceId.trim()) {
+        return;
+      }
+      setRunningLegacySyncSourceId(sourceId);
+      try {
+        const payload = await apiFetch<{ status: string; run?: { id?: string } }>(
+          apiUrl,
+          `/v1/legacy-import/sources/${encodeURIComponent(sourceId)}/sync`,
+          {
+            method: "POST",
+            body: {
+              project_id: project,
+              requested_by: reviewer.trim() || "web_ui",
+            },
+          },
+        );
+        notifications.show({
+          color: "teal",
+          title: payload.status === "already_queued" ? "Sync already queued" : "Sync queued",
+          message:
+            payload.run?.id && String(payload.run.id).trim()
+              ? `Run ${String(payload.run.id).slice(0, 8)} queued.`
+              : "Legacy memory sync run queued.",
+        });
+        await loadLegacyImportSources();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Sync queue failed",
+          message: String(error),
+        });
+      } finally {
+        setRunningLegacySyncSourceId(null);
+      }
+    },
+    [apiUrl, loadLegacyImportSources, projectId, reviewer],
+  );
+
+  const connectLegacyMemoryQuickstart = useCallback(async (): Promise<boolean> => {
+    const project = projectId.trim();
+    const sourceRef = legacySourceRef.trim();
+    const profile = legacySqlProfile.trim();
+    const dsnEnv = legacySqlDsnEnv.trim();
+    if (!project) {
+      notifications.show({
+        color: "red",
+        title: "Project ID required",
+        message: "Set project id before connecting existing memory.",
+      });
+      return false;
+    }
+    if (!sourceRef) {
+      notifications.show({
+        color: "red",
+        title: "Source ref required",
+        message: "Set a source name for this memory connector.",
+      });
+      return false;
+    }
+    if (!profile) {
+      notifications.show({
+        color: "red",
+        title: "Profile required",
+        message: "Select a memory profile first.",
+      });
+      return false;
+    }
+    if (!dsnEnv) {
+      notifications.show({
+        color: "red",
+        title: "DSN env var required",
+        message: "Set environment variable name for PostgreSQL DSN.",
+      });
+      return false;
+    }
+    const interval = Math.max(1, Math.min(10080, Number(legacySyncIntervalMinutes || "5") || 5));
+    const maxRecords = Math.max(1, Math.min(50000, Number(legacyMaxRecords || "5000") || 5000));
+    const chunkSize = Math.max(1, Math.min(500, Number(legacyChunkSize || "100") || 100));
+
+    setConnectingLegacySource(true);
+    let connected = false;
+    try {
+      const upsert = await apiFetch<LegacyImportSourceUpsertPayload>(apiUrl, "/v1/legacy-import/sources", {
+        method: "PUT",
+        body: {
+          project_id: project,
+          source_type: "postgres_sql",
+          source_ref: sourceRef,
+          enabled: true,
+          sync_interval_minutes: interval,
+          updated_by: reviewer.trim() || "web_ui",
+          config: {
+            sql_dsn_env: dsnEnv,
+            sql_profile: profile,
+            max_records: maxRecords,
+            chunk_size: chunkSize,
+          },
+        },
+      });
+      const sourceId = String(upsert.source?.id || "").trim();
+      if (!sourceId) {
+        throw new Error("legacy source id missing in API response");
+      }
+      await runLegacySourceSync(sourceId);
+      if (legacyAutoOpenMigrationMode) {
+        setCoreWorkspaceTab("drafts");
+        setShowMigrationMode(true);
+        setShowDraftOperationsTools(true);
+      }
+      notifications.show({
+        color: "teal",
+        title: "Existing memory connected",
+        message: `Profile ${profile} is connected. Initial sync queued.`,
+      });
+      connected = true;
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Could not connect memory",
+        message: String(error),
+      });
+    } finally {
+      setConnectingLegacySource(false);
+      await loadLegacyImportSources();
+    }
+    return connected;
+  }, [
+    apiUrl,
+    legacyAutoOpenMigrationMode,
+    legacyChunkSize,
+    legacyMaxRecords,
+    legacySourceRef,
+    legacySqlDsnEnv,
+    legacySqlProfile,
+    legacySyncIntervalMinutes,
+    loadLegacyImportSources,
+    projectId,
+    reviewer,
+    runLegacySourceSync,
+  ]);
+
+  const openLegacySetupWizard = useCallback(() => {
+    setLegacySetupStep(1);
+    setShowLegacySetupModal(true);
+  }, []);
+
+  const completeLegacySetupWizard = useCallback(async () => {
+    const ok = await connectLegacyMemoryQuickstart();
+    if (ok) {
+      setShowLegacySetupModal(false);
+      setLegacySetupStep(1);
+    }
+  }, [connectLegacyMemoryQuickstart]);
+
   const loadSpaceOwners = useCallback(
     async (slug: string) => {
       if (!projectId.trim() || !slug.trim()) {
@@ -2374,6 +2832,59 @@ export default function App() {
   }, [selectedPageSlug, selectedSpaceKey]);
 
   useEffect(() => {
+    const project = projectId.trim();
+    if (!project || !selectedPageSlug) return;
+    try {
+      window.localStorage.setItem(`${LAST_PAGE_STORAGE_PREFIX}${project}`, selectedPageSlug);
+    } catch {
+      // ignore storage errors
+    }
+  }, [projectId, selectedPageSlug]);
+
+  useEffect(() => {
+    const project = projectId.trim();
+    if (!project || selectedPageSlug || pageNodes.length === 0) return;
+    let remembered: string | null = null;
+    try {
+      remembered = window.localStorage.getItem(`${LAST_PAGE_STORAGE_PREFIX}${project}`);
+    } catch {
+      remembered = null;
+    }
+    const rememberedExists = remembered && pageNodes.some((item) => item.slug === remembered);
+    const scopedPages = selectedSpaceKey
+      ? pageNodes.filter((item) => pageGroupKey(item.slug) === selectedSpaceKey)
+      : pageNodes;
+    const fallback = scopedPages[0]?.slug || pageNodes[0]?.slug || null;
+    const next = rememberedExists ? remembered : fallback;
+    if (next) {
+      setSelectedSpaceKey(pageGroupKey(next));
+      setSelectedPageSlug(next);
+    }
+  }, [pageNodes, projectId, selectedPageSlug, selectedSpaceKey]);
+
+  useEffect(() => {
+    const project = projectId.trim();
+    if (!project) {
+      setShowOnboardingModal(false);
+      return;
+    }
+    let onboardingDone = false;
+    try {
+      onboardingDone = window.localStorage.getItem(`${ONBOARDING_STORAGE_PREFIX}${project}`) === "1";
+    } catch {
+      onboardingDone = false;
+    }
+    if (pageNodes.length === 0 && !onboardingDone) {
+      setShowOnboardingModal(true);
+      setOnboardingStep(1);
+      return;
+    }
+    if (showOnboardingModal && (pageNodes.length > 0 || onboardingDone)) {
+      setShowOnboardingModal(false);
+    }
+  }, [pageNodes.length, projectId, showOnboardingModal]);
+
+  useEffect(() => {
     if (Object.keys(collapsedTreeNodes).length === 0) return;
     const valid = new Set<string>();
     const stack = [...wikiTreeNodes];
@@ -2485,6 +2996,34 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    void loadGatekeeperConfig();
+  }, [loadGatekeeperConfig]);
+
+  useEffect(() => {
+    if (!projectId.trim()) {
+      setLegacyProfiles([]);
+      setLegacySources([]);
+      return;
+    }
+    void loadLegacyImportProfiles();
+    void loadLegacyImportSources();
+  }, [loadLegacyImportProfiles, loadLegacyImportSources, projectId]);
+
+  useEffect(() => {
+    if (!projectId.trim()) return;
+    if (legacySourceRef.trim()) return;
+    const suffix = legacySqlProfile.trim() || "memory";
+    const projectToken = projectId
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 40);
+    const nextSourceRef = projectToken ? `${projectToken}_${suffix}` : `existing_${suffix}`;
+    setLegacySourceRef(nextSourceRef);
+  }, [legacySourceRef, legacySqlProfile, projectId]);
+
+  useEffect(() => {
     void loadNotificationsInbox();
   }, [loadNotificationsInbox]);
 
@@ -2513,6 +3052,82 @@ export default function App() {
     const nextMarkdown = String(selectedPageDetail.latest_version?.markdown || "");
     setPageEditMarkdown(nextMarkdown);
   }, [pageEditMode, selectedPageDetail]);
+
+  useEffect(() => {
+    if (!pageEditDraftStorageKey) {
+      setRestoredDraftKey(null);
+      return;
+    }
+    if (restoredDraftKey && restoredDraftKey !== pageEditDraftStorageKey) {
+      setRestoredDraftKey(null);
+    }
+  }, [pageEditDraftStorageKey, restoredDraftKey]);
+
+  useEffect(() => {
+    if (!pageEditMode || !pageEditDraftStorageKey || restoredDraftKey === pageEditDraftStorageKey) return;
+    try {
+      const raw = window.localStorage.getItem(pageEditDraftStorageKey);
+      if (!raw) {
+        setRestoredDraftKey(pageEditDraftStorageKey);
+        return;
+      }
+      const payload = JSON.parse(raw) as {
+        title?: string;
+        summary?: string;
+        markdown?: string;
+        updated_at?: string;
+      };
+      const markdown = String(payload.markdown || "");
+      const title = String(payload.title || "");
+      const summary = String(payload.summary || "");
+      if (!markdown.trim() && !title.trim() && !summary.trim()) {
+        setRestoredDraftKey(pageEditDraftStorageKey);
+        return;
+      }
+      setPageEditTitle((prev) => title || prev);
+      setPageEditSummary((prev) => summary || prev);
+      setPageEditMarkdown((prev) => (markdown.trim() ? markdown : prev));
+      setPageEditDraftSavedAt(payload.updated_at || null);
+      setPageEditDraftState("restored");
+      notifications.show({
+        color: "blue",
+        title: "Draft restored",
+        message: "Recovered unsaved page edits from local draft.",
+      });
+    } catch {
+      // ignore corrupted local draft
+    } finally {
+      setRestoredDraftKey(pageEditDraftStorageKey);
+    }
+  }, [pageEditDraftStorageKey, pageEditMode, restoredDraftKey]);
+
+  useEffect(() => {
+    if (!pageEditMode || !pageEditDraftStorageKey) return;
+    const markdown = pageEditMarkdown.trim();
+    const title = pageEditTitle.trim();
+    const summary = pageEditSummary.trim();
+    if (!markdown && !title && !summary) return;
+    setPageEditDraftState("saving");
+    const timer = window.setTimeout(() => {
+      const updatedAt = new Date().toISOString();
+      try {
+        window.localStorage.setItem(
+          pageEditDraftStorageKey,
+          JSON.stringify({
+            title,
+            summary,
+            markdown: pageEditMarkdown,
+            updated_at: updatedAt,
+          }),
+        );
+        setPageEditDraftSavedAt(updatedAt);
+        setPageEditDraftState("saved");
+      } catch {
+        setPageEditDraftState("idle");
+      }
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [pageEditDraftStorageKey, pageEditMarkdown, pageEditMode, pageEditSummary, pageEditTitle]);
 
   useEffect(() => {
     if (pageMoveMode) return;
@@ -3056,6 +3671,15 @@ export default function App() {
         });
       }
       setPageEditMode(false);
+      if (pageEditDraftStorageKey) {
+        try {
+          window.localStorage.removeItem(pageEditDraftStorageKey);
+        } catch {
+          // ignore storage errors
+        }
+      }
+      setPageEditDraftState("idle");
+      setPageEditDraftSavedAt(null);
       await loadPageDetail(selectedPageSlug);
       await loadPageHistory(selectedPageSlug);
       await loadWikiPages({ silent: true });
@@ -3081,9 +3705,185 @@ export default function App() {
     pageEditTitle,
     projectId,
     reviewer,
+    pageEditDraftStorageKey,
     selectedPageDetail?.page.page_type,
     selectedPageSlug,
   ]);
+
+  const publishCurrentPage = useCallback(async () => {
+    if (!selectedPageSlug) {
+      notifications.show({
+        color: "red",
+        title: "Page not selected",
+        message: "Select wiki page before publishing.",
+      });
+      return;
+    }
+    if (!projectId.trim() || !reviewer.trim()) {
+      notifications.show({
+        color: "red",
+        title: "Missing reviewer or project",
+        message: "Set Project ID and Reviewer before publishing.",
+      });
+      return;
+    }
+    const markdownSeed = pageEditMarkdown.trim() || String(selectedPageDetail?.latest_version?.markdown || "").trim();
+    if (!markdownSeed) {
+      notifications.show({
+        color: "red",
+        title: "No content to publish",
+        message: "Page markdown is empty.",
+      });
+      return;
+    }
+    setSavingPageEdit(true);
+    try {
+      const payload = await apiFetch<WikiPageUpdateResponse>(
+        apiUrl,
+        `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}`,
+        {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            updated_by: reviewer.trim(),
+            title: pageEditTitle.trim() || selectedPageDetail?.page.title || null,
+            page_type: selectedPageDetail?.page.page_type || null,
+            status: "published",
+            markdown: markdownSeed,
+            change_summary: publishSummary.trim() || "Published from wiki UI",
+          },
+          idempotencyKey: randomKey(),
+        },
+      );
+      notifications.show({
+        color: "green",
+        title: "Page published",
+        message: `${payload.page.title || selectedPageSlug} is published.`,
+      });
+      setShowPublishModal(false);
+      setPageEditMode(false);
+      if (pageEditDraftStorageKey) {
+        try {
+          window.localStorage.removeItem(pageEditDraftStorageKey);
+        } catch {
+          // ignore storage errors
+        }
+      }
+      setPageEditDraftState("idle");
+      setPageEditDraftSavedAt(null);
+      await loadPageDetail(selectedPageSlug);
+      await loadPageHistory(selectedPageSlug);
+      await loadWikiPages({ silent: true });
+      await loadDrafts();
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Publish failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingPageEdit(false);
+    }
+  }, [
+    apiUrl,
+    loadDrafts,
+    loadPageDetail,
+    loadPageHistory,
+    loadWikiPages,
+    pageEditMarkdown,
+    pageEditTitle,
+    pageEditDraftStorageKey,
+    projectId,
+    publishSummary,
+    reviewer,
+    selectedPageDetail?.latest_version?.markdown,
+    selectedPageDetail?.page.page_type,
+    selectedPageDetail?.page.title,
+    selectedPageSlug,
+  ]);
+
+  const rollbackWikiPageToVersion = useCallback(
+    async (targetVersion: number) => {
+      if (!selectedPageSlug) {
+        notifications.show({
+          color: "red",
+          title: "Page not selected",
+          message: "Select wiki page before rollback.",
+        });
+        return;
+      }
+      if (!projectId.trim() || !reviewer.trim()) {
+        notifications.show({
+          color: "red",
+          title: "Missing reviewer or project",
+          message: "Set Project ID and Reviewer before rollback.",
+        });
+        return;
+      }
+      if (!Number.isFinite(targetVersion) || targetVersion <= 0) {
+        return;
+      }
+      setRollingBackVersion(targetVersion);
+      try {
+        const payload = await apiFetch<WikiPageUpdateResponse & { rollback?: { target_version: number } }>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/rollback`,
+          {
+            method: "PUT",
+            body: {
+              project_id: projectId,
+              rolled_back_by: reviewer.trim(),
+              target_version: targetVersion,
+              change_summary: `Rollback to v${targetVersion} from wiki history`,
+            },
+            idempotencyKey: randomKey(),
+          },
+        );
+        notifications.show({
+          color: "green",
+          title: "Rollback applied",
+          message: `Page rolled back to v${payload.rollback?.target_version ?? targetVersion}.`,
+        });
+        await loadPageDetail(selectedPageSlug);
+        await loadPageHistory(selectedPageSlug);
+        await loadWikiPages({ silent: true });
+        await loadDrafts();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Rollback failed",
+          message: String(error),
+        });
+      } finally {
+        setRollingBackVersion(null);
+      }
+    },
+    [apiUrl, loadDrafts, loadPageDetail, loadPageHistory, loadWikiPages, projectId, reviewer, selectedPageSlug],
+  );
+
+  const shareCurrentPage = useCallback(async () => {
+    const project = projectId.trim();
+    const currentPath = buildWikiPath(wikiBasePath, selectedPageSlug);
+    const currentUrl = `${window.location.origin}${currentPath}${
+      project ? `?project=${encodeURIComponent(project)}&wiki_status=published` : ""
+    }`;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(currentUrl);
+      }
+      notifications.show({
+        color: "green",
+        title: "Link copied",
+        message: currentUrl,
+      });
+    } catch {
+      notifications.show({
+        color: "blue",
+        title: "Share link",
+        message: currentUrl,
+      });
+    }
+  }, [projectId, selectedPageSlug, wikiBasePath]);
 
   const moveWikiPage = useCallback(async () => {
     if (!selectedPageSlug) {
@@ -3180,9 +3980,75 @@ export default function App() {
     selectedPageSlug,
   ]);
 
-  const transitionWikiPageStatus = useCallback(
-    async (mode: "archive" | "restore") => {
-      if (!selectedPageSlug) {
+  const moveWikiPageFromTree = useCallback(
+    async (sourceSlug: string, targetParentSlug: string) => {
+      const source = String(sourceSlug || "").trim();
+      const targetParent = String(targetParentSlug || "").trim();
+      if (!source || !targetParent || source === targetParent) return;
+      if (!projectId.trim() || !reviewer.trim()) return;
+      if (targetParent.startsWith(`${source}/`)) {
+        notifications.show({
+          color: "red",
+          title: "Invalid move",
+          message: "Cannot move a page inside its own subtree.",
+        });
+        return;
+      }
+      const sourceNode = pageNodes.find((item) => item.slug === source) || null;
+      const leaf = source.split("/").filter(Boolean).pop() || "page";
+      setMovingPage(true);
+      try {
+        const payload = await apiFetch<WikiPageMoveResponse>(
+          apiUrl,
+          `/v1/wiki/pages/${encodeURIComponent(source)}/reparent`,
+          {
+            method: "PUT",
+            body: {
+              project_id: projectId,
+              updated_by: reviewer.trim(),
+              parent_path: targetParent,
+              slug_leaf: leaf,
+              title: sourceNode?.title || null,
+              include_descendants: true,
+              change_summary: `Moved from ${source} to ${targetParent}/${leaf}`,
+            },
+            idempotencyKey: randomKey(),
+          },
+        );
+        const nextSlug = String(payload.page.slug || "");
+        notifications.show({
+          color: "green",
+          title: "Page moved",
+          message: `${sourceNode?.title || source} -> ${nextSlug || "updated"}`,
+        });
+        if (nextSlug) {
+          setSelectedSpaceKey(pageGroupKey(nextSlug));
+          setSelectedPageSlug(nextSlug);
+        }
+        await loadWikiPages({ silent: true });
+        if (nextSlug) {
+          await loadPageDetail(nextSlug);
+          await loadPageHistory(nextSlug);
+        }
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Tree move failed",
+          message: String(error),
+        });
+      } finally {
+        setMovingPage(false);
+        setDraggingPageSlug(null);
+        setTreeDropTargetSlug(null);
+      }
+    },
+    [apiUrl, loadPageDetail, loadPageHistory, loadWikiPages, pageNodes, projectId, reviewer],
+  );
+
+  const transitionWikiPageStatusForSlug = useCallback(
+    async (slug: string, mode: "archive" | "restore") => {
+      const normalizedSlug = String(slug || "").trim();
+      if (!normalizedSlug) {
         notifications.show({
           color: "red",
           title: "Page not selected",
@@ -3203,7 +4069,7 @@ export default function App() {
         const endpoint = mode === "archive" ? "archive" : "restore";
         const payload = await apiFetch<WikiPageStatusTransitionResponse>(
           apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/${endpoint}`,
+          `/v1/wiki/pages/${encodeURIComponent(normalizedSlug)}/${endpoint}`,
           {
             method: "PUT",
             body: {
@@ -3219,7 +4085,9 @@ export default function App() {
             idempotencyKey: randomKey(),
           },
         );
-        const nextSlug = String(payload.page.slug || selectedPageSlug);
+        const nextSlug = String(payload.page.slug || normalizedSlug);
+        setSelectedSpaceKey(pageGroupKey(nextSlug));
+        setSelectedPageSlug(nextSlug);
         notifications.show({
           color: "green",
           title: mode === "archive" ? "Page archived" : "Page restored",
@@ -3239,16 +4107,22 @@ export default function App() {
         setMovingPage(false);
       }
     },
-    [
-      apiUrl,
-      loadDrafts,
-      loadPageDetail,
-      loadPageHistory,
-      loadWikiPages,
-      projectId,
-      reviewer,
-      selectedPageSlug,
-    ],
+    [apiUrl, loadDrafts, loadPageDetail, loadPageHistory, loadWikiPages, projectId, reviewer],
+  );
+
+  const transitionWikiPageStatus = useCallback(
+    async (mode: "archive" | "restore") => {
+      if (!selectedPageSlug) {
+        notifications.show({
+          color: "red",
+          title: "Page not selected",
+          message: "Select wiki page before changing status.",
+        });
+        return;
+      }
+      await transitionWikiPageStatusForSlug(selectedPageSlug, mode);
+    },
+    [selectedPageSlug, transitionWikiPageStatusForSlug],
   );
 
   const uploadPageAsset = useCallback(async () => {
@@ -3575,6 +4449,76 @@ export default function App() {
     spaceWriteMode,
   ]);
 
+  const savePublishPolicy = useCallback(async () => {
+    if (!projectId.trim() || !reviewer.trim()) return;
+    const baseline: GatekeeperConfig = gatekeeperConfig ?? {
+      project_id: projectId,
+      min_sources_for_golden: 3,
+      conflict_free_days: 7,
+      min_score_for_golden: 0.72,
+      operational_short_text_len: 32,
+      operational_short_token_len: 5,
+      llm_assist_enabled: false,
+      llm_provider: "openai",
+      llm_model: "gpt-4.1-mini",
+      llm_score_weight: 0.35,
+      llm_min_confidence: 0.65,
+      llm_timeout_ms: 3500,
+      publish_mode_default: "auto_publish",
+      publish_mode_by_category: {},
+      auto_publish_min_score: 0.9,
+      auto_publish_min_sources: 3,
+      auto_publish_require_golden: true,
+      auto_publish_allow_conflicts: false,
+      updated_by: null,
+      created_at: null,
+      updated_at: null,
+      source: "default",
+    };
+    setSavingPublishPolicy(true);
+    try {
+      await apiFetch<GatekeeperConfigPayload>(apiUrl, "/v1/gatekeeper/config", {
+        method: "PUT",
+        body: {
+          project_id: projectId,
+          updated_by: reviewer.trim(),
+          min_sources_for_golden: baseline.min_sources_for_golden,
+          conflict_free_days: baseline.conflict_free_days,
+          min_score_for_golden: baseline.min_score_for_golden,
+          operational_short_text_len: baseline.operational_short_text_len,
+          operational_short_token_len: baseline.operational_short_token_len,
+          llm_assist_enabled: baseline.llm_assist_enabled,
+          llm_provider: baseline.llm_provider,
+          llm_model: baseline.llm_model,
+          llm_score_weight: baseline.llm_score_weight,
+          llm_min_confidence: baseline.llm_min_confidence,
+          llm_timeout_ms: baseline.llm_timeout_ms,
+          publish_mode_default: publishModeDefault,
+          publish_mode_by_category: baseline.publish_mode_by_category,
+          auto_publish_min_score: baseline.auto_publish_min_score,
+          auto_publish_min_sources: baseline.auto_publish_min_sources,
+          auto_publish_require_golden: baseline.auto_publish_require_golden,
+          auto_publish_allow_conflicts: baseline.auto_publish_allow_conflicts,
+        },
+        idempotencyKey: randomKey(),
+      });
+      await loadGatekeeperConfig();
+      notifications.show({
+        color: "green",
+        title: "Publish mode updated",
+        message: `Default mode is now ${publishModeDefault}.`,
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Publish mode update failed",
+        message: String(error),
+      });
+    } finally {
+      setSavingPublishPolicy(false);
+    }
+  }, [apiUrl, gatekeeperConfig, loadGatekeeperConfig, projectId, publishModeDefault, reviewer]);
+
   const upsertSpaceOwner = useCallback(
     async (owner: string, active: boolean) => {
       if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
@@ -3740,6 +4684,44 @@ export default function App() {
     },
     [setApproveForm],
   );
+
+  const applyCreateTemplate = useCallback(
+    (templateKey: string) => {
+      const template = PAGE_TEMPLATES.find((item) => item.key === templateKey);
+      if (!template) return;
+      const title = template.title;
+      const space = guidedPageForm.spaceKey.trim() || "operations";
+      const slug = normalizeWikiSlug(`${space}/${title}`, title);
+      setGuidedPageForm((prev) => ({
+        ...prev,
+        title,
+        slug,
+        pageType: space,
+        sectionHeading: template.sectionHeading,
+        sectionStatement: template.statements[0] || "",
+        changeSummary: `Created from template: ${template.title}`,
+      }));
+      setSelectedCreateTemplateKey(template.key);
+      notifications.show({
+        color: "teal",
+        title: "Template selected",
+        message: `${template.title} prefilled.`,
+      });
+    },
+    [guidedPageForm.spaceKey],
+  );
+
+  const completeOnboarding = useCallback(() => {
+    const project = projectId.trim();
+    if (project) {
+      try {
+        window.localStorage.setItem(`${ONBOARDING_STORAGE_PREFIX}${project}`, "1");
+      } catch {
+        // ignore storage errors
+      }
+    }
+    setShowOnboardingModal(false);
+  }, [projectId]);
 
   const jumpToPageFromList = useCallback(
     (pages: WikiPageNode[], direction: "next" | "prev") => {
@@ -4287,6 +5269,11 @@ export default function App() {
       const key = event.key.toLowerCase();
       const mod = event.metaKey || event.ctrlKey;
 
+      if (mod && key === "k") {
+        event.preventDefault();
+        setShowQuickNavModal(true);
+        return;
+      }
       if (mod && key === "r") {
         event.preventDefault();
         void loadDrafts();
@@ -4352,6 +5339,12 @@ export default function App() {
     selectNextDraft,
     selectPrevDraft,
   ]);
+
+  useEffect(() => {
+    if (!showQuickNavModal) return;
+    setQuickNavSlug(selectedPageSlug || null);
+    setQuickNavQuery("");
+  }, [selectedPageSlug, showQuickNavModal]);
 
   const semanticDiff = draftDetail?.draft.semantic_diff ?? {};
   const enrichedConflicts = conflictExplain?.conflicts ?? [];
@@ -4544,12 +5537,23 @@ export default function App() {
   const wikiHomeRecentPages = useMemo(() => {
     return [...pageNodes]
       .sort((a, b) => {
-        const tsA = a.latest_draft_at ? new Date(a.latest_draft_at).getTime() : 0;
-        const tsB = b.latest_draft_at ? new Date(b.latest_draft_at).getTime() : 0;
+        const tsA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tsB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
         return tsB - tsA;
       })
       .slice(0, 8);
   }, [pageNodes]);
+  const quickNavMatches = useMemo(() => {
+    const query = quickNavQuery.trim().toLowerCase();
+    if (!query) return wikiHomeRecentPages.slice(0, 8);
+    return pageNodes
+      .filter((page) => {
+        const title = String(page.title || "").toLowerCase();
+        const slug = String(page.slug || "").toLowerCase();
+        return title.includes(query) || slug.includes(query);
+      })
+      .slice(0, 10);
+  }, [pageNodes, quickNavQuery, wikiHomeRecentPages]);
   const queueMetrics = useMemo(() => {
     const nowMs = Date.now();
     const openScoped = scopedDrafts.filter((item) => isOpenReviewDraft(item));
@@ -4711,6 +5715,155 @@ export default function App() {
     );
   };
 
+  const renderConfluenceTreeNode = (node: WikiTreeNode) => {
+    const isSelected = Boolean(node.slug && selectedPageSlug === node.slug);
+    const isDropTarget = Boolean(
+      node.slug && treeDropTargetSlug === node.slug && draggingPageSlug && draggingPageSlug !== node.slug,
+    );
+    const isCollapsed = Boolean(collapsedTreeNodes[node.key]);
+    const hasChildren = node.children.length > 0;
+    const rowPad = 10 + Math.max(0, node.depth) * 14;
+    const pageStatus = String(node.page?.status || "").trim().toLowerCase();
+    return (
+      <Stack key={node.key} gap={2}>
+        <Group
+          className={`${isSelected ? "confluence-tree-row active" : "confluence-tree-row"}${isDropTarget ? " drop-target" : ""}`}
+          style={{ paddingLeft: rowPad }}
+          gap={6}
+          wrap="nowrap"
+          draggable={Boolean(node.slug)}
+          onDragStart={(event) => {
+            if (!node.slug) return;
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", node.slug);
+            setDraggingPageSlug(node.slug);
+          }}
+          onDragEnd={() => {
+            setDraggingPageSlug(null);
+            setTreeDropTargetSlug(null);
+          }}
+          onDragOver={(event) => {
+            if (!node.slug || !draggingPageSlug || draggingPageSlug === node.slug) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setTreeDropTargetSlug(node.slug);
+          }}
+          onDragLeave={() => {
+            if (treeDropTargetSlug === node.slug) {
+              setTreeDropTargetSlug(null);
+            }
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            if (!node.slug) return;
+            const source = draggingPageSlug || event.dataTransfer.getData("text/plain");
+            if (!source || source === node.slug) return;
+            void moveWikiPageFromTree(source, node.slug);
+          }}
+          onClick={() => {
+            if (!node.slug) return;
+            setSelectedSpaceKey(pageGroupKey(node.slug));
+            setSelectedPageSlug(node.slug);
+          }}
+        >
+          {hasChildren ? (
+            <ActionIcon
+              size="sm"
+              variant="subtle"
+              color="gray"
+              onClick={(event) => {
+                event.stopPropagation();
+                setCollapsedTreeNodes((prev) => ({ ...prev, [node.key]: !prev[node.key] }));
+              }}
+              aria-label={isCollapsed ? `Expand ${node.label}` : `Collapse ${node.label}`}
+            >
+              {isCollapsed ? <IconChevronDown size={12} /> : <IconChevronUp size={12} />}
+            </ActionIcon>
+          ) : (
+            <Box w={22} />
+          )}
+          <Text size="sm" fw={isSelected ? 700 : 500} lineClamp={1} style={{ flex: 1 }}>
+            {node.label}
+          </Text>
+          <Group gap={4} wrap="nowrap">
+            {node.open_count > 0 ? (
+              <Badge size="xs" variant="light" color="orange">
+                {node.open_count}
+              </Badge>
+            ) : null}
+            {node.slug ? (
+              <Menu shadow="md" width={168} withinPortal position="bottom-end">
+                <Menu.Target>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    color="gray"
+                    aria-label={`Open actions for ${node.label}`}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <IconDots size={12} />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedSpaceKey(pageGroupKey(node.slug!));
+                      setSelectedPageSlug(node.slug!);
+                      setCoreWorkspaceTab("wiki");
+                    }}
+                  >
+                    Open
+                  </Menu.Item>
+                  <Menu.Item
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      const segments = node.slug!.split("/").filter(Boolean);
+                      const leaf = segments[segments.length - 1] || "page";
+                      const parent = segments.slice(0, -1).join("/");
+                      setSelectedSpaceKey(pageGroupKey(node.slug!));
+                      setSelectedPageSlug(node.slug!);
+                      setPageMoveParentPath(parent);
+                      setPageMoveSlugLeaf(leaf);
+                      setPageMoveTitle(node.page?.title || leaf);
+                      setPageMoveSummary("Page move/rename");
+                      setPageMoveIncludeDescendants(true);
+                      setPageEditMode(false);
+                      setPageMoveMode(true);
+                    }}
+                  >
+                    Move / Rename
+                  </Menu.Item>
+                  {pageStatus === "archived" ? (
+                    <Menu.Item
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void transitionWikiPageStatusForSlug(node.slug!, "restore");
+                      }}
+                    >
+                      Restore
+                    </Menu.Item>
+                  ) : (
+                    <Menu.Item
+                      color="red"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void transitionWikiPageStatusForSlug(node.slug!, "archive");
+                      }}
+                    >
+                      Archive
+                    </Menu.Item>
+                  )}
+                </Menu.Dropdown>
+              </Menu>
+            ) : null}
+          </Group>
+        </Group>
+        {hasChildren && !isCollapsed ? node.children.map((child) => renderConfluenceTreeNode(child)) : null}
+      </Stack>
+    );
+  };
+
   if (requiresAuthSession && !hasSessionToken) {
     return (
       <Box className="synapse-shell">
@@ -4757,6 +5910,783 @@ export default function App() {
             </Stack>
           </Paper>
         </Stack>
+      </Box>
+    );
+  }
+
+  if (uiMode === "core" || !CAN_ACCESS_ADVANCED_MODE) {
+    return (
+      <Box className="confluence-shell">
+        <Box className="confluence-topbar">
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Group gap="sm" wrap="nowrap">
+              <Text className="eyebrow">Synapse Wiki</Text>
+              <Button
+                size="compact-sm"
+                variant={coreWorkspaceTab === "wiki" ? "filled" : "light"}
+                color={coreWorkspaceTab === "wiki" ? "blue" : "gray"}
+                onClick={() => setCoreWorkspaceTab("wiki")}
+              >
+                Wiki
+              </Button>
+              <Button
+                size="compact-sm"
+                variant={coreWorkspaceTab === "drafts" ? "filled" : "light"}
+                color={coreWorkspaceTab === "drafts" ? "blue" : "gray"}
+                onClick={() => setCoreWorkspaceTab("drafts")}
+              >
+                Drafts
+              </Button>
+              <Button
+                size="compact-sm"
+                variant={coreWorkspaceTab === "tasks" ? "filled" : "light"}
+                color={coreWorkspaceTab === "tasks" ? "blue" : "gray"}
+                onClick={() => setCoreWorkspaceTab("tasks")}
+              >
+                Tasks
+              </Button>
+            </Group>
+            <Group gap="xs" wrap="nowrap">
+              <TextInput
+                size="sm"
+                placeholder="Search page title or slug"
+                value={pageFilter}
+                onChange={(event) => setPageFilter(event.currentTarget.value)}
+                leftSection={<IconSearch size={14} />}
+                w={340}
+                rightSection={<Kbd size="xs">⌘/Ctrl+K</Kbd>}
+              />
+              <Button
+                size="sm"
+                variant="light"
+                leftSection={<IconFilePlus size={14} />}
+                onClick={() => {
+                  setShowCoreCreatePanel((prev) => !prev);
+                  setCoreWorkspaceTab("wiki");
+                }}
+              >
+                Create
+              </Button>
+              <Button
+                size="sm"
+                variant="light"
+                leftSection={<IconLink size={14} />}
+                onClick={() => void shareCurrentPage()}
+              >
+                Share
+              </Button>
+              {selectedPageSlug && !pageEditMode ? (
+                <Button
+                  size="sm"
+                  variant="light"
+                  color="blue"
+                  onClick={() => {
+                    setPageMoveMode(false);
+                    setPageEditMode(true);
+                  }}
+                >
+                  Edit
+                </Button>
+              ) : null}
+              {selectedPageSlug ? (
+                <Button
+                  size="sm"
+                  variant="filled"
+                  color="blue"
+                  onClick={() => setShowPublishModal(true)}
+                >
+                  Publish
+                </Button>
+              ) : null}
+              <Button
+                size="sm"
+                variant="light"
+                leftSection={<IconArrowsShuffle size={14} />}
+                onClick={() => {
+                  void loadWikiPages();
+                  void loadDrafts();
+                }}
+              >
+                Refresh Inbox
+              </Button>
+            </Group>
+          </Group>
+        </Box>
+
+        <Box className="confluence-layout">
+          <Paper className="confluence-left-rail" withBorder>
+            <Stack gap="sm">
+              <TextInput
+                size="xs"
+                label="Project ID"
+                value={projectId}
+                onChange={(event) => setProjectId(event.currentTarget.value)}
+                placeholder="omega_demo"
+              />
+              <TextInput
+                size="xs"
+                label="Reviewer"
+                value={reviewer}
+                onChange={(event) => setReviewer(event.currentTarget.value)}
+                placeholder="ops_manager"
+              />
+              <Select
+                size="xs"
+                label="Space"
+                value={selectedSpaceKey}
+                onChange={setSelectedSpaceKey}
+                clearable
+                data={spaceNodes.map((space) => ({
+                  value: space.key,
+                  label: `${space.title} (${space.page_count})`,
+                }))}
+                placeholder="All spaces"
+              />
+              <Select
+                size="xs"
+                label="Status"
+                value={pageStatusFilter}
+                onChange={(value) => setPageStatusFilter(value)}
+                clearable
+                data={[
+                  { value: "published", label: "Published" },
+                  { value: "reviewed", label: "Reviewed" },
+                  { value: "draft", label: "Draft" },
+                  { value: "archived", label: "Archived" },
+                ]}
+                placeholder="All statuses"
+              />
+            </Stack>
+            <Divider my="sm" />
+            <Group justify="space-between" mb={6}>
+              <Text size="sm" fw={700}>
+                Pages
+              </Text>
+              <Badge size="xs" variant="light" color="blue">
+                {pageNodes.length}
+              </Badge>
+            </Group>
+            <ScrollArea h={760} type="auto">
+              <Stack gap={2} className="confluence-tree">
+                {wikiTreeNodes.length === 0 ? (
+                  <Text size="sm" c="dimmed">
+                    No pages in scope.
+                  </Text>
+                ) : (
+                  wikiTreeNodes.map((node) => renderConfluenceTreeNode(node))
+                )}
+              </Stack>
+            </ScrollArea>
+          </Paper>
+
+          <Paper className="confluence-main" withBorder>
+            {coreWorkspaceTab === "tasks" ? (
+              <Suspense
+                fallback={
+                  <Group gap={8}>
+                    <Loader size="sm" />
+                    <Text size="sm" c="dimmed">
+                      Loading tasks…
+                    </Text>
+                  </Group>
+                }
+              >
+                <LazyTaskTrackerPanel apiUrl={apiUrl} projectId={projectId} reviewer={reviewer} />
+              </Suspense>
+            ) : coreWorkspaceTab === "drafts" ? (
+              <Stack gap="sm">
+                <Group justify="space-between" align="center">
+                  <Title order={3}>Draft Inbox</Title>
+                  <Badge variant="light" color="cyan">
+                    {visibleDrafts.length}
+                  </Badge>
+                </Group>
+                {visibleDrafts.length === 0 ? (
+                  <Paper withBorder p="md" radius="md">
+                    <Text size="sm" c="dimmed">
+                      No drafts in current scope.
+                    </Text>
+                  </Paper>
+                ) : (
+                  <ScrollArea h={760} type="auto">
+                    <Stack gap="xs">
+                      {visibleDrafts.map((draft) => (
+                        <Paper key={draft.id} withBorder p="sm" radius="md">
+                          <Group justify="space-between" align="flex-start" wrap="nowrap">
+                            <Stack gap={4} style={{ flex: 1 }}>
+                              <Text fw={700} size="sm">
+                                {draft.page.title || draft.page.slug || draft.section_key || "Untitled draft"}
+                              </Text>
+                              <Group gap={6} wrap="wrap">
+                                <Badge size="xs" color={statusColor(draft.status)} variant="light">
+                                  {draft.status}
+                                </Badge>
+                                <Badge size="xs" variant="light" color="blue">
+                                  conf {draft.confidence.toFixed(2)}
+                                </Badge>
+                                <Badge size="xs" variant="light" color="gray">
+                                  {fmtDate(draft.created_at)}
+                                </Badge>
+                              </Group>
+                              <Text size="xs" c="dimmed" lineClamp={2}>
+                                {draft.rationale}
+                              </Text>
+                            </Stack>
+                            <Button
+                              size="compact-sm"
+                              variant="light"
+                              onClick={() => {
+                                if (!draft.page.slug) return;
+                                setSelectedSpaceKey(pageGroupKey(draft.page.slug));
+                                setSelectedPageSlug(draft.page.slug);
+                                setCoreWorkspaceTab("wiki");
+                              }}
+                            >
+                              Open page
+                            </Button>
+                          </Group>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  </ScrollArea>
+                )}
+              </Stack>
+            ) : (
+              <Stack gap="sm" className="confluence-page-view">
+                <Group justify="space-between" align="center" wrap="wrap">
+                  <Breadcrumbs separator="›">
+                    {wikiPageBreadcrumb.map((crumb, index) => (
+                      <Text
+                        key={`confluence-crumb-${index}-${crumb.slug || "root"}`}
+                        size="sm"
+                        c={crumb.slug ? "dimmed" : "gray"}
+                        style={crumb.slug ? { cursor: "pointer" } : undefined}
+                        onClick={() => {
+                          if (!crumb.slug) {
+                            setSelectedPageSlug(null);
+                            return;
+                          }
+                          setSelectedSpaceKey(pageGroupKey(crumb.slug));
+                          setSelectedPageSlug(crumb.slug);
+                        }}
+                      >
+                        {crumb.label}
+                      </Text>
+                    ))}
+                  </Breadcrumbs>
+                  <Group gap="xs">
+                    <Button
+                      size="compact-sm"
+                      variant="light"
+                      leftSection={<IconFilePlus size={14} />}
+                      onClick={() => setShowCoreCreatePanel((prev) => !prev)}
+                    >
+                      Create
+                    </Button>
+                    {selectedPageSlug ? (
+                      <Button
+                        size="compact-sm"
+                        variant="light"
+                        leftSection={<IconRefresh size={14} />}
+                        onClick={() => {
+                          void loadPageDetail(selectedPageSlug);
+                          void loadPageHistory(selectedPageSlug);
+                        }}
+                      >
+                        Refresh page
+                      </Button>
+                    ) : null}
+                    {selectedPageSlug && !pageEditMode ? (
+                      <Button
+                        size="compact-sm"
+                        variant="filled"
+                        color="blue"
+                        onClick={() => {
+                          setPageMoveMode(false);
+                          setPageEditMode(true);
+                        }}
+                      >
+                        Edit
+                      </Button>
+                    ) : null}
+                  </Group>
+                </Group>
+
+                {showCoreCreatePanel && (
+                  <Paper withBorder p="sm" radius="md" className="confluence-create-panel">
+                    <Group gap={6} mb="sm" wrap="wrap">
+                      {PAGE_TEMPLATES.map((template) => (
+                        <Button
+                          key={`core-create-template-${template.key}`}
+                          size="compact-xs"
+                          variant={selectedCreateTemplateKey === template.key ? "filled" : "light"}
+                          color={selectedCreateTemplateKey === template.key ? "blue" : "gray"}
+                          onClick={() => applyCreateTemplate(template.key)}
+                        >
+                          {template.title}
+                        </Button>
+                      ))}
+                    </Group>
+                    <SimpleGrid cols={{ base: 1, md: 2, xl: 4 }} spacing="sm">
+                      <TextInput
+                        size="xs"
+                        label="Space"
+                        value={guidedPageForm.spaceKey}
+                        onChange={(event) => setGuidedPageForm((prev) => ({ ...prev, spaceKey: event.currentTarget.value }))}
+                        placeholder="operations"
+                      />
+                      <TextInput
+                        size="xs"
+                        label="Title"
+                        value={guidedPageForm.title}
+                        onChange={(event) => setGuidedPageForm((prev) => ({ ...prev, title: event.currentTarget.value }))}
+                        placeholder="BC Omega Access"
+                      />
+                      <TextInput
+                        size="xs"
+                        label="Slug"
+                        value={guidedPageForm.slug}
+                        onChange={(event) => setGuidedPageForm((prev) => ({ ...prev, slug: event.currentTarget.value }))}
+                        placeholder="operations/bc-omega-access"
+                      />
+                      <Select
+                        size="xs"
+                        label="Status"
+                        value={guidedPageForm.status}
+                        onChange={(value) => {
+                          if (value === "draft" || value === "reviewed" || value === "published") {
+                            setGuidedPageForm((prev) => ({ ...prev, status: value }));
+                          }
+                        }}
+                        allowDeselect={false}
+                        data={[
+                          { value: "published", label: "published" },
+                          { value: "reviewed", label: "reviewed" },
+                          { value: "draft", label: "draft" },
+                        ]}
+                      />
+                    </SimpleGrid>
+                    <Group mt="sm" justify="flex-end">
+                      <Button size="compact-sm" variant="subtle" onClick={() => void suggestGuidedSlug()}>
+                        Suggest slug
+                      </Button>
+                      <Button size="compact-sm" loading={creatingPage} onClick={() => void createGuidedWikiPage()}>
+                        Create page
+                      </Button>
+                    </Group>
+                  </Paper>
+                )}
+
+                {!selectedPageSlug ? (
+                  <Paper withBorder p="lg" radius="md">
+                    <Stack gap="sm">
+                      <Title order={2}>Welcome to your workspace</Title>
+                      <Text c="dimmed">
+                        Choose a page from the left tree or create the first page for this project.
+                      </Text>
+                      <Divider />
+                      <Text fw={700} size="sm">
+                        Recent pages
+                      </Text>
+                      <Group gap="xs" wrap="wrap">
+                        {wikiHomeRecentPages.map((page) => (
+                          <Button
+                            key={`core-home-${page.slug}`}
+                            size="compact-sm"
+                            variant="light"
+                            onClick={() => {
+                              setSelectedSpaceKey(pageGroupKey(page.slug));
+                              setSelectedPageSlug(page.slug);
+                            }}
+                          >
+                            {page.title || page.slug}
+                          </Button>
+                        ))}
+                      </Group>
+                    </Stack>
+                  </Paper>
+                ) : loadingPageDetail ? (
+                  <Group gap={8}>
+                    <Loader size="sm" />
+                    <Text size="sm" c="dimmed">
+                      Loading page…
+                    </Text>
+                  </Group>
+                ) : selectedPageDetail ? (
+                  <>
+                    <Stack gap={2}>
+                      <Title order={1}>{selectedPageDetail.page.title || selectedPageDetail.page.slug}</Title>
+                      <Text size="sm" c="dimmed">
+                        Updated {fmtDate(latestPageVersion?.created_at)} {latestPageVersion?.created_by ? `by ${latestPageVersion.created_by}` : ""}
+                      </Text>
+                    </Stack>
+                    {pageEditMode ? (
+                      <Paper withBorder p="sm" radius="md">
+                        <Stack gap="sm">
+                          <Group justify="space-between" align="center" wrap="wrap">
+                            <Text size="xs" c="dimmed">
+                              {pageEditDraftState === "saving"
+                                ? "Autosave: saving..."
+                                : pageEditDraftState === "saved"
+                                  ? `Autosave: saved ${fmtDate(pageEditDraftSavedAt)}`
+                                  : pageEditDraftState === "restored"
+                                    ? "Autosave: restored local draft"
+                                    : "Autosave: idle"}
+                            </Text>
+                            <Badge size="xs" variant="light" color={pageEditDraftState === "saving" ? "orange" : "teal"}>
+                              {pageEditDraftState}
+                            </Badge>
+                          </Group>
+                          <TextInput
+                            label="Page title"
+                            value={pageEditTitle}
+                            onChange={(event) => setPageEditTitle(event.currentTarget.value)}
+                          />
+                          <TextInput
+                            label="Change summary"
+                            value={pageEditSummary}
+                            onChange={(event) => setPageEditSummary(event.currentTarget.value)}
+                          />
+                          <Textarea
+                            label="Page markdown"
+                            value={pageEditMarkdown}
+                            onChange={(event) => setPageEditMarkdown(event.currentTarget.value)}
+                            autosize
+                            minRows={20}
+                          />
+                          <Group justify="flex-end">
+                            <Button
+                              variant="subtle"
+                              onClick={() => setPageEditMode(false)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              loading={savingPageEdit}
+                              onClick={() => void saveWikiPageEdit()}
+                            >
+                              Update
+                            </Button>
+                          </Group>
+                        </Stack>
+                      </Paper>
+                    ) : (
+                      <Suspense
+                        fallback={
+                          <Paper withBorder p="md" radius="md">
+                            <Group gap={8}>
+                              <Loader size="sm" />
+                              <Text size="sm" c="dimmed">
+                                Rendering page…
+                              </Text>
+                            </Group>
+                          </Paper>
+                        }
+                      >
+                        <LazyWikiPageCanvas
+                          title={selectedPageDetail.page.title || selectedPageDetail.page.slug || "Untitled page"}
+                          slug={selectedPageDetail.page.slug}
+                          markdown={wikiPreviewMarkdown}
+                          apiBaseUrl={apiUrl}
+                          readonly
+                          onApplyEditedStatement={() => {}}
+                        />
+                      </Suspense>
+                    )}
+                  </>
+                ) : (
+                  <Text size="sm" c="dimmed">
+                    Page content is unavailable.
+                  </Text>
+                )}
+              </Stack>
+            )}
+          </Paper>
+
+          {coreWorkspaceTab === "wiki" && (
+            <Paper className="confluence-right-rail" withBorder>
+              {!selectedPageSlug ? (
+                <Text size="sm" c="dimmed">
+                  Select a page to see context.
+                </Text>
+              ) : (
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Text fw={700} size="sm">
+                      Page Details
+                    </Text>
+                    <Badge variant="light" color="blue">
+                      {selectedPageDetail?.page.status || "n/a"}
+                    </Badge>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    slug: {selectedPageSlug}
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    version: v{latestPageVersion?.version ?? selectedPageDetail?.page.current_version ?? "—"}
+                  </Text>
+                  <Divider />
+                  <Text size="xs" fw={700}>
+                    Sections
+                  </Text>
+                  {(selectedPageDetail?.sections ?? []).length === 0 ? (
+                    <Text size="xs" c="dimmed">
+                      No sections.
+                    </Text>
+                  ) : (
+                    <Stack gap={4}>
+                      {(selectedPageDetail?.sections ?? []).slice(0, 8).map((section) => (
+                        <Text key={`core-side-section-${section.section_key}`} size="xs" c="dimmed">
+                          {section.heading} ({section.statement_count})
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                  <Divider />
+                  <Text size="xs" fw={700}>
+                    Open drafts
+                  </Text>
+                  <Badge size="sm" variant="light" color="orange">
+                    {selectedPageOpenDrafts.length}
+                  </Badge>
+                  <Button
+                    size="compact-sm"
+                    variant="light"
+                    color="cyan"
+                    onClick={() => setCoreWorkspaceTab("drafts")}
+                  >
+                    Open Draft Inbox
+                  </Button>
+                </Stack>
+              )}
+            </Paper>
+          )}
+        </Box>
+
+        <Modal
+          opened={showQuickNavModal}
+          onClose={() => setShowQuickNavModal(false)}
+          title="Jump to page"
+          centered
+        >
+          <Stack gap="sm">
+            <TextInput
+              autoFocus
+              value={quickNavQuery}
+              onChange={(event) => setQuickNavQuery(event.currentTarget.value)}
+              placeholder="Type page title or slug"
+            />
+            <Paper withBorder p="xs" radius="md">
+              <Stack gap={6}>
+                {(quickNavMatches.length === 0 && quickNavQuery.trim().length > 0) ? (
+                  <Text size="xs" c="dimmed">
+                    No matching pages.
+                  </Text>
+                ) : (
+                  quickNavMatches.map((item) => (
+                    <Button
+                      key={`quick-nav-item-${item.slug}`}
+                      size="compact-sm"
+                      variant={quickNavSlug === item.slug ? "filled" : "subtle"}
+                      justify="flex-start"
+                      onClick={() => setQuickNavSlug(item.slug)}
+                    >
+                      {item.title || item.slug}
+                    </Button>
+                  ))
+                )}
+              </Stack>
+            </Paper>
+            <Group justify="flex-end">
+              <Button
+                size="compact-sm"
+                variant="subtle"
+                disabled={quickNavQuery.trim().length < 2}
+                onClick={() => {
+                  const title = quickNavQuery.trim();
+                  if (!title) return;
+                  const space = selectedSpaceKey || guidedPageForm.spaceKey || "operations";
+                  const slug = normalizeWikiSlug(`${space}/${title}`, title);
+                  setGuidedPageForm((prev) => ({
+                    ...prev,
+                    spaceKey: space,
+                    title,
+                    slug,
+                    changeSummary: `Created from quick search: ${title}`,
+                  }));
+                  setSelectedCreateTemplateKey(null);
+                  setShowCoreCreatePanel(true);
+                  setCoreWorkspaceTab("wiki");
+                  setShowQuickNavModal(false);
+                }}
+              >
+                Create from query
+              </Button>
+              <Button
+                size="compact-sm"
+                variant="light"
+                onClick={() => setShowQuickNavModal(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="compact-sm"
+                disabled={!(quickNavSlug || quickNavMatches[0]?.slug)}
+                onClick={() => {
+                  const target = quickNavSlug || quickNavMatches[0]?.slug || null;
+                  if (!target) return;
+                  setSelectedSpaceKey(pageGroupKey(target));
+                  setSelectedPageSlug(target);
+                  setCoreWorkspaceTab("wiki");
+                  setShowQuickNavModal(false);
+                }}
+              >
+                Open page
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+
+        <Modal
+          opened={showPublishModal}
+          onClose={() => setShowPublishModal(false)}
+          title="Publish page"
+          centered
+        >
+          <Stack gap="sm">
+            <Text size="sm" c="dimmed">
+              Publishing this page will make the latest content visible to all connected agents.
+            </Text>
+            <TextInput
+              label="Location"
+              value={selectedPageSlug || ""}
+              readOnly
+            />
+            <TextInput
+              label="Change summary"
+              value={publishSummary}
+              onChange={(event) => setPublishSummary(event.currentTarget.value)}
+              placeholder="What changed in this version?"
+            />
+            <Group justify="flex-end">
+              <Button
+                size="compact-sm"
+                variant="light"
+                onClick={() => setShowPublishModal(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="compact-sm"
+                loading={savingPageEdit}
+                disabled={!selectedPageSlug}
+                onClick={() => void publishCurrentPage()}
+              >
+                Publish
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+
+        <Modal
+          opened={showOnboardingModal}
+          onClose={() => setShowOnboardingModal(false)}
+          title="Welcome to Synapse Wiki"
+          centered
+        >
+          <Stack gap="sm">
+            <Badge variant="light" color="blue">
+              Step {onboardingStep} of 3
+            </Badge>
+            {onboardingStep === 1 && (
+              <>
+                <Text size="sm" fw={700}>
+                  1. Connect your workspace
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Project and reviewer are already set. Next we create your first wiki page.
+                </Text>
+              </>
+            )}
+            {onboardingStep === 2 && (
+              <>
+                <Text size="sm" fw={700}>
+                  2. Create your first page
+                </Text>
+                <Group gap={6} wrap="wrap">
+                  {PAGE_TEMPLATES.map((template) => (
+                    <Button
+                      key={`onboarding-template-${template.key}`}
+                      size="compact-xs"
+                      variant="light"
+                      onClick={() => {
+                        applyCreateTemplate(template.key);
+                        setShowCoreCreatePanel(true);
+                        setCoreWorkspaceTab("wiki");
+                        setShowOnboardingModal(false);
+                      }}
+                    >
+                      {template.title}
+                    </Button>
+                  ))}
+                </Group>
+                <Text size="xs" c="dimmed">
+                  Selecting a template opens the create panel prefilled.
+                </Text>
+              </>
+            )}
+            {onboardingStep === 3 && (
+              <>
+                <Text size="sm" fw={700}>
+                  3. Review incoming drafts
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Drafts are a separate inbox. Use it only when updates need moderation.
+                </Text>
+              </>
+            )}
+            <Group justify="space-between">
+              <Button
+                size="compact-sm"
+                variant="subtle"
+                disabled={onboardingStep <= 1}
+                onClick={() => setOnboardingStep((prev) => Math.max(1, prev - 1))}
+              >
+                Back
+              </Button>
+              <Group gap="xs">
+                <Button
+                  size="compact-sm"
+                  variant="light"
+                  onClick={() => {
+                    completeOnboarding();
+                    setCoreWorkspaceTab("wiki");
+                  }}
+                >
+                  Skip
+                </Button>
+                {onboardingStep < 3 ? (
+                  <Button
+                    size="compact-sm"
+                    onClick={() => setOnboardingStep((prev) => Math.min(3, prev + 1))}
+                  >
+                    Next
+                  </Button>
+                ) : (
+                  <Button
+                    size="compact-sm"
+                    onClick={() => {
+                      completeOnboarding();
+                      setCoreWorkspaceTab("drafts");
+                    }}
+                  >
+                    Finish
+                  </Button>
+                )}
+              </Group>
+            </Group>
+          </Stack>
+        </Modal>
       </Box>
     );
   }
@@ -4852,7 +6782,7 @@ export default function App() {
           </SimpleGrid>
           {effectiveUiMode === "core" && (
             <Text size="xs" c="dimmed" mt={8}>
-              API endpoint uses workspace default. Switch to advanced profile to override API URL.
+              API endpoint uses workspace default. Set VITE_SYNAPSE_API_URL to override.
             </Text>
           )}
 
@@ -5113,15 +7043,14 @@ export default function App() {
               <Text className="eyebrow">Wiki Workspace</Text>
               <Title order={3}>Company Wiki, Written by Agents.</Title>
               <Text c="dimmed" size="sm">
-                Review and publish trusted knowledge pages. Draft moderation and task tracking stay available as
-                operational side flows when needed.
+                Review and publish trusted knowledge pages with a page-first workspace.
               </Text>
               <Group gap="xs" wrap="wrap">
                 <Badge variant="light" color="teal">
                   Wiki
                 </Badge>
                 <Text size="xs" c="dimmed">
-                  Draft moderation and tasks are available in Operations actions.
+                  Drafts and Tasks are secondary tabs.
                 </Text>
               </Group>
             </Stack>
@@ -5132,9 +7061,9 @@ export default function App() {
           <Paper radius="xl" p="md" withBorder className="wiki-command-bar">
             <Group justify="space-between" align="flex-end" wrap="wrap">
               <Stack gap={2}>
-                <Text className="eyebrow">Corporate Wiki Workspace</Text>
+                <Text className="eyebrow">Knowledge Base</Text>
                 <Text size="sm" c="dimmed">
-                  Wiki is primary. Draft inbox and tasks are operational side flows.
+                  Confluence-style workspace: pages first, operations second.
                 </Text>
               </Stack>
               <Group gap="xs" wrap="wrap">
@@ -5158,37 +7087,18 @@ export default function App() {
                 />
                 <Button
                   variant={coreWorkspaceTab === "wiki" ? "filled" : "light"}
-                  color="teal"
+                  color={coreWorkspaceTab === "wiki" ? "teal" : "gray"}
                   onClick={() => setCoreWorkspaceTab("wiki")}
                 >
-                  Open Wiki
+                  Wiki
                 </Button>
-                <Button
-                  variant={coreWorkspaceTab === "drafts" || coreWorkspaceTab === "tasks" ? "filled" : "light"}
-                  color={coreWorkspaceTab === "drafts" || coreWorkspaceTab === "tasks" ? "cyan" : "gray"}
-                  onClick={() => setShowOperationsNav((value) => !value)}
-                >
-                  Operations ({openDraftCount})
-                </Button>
-              </Group>
-            </Group>
-          </Paper>
-        )}
-
-        {effectiveUiMode === "core" && showOperationsNav && (
-          <Paper radius="xl" p="sm" withBorder className="operations-nav-card">
-            <Group justify="space-between" align="center" wrap="wrap">
-              <Text size="sm" c="dimmed">
-                Operational flows for moderation and execution tracking.
-              </Text>
-              <Group gap="xs" wrap="wrap">
                 <Button
                   size="compact-sm"
                   variant={coreWorkspaceTab === "drafts" ? "filled" : "light"}
                   color={coreWorkspaceTab === "drafts" ? "cyan" : "gray"}
                   onClick={() => setCoreWorkspaceTab("drafts")}
                 >
-                  Open Draft Inbox
+                  Drafts
                 </Button>
                 <Button
                   size="compact-sm"
@@ -5196,7 +7106,7 @@ export default function App() {
                   color={coreWorkspaceTab === "tasks" ? "orange" : "gray"}
                   onClick={() => setCoreWorkspaceTab("tasks")}
                 >
-                  Open Tasks
+                  Tasks
                 </Button>
               </Group>
             </Group>
@@ -5252,6 +7162,116 @@ export default function App() {
               </Paper>
             </SimpleGrid>
             <Stack gap="sm" mb="sm">
+              <Paper withBorder p="xs" radius="md" className="legacy-connect-card">
+                <Stack gap={8}>
+                  <Group justify="space-between" align="center" wrap="wrap">
+                    <Stack gap={2}>
+                      <Text size="sm" fw={700}>
+                        Connect Existing Agent Memory
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        Bring existing memory into Synapse Wiki in a guided 3-step setup.
+                      </Text>
+                    </Stack>
+                    {loadingLegacyProfiles || loadingLegacySources ? (
+                      <Loader size="xs" />
+                    ) : legacyConnectedSource ? (
+                      <Badge size="xs" variant="light" color="teal">
+                        connected
+                      </Badge>
+                    ) : (
+                      <Badge size="xs" variant="light" color="gray">
+                        not connected
+                      </Badge>
+                    )}
+                  </Group>
+                  <SimpleGrid cols={{ base: 1, sm: 3 }} spacing={6}>
+                    <Paper withBorder p="xs" radius="md">
+                      <Text size="xs" c="dimmed">
+                        Profile
+                      </Text>
+                      <Text size="sm" fw={700}>
+                        {legacySelectedProfile?.label || legacySqlProfile}
+                      </Text>
+                    </Paper>
+                    <Paper withBorder p="xs" radius="md">
+                      <Text size="xs" c="dimmed">
+                        Source
+                      </Text>
+                      <Text size="sm" fw={700}>
+                        {legacyConnectedSource?.source_ref || legacySourceRef || "—"}
+                      </Text>
+                    </Paper>
+                    <Paper withBorder p="xs" radius="md">
+                      <Text size="xs" c="dimmed">
+                        Last success
+                      </Text>
+                      <Text size="sm" fw={700}>
+                        {legacyConnectedSource ? fmtDate(legacyConnectedSource.last_success_at) : "—"}
+                      </Text>
+                    </Paper>
+                  </SimpleGrid>
+                  <Group gap="xs" wrap="wrap">
+                    <Button
+                      size="xs"
+                      color="teal"
+                      disabled={!projectId.trim()}
+                      onClick={() => openLegacySetupWizard()}
+                    >
+                      Open setup wizard
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      disabled={!projectId.trim()}
+                      loading={loadingLegacySources}
+                      onClick={() => void loadLegacyImportSources()}
+                    >
+                      Refresh sources
+                    </Button>
+                    {legacyConnectedSource && (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        color="indigo"
+                        loading={runningLegacySyncSourceId === legacyConnectedSource.id}
+                        onClick={() => void runLegacySourceSync(legacyConnectedSource.id)}
+                      >
+                        Run sync now
+                      </Button>
+                    )}
+                  </Group>
+                  {legacyConnectedSource ? (
+                    <Group gap={6} wrap="wrap">
+                      <Badge size="xs" variant="light" color={legacyConnectedSource.enabled ? "teal" : "gray"}>
+                        {legacyConnectedSource.source_ref}
+                      </Badge>
+                      <Badge size="xs" variant="light" color="blue">
+                        every {legacyConnectedSource.sync_interval_minutes}m
+                      </Badge>
+                      <Badge size="xs" variant="light" color="gray">
+                        last run {fmtDate(legacyConnectedSource.last_run_at)}
+                      </Badge>
+                      <Badge size="xs" variant="light" color="gray">
+                        last success {fmtDate(legacyConnectedSource.last_success_at)}
+                      </Badge>
+                    </Group>
+                  ) : legacyPostgresSources.length > 0 ? (
+                    <Stack gap={4}>
+                      <Text size="xs" c="dimmed">
+                        Existing connectors in this project:
+                      </Text>
+                      <Group gap={6} wrap="wrap">
+                        {legacyPostgresSources.slice(0, 4).map((item) => (
+                          <Badge key={`legacy-source-${item.id}`} size="xs" variant="light" color="gray">
+                            {item.source_ref}
+                          </Badge>
+                        ))}
+                      </Group>
+                    </Stack>
+                  ) : null}
+                </Stack>
+              </Paper>
               <Select
                 label="Space"
                 placeholder="All spaces"
@@ -6283,9 +8303,26 @@ export default function App() {
                     ) : (
                       <Stack gap={4}>
                         {(pageHistory?.versions ?? []).slice(0, 5).map((version) => (
-                          <Text key={`ctx-version-${version.version}`} size="xs" c="dimmed">
-                            v{version.version} • {fmtDate(version.created_at)}
-                          </Text>
+                          <Group key={`ctx-version-${version.version}`} justify="space-between" align="center" wrap="nowrap">
+                            <Text size="xs" c="dimmed">
+                              v{version.version} • {fmtDate(version.created_at)}
+                            </Text>
+                            {Number(selectedPageDetail?.page.current_version || 0) !== Number(version.version) ? (
+                              <Button
+                                size="compact-xs"
+                                variant="light"
+                                color="orange"
+                                loading={rollingBackVersion === Number(version.version)}
+                                onClick={() => void rollbackWikiPageToVersion(Number(version.version))}
+                              >
+                                Rollback
+                              </Button>
+                            ) : (
+                              <Badge size="xs" variant="light" color="green">
+                                current
+                              </Badge>
+                            )}
+                          </Group>
                         ))}
                       </Stack>
                     )}
@@ -6464,6 +8501,43 @@ export default function App() {
                           policy source: {spacePolicy.exists ? "configured" : "default open"}
                         </Text>
                       )}
+
+                      <Divider />
+
+                      <Text size="xs" fw={700}>
+                        Knowledge publish mode
+                      </Text>
+                      <Select
+                        size="xs"
+                        label="Default publish mode"
+                        value={publishModeDefault}
+                        onChange={(value) => {
+                          if (value === "human_required" || value === "conditional" || value === "auto_publish") {
+                            setPublishModeDefault(value);
+                          }
+                        }}
+                        data={[
+                          { value: "auto_publish", label: "auto_publish (agent writes directly)" },
+                          { value: "conditional", label: "conditional (quality-gated autopublish)" },
+                          { value: "human_required", label: "human_required (manual moderation)" },
+                        ]}
+                        allowDeselect={false}
+                        disabled={loadingGatekeeperConfig}
+                      />
+                      <Text size="xs" c="dimmed">
+                        Agents publish by default in `auto_publish`. Switch to `human_required` if you need strict review.
+                      </Text>
+                      <Group justify="flex-end">
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          color="violet"
+                          loading={savingPublishPolicy}
+                          onClick={() => void savePublishPolicy()}
+                        >
+                          Save publish mode
+                        </Button>
+                      </Group>
 
                       <Divider />
 
@@ -7906,6 +9980,22 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="orange"
+                              loading={
+                                rollingBackVersion != null &&
+                                Number(rollingBackVersion) === Number(selectedHistoryTarget?.version ?? -1)
+                              }
+                              onClick={() => {
+                                const targetVersion = Number(selectedHistoryTarget?.version || 0);
+                                if (!targetVersion) return;
+                                void rollbackWikiPageToVersion(targetVersion);
+                              }}
+                            >
+                              Rollback to target version
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               onClick={() => {
                                 const targetMarkdown = String(selectedHistoryTarget?.markdown || "").trim();
                                 if (!targetMarkdown) return;
@@ -8388,6 +10478,186 @@ export default function App() {
           </Group>
           </Paper>
         )}
+
+        <Modal
+          opened={showLegacySetupModal}
+          onClose={() => {
+            if (connectingLegacySource) return;
+            setShowLegacySetupModal(false);
+          }}
+          title="Connect Existing Agent Memory"
+          centered
+        >
+          <Stack gap="sm">
+            <Badge variant="light" color="teal">
+              Step {legacySetupStep} of 3
+            </Badge>
+            {legacySetupStep === 1 && (
+              <Stack gap={8}>
+                <Text size="sm" fw={700}>
+                  1. Choose your memory profile
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Start with the schema that matches your existing DB.
+                </Text>
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                  {(legacyProfiles.length > 0
+                    ? legacyProfiles
+                    : [
+                        { profile: "ops_kb_items", label: "Ops KB Items", description: "Operational KB table." },
+                        { profile: "memory_items", label: "Memory Items", description: "Generic runtime memory." },
+                      ]
+                  ).map((profile) => (
+                    <Paper
+                      key={`legacy-profile-${profile.profile}`}
+                      withBorder
+                      p="xs"
+                      radius="md"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => setLegacySqlProfile(profile.profile)}
+                    >
+                      <Stack gap={4}>
+                        <Group justify="space-between" align="center">
+                          <Text size="sm" fw={700}>
+                            {profile.label}
+                          </Text>
+                          <Badge
+                            size="xs"
+                            variant={legacySqlProfile === profile.profile ? "filled" : "light"}
+                            color={legacySqlProfile === profile.profile ? "teal" : "gray"}
+                          >
+                            {legacySqlProfile === profile.profile ? "selected" : "choose"}
+                          </Badge>
+                        </Group>
+                        <Text size="xs" c="dimmed">
+                          {profile.description}
+                        </Text>
+                      </Stack>
+                    </Paper>
+                  ))}
+                </SimpleGrid>
+              </Stack>
+            )}
+            {legacySetupStep === 2 && (
+              <Stack gap={8}>
+                <Text size="sm" fw={700}>
+                  2. Configure connector
+                </Text>
+                <Text size="sm" c="dimmed">
+                  These fields are enough for zero-custom-script adoption.
+                </Text>
+                <TextInput
+                  label="Source ref"
+                  value={legacySourceRef}
+                  onChange={(event) => setLegacySourceRef(event.currentTarget.value)}
+                  placeholder="existing_memory"
+                />
+                <TextInput
+                  label="Postgres DSN env var"
+                  value={legacySqlDsnEnv}
+                  onChange={(event) => setLegacySqlDsnEnv(event.currentTarget.value)}
+                  placeholder="HW_MEMORY_DSN"
+                />
+                <Select
+                  label="Sync interval"
+                  value={legacySyncIntervalMinutes}
+                  onChange={(value) => {
+                    if (!value) return;
+                    setLegacySyncIntervalMinutes(value);
+                  }}
+                  data={[
+                    { value: "1", label: "every 1 minute" },
+                    { value: "5", label: "every 5 minutes" },
+                    { value: "15", label: "every 15 minutes" },
+                    { value: "30", label: "every 30 minutes" },
+                    { value: "60", label: "every 60 minutes" },
+                  ]}
+                  allowDeselect={false}
+                />
+              </Stack>
+            )}
+            {legacySetupStep === 3 && (
+              <Stack gap={8}>
+                <Text size="sm" fw={700}>
+                  3. Review and start
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Synapse will create/update connector and queue first sync run.
+                </Text>
+                <Paper withBorder p="xs" radius="md">
+                  <Stack gap={4}>
+                    <Text size="xs" c="dimmed">
+                      Profile
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      {legacySelectedProfile?.label || legacySqlProfile}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Source
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      {legacySourceRef || "—"}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      DSN env
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      {legacySqlDsnEnv || "—"}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Interval
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      every {legacySyncIntervalMinutes || "5"} minute(s)
+                    </Text>
+                  </Stack>
+                </Paper>
+                <Checkbox
+                  label="After connect, open Drafts migration tools"
+                  checked={legacyAutoOpenMigrationMode}
+                  onChange={(event) => setLegacyAutoOpenMigrationMode(event.currentTarget.checked)}
+                />
+              </Stack>
+            )}
+            <Group justify="space-between">
+              <Button
+                size="compact-sm"
+                variant="subtle"
+                disabled={legacySetupStep <= 1 || connectingLegacySource}
+                onClick={() => setLegacySetupStep((prev) => Math.max(1, prev - 1))}
+              >
+                Back
+              </Button>
+              <Group gap="xs">
+                <Button
+                  size="compact-sm"
+                  variant="light"
+                  disabled={connectingLegacySource}
+                  onClick={() => setShowLegacySetupModal(false)}
+                >
+                  Cancel
+                </Button>
+                {legacySetupStep < 3 ? (
+                  <Button
+                    size="compact-sm"
+                    onClick={() => setLegacySetupStep((prev) => Math.min(3, prev + 1))}
+                  >
+                    Next
+                  </Button>
+                ) : (
+                  <Button
+                    size="compact-sm"
+                    color="teal"
+                    loading={connectingLegacySource}
+                    onClick={() => void completeLegacySetupWizard()}
+                  >
+                    Connect & queue sync
+                  </Button>
+                )}
+              </Group>
+            </Group>
+          </Stack>
+        </Modal>
       </Stack>
     </Box>
   );

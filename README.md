@@ -157,12 +157,6 @@ cd apps/web && npm install && npm run dev
 
 Open `http://localhost:5173`.
 
-Lock workspace to focused core workflow (hide advanced mode and expert toggles):
-
-```bash
-export VITE_SYNAPSE_UI_PROFILE=core-only
-```
-
 ## Open-Core Stack
 
 ### Synapse Core (OSS)
