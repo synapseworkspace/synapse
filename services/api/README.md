@@ -98,6 +98,7 @@ Environment:
 - `GET /v1/wiki/uploads/{upload_id}/content?project_id=...&download=false`
 - `GET /v1/wiki/pages/{slug}?project_id=...`
 - `GET /v1/wiki/pages/{slug}/history?project_id=...&limit=20&include_markdown=true`
+- `PUT /v1/wiki/pages/{slug}/rollback` (create new page version from a selected historical version; keeps audit trail)
 - `GET /v1/wiki/drafts?project_id=...&status=pending_review`
 - `GET /v1/wiki/drafts/{draft_id}?project_id=...`
 - `GET /v1/wiki/drafts/{draft_id}/conflicts/explain?project_id=...` (MCP `explain_conflicts` compatible enrichment for UI conflict resolver)
@@ -171,6 +172,7 @@ Environment:
 - `PUT /v1/intelligence/delivery/targets`
 - `GET /v1/intelligence/delivery/attempts?project_id=...&kind=daily|weekly|incident_escalation_daily`
 - `GET /v1/legacy-import/sources?project_id=...`
+- `GET /v1/legacy-import/profiles?source_type=postgres_sql`
 - `PUT /v1/legacy-import/sources`
 - `POST /v1/legacy-import/sources/{source_id}/sync`
 - `GET /v1/legacy-import/runs?project_id=...`
@@ -180,6 +182,7 @@ Legacy source types for `PUT /v1/legacy-import/sources`:
 - `notion_root_page`
 - `notion_database`
 - `postgres_sql`:
+  - profile-driven pull for common schemas (`sql_profile=ops_kb_items|memory_items|auto`) without custom importer scripts;
   - query-based pull from existing Postgres memory schema (`sql_sync_mode=polling`);
   - low-latency logical-slot ingestion (`sql_sync_mode=wal_cdc`).
 - `POST /v1/simulator/runs`

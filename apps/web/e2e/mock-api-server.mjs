@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 const port = Number(process.env.SYNAPSE_E2E_API_PORT || 18180);
 const projectIdDefault = "omega_demo";
+const projectIdDemo = "hw_ai_agents";
 const INCIDENT_SECRET_MASK = "********";
 const INCIDENT_SECRET_CLEAR_TOKEN = "__clear__";
 const INCIDENT_SECRET_EDIT_ROLES_DEFAULT = ["incident_admin", "security_admin", "admin"];
@@ -135,6 +136,58 @@ const state = {
       updated_at: nowIso(),
     },
   ],
+  gatekeeperConfigs: {
+    [projectIdDefault]: {
+      project_id: projectIdDefault,
+      min_sources_for_golden: 3,
+      conflict_free_days: 7,
+      min_score_for_golden: 0.72,
+      operational_short_text_len: 32,
+      operational_short_token_len: 5,
+      llm_assist_enabled: false,
+      llm_provider: "openai",
+      llm_model: "gpt-4.1-mini",
+      llm_score_weight: 0.35,
+      llm_min_confidence: 0.65,
+      llm_timeout_ms: 3500,
+      publish_mode_default: "auto_publish",
+      publish_mode_by_category: {},
+      auto_publish_min_score: 0.9,
+      auto_publish_min_sources: 3,
+      auto_publish_require_golden: true,
+      auto_publish_allow_conflicts: false,
+      updated_by: "mock_seed",
+      created_at: "2026-04-04T00:00:00Z",
+      updated_at: "2026-04-04T00:00:00Z",
+      source: "project_override",
+    },
+    [projectIdDemo]: {
+      project_id: projectIdDemo,
+      min_sources_for_golden: 3,
+      conflict_free_days: 7,
+      min_score_for_golden: 0.72,
+      operational_short_text_len: 32,
+      operational_short_token_len: 5,
+      llm_assist_enabled: false,
+      llm_provider: "openai",
+      llm_model: "gpt-4.1-mini",
+      llm_score_weight: 0.35,
+      llm_min_confidence: 0.65,
+      llm_timeout_ms: 3500,
+      publish_mode_default: "auto_publish",
+      publish_mode_by_category: {},
+      auto_publish_min_score: 0.9,
+      auto_publish_min_sources: 3,
+      auto_publish_require_golden: true,
+      auto_publish_allow_conflicts: false,
+      updated_by: "mock_seed",
+      created_at: "2026-04-04T00:00:00Z",
+      updated_at: "2026-04-04T00:00:00Z",
+      source: "project_override",
+    },
+  },
+  legacyImportSources: [],
+  legacyImportSyncRuns: [],
   tasks: [
     {
       id: "f95adf62-e390-4f8f-b7f4-79a0cb87a3fd",
@@ -199,6 +252,78 @@ const state = {
       created_at: "2026-03-31T09:00:00Z",
       updated_at: "2026-04-01T10:20:00Z",
     },
+    {
+      id: "22d8f6a4-40ab-4fdb-8b87-3bb5b1e9f101",
+      project_id: projectIdDemo,
+      title: "BC Omega Access",
+      slug: "operations/bc-omega-access",
+      entity_key: "bc_omega",
+      page_type: "operations",
+      status: "published",
+      current_version: 2,
+      created_at: "2026-04-02T09:30:00Z",
+      updated_at: "2026-04-04T07:20:00Z",
+    },
+    {
+      id: "5b4f36ad-9476-4593-9179-f01abed7f102",
+      project_id: projectIdDemo,
+      title: "Warehouse #1 Status",
+      slug: "operations/warehouses/warehouse-1-status",
+      entity_key: "warehouse_1",
+      page_type: "operations",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-04-02T10:00:00Z",
+      updated_at: "2026-04-04T06:45:00Z",
+    },
+    {
+      id: "90dd90a6-a1b6-486f-9249-6661d06bf103",
+      project_id: projectIdDemo,
+      title: "Odintsovo Traffic Patterns",
+      slug: "operations/routes/odintsovo-traffic-patterns",
+      entity_key: "odintsovo_routes",
+      page_type: "operations",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-04-01T15:20:00Z",
+      updated_at: "2026-04-04T05:10:00Z",
+    },
+    {
+      id: "763f89a3-304f-4c28-90cd-8f2ff9dbf104",
+      project_id: projectIdDemo,
+      title: "ACME Corp Preferences",
+      slug: "customers/acme-corp/preferences",
+      entity_key: "customer_acme",
+      page_type: "customer",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-04-03T12:40:00Z",
+      updated_at: "2026-04-04T08:00:00Z",
+    },
+    {
+      id: "e6fb005f-f78f-4afb-9154-6f5c78adf105",
+      project_id: projectIdDemo,
+      title: "Dispatch Card-Access Policy",
+      slug: "policies/dispatch/card-access-policy",
+      entity_key: "dispatch_policy",
+      page_type: "policy",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-04-02T11:10:00Z",
+      updated_at: "2026-04-04T04:55:00Z",
+    },
+    {
+      id: "b13285e7-307d-4d89-8a26-a32fbcd4f106",
+      project_id: projectIdDemo,
+      title: "Incident: Warehouse #1 Quarantine",
+      slug: "incidents/2026-04-03-warehouse-1-quarantine",
+      entity_key: "incident_warehouse1_quarantine",
+      page_type: "incident",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-04-03T08:15:00Z",
+      updated_at: "2026-04-03T08:15:00Z",
+    },
   ],
   wikiPageVersions: [
     {
@@ -221,6 +346,82 @@ const state = {
       created_by: "qa_reviewer",
       change_summary: "Added driver notice",
       created_at: "2026-04-01T10:20:00Z",
+    },
+    {
+      id: "9a372924-afdb-4a97-8105-14e8ff11f201",
+      page_id: "22d8f6a4-40ab-4fdb-8b87-3bb5b1e9f101",
+      version: 1,
+      markdown: "# BC Omega Access\n\n## Gate Policy\n- Entry allowed via yard gate.\n- Agent should verify access notes before dispatch.\n",
+      source: "human",
+      created_by: "logistics_lead",
+      change_summary: "Initial draft from migration",
+      created_at: "2026-04-02T09:30:00Z",
+    },
+    {
+      id: "26f4d5d3-495c-4f89-b8ca-f2e2d95ff202",
+      page_id: "22d8f6a4-40ab-4fdb-8b87-3bb5b1e9f101",
+      version: 2,
+      markdown:
+        "# BC Omega Access\n\n## Gate Policy\n- Entry requires physical access card after 10:00.\n- Notify driver before route handoff.\n\n## Evidence\n- Confirmed by 3 independent driver sessions.\n",
+      source: "human",
+      created_by: "ops_manager",
+      change_summary: "Updated access change from approved draft",
+      created_at: "2026-04-04T07:20:00Z",
+    },
+    {
+      id: "3308b57a-c4ca-4128-9a0e-5a6498b7f203",
+      page_id: "5b4f36ad-9476-4593-9179-f01abed7f102",
+      version: 1,
+      markdown:
+        "# Warehouse #1 Status\n\n## Current State\n- Quarantine active until 2026-04-05.\n- New inbound deliveries are paused.\n\n## Dispatch Rules\n- Re-route to Warehouse #2 unless customer requires manual override.\n",
+      source: "human",
+      created_by: "ops_manager",
+      change_summary: "Incident-driven operational update",
+      created_at: "2026-04-04T06:45:00Z",
+    },
+    {
+      id: "cb7f74d2-b445-44fb-b53a-cde3567f6204",
+      page_id: "90dd90a6-a1b6-486f-9249-6661d06bf103",
+      version: 1,
+      markdown:
+        "# Odintsovo Traffic Patterns\n\n## Peak Window\n- 08:30-10:30 local time has stable +22-35 min delay.\n\n## Routing Guidance\n- Prefer M1 approach when queue depth > 12.\n",
+      source: "human",
+      created_by: "routing_lead",
+      change_summary: "Weekly route synthesis",
+      created_at: "2026-04-04T05:10:00Z",
+    },
+    {
+      id: "f4eb2f18-0268-4cd5-9c8d-d5cbdd759205",
+      page_id: "763f89a3-304f-4c28-90cd-8f2ff9dbf104",
+      version: 1,
+      markdown:
+        "# ACME Corp Preferences\n\n## Communication\n- Prefer Slack for dispatch confirmations.\n- Avoid phone calls after 17:00.\n\n## Delivery Notes\n- Security desk accepts parcels for floor 4.\n",
+      source: "human",
+      created_by: "customer_ops",
+      change_summary: "Customer profile consolidation",
+      created_at: "2026-04-04T08:00:00Z",
+    },
+    {
+      id: "4d6198fd-bcbc-4696-a3d8-98502a42b206",
+      page_id: "e6fb005f-f78f-4afb-9154-6f5c78adf105",
+      version: 1,
+      markdown:
+        "# Dispatch Card-Access Policy\n\n## Rule\n- When page `operations/bc-omega-access` indicates card-only entry, agent must include card notice in driver brief.\n\n## Escalation\n- If card unavailable, open task in `access_policy` queue.\n",
+      source: "human",
+      created_by: "qa_reviewer",
+      change_summary: "Policy binding to operations page",
+      created_at: "2026-04-04T04:55:00Z",
+    },
+    {
+      id: "9d18e5d3-6c4b-48b7-923d-c2f844a45207",
+      page_id: "b13285e7-307d-4d89-8a26-a32fbcd4f106",
+      version: 1,
+      markdown:
+        "# Incident: Warehouse #1 Quarantine\n\n## Timeline\n- 2026-04-03 08:00: quarantine announced.\n\n## Impact\n- ~18% of morning deliveries re-routed.\n\n## Action\n- Monitor customer delays and update route policy if backlog grows.\n",
+      source: "human",
+      created_by: "incident_commander",
+      change_summary: "Incident page published",
+      created_at: "2026-04-03T08:15:00Z",
     },
   ],
 };
@@ -622,6 +823,100 @@ function listWikiPageVersions(pageId) {
   return state.wikiPageVersions
     .filter((item) => String(item.page_id || "").trim() === pid)
     .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
+}
+
+function normalizePublishMode(value) {
+  const mode = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (mode === "human_required" || mode === "conditional" || mode === "auto_publish") {
+    return mode;
+  }
+  return "auto_publish";
+}
+
+function getGatekeeperConfig(projectId) {
+  const pid = String(projectId || "").trim();
+  const existing = state.gatekeeperConfigs[pid];
+  if (existing && typeof existing === "object") {
+    return { ...existing };
+  }
+  return {
+    project_id: pid,
+    min_sources_for_golden: 3,
+    conflict_free_days: 7,
+    min_score_for_golden: 0.72,
+    operational_short_text_len: 32,
+    operational_short_token_len: 5,
+    llm_assist_enabled: false,
+    llm_provider: "openai",
+    llm_model: "gpt-4.1-mini",
+    llm_score_weight: 0.35,
+    llm_min_confidence: 0.65,
+    llm_timeout_ms: 3500,
+    publish_mode_default: "auto_publish",
+    publish_mode_by_category: {},
+    auto_publish_min_score: 0.9,
+    auto_publish_min_sources: 3,
+    auto_publish_require_golden: true,
+    auto_publish_allow_conflicts: false,
+    updated_by: null,
+    created_at: null,
+    updated_at: null,
+    source: "default",
+  };
+}
+
+function listLegacyImportProfiles() {
+  return [
+    {
+      profile: "ops_kb_items",
+      label: "Ops KB Items",
+      description: "Operational KB table used in many agent stacks.",
+      default_table: "ops_kb_items",
+      table_candidates: ["ops_kb_items", "public.ops_kb_items"],
+      default_source_id_prefix: "ops_kb",
+    },
+    {
+      profile: "memory_items",
+      label: "Memory Items",
+      description: "Generic runtime memory table (`memory_items`).",
+      default_table: "memory_items",
+      table_candidates: ["memory_items", "public.memory_items"],
+      default_source_id_prefix: "memory",
+    },
+  ];
+}
+
+function normalizeLegacySqlProfile(value) {
+  const profile = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (profile === "ops_kb_items" || profile === "memory_items" || profile === "auto") {
+    return profile;
+  }
+  return "ops_kb_items";
+}
+
+function normalizeLegacySourceConfig(config) {
+  const payload = config && typeof config === "object" ? { ...config } : {};
+  const profile = normalizeLegacySqlProfile(payload.sql_profile);
+  payload.sql_profile = profile;
+  payload.sql_sync_mode = String(payload.sql_sync_mode || "polling").trim().toLowerCase() || "polling";
+  if (!payload.sql_dsn_env) {
+    payload.sql_dsn_env = "LEGACY_SQL_DSN";
+  }
+  if (!payload.max_records || !Number.isFinite(Number(payload.max_records))) {
+    payload.max_records = 5000;
+  } else {
+    payload.max_records = Math.max(1, Math.min(50000, Math.trunc(Number(payload.max_records))));
+  }
+  if (!payload.chunk_size || !Number.isFinite(Number(payload.chunk_size))) {
+    payload.chunk_size = 100;
+  } else {
+    payload.chunk_size = Math.max(1, Math.min(500, Math.trunc(Number(payload.chunk_size))));
+  }
+  return payload;
 }
 
 function getQueueControl(projectId) {
@@ -5421,6 +5716,207 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === "/v1/gatekeeper/config" && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    sendJson(res, 200, { config: getGatekeeperConfig(projectId) });
+    return;
+  }
+
+  if (url.pathname === "/v1/gatekeeper/config" && req.method === "PUT") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const updatedBy = String(body.updated_by || "").trim();
+    if (!projectId || !updatedBy) {
+      sendJson(res, 422, { detail: "project_id_updated_by_required" });
+      return;
+    }
+    const now = nowIso();
+    const current = getGatekeeperConfig(projectId);
+    const next = {
+      ...current,
+      min_sources_for_golden: Math.max(2, Math.min(50, Number(body.min_sources_for_golden ?? current.min_sources_for_golden))),
+      conflict_free_days: Math.max(1, Math.min(365, Number(body.conflict_free_days ?? current.conflict_free_days))),
+      min_score_for_golden: Math.max(0, Math.min(1, Number(body.min_score_for_golden ?? current.min_score_for_golden))),
+      operational_short_text_len: Math.max(
+        8,
+        Math.min(512, Number(body.operational_short_text_len ?? current.operational_short_text_len)),
+      ),
+      operational_short_token_len: Math.max(
+        1,
+        Math.min(128, Number(body.operational_short_token_len ?? current.operational_short_token_len)),
+      ),
+      llm_assist_enabled: Boolean(body.llm_assist_enabled ?? current.llm_assist_enabled),
+      llm_provider: String(body.llm_provider || current.llm_provider || "openai"),
+      llm_model: String(body.llm_model || current.llm_model || "gpt-4.1-mini"),
+      llm_score_weight: Math.max(0, Math.min(1, Number(body.llm_score_weight ?? current.llm_score_weight))),
+      llm_min_confidence: Math.max(0, Math.min(1, Number(body.llm_min_confidence ?? current.llm_min_confidence))),
+      llm_timeout_ms: Math.max(200, Math.min(20000, Number(body.llm_timeout_ms ?? current.llm_timeout_ms))),
+      publish_mode_default: normalizePublishMode(body.publish_mode_default ?? current.publish_mode_default),
+      publish_mode_by_category:
+        body.publish_mode_by_category && typeof body.publish_mode_by_category === "object"
+          ? Object.fromEntries(
+              Object.entries(body.publish_mode_by_category).map(([key, value]) => [String(key), normalizePublishMode(value)]),
+            )
+          : current.publish_mode_by_category,
+      auto_publish_min_score: Math.max(0, Math.min(1, Number(body.auto_publish_min_score ?? current.auto_publish_min_score))),
+      auto_publish_min_sources: Math.max(1, Math.min(100, Number(body.auto_publish_min_sources ?? current.auto_publish_min_sources))),
+      auto_publish_require_golden: Boolean(body.auto_publish_require_golden ?? current.auto_publish_require_golden),
+      auto_publish_allow_conflicts: Boolean(body.auto_publish_allow_conflicts ?? current.auto_publish_allow_conflicts),
+      updated_by: updatedBy,
+      created_at: current.created_at || now,
+      updated_at: now,
+      source: "project_override",
+    };
+    state.gatekeeperConfigs[projectId] = next;
+    sendJson(res, 200, { status: "ok", config: next });
+    return;
+  }
+
+  if (url.pathname === "/v1/legacy-import/profiles" && req.method === "GET") {
+    const sourceType = String(queryParam(url, "source_type") || "postgres_sql")
+      .trim()
+      .toLowerCase();
+    if (sourceType !== "postgres_sql") {
+      sendJson(res, 200, { profiles: [] });
+      return;
+    }
+    sendJson(res, 200, { profiles: listLegacyImportProfiles() });
+    return;
+  }
+
+  if (url.pathname === "/v1/legacy-import/sources" && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const enabledParam = queryParam(url, "enabled");
+    const enabledFilter =
+      enabledParam == null
+        ? null
+        : String(enabledParam).trim().toLowerCase() === "true"
+          ? true
+          : String(enabledParam).trim().toLowerCase() === "false"
+            ? false
+            : null;
+    let rows = state.legacyImportSources.filter((item) => String(item.project_id || "").trim() === projectId);
+    if (enabledFilter !== null) {
+      rows = rows.filter((item) => Boolean(item.enabled) === enabledFilter);
+    }
+    rows = rows.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+    sendJson(res, 200, { sources: rows });
+    return;
+  }
+
+  if (url.pathname === "/v1/legacy-import/sources" && req.method === "PUT") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const sourceType = String(body.source_type || "").trim().toLowerCase();
+    const sourceRef = String(body.source_ref || "").trim();
+    const updatedBy = String(body.updated_by || "web_ui").trim() || "web_ui";
+    if (!projectId || !sourceType || !sourceRef) {
+      sendJson(res, 422, { detail: "project_id_source_type_source_ref_required" });
+      return;
+    }
+    const now = nowIso();
+    const syncIntervalRaw = Number(body.sync_interval_minutes || 1440);
+    const syncInterval = Number.isFinite(syncIntervalRaw)
+      ? Math.max(1, Math.min(10080, Math.trunc(syncIntervalRaw)))
+      : 1440;
+    const enabled = body.enabled == null ? true : Boolean(body.enabled);
+    const nextRunAtRaw = body.next_run_at ? new Date(String(body.next_run_at)) : null;
+    const nextRunAt =
+      nextRunAtRaw && Number.isFinite(nextRunAtRaw.getTime())
+        ? nextRunAtRaw.toISOString()
+        : new Date(Date.now() + syncInterval * 60 * 1000).toISOString();
+    const normalizedConfig = normalizeLegacySourceConfig(body.config);
+    let existing = state.legacyImportSources.find(
+      (item) =>
+        String(item.project_id || "").trim() === projectId &&
+        String(item.source_type || "").trim().toLowerCase() === sourceType &&
+        String(item.source_ref || "").trim() === sourceRef,
+    );
+    if (!existing) {
+      existing = {
+        id: randomUUID(),
+        project_id: projectId,
+        source_type: sourceType,
+        source_ref: sourceRef,
+        enabled,
+        sync_interval_minutes: syncInterval,
+        next_run_at: nextRunAt,
+        last_run_at: null,
+        last_success_at: null,
+        config: normalizedConfig,
+        created_by: updatedBy,
+        updated_by: updatedBy,
+        created_at: now,
+        updated_at: now,
+      };
+      state.legacyImportSources.push(existing);
+    } else {
+      existing.enabled = enabled;
+      existing.sync_interval_minutes = syncInterval;
+      existing.next_run_at = nextRunAt;
+      existing.config = normalizedConfig;
+      existing.updated_by = updatedBy;
+      existing.updated_at = now;
+    }
+    sendJson(res, 200, { status: "ok", source: existing });
+    return;
+  }
+
+  if (url.pathname.startsWith("/v1/legacy-import/sources/") && url.pathname.endsWith("/sync") && req.method === "POST") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const requestedBy = String(body.requested_by || "web_ui").trim() || "web_ui";
+    const sourceId = decodeURIComponent(url.pathname.slice("/v1/legacy-import/sources/".length, -"/sync".length));
+    if (!projectId || !sourceId.trim()) {
+      sendJson(res, 422, { detail: "project_id_source_id_required" });
+      return;
+    }
+    const source = state.legacyImportSources.find(
+      (item) => String(item.id || "").trim() === sourceId && String(item.project_id || "").trim() === projectId,
+    );
+    if (!source) {
+      sendJson(res, 404, { error: "legacy_import_source_not_found" });
+      return;
+    }
+    const now = nowIso();
+    const run = {
+      id: randomUUID(),
+      source_id: sourceId,
+      project_id: projectId,
+      status: "queued",
+      trigger_mode: "manual",
+      requested_by: requestedBy,
+      created_at: now,
+    };
+    state.legacyImportSyncRuns.unshift(run);
+    source.last_run_at = now;
+    source.last_success_at = now;
+    source.updated_at = now;
+    source.next_run_at = new Date(Date.now() + Math.max(1, Number(source.sync_interval_minutes || 5)) * 60 * 1000).toISOString();
+    sendJson(res, 200, { status: "queued", run: { id: run.id, source_id: sourceId, project_id: projectId } });
+    return;
+  }
+
   if (url.pathname === "/v1/wiki/pages/search" && req.method === "GET") {
     const projectId = String(queryParam(url, "project_id") || "").trim();
     const query = String(queryParam(url, "q") || "").trim().toLowerCase();
@@ -5451,6 +5947,99 @@ const server = http.createServer(async (req, res) => {
         score: String(item.slug || "").toLowerCase() === query ? 0.95 : 0.7,
       }));
     sendJson(res, 200, { results });
+    return;
+  }
+
+  if (url.pathname === "/v1/wiki/pages" && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const statusFilter = String(queryParam(url, "status") || "")
+      .trim()
+      .toLowerCase();
+    const updatedByFilter = String(queryParam(url, "updated_by") || "")
+      .trim()
+      .toLowerCase();
+    const withOpenDrafts = String(queryParam(url, "with_open_drafts") || "false")
+      .trim()
+      .toLowerCase() === "true";
+    const sortBy = String(queryParam(url, "sort_by") || "activity")
+      .trim()
+      .toLowerCase();
+    const sortDir = String(queryParam(url, "sort_dir") || "desc")
+      .trim()
+      .toLowerCase() === "asc"
+      ? "asc"
+      : "desc";
+    const limitRaw = Number(queryParam(url, "limit") || 200);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 200;
+
+    let rows = state.wikiPages
+      .filter((item) => String(item.project_id || "").trim() === projectId)
+      .map((item) => {
+        const latestVersion = listWikiPageVersions(item.id)[0] || null;
+        return {
+          id: item.id,
+          title: item.title,
+          slug: item.slug,
+          entity_key: item.entity_key || null,
+          page_type: item.page_type || null,
+          status: item.status || "published",
+          current_version: Number.isFinite(Number(item.current_version)) ? Number(item.current_version) : null,
+          created_at: item.created_at || null,
+          updated_at: item.updated_at || null,
+          draft_count: 0,
+          open_draft_count: 0,
+          latest_draft_at: null,
+          _updated_by: String(latestVersion?.created_by || "")
+            .trim()
+            .toLowerCase(),
+        };
+      });
+
+    if (statusFilter) {
+      rows = rows.filter((item) => String(item.status || "").trim().toLowerCase() === statusFilter);
+    }
+    if (updatedByFilter) {
+      rows = rows.filter((item) => item._updated_by === updatedByFilter);
+    }
+    if (withOpenDrafts) {
+      rows = rows.filter((item) => Number(item.open_draft_count || 0) > 0);
+    }
+
+    rows.sort((a, b) => {
+      let primary = 0;
+      if (sortBy === "title") {
+        primary = String(a.title || "").localeCompare(String(b.title || ""));
+      } else if (sortBy === "updated_at") {
+        primary = String(a.updated_at || "").localeCompare(String(b.updated_at || ""));
+      } else {
+        primary = String(a.updated_at || "").localeCompare(String(b.updated_at || ""));
+      }
+      if (primary === 0) {
+        primary = String(a.slug || "").localeCompare(String(b.slug || ""));
+      }
+      return sortDir === "asc" ? primary : -primary;
+    });
+
+    sendJson(res, 200, {
+      pages: rows.slice(0, limit).map((item) => ({
+        id: item.id,
+        title: item.title,
+        slug: item.slug,
+        entity_key: item.entity_key,
+        page_type: item.page_type,
+        status: item.status,
+        current_version: item.current_version,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+        draft_count: item.draft_count,
+        open_draft_count: item.open_draft_count,
+        latest_draft_at: item.latest_draft_at,
+      })),
+    });
     return;
   }
 
@@ -5688,6 +6277,82 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const wikiPageRollbackMatch = url.pathname.match(/^\/v1\/wiki\/pages\/([^/]+(?:\/[^/]+)*)\/rollback$/);
+  if (wikiPageRollbackMatch && req.method === "PUT") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const rolledBackBy = String(body.rolled_back_by || "").trim();
+    const targetVersionRaw = Number(body.target_version || 0);
+    const targetVersion = Number.isFinite(targetVersionRaw) ? Math.trunc(targetVersionRaw) : 0;
+    if (!projectId || !rolledBackBy || targetVersion <= 0) {
+      sendJson(res, 422, { detail: "project_id_rolled_back_by_target_version_required" });
+      return;
+    }
+    const slug = decodeURIComponent(wikiPageRollbackMatch[1]);
+    const page = findWikiPageBySlug(projectId, slug);
+    if (!page) {
+      sendJson(res, 404, { error: "wiki_page_not_found" });
+      return;
+    }
+    const versions = listWikiPageVersions(page.id);
+    const target = versions.find((item) => Number(item.version || 0) === targetVersion);
+    if (!target) {
+      sendJson(res, 404, { error: "wiki_page_version_not_found", target_version: targetVersion });
+      return;
+    }
+    const now = nowIso();
+    const nextVersion = Number(page.current_version || 0) + 1;
+    const nextStatusRaw = String(body.status || page.status || "published").trim().toLowerCase();
+    const nextStatus =
+      nextStatusRaw === "draft" || nextStatusRaw === "reviewed" || nextStatusRaw === "published" || nextStatusRaw === "archived"
+        ? nextStatusRaw
+        : "published";
+    const summaryRaw = String(body.change_summary || "").trim();
+    const changeSummary = summaryRaw || `Rolled back to v${targetVersion} by ${rolledBackBy}`;
+    state.wikiPageVersions.unshift({
+      id: randomUUID(),
+      page_id: page.id,
+      version: nextVersion,
+      markdown: String(target.markdown || ""),
+      source: "rollback",
+      created_by: rolledBackBy,
+      change_summary: changeSummary,
+      created_at: now,
+    });
+    page.current_version = nextVersion;
+    page.status = nextStatus;
+    page.updated_at = now;
+    sendJson(res, 200, {
+      status: "updated",
+      page: {
+        id: page.id,
+        title: page.title,
+        slug: page.slug,
+        entity_key: page.entity_key,
+        page_type: page.page_type,
+        status: page.status,
+        current_version: page.current_version,
+      },
+      latest_version: {
+        version: nextVersion,
+        markdown: String(target.markdown || ""),
+        source: "rollback",
+        created_by: rolledBackBy,
+        change_summary: changeSummary,
+      },
+      snapshot_id: randomUUID(),
+      rollback: {
+        target_version: targetVersion,
+        rolled_back_by: rolledBackBy,
+      },
+    });
+    return;
+  }
+
   const wikiPageMatch = url.pathname.match(/^\/v1\/wiki\/pages\/([^/]+(?:\/[^/]+)*)$/);
   if (wikiPageMatch && req.method === "GET") {
     const projectId = String(queryParam(url, "project_id") || "").trim();
@@ -5740,6 +6405,108 @@ const server = http.createServer(async (req, res) => {
           created_at: "2026-03-31T09:00:00Z",
         },
       ],
+    });
+    return;
+  }
+
+  const wikiPageReparentMatch = url.pathname.match(/^\/v1\/wiki\/pages\/([^/]+(?:\/[^/]+)*)\/reparent$/);
+  if (wikiPageReparentMatch && req.method === "PUT") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const updatedBy = String(body.updated_by || "").trim();
+    if (!projectId || !updatedBy) {
+      sendJson(res, 422, { detail: "project_id_updated_by_required" });
+      return;
+    }
+    const sourceSlug = decodeURIComponent(wikiPageReparentMatch[1]);
+    const sourcePage = findWikiPageBySlug(projectId, sourceSlug);
+    if (!sourcePage) {
+      sendJson(res, 404, { error: "page_not_found" });
+      return;
+    }
+    const includeDescendants = Boolean(body.include_descendants);
+    const parentPath = String(body.parent_path || "").trim();
+    const slugLeafRaw = String(body.slug_leaf || "").trim();
+    const slugLeaf = normalizeWikiSlugSegment(slugLeafRaw || sourceSlug.split("/").filter(Boolean).slice(-1)[0] || "page");
+    const normalizedParent = parentPath ? normalizeWikiSlug(parentPath, "root") : "";
+    const targetSlug = normalizedParent ? `${normalizedParent}/${slugLeaf}` : slugLeaf;
+    const duplicate = state.wikiPages.find(
+      (item) =>
+        String(item.project_id || "").trim() === projectId &&
+        String(item.slug || "").trim() === targetSlug &&
+        String(item.id || "") !== String(sourcePage.id || ""),
+    );
+    if (duplicate) {
+      sendJson(res, 409, { error: "page_slug_exists", slug: targetSlug });
+      return;
+    }
+    if (targetSlug === sourceSlug) {
+      sendJson(res, 200, {
+        status: "noop",
+        page: {
+          id: sourcePage.id,
+          title: sourcePage.title,
+          slug: sourcePage.slug,
+          entity_key: sourcePage.entity_key,
+          page_type: sourcePage.page_type,
+          status: sourcePage.status,
+          current_version: sourcePage.current_version,
+        },
+        include_descendants: includeDescendants,
+        moved_pages: [],
+      });
+      return;
+    }
+    if (targetSlug.startsWith(`${sourceSlug}/`)) {
+      sendJson(res, 422, { detail: "wiki_reparent_cycle_detected" });
+      return;
+    }
+
+    const now = nowIso();
+    const descendants = state.wikiPages.filter(
+      (item) =>
+        String(item.project_id || "").trim() === projectId &&
+        String(item.slug || "").trim().startsWith(`${sourceSlug}/`),
+    );
+    const moveRows = includeDescendants ? [sourcePage, ...descendants] : [sourcePage];
+    const movedPages = [];
+    for (const row of moveRows) {
+      const oldSlug = String(row.slug || "").trim();
+      const suffix = oldSlug === sourceSlug ? "" : oldSlug.slice(sourceSlug.length + 1);
+      const newSlug = suffix ? `${targetSlug}/${suffix}` : targetSlug;
+      if (oldSlug === newSlug) {
+        continue;
+      }
+      movedPages.push({
+        id: row.id,
+        old_slug: oldSlug,
+        new_slug: newSlug,
+        old_title: row.title,
+        new_title: row === sourcePage && String(body.title || "").trim() ? String(body.title || "").trim() : row.title,
+      });
+      row.slug = newSlug;
+      if (row === sourcePage && String(body.title || "").trim()) {
+        row.title = String(body.title || "").trim();
+      }
+      row.updated_at = now;
+    }
+    sendJson(res, 200, {
+      status: "moved",
+      page: {
+        id: sourcePage.id,
+        title: sourcePage.title,
+        slug: sourcePage.slug,
+        entity_key: sourcePage.entity_key,
+        page_type: sourcePage.page_type,
+        status: sourcePage.status,
+        current_version: sourcePage.current_version,
+      },
+      include_descendants: includeDescendants,
+      moved_pages: movedPages,
     });
     return;
   }

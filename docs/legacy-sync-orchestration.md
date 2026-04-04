@@ -41,7 +41,36 @@ List sources:
 curl -sS "http://localhost:8080/v1/legacy-import/sources?project_id=omega_demo"
 ```
 
+List built-in Postgres profiles:
+
+```bash
+curl -sS "http://localhost:8080/v1/legacy-import/profiles?source_type=postgres_sql"
+```
+
 Configure PostgreSQL source (custom memory tables without custom importer script):
+
+Zero-config profile mode (recommended for `ops_kb_items` / `memory_items`):
+
+```bash
+curl -sS -X PUT http://localhost:8080/v1/legacy-import/sources \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "project_id": "omega_demo",
+    "source_type": "postgres_sql",
+    "source_ref": "hw_memory",
+    "enabled": true,
+    "sync_interval_minutes": 5,
+    "updated_by": "ops_admin",
+    "config": {
+      "sql_dsn_env": "HW_MEMORY_DSN",
+      "sql_profile": "ops_kb_items",
+      "max_records": 5000,
+      "chunk_size": 100
+    }
+  }'
+```
+
+Advanced custom query mode:
 
 ```bash
 curl -sS -X PUT http://localhost:8080/v1/legacy-import/sources \
@@ -151,6 +180,8 @@ SQL source config extras (`source_type=postgres_sql`):
 
 - `sql_dsn` or `sql_dsn_env`: connection DSN (prefer env var).
 - `sql_sync_mode`: `polling` (default) or `wal_cdc`.
+- `sql_profile`: `ops_kb_items` / `memory_items` / `auto` (recommended quick-start when no custom query is provided).
+- `sql_profile_table`: optional table override for profile mode (for example `public.ops_kb_items`).
 - `sql_query` or `sql_query_file`: query that returns canonical columns (`source_id`, `content`, optional `entity_key`, `category`, `observed_at`, `metadata`) or use `sql_mapping`.
 - `sql_query_params`: optional static SQL parameters object.
 - `sql_mapping`: optional column mapping (`source_id_field`, `content_field`, `entity_key_field`, `category_field`, `observed_at_field`, `metadata_fields`, `metadata_static`).

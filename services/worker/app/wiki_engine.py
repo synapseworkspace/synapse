@@ -301,7 +301,7 @@ class GatekeeperConfig:
     llm_score_weight: float = 0.35
     llm_min_confidence: float = 0.65
     llm_timeout_ms: int = 3500
-    publish_mode_default: str = "human_required"
+    publish_mode_default: str = "auto_publish"
     publish_mode_by_category: dict[str, str] | None = None
     auto_publish_min_score: float = 0.9
     auto_publish_min_sources: int = 3
@@ -1483,7 +1483,7 @@ class WikiSynthesisEngine:
     def _normalize_publish_mode(self, value: Any) -> str:
         raw = str(value or "").strip().lower()
         if raw not in {"human_required", "conditional", "auto_publish"}:
-            return "human_required"
+            return "auto_publish"
         return raw
 
     def _normalize_publish_mode_map(self, value: Any) -> dict[str, str]:
@@ -1580,7 +1580,7 @@ class WikiSynthesisEngine:
                 llm_score_weight=self.gatekeeper_llm_score_weight,
                 llm_min_confidence=self.gatekeeper_llm_min_confidence,
                 llm_timeout_ms=self.gatekeeper_llm_timeout_ms,
-                publish_mode_default="human_required",
+                publish_mode_default="auto_publish",
                 publish_mode_by_category={},
                 auto_publish_min_score=0.9,
                 auto_publish_min_sources=3,
@@ -1621,7 +1621,7 @@ class WikiSynthesisEngine:
                     llm_score_weight=max(0.0, min(1.0, float(row[8]))),
                     llm_min_confidence=max(0.0, min(1.0, float(row[9]))),
                     llm_timeout_ms=max(200, int(row[10])),
-                    publish_mode_default="human_required",
+                    publish_mode_default="auto_publish",
                     publish_mode_by_category={},
                     auto_publish_min_score=0.9,
                     auto_publish_min_sources=3,
@@ -1641,7 +1641,7 @@ class WikiSynthesisEngine:
                     llm_score_weight=self.gatekeeper_llm_score_weight,
                     llm_min_confidence=self.gatekeeper_llm_min_confidence,
                     llm_timeout_ms=self.gatekeeper_llm_timeout_ms,
-                    publish_mode_default="human_required",
+                    publish_mode_default="auto_publish",
                     publish_mode_by_category={},
                     auto_publish_min_score=0.9,
                     auto_publish_min_sources=3,

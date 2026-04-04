@@ -28,6 +28,19 @@ from app.legacy_import import (
     SQLImporter,
     SUPPORTED_EXTENSIONS,
 )
+try:
+    from shared.legacy_profiles import (
+        apply_postgres_sql_profile_defaults,
+        get_postgres_sql_profile_preset,
+    )
+except ModuleNotFoundError:
+    services_root = Path(__file__).resolve().parents[2]
+    if str(services_root) not in sys.path:
+        sys.path.append(str(services_root))
+    from shared.legacy_profiles import (
+        apply_postgres_sql_profile_defaults,
+        get_postgres_sql_profile_preset,
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -529,23 +542,36 @@ class LegacySyncEngine:
             return notion_importer.collect_from_database(source.source_ref, max_records=max_records), {}
 
         if source.source_type == "postgres_sql":
-            dsn = self._resolve_sql_dsn(config)
-            sync_mode = str(config.get("sql_sync_mode") or "polling").strip().lower() or "polling"
+            resolved_config, profile_meta = apply_postgres_sql_profile_defaults(config, source_ref=source.source_ref)
+            dsn = self._resolve_sql_dsn(resolved_config)
+            sync_mode = str(resolved_config.get("sql_sync_mode") or "polling").strip().lower() or "polling"
+            state_patch: dict[str, Any] = {}
+            if profile_meta.get("profile"):
+                state_patch["sql_profile"] = str(profile_meta.get("profile"))
+                if bool(profile_meta.get("profile_inferred")):
+                    state_patch["sql_profile_inferred"] = True
             if sync_mode in {"polling", "query"}:
-                return self._collect_postgres_sql_polling(
+                result, source_patch = self._collect_postgres_sql_polling(
                     dsn=dsn,
-                    config=config,
-                    max_records=max_records,
-                    max_chars=max_chars,
-                )
-            if sync_mode in {"wal", "wal_cdc", "cdc"}:
-                return self._collect_postgres_sql_wal_cdc(
-                    dsn=dsn,
-                    config=config,
+                    config=resolved_config,
                     max_records=max_records,
                     max_chars=max_chars,
                     source_ref=source.source_ref,
                 )
+                if source_patch:
+                    state_patch.update(source_patch)
+                return result, state_patch
+            if sync_mode in {"wal", "wal_cdc", "cdc"}:
+                result, source_patch = self._collect_postgres_sql_wal_cdc(
+                    dsn=dsn,
+                    config=resolved_config,
+                    max_records=max_records,
+                    max_chars=max_chars,
+                    source_ref=source.source_ref,
+                )
+                if source_patch:
+                    state_patch.update(source_patch)
+                return result, state_patch
             raise RuntimeError(
                 f"unsupported sql_sync_mode for postgres_sql source: {sync_mode} (supported: polling|wal_cdc)"
             )
@@ -575,6 +601,7 @@ class LegacySyncEngine:
         config: dict[str, Any],
         max_records: int,
         max_chars: int,
+        source_ref: str,
     ) -> tuple[LegacyImportResult, dict[str, Any]]:
         query = str(config.get("sql_query") or "").strip()
         query_file = str(config.get("sql_query_file") or "").strip()
@@ -583,10 +610,42 @@ class LegacySyncEngine:
             if not query_path.exists() or not query_path.is_file():
                 raise RuntimeError(f"sql_query_file does not exist: {query_path}")
             query = query_path.read_text(encoding="utf-8").strip()
-        if not query:
-            raise RuntimeError("missing SQL query for postgres_sql source (config.sql_query or config.sql_query_file)")
-
         sql_mapping = config.get("sql_mapping") if isinstance(config.get("sql_mapping"), dict) else {}
+        profile_plan_warnings: list[str] = []
+        state_patch: dict[str, Any] = {}
+
+        if not query:
+            profile_plan = self._build_postgres_sql_profile_polling_plan(
+                dsn=dsn,
+                config=config,
+                source_ref=source_ref,
+                max_records=max_records,
+            )
+            query = str(profile_plan.get("query") or "").strip()
+            plan_mapping = profile_plan.get("sql_mapping") if isinstance(profile_plan.get("sql_mapping"), dict) else {}
+            if plan_mapping:
+                merged_mapping = dict(plan_mapping)
+                merged_mapping.update(sql_mapping)
+                sql_mapping = merged_mapping
+            planned_cursor_column = str(profile_plan.get("cursor_column") or "").strip()
+            if planned_cursor_column and not str(config.get("sql_cursor_column") or "").strip():
+                config = dict(config)
+                config["sql_cursor_column"] = planned_cursor_column
+            planned_cursor_param = str(profile_plan.get("cursor_param") or "").strip()
+            if planned_cursor_param and not str(config.get("sql_cursor_param") or "").strip():
+                config = dict(config)
+                config["sql_cursor_param"] = planned_cursor_param
+            if profile_plan.get("state_patch"):
+                state_patch.update(dict(profile_plan["state_patch"]))
+            warnings = profile_plan.get("warnings")
+            if isinstance(warnings, list):
+                profile_plan_warnings = [str(item) for item in warnings if str(item).strip()]
+
+        if not query:
+            raise RuntimeError(
+                "missing SQL query for postgres_sql source; set config.sql_query/config.sql_query_file or enable a known sql_profile"
+            )
+
         sql_query_params = config.get("sql_query_params") if isinstance(config.get("sql_query_params"), dict) else {}
         cursor_key = str(config.get("sql_cursor_state_key") or "sql_last_cursor").strip() or "sql_last_cursor"
         cursor_start = str(config.get("sql_cursor_start") or "").strip()
@@ -595,6 +654,9 @@ class LegacySyncEngine:
         if not cursor_value:
             cursor_value = cursor_start
         cursor_param = str(config.get("sql_cursor_param") or "cursor").strip() or "cursor"
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cursor_param):
+            warnings.append(f"sql_cursor_param `{cursor_param}` is invalid; fallback to `cursor`")
+            cursor_param = "cursor"
         cursor_column = str(config.get("sql_cursor_column") or "").strip() or None
         importer = SQLImporter(
             dsn=dsn,
@@ -611,7 +673,8 @@ class LegacySyncEngine:
             cursor_param=cursor_param,
             cursor_column=cursor_column,
         )
-        state_patch: dict[str, Any] = {}
+        parser_warnings = list(profile_plan_warnings)
+        parser_warnings.extend(list(sql_result.parser_warnings))
         next_cursor = str(sql_result.next_cursor or "").strip()
         if next_cursor and next_cursor != cursor_value:
             state_patch[cursor_key] = next_cursor
@@ -620,10 +683,279 @@ class LegacySyncEngine:
             LegacyImportResult(
                 records=list(sql_result.records),
                 skipped_files=[],
-                parser_warnings=list(sql_result.parser_warnings),
+                parser_warnings=parser_warnings,
             ),
             state_patch,
         )
+
+    def _build_postgres_sql_profile_polling_plan(
+        self,
+        *,
+        dsn: str,
+        config: dict[str, Any],
+        source_ref: str,
+        max_records: int,
+    ) -> dict[str, Any]:
+        profile = str(config.get("sql_profile") or "").strip()
+        preset = get_postgres_sql_profile_preset(profile)
+        if not preset:
+            return {"query": "", "sql_mapping": {}, "warnings": [], "state_patch": {}}
+
+        table_candidates: list[str] = []
+        for item in (
+            config.get("sql_profile_table"),
+            preset.get("default_table"),
+            *(preset.get("table_candidates") or []),
+        ):
+            text = str(item or "").strip()
+            if text and text not in table_candidates:
+                table_candidates.append(text)
+        if not table_candidates:
+            raise RuntimeError(
+                f"postgres_sql profile `{profile}` has no table candidates; set config.sql_profile_table explicitly"
+            )
+
+        resolved = self._resolve_existing_sql_table(dsn=dsn, candidates=table_candidates)
+        if resolved is None:
+            tried = ", ".join(table_candidates)
+            raise RuntimeError(
+                f"postgres_sql profile `{profile}` could not resolve table (tried: {tried}); set config.sql_profile_table"
+            )
+
+        schema = str(resolved["schema"])
+        table = str(resolved["table"])
+        columns = list(resolved["columns"])
+        column_types = dict(resolved["column_types"])
+        column_lookup = {str(item).strip().lower(): str(item).strip() for item in columns if str(item).strip()}
+
+        mapping = config.get("sql_mapping") if isinstance(config.get("sql_mapping"), dict) else {}
+        merged_mapping = dict(mapping)
+        source_id_field = self._pick_existing_column(column_lookup, preset.get("source_id_fields"))
+        entity_key_field = self._pick_existing_column(column_lookup, preset.get("entity_key_fields"))
+        category_field = self._pick_existing_column(column_lookup, preset.get("category_fields"))
+        observed_at_field = self._pick_existing_column(column_lookup, preset.get("observed_at_fields"))
+        content_fields = self._pick_existing_columns(column_lookup, preset.get("content_fields"))
+        metadata_fields = self._pick_existing_columns(column_lookup, preset.get("metadata_fields"))
+
+        if source_id_field and not str(merged_mapping.get("source_id_field") or "").strip():
+            merged_mapping["source_id_field"] = source_id_field
+        if entity_key_field and not str(merged_mapping.get("entity_key_field") or "").strip():
+            merged_mapping["entity_key_field"] = entity_key_field
+        if category_field and not str(merged_mapping.get("category_field") or "").strip():
+            merged_mapping["category_field"] = category_field
+        if observed_at_field and not str(merged_mapping.get("observed_at_field") or "").strip():
+            merged_mapping["observed_at_field"] = observed_at_field
+        if content_fields and not (
+            isinstance(merged_mapping.get("content_fields"), list) and merged_mapping.get("content_fields")
+        ):
+            merged_mapping["content_fields"] = content_fields
+        if metadata_fields and not (
+            isinstance(merged_mapping.get("metadata_fields"), list) and merged_mapping.get("metadata_fields")
+        ):
+            merged_mapping["metadata_fields"] = metadata_fields
+
+        warnings: list[str] = []
+        cursor_column_requested = str(config.get("sql_cursor_column") or "").strip()
+        cursor_column = ""
+        if cursor_column_requested:
+            cursor_column = column_lookup.get(cursor_column_requested.lower(), "")
+            if not cursor_column:
+                warnings.append(
+                    f"sql_cursor_column `{cursor_column_requested}` not found in `{schema}.{table}`; fallback strategy applied"
+                )
+        if not cursor_column:
+            cursor_column = observed_at_field or source_id_field
+        if not cursor_column and columns:
+            cursor_column = columns[0]
+
+        cursor_param = str(config.get("sql_cursor_param") or "cursor").strip() or "cursor"
+        order_column = cursor_column or source_id_field or (columns[0] if columns else "")
+        if not order_column:
+            raise RuntimeError(f"postgres_sql profile `{profile}` resolved empty column list for `{schema}.{table}`")
+
+        raw_limit = config.get("sql_profile_limit", config.get("sql_limit", max_records))
+        limit_value = max(1, min(50000, int(raw_limit or max_records)))
+        table_expr = self._quote_qualified_table(schema=schema, table=table)
+        order_expr = self._quote_sql_identifier(order_column)
+
+        where_clause = ""
+        if cursor_column:
+            cursor_expr = self._quote_sql_identifier(cursor_column)
+            cursor_dtype = str(column_types.get(cursor_column.lower()) or "").lower()
+            cursor_cast = self._cursor_param_cast(cursor_dtype)
+            if cursor_cast:
+                where_clause = (
+                    f"WHERE (%({cursor_param})s IS NULL OR {cursor_expr} > %({cursor_param})s{cursor_cast})"
+                )
+            else:
+                where_clause = f"WHERE (%({cursor_param})s IS NULL OR {cursor_expr}::text > %({cursor_param})s)"
+
+        query = f"SELECT * FROM {table_expr} {where_clause} ORDER BY {order_expr} ASC LIMIT {limit_value}"
+        state_patch: dict[str, Any] = {
+            "sql_profile": profile,
+            "sql_profile_resolved_table": f"{schema}.{table}",
+            "sql_profile_resolved_at": datetime.now(UTC).isoformat(),
+        }
+        if cursor_column:
+            state_patch["sql_cursor_column"] = cursor_column
+        if not str(config.get("sql_profile_table") or "").strip():
+            state_patch["sql_profile_table"] = f"{schema}.{table}"
+        if not str(config.get("sql_source_id_prefix") or "").strip():
+            state_patch["sql_source_id_prefix"] = str(preset.get("default_source_id_prefix") or source_ref or profile)
+
+        return {
+            "query": query,
+            "sql_mapping": merged_mapping,
+            "cursor_column": cursor_column,
+            "cursor_param": cursor_param,
+            "warnings": warnings,
+            "state_patch": state_patch,
+        }
+
+    def _resolve_existing_sql_table(self, *, dsn: str, candidates: list[str]) -> dict[str, Any] | None:
+        try:
+            import psycopg
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("psycopg runtime dependency is missing for postgres_sql profile resolution") from exc
+
+        for candidate in candidates:
+            parsed = self._parse_table_candidate(candidate)
+            if parsed is None:
+                continue
+            schema_name, table_name = parsed
+            with psycopg.connect(dsn) as conn:
+                with conn.cursor() as cur:
+                    if schema_name:
+                        cur.execute(
+                            """
+                            SELECT table_schema, table_name, column_name, data_type, ordinal_position
+                            FROM information_schema.columns
+                            WHERE table_schema = %s
+                              AND table_name = %s
+                            ORDER BY ordinal_position ASC
+                            """,
+                            (schema_name, table_name),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            SELECT table_schema, table_name, column_name, data_type, ordinal_position
+                            FROM information_schema.columns
+                            WHERE table_name = %s
+                              AND table_schema IN (CURRENT_SCHEMA(), 'public')
+                            ORDER BY CASE
+                                WHEN table_schema = CURRENT_SCHEMA() THEN 0
+                                WHEN table_schema = 'public' THEN 1
+                                ELSE 2
+                              END,
+                              ordinal_position ASC
+                            """,
+                            (table_name,),
+                        )
+                    rows = cur.fetchall() or []
+            if not rows:
+                continue
+            selected_schema = str(rows[0][0]).strip()
+            selected_table = str(rows[0][1]).strip()
+            columns: list[str] = []
+            column_types: dict[str, str] = {}
+            for row in rows:
+                row_schema = str(row[0]).strip()
+                row_table = str(row[1]).strip()
+                if row_schema != selected_schema or row_table != selected_table:
+                    continue
+                column_name = str(row[2]).strip()
+                if not column_name:
+                    continue
+                columns.append(column_name)
+                column_types[column_name.lower()] = str(row[3] or "").strip().lower()
+            if columns:
+                return {
+                    "schema": selected_schema,
+                    "table": selected_table,
+                    "columns": columns,
+                    "column_types": column_types,
+                }
+        return None
+
+    @staticmethod
+    def _parse_table_candidate(value: str) -> tuple[str | None, str] | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        parts = text.split(".")
+        if len(parts) == 1:
+            table = parts[0].strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+                return None
+            return None, table
+        if len(parts) == 2:
+            schema = parts[0].strip()
+            table = parts[1].strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", schema):
+                return None
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+                return None
+            return schema, table
+        return None
+
+    @staticmethod
+    def _pick_existing_column(column_lookup: dict[str, str], candidates: Any) -> str:
+        if not isinstance(candidates, list):
+            return ""
+        for item in candidates:
+            token = str(item or "").strip().lower()
+            if not token:
+                continue
+            resolved = column_lookup.get(token)
+            if resolved:
+                return resolved
+        return ""
+
+    @staticmethod
+    def _pick_existing_columns(column_lookup: dict[str, str], candidates: Any) -> list[str]:
+        if not isinstance(candidates, list):
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            token = str(item or "").strip().lower()
+            if not token:
+                continue
+            resolved = column_lookup.get(token)
+            if not resolved:
+                continue
+            dedup = resolved.lower()
+            if dedup in seen:
+                continue
+            seen.add(dedup)
+            out.append(resolved)
+        return out
+
+    @staticmethod
+    def _quote_sql_identifier(identifier: str) -> str:
+        text = str(identifier or "").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text):
+            raise RuntimeError(f"unsafe SQL identifier `{identifier}`")
+        return f'"{text}"'
+
+    def _quote_qualified_table(self, *, schema: str, table: str) -> str:
+        return f"{self._quote_sql_identifier(schema)}.{self._quote_sql_identifier(table)}"
+
+    @staticmethod
+    def _cursor_param_cast(data_type: str) -> str:
+        normalized = str(data_type or "").strip().lower()
+        if not normalized:
+            return ""
+        if "timestamp" in normalized:
+            return "::timestamptz"
+        if normalized == "date":
+            return "::date"
+        if normalized in {"smallint", "integer", "bigint"}:
+            return "::bigint"
+        if normalized in {"numeric", "decimal", "real", "double precision"}:
+            return "::numeric"
+        return ""
 
     def _collect_postgres_sql_wal_cdc(
         self,

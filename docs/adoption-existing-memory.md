@@ -14,6 +14,35 @@ For custom Postgres memory stacks, use native `legacy-import` source type `postg
 - incremental SQL polling (`sql_sync_mode=polling`, cursor state like `sql_last_cursor`);
 - low-latency WAL/CDC ingestion (`sql_sync_mode=wal_cdc`, logical-slot LSN state like `sql_last_lsn`).
 
+## Zero-Config Legacy Memory Profiles
+
+For common schemas (`ops_kb_items`, `memory_items`) you can avoid custom importer scripts and manual SQL mapping:
+
+1. Configure `source_type=postgres_sql`.
+1. Set `config.sql_profile` (`ops_kb_items` or `memory_items`; `auto` is supported).
+1. Provide DSN (`sql_dsn` or `sql_dsn_env`).
+
+Synapse resolves table + column mapping automatically, generates safe polling SQL, and persists resolved cursor/table metadata back into source config.
+
+```json
+{
+  "project_id": "omega_demo",
+  "source_type": "postgres_sql",
+  "source_ref": "hw_memory",
+  "updated_by": "ops_admin",
+  "config": {
+    "sql_dsn_env": "HW_MEMORY_DSN",
+    "sql_profile": "ops_kb_items",
+    "max_records": 5000,
+    "chunk_size": 100
+  }
+}
+```
+
+Discover available profiles:
+
+- `GET /v1/legacy-import/profiles?source_type=postgres_sql`
+
 ## Coexistence Modes
 
 `Synapse.attach(..., adoption_mode=...)` (Python) / `adoptionMode` (TypeScript):
@@ -68,7 +97,7 @@ Runtime enforcement uses `X-Synapse-Source-System` and can run in `off|advisory|
    - compare answer quality with existing retrieval path.
 4. `full_loop`:
    - enable category-by-category;
-   - use publish policy (`human_required|conditional|auto_publish`) by risk level.
+   - keep default `auto_publish` for low-risk/high-confidence flows and tune policy (`human_required|conditional|auto_publish`) by risk level.
 
 ## CLI Workflow
 
@@ -105,6 +134,6 @@ synapse-cli connect openclaw --dir . --adoption-mode observe_only
 
 - Keep `source_id` stable for idempotent backfill and dedup safety.
 - Keep provenance metadata enabled (`synapse_provenance`) for auditability.
-- Start with `human_required` publish mode, then open `conditional/auto_publish` only for low-risk categories.
+- Default is `auto_publish` with history + rollback safety; switch to `human_required` for strict review domains.
 - Track moderation latency and conflict rates before enabling full-loop rollout.
 - For first migration waves, prefer bootstrap-approve in capped batches (`limit`, `min_confidence`, `require_conflict_free`) and keep `dry_run` sampling in the loop.

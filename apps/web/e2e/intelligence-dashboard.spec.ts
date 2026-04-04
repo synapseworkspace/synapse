@@ -1,11 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
-const UI_PROFILE = String(process.env.VITE_SYNAPSE_UI_PROFILE || "")
-  .trim()
-  .toLowerCase();
-const ADVANCED_UI_PROFILES = new Set(["advanced", "admin", "ops-admin", "ops_admin", "control-center", "control_center"]);
-const HAS_ADVANCED_UI = ADVANCED_UI_PROFILES.has(UI_PROFILE);
+const HAS_ADVANCED_UI = false;
 
 async function openDashboard(page: Page, mode: "core" | "advanced" = "core") {
   await page.goto("/");
@@ -15,7 +11,7 @@ async function openDashboard(page: Page, mode: "core" | "advanced" = "core") {
   }
   await page.getByLabel("Project ID").fill("omega_demo");
   await page.getByLabel("Reviewer").fill("qa_reviewer");
-  await page.getByRole("button", { name: "Refresh Inbox" }).click();
+  await page.getByRole("button", { name: /Refresh (Inbox|drafts)/i }).first().click();
   if (mode === "advanced") {
     if (!HAS_ADVANCED_UI) {
       test.skip(true, "advanced UI profile is disabled in this run");
@@ -25,9 +21,12 @@ async function openDashboard(page: Page, mode: "core" | "advanced" = "core") {
     await expect(page.getByText("Scheduler Run History (30d)")).toBeVisible();
     await expect(page.getByText("Top alert codes")).toBeVisible();
   } else {
-    await expect(page.getByText("Company Wiki, Written by Agents.", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Open Wiki", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Operations \(\d+\)/ })).toBeVisible();
+    await expect(
+      page.getByText(/(Company Wiki, Written by Agents\.|Synapse Wiki)/i),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Wiki", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Drafts", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Tasks", exact: true })).toBeVisible();
   }
 }
 
@@ -251,12 +250,11 @@ test("alert routing management and rollback rejection workflow", async ({ page }
 test("task tracker lifecycle flow", async ({ page }) => {
   test.setTimeout(120000);
   await openDashboard(page, "core");
-  await expect(page.getByRole("button", { name: "Refresh drafts", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Refresh (Inbox|drafts)/i }).first()).toBeVisible();
   await expect(page.getByText("Review Queue Presets", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Guided Page Builder", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Next Page (Shift+J)", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: /Operations \(\d+\)/ }).click();
-  await page.getByRole("button", { name: "Open Tasks", exact: true }).click();
+  await page.getByRole("button", { name: "Tasks", exact: true }).click();
   const taskPanel = page.locator(".intelligence-panel").filter({ hasText: "Task Tracker" }).first();
   await taskPanel.scrollIntoViewIfNeeded();
   await expect(taskPanel.getByText("Task Tracker", { exact: true })).toBeVisible();

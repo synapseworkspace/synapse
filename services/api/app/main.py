@@ -53,6 +53,11 @@ try:
         serialize_context_policy_config,
         serialize_graph_config,
     )
+    from shared.legacy_profiles import (
+        apply_postgres_sql_profile_defaults,
+        list_postgres_sql_profiles,
+        normalize_postgres_sql_profile,
+    )
 except ModuleNotFoundError:
     services_root = Path(__file__).resolve().parents[2]
     if str(services_root) not in sys.path:
@@ -71,6 +76,11 @@ except ModuleNotFoundError:
         resolve_context_policy_config,
         serialize_context_policy_config,
         serialize_graph_config,
+    )
+    from shared.legacy_profiles import (
+        apply_postgres_sql_profile_defaults,
+        list_postgres_sql_profiles,
+        normalize_postgres_sql_profile,
     )
 
 
@@ -245,7 +255,7 @@ class GatekeeperConfigUpsertRequest(BaseModel):
     llm_score_weight: float = Field(default=0.35, ge=0.0, le=1.0)
     llm_min_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     llm_timeout_ms: int = Field(default=3500, ge=200, le=20000)
-    publish_mode_default: str = Field(default="human_required", pattern="^(human_required|conditional|auto_publish)$")
+    publish_mode_default: str = Field(default="auto_publish", pattern="^(human_required|conditional|auto_publish)$")
     publish_mode_by_category: dict[str, str] | None = None
     auto_publish_min_score: float = Field(default=0.9, ge=0.0, le=1.0)
     auto_publish_min_sources: int = Field(default=3, ge=1, le=100)
@@ -764,6 +774,14 @@ class WikiPageStatusTransitionRequest(BaseModel):
     updated_by: str = Field(min_length=1, max_length=256)
     include_descendants: bool = False
     restore_status: str = Field(default="published", pattern="^(draft|reviewed|published)$")
+    change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class WikiPageRollbackRequest(BaseModel):
+    project_id: str
+    rolled_back_by: str = Field(min_length=1, max_length=256)
+    target_version: int = Field(ge=1, le=1000000)
+    status: str | None = Field(default=None, pattern="^(draft|reviewed|published|archived)$")
     change_summary: str | None = Field(default=None, max_length=4000)
 
 
@@ -2313,7 +2331,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _normalize_publish_mode(value: Any, *, default: str = "human_required") -> str:
+def _normalize_publish_mode(value: Any, *, default: str = "auto_publish") -> str:
     mode = str(value or "").strip().lower()
     if mode not in {"human_required", "conditional", "auto_publish"}:
         return default
@@ -2476,7 +2494,7 @@ def _normalize_gatekeeper_config_for_apply(project_id: str, config: dict[str, An
         llm_score_weight=max(0.0, min(1.0, _coerce_float(config.get("llm_score_weight"), 0.35))),
         llm_min_confidence=max(0.0, min(1.0, _coerce_float(config.get("llm_min_confidence"), 0.65))),
         llm_timeout_ms=max(200, min(20000, _coerce_int(config.get("llm_timeout_ms"), 3500))),
-        publish_mode_default=_normalize_publish_mode(config.get("publish_mode_default"), default="human_required"),
+        publish_mode_default=_normalize_publish_mode(config.get("publish_mode_default"), default="auto_publish"),
         publish_mode_by_category=_normalize_publish_mode_map(config.get("publish_mode_by_category")),
         auto_publish_min_score=max(0.0, min(1.0, _coerce_float(config.get("auto_publish_min_score"), 0.9))),
         auto_publish_min_sources=max(1, min(100, _coerce_int(config.get("auto_publish_min_sources"), 3))),
@@ -15251,6 +15269,91 @@ def get_wiki_page_history(
     }
 
 
+@app.put("/v1/wiki/pages/{slug}/rollback", response_model=None)
+def rollback_wiki_page(
+    slug: str,
+    payload: WikiPageRollbackRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    normalized_slug = _normalize_wiki_slug(slug, slug)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=payload.project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "error": "wiki_page_not_found",
+                        "project_id": payload.project_id,
+                        "slug": normalized_slug,
+                    },
+                )
+            page_id = page_row[0]
+            canonical_slug = str(page_row[2] or normalized_slug).strip() or normalized_slug
+            page_status = str(page_row[5] or "published").strip() or "published"
+            cur.execute(
+                """
+                SELECT markdown
+                FROM wiki_page_versions
+                WHERE page_id = %s
+                  AND version = %s
+                LIMIT 1
+                """,
+                (page_id, int(payload.target_version)),
+            )
+            target_row = cur.fetchone()
+            if target_row is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "error": "wiki_page_version_not_found",
+                        "project_id": payload.project_id,
+                        "slug": canonical_slug,
+                        "target_version": int(payload.target_version),
+                    },
+                )
+            rollback_markdown = str(target_row[0] or "")
+
+    rollback_summary = (
+        payload.change_summary.strip()
+        if isinstance(payload.change_summary, str) and payload.change_summary.strip()
+        else None
+    ) or f"Rolled back to v{int(payload.target_version)} by {payload.rolled_back_by}"
+
+    rollback_payload = WikiPageUpdateRequest(
+        project_id=payload.project_id,
+        updated_by=payload.rolled_back_by,
+        markdown=rollback_markdown,
+        status=payload.status or page_status,
+        change_summary=rollback_summary,
+    )
+    rollback_idempotency_key = (
+        f"{idempotency_key}:rollback:v{int(payload.target_version)}"
+        if isinstance(idempotency_key, str) and idempotency_key.strip()
+        else None
+    )
+    result = update_wiki_page(
+        slug=canonical_slug,
+        payload=rollback_payload,
+        request=request,
+        idempotency_key=rollback_idempotency_key,
+    )
+    if isinstance(result, JSONResponse):
+        return result
+    if isinstance(result, dict):
+        result["rollback"] = {
+            "target_version": int(payload.target_version),
+            "rolled_back_by": payload.rolled_back_by,
+        }
+    return result
+
+
 @app.get("/v1/wiki/pages/{slug}/aliases")
 def list_wiki_page_aliases(slug: str, project_id: str) -> Any:
     normalized_slug = _normalize_wiki_slug(slug, slug)
@@ -18480,7 +18583,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     source_ownership_advisories += 1
             has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
             policy = {
-                "publish_mode_default": "human_required",
+                "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
@@ -19292,7 +19395,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "llm_score_weight": 0.35,
                 "llm_min_confidence": 0.65,
                 "llm_timeout_ms": 3500,
-                "publish_mode_default": "human_required",
+                "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
@@ -19346,7 +19449,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "llm_score_weight": float(row[8]),
                 "llm_min_confidence": float(row[9]),
                 "llm_timeout_ms": int(row[10]),
-                "publish_mode_default": "human_required",
+                "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
@@ -19372,7 +19475,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
             "llm_score_weight": 0.35,
             "llm_min_confidence": 0.65,
             "llm_timeout_ms": 3500,
-            "publish_mode_default": "human_required",
+            "publish_mode_default": "auto_publish",
             "publish_mode_by_category": {},
             "auto_publish_min_score": 0.9,
             "auto_publish_min_sources": 3,
@@ -19534,7 +19637,7 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
     with get_conn() as conn:
         has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
         has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
-        publish_mode_default = _normalize_publish_mode(payload.publish_mode_default, default="human_required")
+        publish_mode_default = _normalize_publish_mode(payload.publish_mode_default, default="auto_publish")
         publish_mode_by_category = _normalize_publish_mode_map(payload.publish_mode_by_category)
         with conn.cursor() as cur:
             if has_llm_columns and has_publish_columns:
@@ -19777,7 +19880,7 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
                 "llm_score_weight": float(row[8]),
                 "llm_min_confidence": float(row[9]),
                 "llm_timeout_ms": int(row[10]),
-                "publish_mode_default": "human_required",
+                "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
@@ -19804,7 +19907,7 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
             "llm_score_weight": 0.35,
             "llm_min_confidence": 0.65,
             "llm_timeout_ms": 3500,
-            "publish_mode_default": "human_required",
+            "publish_mode_default": "auto_publish",
             "publish_mode_by_category": {},
             "auto_publish_min_score": 0.9,
             "auto_publish_min_sources": 3,
@@ -25376,8 +25479,50 @@ def list_legacy_import_sources(
     return {"sources": sources}
 
 
+def _normalize_legacy_import_source_config(
+    *,
+    source_type: str,
+    source_ref: str,
+    config: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    normalized = dict(config or {})
+    metadata: dict[str, Any] = {}
+    if source_type != "postgres_sql":
+        return normalized, metadata
+
+    raw_profile = str(normalized.get("sql_profile") or normalized.get("profile") or "").strip()
+    if raw_profile:
+        profile_candidate = normalize_postgres_sql_profile(raw_profile)
+        if profile_candidate is None:
+            allowed = ", ".join(item["profile"] for item in list_postgres_sql_profiles())
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported postgres_sql profile `{raw_profile}` (allowed: {allowed}, auto)",
+            )
+
+    normalized, profile_meta = apply_postgres_sql_profile_defaults(normalized, source_ref=source_ref)
+    if profile_meta.get("profile") is not None:
+        metadata["profile"] = str(profile_meta.get("profile"))
+        metadata["profile_inferred"] = bool(profile_meta.get("profile_inferred"))
+        metadata["profile_auto_mode"] = bool(profile_meta.get("profile_auto_mode"))
+    return normalized, metadata
+
+
+@app.get("/v1/legacy-import/profiles")
+def list_legacy_import_profiles(source_type: str = Query(default="postgres_sql")) -> dict[str, Any]:
+    normalized = str(source_type or "").strip().lower()
+    if normalized != "postgres_sql":
+        return {"profiles": []}
+    return {"profiles": list_postgres_sql_profiles()}
+
+
 @app.put("/v1/legacy-import/sources")
 def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dict[str, Any]:
+    normalized_config, profile_meta = _normalize_legacy_import_source_config(
+        source_type=payload.source_type,
+        source_ref=payload.source_ref,
+        config=payload.config,
+    )
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -25426,13 +25571,13 @@ def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dic
                     payload.enabled,
                     payload.sync_interval_minutes,
                     payload.next_run_at,
-                    Jsonb(payload.config or {}),
+                    Jsonb(normalized_config),
                     payload.updated_by,
                     payload.updated_by,
                 ),
             )
             row = cur.fetchone()
-    return {
+    response: dict[str, Any] = {
         "status": "ok",
         "source": {
             "id": row[0],
@@ -25451,6 +25596,9 @@ def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dic
             "updated_at": row[13].isoformat(),
         },
     }
+    if profile_meta:
+        response["profile_resolution"] = profile_meta
+    return response
 
 
 @app.post("/v1/legacy-import/sources/{source_id}/sync")

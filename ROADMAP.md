@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-03
+Last updated: 2026-04-04
 Owner: Core team
 
 ## Правило актуальности
@@ -62,6 +62,48 @@ Workstreams:
   - Confluence-like page-first navigation, reduced control density in first viewport.
 - `done` Adoption migration mode:
   - trusted-source bootstrap approve with sampling + rollback defaults in UI flow.
+
+## User-Friendly Wiki UX (12-Point Track)
+
+Status: `in_progress`
+
+Goal:
+- сделать UX уровня “корпоративная wiki для обычных людей”, а не control-center;
+- держать Drafts/Tasks вторичными по отношению к page-first wiki.
+
+Checklist:
+1. `done` Wiki-only landing:
+   - open last visited page automatically per project (`localStorage` restore).
+2. `done` Super-simple top bar:
+   - compact actions (`Create`, `Share`, `Edit`, `Publish`, `Refresh Inbox`) + search.
+3. `done` Clean left tree:
+   - page tree with context menu (`Open`, `Move/Rename`, `Archive/Restore`);
+   - drag-and-drop move with `reparent` workflow wired.
+4. `in_progress` Rich page editing:
+   - done: local autosave + restore for page edit drafts in core mode;
+   - next: slash-first core editor, undo/redo parity, stronger version diff UX.
+5. `done` Drafts as inbox:
+   - Drafts live in dedicated tab; page view shows lightweight “Open drafts” context only.
+6. `done` Publish modal:
+   - modal with location + change summary before publish.
+7. `done` Smart page creation:
+   - template-first create panel (`Access Policy`, `Operations Incident`, `Customer Preference`).
+8. `done` 60-second onboarding:
+   - first-run guided modal with 3 steps (connect -> create -> review).
+9. `in_progress` Human copy cleanup:
+   - remove ops-heavy labels from core surface; keep technical language in advanced mode.
+10. `done` Fast search:
+    - `Cmd/Ctrl+K` jump modal, recent pages, and create-from-query path.
+11. `planned` Friendly roles model:
+    - Viewer / Editor / Approver / Admin language + simple permission table in UI/docs.
+12. `planned` UX metrics:
+    - track TTFV, time-to-first-publish, and click-depth to open/publish.
+
+Next Up (execution order):
+1. Core-mode rich editor (replace markdown textarea) with autosave indicator.
+2. Friendly roles language pass + quick permissions guide in UI.
+3. UX telemetry primitives for TTFV and first-publish funnel.
+4. Sticky page toolbar (`History`, `Watching`, `...`) for 1:1 wiki parity.
 
 ## Confluence-Like Wiki Track (Q2-Q3 2026)
 
@@ -494,6 +536,10 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Upgraded existing-memory connector UX from dense inline form to guided setup wizard: Wiki Tree now shows a compact status card with “Open setup wizard”, and the wizard runs a clear 3-step flow (profile -> connector config -> review/launch) before queuing first sync.
+- 2026-04-04: Added user-friendly existing-memory onboarding in web core wiki workspace: new “Connect Existing Agent Memory” quickstart card (profile + DSN env + source ref + cadence), wired to native legacy-import APIs (`/v1/legacy-import/profiles`, `/v1/legacy-import/sources`, `/sync`) with one-click connect-and-first-sync flow, plus mock API parity for e2e/dev.
+- 2026-04-04: Closed existing-memory adoption gap for custom stacks without custom import scripts: added built-in Postgres legacy memory profiles (`ops_kb_items`, `memory_items`, `auto`) with API discovery endpoint (`GET /v1/legacy-import/profiles`), profile-aware source upsert normalization in API, and worker-side profile auto-resolution that discovers table/columns, generates safe incremental polling SQL, and persists resolved profile/table/cursor metadata into source config.
+- 2026-04-04: Switched knowledge publication defaults to autonomous-first mode: Gatekeeper fallback/default `publish_mode_default` is now `auto_publish` (API + worker), added explicit wiki page rollback endpoint (`PUT /v1/wiki/pages/{slug}/rollback`) backed by page-version history, and shipped admin-facing publish-mode control in web Governance panel so operators can downgrade to `human_required` per project when needed.
 - 2026-04-03: Closed execution queue item “automated pre-prod chaos runs”: added `scripts/run_selfhost_chaos_drill.sh` (clean self-hosted stack boot, baseline core-loop acceptance, dependency fault injection, post-fault recovery + core-loop verification, JSON report), wired optional CI workflow dispatch job (`run_selfhost_chaos_drill=true`) with artifact upload, and integrated local opt-in + script-smoke coverage into `scripts/ci_checks.sh` plus reliability/self-hosted runbook updates.
 - 2026-04-03: Closed execution queue item “low-latency external-memory ingestion”: extended `postgres_sql` legacy source with `sql_sync_mode=wal_cdc` (logical-slot CDC via `pg_logical_slot_get_changes|peek_changes`, `test_decoding` + `wal2json` parser support, table/operation filters, LSN state persistence, and canonical record mapping), kept polling mode as default/backward-compatible path, lowered orchestration cadence floor to 1 minute (migration `048_legacy_sync_low_latency_interval.sql` + API validation update), and added deterministic WAL connector smoke check (`scripts/check_legacy_sync_wal_connector.py`) to CI.
 - 2026-04-03: Completed Recovery Plan closure for wiki-first rollout: tightened Gatekeeper runtime-noise demotion (single-source one-off runtime memory events now route to `operational_memory` unless high-priority/policy signals), simplified Draft Inbox core UX with explicit `Migration Mode` gating for bootstrap tools, and hardened trusted-source adoption API (`/v1/wiki/drafts/bootstrap-approve/run`) with apply-time trusted-source requirement + soft batch cap + safety metadata.
