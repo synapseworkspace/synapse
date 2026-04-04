@@ -52,7 +52,7 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { diffWords } from "diff";
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type DraftStatus = "pending_review" | "blocked_conflict" | "approved" | "rejected";
 type PublishMode = "human_required" | "conditional" | "auto_publish";
@@ -790,6 +790,23 @@ type TriagePriorityReason = {
   weight: number;
 };
 
+type WikiUxMetricsState = {
+  sessionStartedMs: number;
+  firstPageViewMs: number | null;
+  firstPublishMs: number | null;
+  pageOpenCount: number;
+  pageOpenCountAtFirstPublish: number | null;
+  publishCount: number;
+};
+
+type FriendlyRoleDescriptor = {
+  key: "viewer" | "editor" | "approver" | "admin";
+  label: string;
+  canDo: string;
+  typicalUse: string;
+  mapsTo: string[];
+};
+
 const STORAGE_KEY = "synapse_web_console_v4";
 
 const DEFAULT_APPROVE_FORM: ApproveFormState = {
@@ -880,6 +897,38 @@ const REVIEW_QUEUE_PRESETS: ReviewQueuePreset[] = [
 const ONBOARDING_STORAGE_PREFIX = "synapse:onboarding_done:";
 const LAST_PAGE_STORAGE_PREFIX = "synapse:last_page:";
 const PAGE_EDIT_DRAFT_STORAGE_PREFIX = "synapse:page_edit_draft:";
+const UX_METRICS_STORAGE_PREFIX = "synapse:wiki_ux_metrics:";
+
+const FRIENDLY_ROLE_MODEL: FriendlyRoleDescriptor[] = [
+  {
+    key: "viewer",
+    label: "Viewer",
+    canDo: "Read wiki pages and open draft context.",
+    typicalUse: "Business users who consume knowledge but do not edit policy.",
+    mapsTo: ["viewer", "read_only", "reader"],
+  },
+  {
+    key: "editor",
+    label: "Editor",
+    canDo: "Create and edit pages, propose updates, attach evidence.",
+    typicalUse: "Ops leads and subject-matter experts writing runbooks.",
+    mapsTo: ["editor", "writer", "contributor"],
+  },
+  {
+    key: "approver",
+    label: "Approver",
+    canDo: "Review/approve/reject drafts and publish trusted updates.",
+    typicalUse: "Team leads responsible for quality gates.",
+    mapsTo: ["approver", "reviewer", "moderator"],
+  },
+  {
+    key: "admin",
+    label: "Admin",
+    canDo: "Manage workspace settings, policies, and role assignments.",
+    typicalUse: "Platform owners and security administrators.",
+    mapsTo: ["admin", "owner", "workspace_admin"],
+  },
+];
 
 type UiMode = "core" | "advanced";
 type CoreWorkspaceTab = "wiki" | "drafts" | "tasks";
@@ -1024,6 +1073,34 @@ function formatMinutes(value: number | null): string {
 function formatPercent(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "—";
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatDurationMs(valueMs: number | null): string {
+  if (valueMs == null || !Number.isFinite(valueMs) || valueMs < 0) return "—";
+  const minutes = Math.floor(valueMs / (1000 * 60));
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  if (hours < 24) return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const hoursRemainder = hours % 24;
+  return hoursRemainder > 0 ? `${days}d ${hoursRemainder}h` : `${days}d`;
+}
+
+function buildLineDeltaPreview(beforeRaw: string, afterRaw: string, limit = 4): { added: string[]; removed: string[] } {
+  const normalizeLines = (value: string) =>
+    value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  const before = normalizeLines(beforeRaw || "");
+  const after = normalizeLines(afterRaw || "");
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  const added = after.filter((line) => !beforeSet.has(line)).slice(0, limit);
+  const removed = before.filter((line) => !afterSet.has(line)).slice(0, limit);
+  return { added, removed };
 }
 
 function moderationHealthColor(health: string | null | undefined): string {
@@ -1525,6 +1602,7 @@ export default function App() {
   const [loadingModerationThroughput, setLoadingModerationThroughput] = useState(false);
   const [creatingPage, setCreatingPage] = useState(false);
   const [showCoreCreatePanel, setShowCoreCreatePanel] = useState(false);
+  const [showRolesGuideModal, setShowRolesGuideModal] = useState(false);
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [publishSummary, setPublishSummary] = useState("Publish page update");
   const [showQuickNavModal, setShowQuickNavModal] = useState(false);
@@ -1548,6 +1626,15 @@ export default function App() {
   const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
   const [selectedTocSectionKey, setSelectedTocSectionKey] = useState<string | null>(null);
   const [urlStateReady, setUrlStateReady] = useState(false);
+  const [wikiUxMetrics, setWikiUxMetrics] = useState<WikiUxMetricsState>(() => ({
+    sessionStartedMs: Date.now(),
+    firstPageViewMs: null,
+    firstPublishMs: null,
+    pageOpenCount: 0,
+    pageOpenCountAtFirstPublish: null,
+    publishCount: 0,
+  }));
+  const previousSelectedPageSlugRef = useRef<string | null>(null);
   const effectiveUiMode: UiMode = CAN_ACCESS_ADVANCED_MODE ? uiMode : "core";
   const showExpertModerationControls = effectiveUiMode === "advanced" || (CAN_ACCESS_ADVANCED_MODE && coreExpertControls);
   const requiresAuthSession =
@@ -2818,6 +2905,81 @@ export default function App() {
   }, [selectedDraftId, visibleDrafts]);
 
   useEffect(() => {
+    const project = projectId.trim();
+    previousSelectedPageSlugRef.current = null;
+    if (!project) {
+      setWikiUxMetrics({
+        sessionStartedMs: Date.now(),
+        firstPageViewMs: null,
+        firstPublishMs: null,
+        pageOpenCount: 0,
+        pageOpenCountAtFirstPublish: null,
+        publishCount: 0,
+      });
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(`${UX_METRICS_STORAGE_PREFIX}${project}`);
+      if (!raw) throw new Error("missing metrics");
+      const parsed = JSON.parse(raw) as Partial<WikiUxMetricsState>;
+      const sessionStartedMs = Number(parsed.sessionStartedMs);
+      const firstPageViewMs = parsed.firstPageViewMs == null ? null : Number(parsed.firstPageViewMs);
+      const firstPublishMs = parsed.firstPublishMs == null ? null : Number(parsed.firstPublishMs);
+      const pageOpenCount = Number(parsed.pageOpenCount ?? 0);
+      const pageOpenCountAtFirstPublish =
+        parsed.pageOpenCountAtFirstPublish == null ? null : Number(parsed.pageOpenCountAtFirstPublish);
+      const publishCount = Number(parsed.publishCount ?? 0);
+      if (!Number.isFinite(sessionStartedMs)) throw new Error("invalid metrics");
+      setWikiUxMetrics({
+        sessionStartedMs,
+        firstPageViewMs: Number.isFinite(firstPageViewMs ?? NaN) ? firstPageViewMs : null,
+        firstPublishMs: Number.isFinite(firstPublishMs ?? NaN) ? firstPublishMs : null,
+        pageOpenCount: Number.isFinite(pageOpenCount) ? Math.max(0, Math.round(pageOpenCount)) : 0,
+        pageOpenCountAtFirstPublish:
+          pageOpenCountAtFirstPublish != null && Number.isFinite(pageOpenCountAtFirstPublish)
+            ? Math.max(0, Math.round(pageOpenCountAtFirstPublish))
+            : null,
+        publishCount: Number.isFinite(publishCount) ? Math.max(0, Math.round(publishCount)) : 0,
+      });
+    } catch {
+      setWikiUxMetrics({
+        sessionStartedMs: Date.now(),
+        firstPageViewMs: null,
+        firstPublishMs: null,
+        pageOpenCount: 0,
+        pageOpenCountAtFirstPublish: null,
+        publishCount: 0,
+      });
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    const project = projectId.trim();
+    if (!project) return;
+    try {
+      window.localStorage.setItem(`${UX_METRICS_STORAGE_PREFIX}${project}`, JSON.stringify(wikiUxMetrics));
+    } catch {
+      // ignore storage errors
+    }
+  }, [projectId, wikiUxMetrics]);
+
+  useEffect(() => {
+    if (!selectedPageSlug) {
+      previousSelectedPageSlugRef.current = null;
+      return;
+    }
+    const previous = previousSelectedPageSlugRef.current;
+    previousSelectedPageSlugRef.current = selectedPageSlug;
+    if (previous === selectedPageSlug) return;
+    const now = Date.now();
+    setWikiUxMetrics((prev) => ({
+      ...prev,
+      firstPageViewMs: prev.firstPageViewMs ?? now,
+      pageOpenCount: prev.pageOpenCount + 1,
+    }));
+  }, [selectedPageSlug]);
+
+  useEffect(() => {
     if (!selectedPageSlug) return;
     if (!pageNodes.some((item) => item.slug === selectedPageSlug)) {
       setSelectedPageSlug(null);
@@ -3760,6 +3922,13 @@ export default function App() {
         title: "Page published",
         message: `${payload.page.title || selectedPageSlug} is published.`,
       });
+      const publishedAtMs = Date.now();
+      setWikiUxMetrics((prev) => ({
+        ...prev,
+        firstPublishMs: prev.firstPublishMs ?? publishedAtMs,
+        pageOpenCountAtFirstPublish: prev.firstPublishMs == null ? prev.pageOpenCount : prev.pageOpenCountAtFirstPublish,
+        publishCount: prev.publishCount + 1,
+      }));
       setShowPublishModal(false);
       setPageEditMode(false);
       if (pageEditDraftStorageKey) {
@@ -5514,6 +5683,28 @@ export default function App() {
       changed: addedTokens + removedTokens,
     };
   }, [pageHistoryDiff]);
+  const pageRevisionLinePreview = useMemo(
+    () =>
+      buildLineDeltaPreview(
+        String(selectedHistoryBase?.markdown || ""),
+        String(selectedHistoryTarget?.markdown || ""),
+        4,
+      ),
+    [selectedHistoryBase?.markdown, selectedHistoryTarget?.markdown],
+  );
+  const wikiUxSummary = useMemo(() => {
+    const firstViewDelta =
+      wikiUxMetrics.firstPageViewMs != null ? Math.max(0, wikiUxMetrics.firstPageViewMs - wikiUxMetrics.sessionStartedMs) : null;
+    const firstPublishDelta =
+      wikiUxMetrics.firstPublishMs != null ? Math.max(0, wikiUxMetrics.firstPublishMs - wikiUxMetrics.sessionStartedMs) : null;
+    return {
+      ttfvMs: firstViewDelta,
+      timeToFirstPublishMs: firstPublishDelta,
+      clickDepthToFirstPublish: wikiUxMetrics.pageOpenCountAtFirstPublish,
+      pageOpenCount: wikiUxMetrics.pageOpenCount,
+      publishCount: wikiUxMetrics.publishCount,
+    };
+  }, [wikiUxMetrics]);
   const selectedPageOpenDrafts = useMemo(() => {
     if (!selectedPageSlug) return [];
     return drafts
@@ -5875,7 +6066,7 @@ export default function App() {
               <Text className="eyebrow">Synapse Wiki</Text>
               <Title order={1}>Sign in to continue</Title>
               <Text c="dimmed">
-                Authenticate once, then you will land directly in Wiki workspace with Drafts and Tasks.
+                Authenticate once, then you will land directly in your company wiki.
               </Text>
             </Stack>
           </Paper>
@@ -6007,9 +6198,29 @@ export default function App() {
                   void loadDrafts();
                 }}
               >
-                Refresh Inbox
+                Sync
               </Button>
             </Group>
+          </Group>
+          <Group justify="space-between" align="center" mt={8} wrap="wrap">
+            <Group gap={6} wrap="wrap">
+              <Badge size="sm" variant="light" color={wikiUxSummary.ttfvMs == null ? "gray" : "teal"}>
+                TTFV {formatDurationMs(wikiUxSummary.ttfvMs)}
+              </Badge>
+              <Badge size="sm" variant="light" color={wikiUxSummary.timeToFirstPublishMs == null ? "gray" : "blue"}>
+                First publish {formatDurationMs(wikiUxSummary.timeToFirstPublishMs)}
+              </Badge>
+              <Badge
+                size="sm"
+                variant="light"
+                color={wikiUxSummary.clickDepthToFirstPublish == null ? "gray" : "indigo"}
+              >
+                Click depth {wikiUxSummary.clickDepthToFirstPublish ?? "—"}
+              </Badge>
+            </Group>
+            <Button size="compact-sm" variant="subtle" onClick={() => setShowRolesGuideModal(true)}>
+              Roles & access
+            </Button>
           </Group>
         </Box>
 
@@ -6018,14 +6229,14 @@ export default function App() {
             <Stack gap="sm">
               <TextInput
                 size="xs"
-                label="Project ID"
+                label="Workspace"
                 value={projectId}
                 onChange={(event) => setProjectId(event.currentTarget.value)}
                 placeholder="omega_demo"
               />
               <TextInput
                 size="xs"
-                label="Reviewer"
+                label="Your name"
                 value={reviewer}
                 onChange={(event) => setReviewer(event.currentTarget.value)}
                 placeholder="ops_manager"
@@ -6070,7 +6281,7 @@ export default function App() {
               <Stack gap={2} className="confluence-tree">
                 {wikiTreeNodes.length === 0 ? (
                   <Text size="sm" c="dimmed">
-                    No pages in scope.
+                    No pages yet.
                   </Text>
                 ) : (
                   wikiTreeNodes.map((node) => renderConfluenceTreeNode(node))
@@ -6280,9 +6491,9 @@ export default function App() {
                 {!selectedPageSlug ? (
                   <Paper withBorder p="lg" radius="md">
                     <Stack gap="sm">
-                      <Title order={2}>Welcome to your workspace</Title>
+                      <Title order={2}>Welcome to your wiki</Title>
                       <Text c="dimmed">
-                        Choose a page from the left tree or create the first page for this project.
+                        Choose a page from the left tree or create the first page for this workspace.
                       </Text>
                       <Divider />
                       <Text fw={700} size="sm">
@@ -6407,7 +6618,7 @@ export default function App() {
             <Paper className="confluence-right-rail" withBorder>
               {!selectedPageSlug ? (
                 <Text size="sm" c="dimmed">
-                  Select a page to see context.
+                  Select a page to see details.
                 </Text>
               ) : (
                 <Stack gap="sm">
@@ -6455,7 +6666,7 @@ export default function App() {
                     color="cyan"
                     onClick={() => setCoreWorkspaceTab("drafts")}
                   >
-                    Open Draft Inbox
+                    Open Drafts
                   </Button>
                 </Stack>
               )}
@@ -6544,6 +6755,37 @@ export default function App() {
                 Open page
               </Button>
             </Group>
+          </Stack>
+        </Modal>
+
+        <Modal
+          opened={showRolesGuideModal}
+          onClose={() => setShowRolesGuideModal(false)}
+          title="Roles & access"
+          centered
+        >
+          <Stack gap="sm">
+            <Text size="sm" c="dimmed">
+              Synapse uses four human-friendly roles. Internal RBAC claims can map to these labels.
+            </Text>
+            {FRIENDLY_ROLE_MODEL.map((role) => (
+              <Paper key={`friendly-role-${role.key}`} withBorder p="sm" radius="md">
+                <Stack gap={4}>
+                  <Group justify="space-between" align="center">
+                    <Text fw={700} size="sm">
+                      {role.label}
+                    </Text>
+                    <Badge variant="light" color="indigo">
+                      {role.mapsTo.join(", ")}
+                    </Badge>
+                  </Group>
+                  <Text size="xs">{role.canDo}</Text>
+                  <Text size="xs" c="dimmed">
+                    Typical use: {role.typicalUse}
+                  </Text>
+                </Stack>
+              </Paper>
+            ))}
           </Stack>
         </Modal>
 
@@ -8327,17 +8569,74 @@ export default function App() {
                       </Stack>
                     )}
                     {(pageHistory?.versions ?? []).length > 1 && (
-                      <Group gap={6} mt={8} wrap="wrap">
-                        <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
-                          changes {pageRevisionDelta.changed}
-                        </Badge>
-                        <Badge size="xs" variant="light" color="teal">
-                          +{pageRevisionDelta.addedTokens}
-                        </Badge>
-                        <Badge size="xs" variant="light" color="red">
-                          -{pageRevisionDelta.removedTokens}
-                        </Badge>
-                      </Group>
+                      <>
+                        <Group gap={6} mt={8} wrap="wrap">
+                          <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
+                            changes {pageRevisionDelta.changed}
+                          </Badge>
+                          <Badge size="xs" variant="light" color="teal">
+                            +{pageRevisionDelta.addedTokens}
+                          </Badge>
+                          <Badge size="xs" variant="light" color="red">
+                            -{pageRevisionDelta.removedTokens}
+                          </Badge>
+                        </Group>
+                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing={6} mt={8}>
+                          <Select
+                            size="xs"
+                            label="Compare from"
+                            value={historyBaseVersion}
+                            onChange={setHistoryBaseVersion}
+                            data={pageHistoryOptions}
+                          />
+                          <Select
+                            size="xs"
+                            label="Compare to"
+                            value={historyTargetVersion}
+                            onChange={setHistoryTargetVersion}
+                            data={pageHistoryOptions}
+                          />
+                        </SimpleGrid>
+                        <Paper withBorder p="xs" radius="md" mt={8} className="diff-block">
+                          <Text size="xs" fw={700} mb={6}>
+                            Quick diff preview
+                          </Text>
+                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing={8}>
+                            <Stack gap={4}>
+                              <Text size="xs" c="dimmed">
+                                Added lines
+                              </Text>
+                              {pageRevisionLinePreview.added.length === 0 ? (
+                                <Text size="xs" c="dimmed">
+                                  No unique added lines.
+                                </Text>
+                              ) : (
+                                pageRevisionLinePreview.added.map((line, index) => (
+                                  <Text key={`rev-added-${index}`} size="xs">
+                                    + {line}
+                                  </Text>
+                                ))
+                              )}
+                            </Stack>
+                            <Stack gap={4}>
+                              <Text size="xs" c="dimmed">
+                                Removed lines
+                              </Text>
+                              {pageRevisionLinePreview.removed.length === 0 ? (
+                                <Text size="xs" c="dimmed">
+                                  No unique removed lines.
+                                </Text>
+                              ) : (
+                                pageRevisionLinePreview.removed.map((line, index) => (
+                                  <Text key={`rev-removed-${index}`} size="xs">
+                                    - {line}
+                                  </Text>
+                                ))
+                              )}
+                            </Stack>
+                          </SimpleGrid>
+                        </Paper>
+                      </>
                     )}
                   </Paper>
                   <Paper withBorder p="xs" radius="md">

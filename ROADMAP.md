@@ -90,7 +90,7 @@ Checklist:
 
 ## User-Friendly Wiki UX (12-Point Track)
 
-Status: `in_progress`
+Status: `done`
 
 Goal:
 - сделать UX уровня “корпоративная wiki для обычных людей”, а не control-center;
@@ -100,13 +100,13 @@ Checklist:
 1. `done` Wiki-only landing:
    - open last visited page automatically per project (`localStorage` restore).
 2. `done` Super-simple top bar:
-   - compact actions (`Create`, `Share`, `Edit`, `Publish`, `Refresh Inbox`) + search.
+   - compact actions (`Create`, `Share`, `Edit`, `Publish`, `Sync`) + search.
 3. `done` Clean left tree:
    - page tree with context menu (`Open`, `Move/Rename`, `Archive/Restore`);
    - drag-and-drop move with `reparent` workflow wired.
-4. `in_progress` Rich page editing:
+4. `done` Rich page editing:
    - done: local autosave + restore for page edit drafts in core mode;
-   - next: slash-first core editor, undo/redo parity, stronger version diff UX.
+   - done: slash-first core editor, undo/redo parity, stronger version diff UX.
 5. `done` Drafts as inbox:
    - Drafts live in dedicated tab; page view shows lightweight “Open drafts” context only.
 6. `done` Publish modal:
@@ -115,20 +115,18 @@ Checklist:
    - template-first create panel (`Access Policy`, `Operations Incident`, `Customer Preference`).
 8. `done` 60-second onboarding:
    - first-run guided modal with 3 steps (connect -> create -> review).
-9. `in_progress` Human copy cleanup:
+9. `done` Human copy cleanup:
    - remove ops-heavy labels from core surface; keep technical language in advanced mode.
 10. `done` Fast search:
     - `Cmd/Ctrl+K` jump modal, recent pages, and create-from-query path.
-11. `planned` Friendly roles model:
-    - Viewer / Editor / Approver / Admin language + simple permission table in UI/docs.
-12. `planned` UX metrics:
-    - track TTFV, time-to-first-publish, and click-depth to open/publish.
+11. `done` Friendly roles model:
+   - Viewer / Editor / Approver / Admin language + simple permission table in UI/docs.
+12. `done` UX metrics:
+   - track TTFV, time-to-first-publish, and click-depth to open/publish.
 
 Next Up (execution order):
-1. Core-mode rich editor (replace markdown textarea) with autosave indicator.
-2. Friendly roles language pass + quick permissions guide in UI.
-3. UX telemetry primitives for TTFV and first-publish funnel.
-4. Sticky page toolbar (`History`, `Watching`, `...`) for 1:1 wiki parity.
+1. Sticky page toolbar (`History`, `Watching`, `...`) for closer wiki parity in core mode.
+2. Optional publish checklist presets per space (for policy-heavy teams).
 
 ## Confluence-Like Wiki Track (Q2-Q3 2026)
 
@@ -561,6 +559,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Completed User-Friendly Wiki UX 12-point track (`done`): finalized slash-first rich editor parity (undo/redo), added stronger revision diff preview in core wiki context, cleaned core-mode language (`Workspace`, `Your name`, `Sync`), shipped friendly roles modal (`Viewer/Editor/Approver/Admin`) plus docs (`docs/wiki-ux-roles-metrics.md`), and added UX funnel telemetry badges (TTFV, first publish time, click-depth) persisted per project in browser storage.
 - 2026-04-04: Closed remaining Knowledge Compiler roadmap items: added claim `assertion_class` typing (`policy|preference|incident|event|fact`) in Gatekeeper features/claim metadata, enabled assertion-class-aware publish control via `routing_policy.publish_mode_by_assertion_class`, introduced retrieval feedback loop APIs (`POST /v1/mcp/retrieval/feedback`, `GET /v1/mcp/retrieval/feedback/stats`) with new migration `050_retrieval_feedback_loop.sql`, and wired auto-publish guardrails to block autonomous publish when recent claim-level retrieval feedback is strongly negative.
 - 2026-04-04: Added Knowledge Compiler v1 hardening: worker now suppresses low-signal backfill event records before claim enqueue, Gatekeeper routing adds `source_id` deny checks plus durable knowledge-signal thresholds and payload key/value density detection, API routing-policy normalization includes new knobs, and new worker unit tests cover noisy snapshot demotion vs valid policy/preference retention (`services/worker/tests/test_wiki_engine_routing.py`).
 - 2026-04-04: Hardened universal wiki-ingestion routing against raw operational streams: routing policy now supports deny rules by `category`, `source_system`, `source_type`, and `entity_key`, plus backfill-specific policy gating (`backfill_requires_policy_signal`) and event-blob shape detection, preventing `order_snapshot`/invoice/status stream style memories from dominating wiki pages.

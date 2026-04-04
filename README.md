@@ -185,6 +185,7 @@ Open `http://localhost:5173`.
 - Knowledge compiler RFC: [docs/knowledge-compiler-rfc.md](docs/knowledge-compiler-rfc.md)
 - Framework integrations: [docs/framework-integrations.md](docs/framework-integrations.md)
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
+- Wiki UX roles and metrics: [docs/wiki-ux-roles-metrics.md](docs/wiki-ux-roles-metrics.md)
 - MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
 - Reliability and SLO guardrails: [docs/reliability-slo.md](docs/reliability-slo.md)
 - Core vs enterprise scope: [docs/core-vs-enterprise.md](docs/core-vs-enterprise.md)

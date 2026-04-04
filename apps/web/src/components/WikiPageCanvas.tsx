@@ -8,7 +8,7 @@ import TableRow from "@tiptap/extension-table-row";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { marked } from "marked";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type WikiPageCanvasProps = {
   title: string;
@@ -115,6 +115,7 @@ export default function WikiPageCanvas({
   const [seedVersion, setSeedVersion] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandSearch, setCommandSearch] = useState("");
+  const commandInputRef = useRef<HTMLInputElement>(null);
   const sourceHtml = useMemo(() => markdownToHtml(markdown), [markdown]);
   const media = useMemo<WikiMediaItem[]>(() => {
     const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
@@ -210,14 +211,44 @@ export default function WikiPageCanvas({
 
   useEffect(() => {
     if (!editor || readonly) return;
+    const focusCommandInput = () => {
+      window.requestAnimationFrame(() => {
+        commandInputRef.current?.focus();
+      });
+    };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      if (event.key === "/") {
+      if (!editMode) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
-        setCommandPaletteOpen((value) => !value);
+        if (event.shiftKey) {
+          editor.chain().focus().redo().run();
+        } else {
+          editor.chain().focus().undo().run();
+        }
         return;
       }
-      if (!editMode) return;
+      if ((event.metaKey || event.ctrlKey) && event.key === "/") {
+        event.preventDefault();
+        setCommandSearch("");
+        setCommandPaletteOpen(true);
+        focusCommandInput();
+        return;
+      }
+      if (!event.metaKey && !event.ctrlKey && event.key === "/" && editMode) {
+        const selection = editor.state.selection;
+        if (selection.empty) {
+          const anchor = selection.from;
+          const prevChar = editor.state.doc.textBetween(Math.max(0, anchor - 1), anchor, "\n", " ");
+          if (!prevChar || /\s/.test(prevChar)) {
+            event.preventDefault();
+            setCommandSearch("");
+            setCommandPaletteOpen(true);
+            focusCommandInput();
+            return;
+          }
+        }
+        return;
+      }
       if (event.shiftKey && event.key.toLowerCase() === "i") {
         event.preventDefault();
         editor.chain().focus().insertContent('<blockquote><p><strong>Info:</strong> </p></blockquote>').run();
@@ -265,7 +296,7 @@ export default function WikiPageCanvas({
       },
       {
         id: "incident-template",
-        label: "Ops Incident Template",
+        label: "Incident Template",
         description: "Insert standard incident status section.",
         keywords: ["incident", "ops", "template", "status"],
         run: ({ editor: target }) => {
@@ -377,7 +408,7 @@ export default function WikiPageCanvas({
     <Paper withBorder p="md" radius="md" className="wiki-canvas-card">
       <Group justify="space-between" align="flex-start" mb="sm">
         <Stack gap={2}>
-          <Title order={6}>Wiki Page Canvas</Title>
+          <Title order={6}>Page</Title>
           <Text size="xs" c="dimmed">
             {slug ? `${title} (${slug})` : title}
           </Text>
@@ -408,6 +439,24 @@ export default function WikiPageCanvas({
             <>
               <Group justify="space-between" align="center" mb="xs">
                 <Group gap={6} wrap="wrap">
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="gray"
+                    onClick={() => editor.chain().focus().undo().run()}
+                    disabled={!editor.can().chain().focus().undo().run()}
+                  >
+                    Undo
+                  </Button>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="gray"
+                    onClick={() => editor.chain().focus().redo().run()}
+                    disabled={!editor.can().chain().focus().redo().run()}
+                  >
+                    Redo
+                  </Button>
                   <Button size="compact-xs" variant="light" color="blue" onClick={() => runCommand("callout-info")}>
                     Info callout
                   </Button>
@@ -437,7 +486,7 @@ export default function WikiPageCanvas({
                   </Button>
                 </Group>
                 <Text size="xs" c="dimmed">
-                  <Kbd>Ctrl/Cmd</Kbd> + <Kbd>/</Kbd> to open command palette
+                  Start line with <Kbd>/</Kbd> or use <Kbd>Ctrl/Cmd</Kbd> + <Kbd>/</Kbd>
                 </Text>
               </Group>
               <Popover
@@ -450,6 +499,7 @@ export default function WikiPageCanvas({
               >
                 <Popover.Target>
                   <TextInput
+                    ref={commandInputRef}
                     size="xs"
                     value={commandSearch}
                     onChange={(event) => setCommandSearch(event.currentTarget.value)}
@@ -500,6 +550,10 @@ export default function WikiPageCanvas({
               </Popover>
               <Divider my="xs" />
               <RichTextEditor.Toolbar sticky stickyOffset={56}>
+                <RichTextEditor.ControlsGroup>
+                  <RichTextEditor.Undo />
+                  <RichTextEditor.Redo />
+                </RichTextEditor.ControlsGroup>
                 <RichTextEditor.ControlsGroup>
                   <RichTextEditor.Bold />
                   <RichTextEditor.Italic />
