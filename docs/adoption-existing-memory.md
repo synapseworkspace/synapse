@@ -57,9 +57,14 @@ Tune via Gatekeeper config `routing_policy` (`GET/PUT /v1/gatekeeper/config`):
 - `blocked_source_system_keywords`
 - `blocked_source_type_keywords`
 - `blocked_entity_keywords`
+- `blocked_source_id_keywords`
 - `event_stream_token_keywords`
+- `durable_signal_keywords`
 - `event_stream_min_numeric_token_ratio`
 - `event_stream_min_token_hits`
+- `event_stream_min_kv_hits`
+- `min_durable_signal_hits`
+- `min_durable_signal_hits_for_backfill`
 - `require_multi_source_for_wiki`
 - `min_sources_for_wiki_candidate`
 - `min_evidence_for_wiki_candidate`

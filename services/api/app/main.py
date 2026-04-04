@@ -1640,9 +1640,52 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "order_event",
         "invoice_event",
     ],
+    "blocked_source_id_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "event_snapshot",
+        "orders_feed",
+        "status_stream",
+        "webhook_event",
+        "telemetry",
+        "trace",
+        "payload_dump",
+    ],
     "event_stream_token_keywords": list(_DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS),
+    "durable_signal_keywords": [
+        "policy",
+        "process",
+        "procedure",
+        "instruction",
+        "rule",
+        "runbook",
+        "manual",
+        "playbook",
+        "preference",
+        "prefer",
+        "prefers",
+        "contact",
+        "workaround",
+        "incident",
+        "required",
+        "must",
+        "forbidden",
+        "закрыт",
+        "карантин",
+        "регламент",
+        "правило",
+        "процесс",
+        "инструкция",
+        "предпочт",
+        "контакт",
+        "обход",
+        "инцидент",
+    ],
     "event_stream_min_numeric_token_ratio": 0.45,
     "event_stream_min_token_hits": 2,
+    "event_stream_min_kv_hits": 2,
+    "min_durable_signal_hits": 1,
+    "min_durable_signal_hits_for_backfill": 1,
     "require_multi_source_for_wiki": True,
     "min_sources_for_wiki_candidate": 2,
     "min_evidence_for_wiki_candidate": 2,
@@ -2485,9 +2528,17 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         value.get("blocked_entity_keywords"),
         fallback=list(base["blocked_entity_keywords"]),
     )
+    normalized["blocked_source_id_keywords"] = _normalize_policy_keyword_list(
+        value.get("blocked_source_id_keywords"),
+        fallback=list(base["blocked_source_id_keywords"]),
+    )
     normalized["event_stream_token_keywords"] = _normalize_policy_keyword_list(
         value.get("event_stream_token_keywords"),
         fallback=list(base["event_stream_token_keywords"]),
+    )
+    normalized["durable_signal_keywords"] = _normalize_policy_keyword_list(
+        value.get("durable_signal_keywords"),
+        fallback=list(base["durable_signal_keywords"]),
     )
     normalized["event_stream_min_numeric_token_ratio"] = max(
         0.0,
@@ -2496,6 +2547,18 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     normalized["event_stream_min_token_hits"] = max(
         1,
         min(20, _coerce_int(value.get("event_stream_min_token_hits"), 2)),
+    )
+    normalized["event_stream_min_kv_hits"] = max(
+        1,
+        min(20, _coerce_int(value.get("event_stream_min_kv_hits"), 2)),
+    )
+    normalized["min_durable_signal_hits"] = max(
+        0,
+        min(20, _coerce_int(value.get("min_durable_signal_hits"), 1)),
+    )
+    normalized["min_durable_signal_hits_for_backfill"] = max(
+        0,
+        min(20, _coerce_int(value.get("min_durable_signal_hits_for_backfill"), 1)),
     )
     normalized["require_multi_source_for_wiki"] = _coerce_bool(value.get("require_multi_source_for_wiki"), True)
     normalized["min_sources_for_wiki_candidate"] = max(

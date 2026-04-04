@@ -87,6 +87,14 @@ Before Step A, Gatekeeper triage decides whether claim is even eligible for wiki
 2. `insight_candidate`: useful but requires standard moderation.
 3. `golden_candidate`: high-value pattern/policy fact, prioritized in moderation queues.
 
+Knowledge Utility Gate (default):
+1. deny-list checks by `category`, `source_system`, `source_type`, `entity_key`, and `source_id`;
+2. event-stream shape detection (token hits + numeric ratio + key/value payload density);
+3. durable-signal checks (`policy/process/rule/preference/incident` style semantics);
+4. backfill-specific guardrails (records without durable signal are held in `operational_memory`).
+
+This is what prevents `order_snapshot`/invoice/status streams from flooding wiki drafts.
+
 Auto-promotion from `insight_candidate` to `golden_candidate` can happen when:
 1. source diversity reaches configured threshold;
 2. claim remains conflict-free in recent horizon;
@@ -198,6 +206,7 @@ Flow:
 2. API stores each record as `events.event_type = memory_backfill` with deterministic event IDs.
 3. Worker extracts candidate claims from those events and enqueues `claim_proposals`.
    - If historical records miss explicit `entity_key` or `category`, worker infers them from text patterns/keywords (EN/RU) with deterministic fallback.
+   - Event-like records with low durable signal are dropped before claim-proposal enqueue (unless marked as trusted knowledge via metadata/record kind).
 4. Standard synthesis pipeline produces `wiki_draft_changes` with evidence links.
 5. Human operators review/approve in the same Draft Inbox flow.
 

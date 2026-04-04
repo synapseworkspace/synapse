@@ -63,6 +63,31 @@ Workstreams:
 - `done` Adoption migration mode:
   - trusted-source bootstrap approve with sampling + rollback defaults in UI flow.
 
+## Knowledge Compiler Hardening (April 2026)
+
+Status: `in_progress`
+
+Goal:
+- stop raw operational/event streams from becoming wiki pages;
+- keep the universal SDK flow simple (`attach -> ingest -> useful wiki drafts`) for existing-memory adoption.
+
+Checklist:
+1. `done` Utility Gate v1 in worker:
+   - durable knowledge-signal scoring;
+   - source-id deny filters;
+   - key/value payload-density event-shape detection.
+2. `done` Backfill pre-enqueue suppression:
+   - event-like low-signal records dropped before claim proposal queue;
+   - trusted knowledge hints (`record_kind`, `knowledge_signal`) bypass suppression.
+3. `done` API parity for new routing knobs:
+   - `GET/PUT /v1/gatekeeper/config` normalizes new `routing_policy` fields.
+4. `done` Regression tests for routing quality:
+   - unit tests for snapshot-noise demotion + policy-fact retention.
+5. `planned` Assertion class contracts:
+   - typed class labels (`policy`, `preference`, `incident`, `event`) to improve explainability.
+6. `planned` Retrieval-feedback loop:
+   - incorporate real runtime usefulness into draft priority and policy suggestions.
+
 ## User-Friendly Wiki UX (12-Point Track)
 
 Status: `in_progress`
@@ -536,6 +561,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Added Knowledge Compiler v1 hardening: worker now suppresses low-signal backfill event records before claim enqueue, Gatekeeper routing adds `source_id` deny checks plus durable knowledge-signal thresholds and payload key/value density detection, API routing-policy normalization includes new knobs, and new worker unit tests cover noisy snapshot demotion vs valid policy/preference retention (`services/worker/tests/test_wiki_engine_routing.py`).
 - 2026-04-04: Hardened universal wiki-ingestion routing against raw operational streams: routing policy now supports deny rules by `category`, `source_system`, `source_type`, and `entity_key`, plus backfill-specific policy gating (`backfill_requires_policy_signal`) and event-blob shape detection, preventing `order_snapshot`/invoice/status stream style memories from dominating wiki pages.
 - 2026-04-04: Added universal Gatekeeper routing-policy layer for wiki quality control: new DB migration (`049_gatekeeper_routing_policy.sql`), API support in `GET/PUT /v1/gatekeeper/config` (`routing_policy`), and worker-side enforcement that demotes raw event-stream style memory (orders/status/telemetry/log-like payloads) to `operational_memory` unless policy/incident override signals are present; also added minimum independent evidence/source guardrails before wiki routing.
 - 2026-04-04: Upgraded existing-memory connector UX from dense inline form to guided setup wizard: Wiki Tree now shows a compact status card with “Open setup wizard”, and the wizard runs a clear 3-step flow (profile -> connector config -> review/launch) before queuing first sync.

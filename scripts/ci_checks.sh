@@ -58,6 +58,9 @@ python3 -m py_compile scripts/export_enterprise_governance_pack.py
 python3 -m py_compile scripts/check_selfhost_stack_defaults.py
 python3 -m py_compile scripts/check_legacy_sync_wal_connector.py
 
+echo "[2.1/6] Worker routing unit tests"
+python3 -m unittest discover -s services/worker/tests -p 'test_*.py' >/dev/null
+
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-openclaw-plugin/tsconfig.json --noEmit

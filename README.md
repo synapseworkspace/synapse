@@ -182,6 +182,7 @@ Open `http://localhost:5173`.
 - OpenClaw 5-minute quickstart: [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
 - OpenClaw integration: [docs/openclaw-integration.md](docs/openclaw-integration.md)
 - Existing-memory adoption playbook: [docs/adoption-existing-memory.md](docs/adoption-existing-memory.md)
+- Knowledge compiler RFC: [docs/knowledge-compiler-rfc.md](docs/knowledge-compiler-rfc.md)
 - Framework integrations: [docs/framework-integrations.md](docs/framework-integrations.md)
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
 - MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
