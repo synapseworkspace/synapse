@@ -40,6 +40,7 @@ Owner: Core team
 13. Reliability + SLO guardrails (latency, quality, observability, release gating).
 14. Existing-memory adoption layer (coexistence modes, migration wizard, source-ownership policy).
 15. Process Playbook Intelligence (if/then runbooks, instruction capture, operator-outcome loops).
+16. Agent Directory & Operations Intelligence (AI orgchart, agent folders, daily worklogs, provenance).
 
 ## Recovery Plan: Wiki-First UX + Draft Quality (April 2026)
 
@@ -163,6 +164,40 @@ Checklist:
    - expose “why this step exists” in wiki UI and MCP retrieval explain.
 9. `planned` Process simulation safety check:
    - run “what changes if we update this process step” simulation before broad publish.
+
+## Agent Directory & Operations Intelligence
+
+Status: `planned`
+
+Goal:
+- сделать в Wiki прозрачную структуру “кто из AI-агентов что делает”;
+- добавить self-maintained профили агентов, ежедневные отчеты и связь с реальными артефактами знаний.
+
+Phase 1 (MVP):
+1. `planned` AI Orgchart index:
+   - page `Agents/Index` with team/role hierarchy and status badges.
+2. `planned` Agent self-profile on attach:
+   - SDK `attach()` can publish/update agent profile (`responsibilities`, `tools`, `data_sources`, `limits`).
+3. `planned` Standard agent folder scaffold:
+   - `Overview`, `Runbooks`, `Daily Reports`, `Created Pages`, `Incidents`, `Changelog`.
+4. `planned` Auto-generated “Created by agent” page index:
+   - list pages/statements authored by each agent with timestamps and links.
+
+Phase 2 (Scale):
+5. `planned` Daily worklog synthesis:
+   - per-agent daily report with completed actions, blockers, escalations, and impact.
+6. `planned` Capability matrix:
+   - “which agent handles what” with confidence and last-success evidence.
+7. `planned` Handoff map:
+   - explicit inter-agent handoff graph (`input contract`, `output contract`, `SLA`).
+
+Phase 3 (Governance):
+8. `planned` Agent scorecards:
+   - quality/reliability metrics (resolution rate, rollback rate, escalation rate, SLA adherence).
+9. `planned` Agent-level provenance and rollback:
+   - show evidence trail for agent-authored updates and support one-click rollback.
+10. `planned` Risk-tiered policy enforcement:
+    - per-agent publish guardrails (`auto_publish` vs `human_required`) by domain risk.
 
 ## Confluence-Like Wiki Track (Q2-Q3 2026)
 
@@ -595,6 +630,7 @@ Progress:
 
 ## Recent Updates
 
+- 2026-04-04: Added new roadmap track `Agent Directory & Operations Intelligence` with phased delivery (`MVP -> Scale -> Governance`): AI orgchart index, attach-time self-profile updates, standard agent folder scaffold, agent-authored page index, daily worklog synthesis, capability/handoff maps, agent scorecards, provenance+rollback, and risk-tiered publish guardrails.
 - 2026-04-04: Added new roadmap track `Process Playbook Intelligence (Support Ops Focus)` to move Synapse from fact-only wiki toward process-aware operational documentation; queued operator decision capture, template-first playbook pages, process-quality gatekeeper routing, risk-tiered auto-publish with rollback, intent-aware context injection, auto onboarding packs, ticket/outcome linkage, provenance for process steps, and pre-publish process simulation checks.
 - 2026-04-04: Completed sticky page toolbar in core wiki view (`History`, `Watch/Watching`, `Share`, `Drafts`, `Edit`, `More`) with real actions wired to existing page flows, added smooth jump-to-revisions anchor (`#wiki-context-revisions`), and reduced header action clutter to keep page view wiki-first.
 - 2026-04-04: Completed User-Friendly Wiki UX 12-point track (`done`): finalized slash-first rich editor parity (undo/redo), added stronger revision diff preview in core wiki context, cleaned core-mode language (`Workspace`, `Your name`, `Sync`), shipped friendly roles modal (`Viewer/Editor/Approver/Admin`) plus docs (`docs/wiki-ux-roles-metrics.md`), and added UX funnel telemetry badges (TTFV, first publish time, click-depth) persisted per project in browser storage.
