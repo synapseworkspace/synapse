@@ -43,6 +43,26 @@ Discover available profiles:
 
 - `GET /v1/legacy-import/profiles?source_type=postgres_sql`
 
+## Memory Tier Routing (Default Safety)
+
+Synapse now treats runtime streams as a separate memory tier by default:
+
+- raw event-like memory (`orders`, `status updates`, `telemetry`, `trace/log style`) is routed to `operational_memory`;
+- only reusable, policy-grade facts are promoted into draft/wiki flow;
+- single-source one-off observations are held back unless policy/incident signals are present.
+
+Tune via Gatekeeper config `routing_policy` (`GET/PUT /v1/gatekeeper/config`):
+
+- `blocked_category_keywords`
+- `blocked_source_system_keywords`
+- `event_stream_token_keywords`
+- `event_stream_min_numeric_token_ratio`
+- `event_stream_min_token_hits`
+- `require_multi_source_for_wiki`
+- `min_sources_for_wiki_candidate`
+- `min_evidence_for_wiki_candidate`
+- `allow_policy_or_incident_override`
+
 ## Coexistence Modes
 
 `Synapse.attach(..., adoption_mode=...)` (Python) / `adoptionMode` (TypeScript):

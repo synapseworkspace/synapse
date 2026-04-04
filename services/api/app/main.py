@@ -257,6 +257,7 @@ class GatekeeperConfigUpsertRequest(BaseModel):
     llm_timeout_ms: int = Field(default=3500, ge=200, le=20000)
     publish_mode_default: str = Field(default="auto_publish", pattern="^(human_required|conditional|auto_publish)$")
     publish_mode_by_category: dict[str, str] | None = None
+    routing_policy: dict[str, Any] | None = None
     auto_publish_min_score: float = Field(default=0.9, ge=0.0, le=1.0)
     auto_publish_min_sources: int = Field(default=3, ge=1, le=100)
     auto_publish_require_golden: bool = True
@@ -1571,12 +1572,68 @@ def _insert_task_event(
 
 _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS: bool | None = None
 _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS: bool | None = None
+_GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN: bool | None = None
 _SOURCE_OWNERSHIP_TABLE_EXISTS: bool | None = None
 _ACCESS_POLICY_DECISIONS_TABLE_EXISTS: bool | None = None
 _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS: bool | None = None
 _SCIM_API_TOKENS_TABLE_EXISTS: bool | None = None
 _SCIM_DIRECTORY_USERS_TABLE_EXISTS: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
+
+_DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS = [
+    "order",
+    "заказ",
+    "event",
+    "telemetry",
+    "trace",
+    "log",
+    "queue",
+    "task",
+    "status",
+    "state",
+    "created",
+    "updated",
+    "assigned",
+    "shipped",
+    "delivered",
+    "cancelled",
+    "processing",
+    "completed",
+    "shipment",
+    "dispatch",
+    "delivery",
+]
+
+_DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
+    "blocked_category_keywords": [
+        "order",
+        "заказ",
+        "telemetry",
+        "trace",
+        "runtime_event",
+        "event_stream",
+        "status_update",
+        "message_log",
+        "task_event",
+    ],
+    "blocked_source_system_keywords": [
+        "order_stream",
+        "event_stream",
+        "telemetry",
+        "trace",
+        "runtime",
+        "queue",
+        "webhook_events",
+        "task_runtime",
+    ],
+    "event_stream_token_keywords": list(_DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS),
+    "event_stream_min_numeric_token_ratio": 0.45,
+    "event_stream_min_token_hits": 2,
+    "require_multi_source_for_wiki": True,
+    "min_sources_for_wiki_candidate": 2,
+    "min_evidence_for_wiki_candidate": 2,
+    "allow_policy_or_incident_override": True,
+}
 
 
 def _gatekeeper_config_has_llm_columns(conn) -> bool:
@@ -1629,6 +1686,25 @@ def _gatekeeper_config_has_publish_columns(conn) -> bool:
         present = {str(row[0]) for row in cur.fetchall()}
     _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS = required.issubset(present)
     return _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS
+
+
+def _gatekeeper_config_has_routing_policy_column(conn) -> bool:
+    global _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN
+    if _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN is not None:
+        return _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'gatekeeper_project_configs'
+              AND column_name = 'routing_policy'
+            LIMIT 1
+            """
+        )
+        _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN = cur.fetchone() is not None
+    return _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN
 
 
 def _source_ownership_table_exists(conn) -> bool:
@@ -2350,6 +2426,70 @@ def _normalize_publish_mode_map(value: Any) -> dict[str, str]:
     return out
 
 
+def _normalize_policy_keyword_list(value: Any, *, fallback: list[str], limit: int = 64) -> list[str]:
+    if not isinstance(value, list):
+        return list(fallback)
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = unicodedata.normalize("NFKC", str(item or "")).strip().lower()
+        text = re.sub(r"\s+", " ", text)
+        if not text:
+            continue
+        if len(text) > 96:
+            text = text[:96]
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    if not out:
+        return list(fallback)
+    return out
+
+
+def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
+    base = dict(_DEFAULT_GATEKEEPER_ROUTING_POLICY)
+    if not isinstance(value, dict):
+        return base
+    normalized = dict(base)
+    normalized["blocked_category_keywords"] = _normalize_policy_keyword_list(
+        value.get("blocked_category_keywords"),
+        fallback=list(base["blocked_category_keywords"]),
+    )
+    normalized["blocked_source_system_keywords"] = _normalize_policy_keyword_list(
+        value.get("blocked_source_system_keywords"),
+        fallback=list(base["blocked_source_system_keywords"]),
+    )
+    normalized["event_stream_token_keywords"] = _normalize_policy_keyword_list(
+        value.get("event_stream_token_keywords"),
+        fallback=list(base["event_stream_token_keywords"]),
+    )
+    normalized["event_stream_min_numeric_token_ratio"] = max(
+        0.0,
+        min(1.0, _coerce_float(value.get("event_stream_min_numeric_token_ratio"), 0.45)),
+    )
+    normalized["event_stream_min_token_hits"] = max(
+        1,
+        min(20, _coerce_int(value.get("event_stream_min_token_hits"), 2)),
+    )
+    normalized["require_multi_source_for_wiki"] = _coerce_bool(value.get("require_multi_source_for_wiki"), True)
+    normalized["min_sources_for_wiki_candidate"] = max(
+        1,
+        min(20, _coerce_int(value.get("min_sources_for_wiki_candidate"), 2)),
+    )
+    normalized["min_evidence_for_wiki_candidate"] = max(
+        1,
+        min(20, _coerce_int(value.get("min_evidence_for_wiki_candidate"), 2)),
+    )
+    normalized["allow_policy_or_incident_override"] = _coerce_bool(
+        value.get("allow_policy_or_incident_override"),
+        True,
+    )
+    return normalized
+
+
 def _resolve_publish_mode_for_category(
     *,
     default_mode: str,
@@ -2496,6 +2636,7 @@ def _normalize_gatekeeper_config_for_apply(project_id: str, config: dict[str, An
         llm_timeout_ms=max(200, min(20000, _coerce_int(config.get("llm_timeout_ms"), 3500))),
         publish_mode_default=_normalize_publish_mode(config.get("publish_mode_default"), default="auto_publish"),
         publish_mode_by_category=_normalize_publish_mode_map(config.get("publish_mode_by_category")),
+        routing_policy=_normalize_gatekeeper_routing_policy(config.get("routing_policy")),
         auto_publish_min_score=max(0.0, min(1.0, _coerce_float(config.get("auto_publish_min_score"), 0.9))),
         auto_publish_min_sources=max(1, min(100, _coerce_int(config.get("auto_publish_min_sources"), 3))),
         auto_publish_require_golden=_coerce_bool(config.get("auto_publish_require_golden"), True),
@@ -19306,8 +19447,40 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
     with get_conn() as conn:
         has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
         has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
+        has_routing_policy_column = _gatekeeper_config_has_routing_policy_column(conn)
         with conn.cursor() as cur:
-            if has_llm_columns and has_publish_columns:
+            if has_llm_columns and has_publish_columns and has_routing_policy_column:
+                cur.execute(
+                    """
+                    SELECT
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      routing_policy,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    FROM gatekeeper_project_configs
+                    WHERE project_id = %s
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                )
+            elif has_llm_columns and has_publish_columns:
                 cur.execute(
                     """
                     SELECT
@@ -19397,6 +19570,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "llm_timeout_ms": 3500,
                 "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
+                "routing_policy": _normalize_gatekeeper_routing_policy(None),
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
                 "auto_publish_require_golden": True,
@@ -19405,6 +19579,34 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "created_at": None,
                 "updated_at": None,
                 "source": "default",
+            }
+        }
+    if has_llm_columns and has_publish_columns and has_routing_policy_column:
+        return {
+            "config": {
+                "project_id": project_id,
+                "min_sources_for_golden": int(row[0]),
+                "conflict_free_days": int(row[1]),
+                "min_score_for_golden": float(row[2]),
+                "operational_short_text_len": int(row[3]),
+                "operational_short_token_len": int(row[4]),
+                "llm_assist_enabled": bool(row[5]),
+                "llm_provider": str(row[6]),
+                "llm_model": str(row[7]),
+                "llm_score_weight": float(row[8]),
+                "llm_min_confidence": float(row[9]),
+                "llm_timeout_ms": int(row[10]),
+                "publish_mode_default": _normalize_publish_mode(row[11]),
+                "publish_mode_by_category": _normalize_publish_mode_map(row[12]),
+                "auto_publish_min_score": float(row[13]),
+                "auto_publish_min_sources": int(row[14]),
+                "auto_publish_require_golden": bool(row[15]),
+                "auto_publish_allow_conflicts": bool(row[16]),
+                "routing_policy": _normalize_gatekeeper_routing_policy(row[17]),
+                "updated_by": row[18],
+                "created_at": row[19].isoformat(),
+                "updated_at": row[20].isoformat(),
+                "source": "project_override",
             }
         }
     if has_llm_columns and has_publish_columns:
@@ -19428,6 +19630,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "auto_publish_min_sources": int(row[14]),
                 "auto_publish_require_golden": bool(row[15]),
                 "auto_publish_allow_conflicts": bool(row[16]),
+                "routing_policy": _normalize_gatekeeper_routing_policy(None),
                 "updated_by": row[17],
                 "created_at": row[18].isoformat(),
                 "updated_at": row[19].isoformat(),
@@ -19451,6 +19654,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
                 "llm_timeout_ms": int(row[10]),
                 "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
+                "routing_policy": _normalize_gatekeeper_routing_policy(None),
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
                 "auto_publish_require_golden": True,
@@ -19477,6 +19681,7 @@ def get_gatekeeper_config(project_id: str) -> dict[str, Any]:
             "llm_timeout_ms": 3500,
             "publish_mode_default": "auto_publish",
             "publish_mode_by_category": {},
+            "routing_policy": _normalize_gatekeeper_routing_policy(None),
             "auto_publish_min_score": 0.9,
             "auto_publish_min_sources": 3,
             "auto_publish_require_golden": True,
@@ -19637,10 +19842,105 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
     with get_conn() as conn:
         has_llm_columns = _gatekeeper_config_has_llm_columns(conn)
         has_publish_columns = _gatekeeper_config_has_publish_columns(conn)
+        has_routing_policy_column = _gatekeeper_config_has_routing_policy_column(conn)
         publish_mode_default = _normalize_publish_mode(payload.publish_mode_default, default="auto_publish")
         publish_mode_by_category = _normalize_publish_mode_map(payload.publish_mode_by_category)
+        routing_policy = _normalize_gatekeeper_routing_policy(payload.routing_policy)
         with conn.cursor() as cur:
-            if has_llm_columns and has_publish_columns:
+            if has_llm_columns and has_publish_columns and has_routing_policy_column:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_project_configs (
+                      project_id,
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      routing_policy,
+                      updated_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id) DO UPDATE
+                    SET min_sources_for_golden = EXCLUDED.min_sources_for_golden,
+                        conflict_free_days = EXCLUDED.conflict_free_days,
+                        min_score_for_golden = EXCLUDED.min_score_for_golden,
+                        operational_short_text_len = EXCLUDED.operational_short_text_len,
+                        operational_short_token_len = EXCLUDED.operational_short_token_len,
+                        llm_assist_enabled = EXCLUDED.llm_assist_enabled,
+                        llm_provider = EXCLUDED.llm_provider,
+                        llm_model = EXCLUDED.llm_model,
+                        llm_score_weight = EXCLUDED.llm_score_weight,
+                        llm_min_confidence = EXCLUDED.llm_min_confidence,
+                        llm_timeout_ms = EXCLUDED.llm_timeout_ms,
+                        publish_mode_default = EXCLUDED.publish_mode_default,
+                        publish_mode_by_category = EXCLUDED.publish_mode_by_category,
+                        auto_publish_min_score = EXCLUDED.auto_publish_min_score,
+                        auto_publish_min_sources = EXCLUDED.auto_publish_min_sources,
+                        auto_publish_require_golden = EXCLUDED.auto_publish_require_golden,
+                        auto_publish_allow_conflicts = EXCLUDED.auto_publish_allow_conflicts,
+                        routing_policy = EXCLUDED.routing_policy,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW()
+                    RETURNING
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      routing_policy,
+                      updated_by,
+                      created_at,
+                      updated_at
+                    """,
+                    (
+                        payload.project_id,
+                        payload.min_sources_for_golden,
+                        payload.conflict_free_days,
+                        payload.min_score_for_golden,
+                        payload.operational_short_text_len,
+                        payload.operational_short_token_len,
+                        payload.llm_assist_enabled,
+                        payload.llm_provider,
+                        payload.llm_model,
+                        payload.llm_score_weight,
+                        payload.llm_min_confidence,
+                        payload.llm_timeout_ms,
+                        publish_mode_default,
+                        Jsonb(publish_mode_by_category),
+                        payload.auto_publish_min_score,
+                        payload.auto_publish_min_sources,
+                        payload.auto_publish_require_golden,
+                        payload.auto_publish_allow_conflicts,
+                        Jsonb(routing_policy),
+                        payload.updated_by,
+                    ),
+                )
+            elif has_llm_columns and has_publish_columns:
                 cur.execute(
                     """
                     INSERT INTO gatekeeper_project_configs (
@@ -19836,6 +20136,35 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
                     ),
                 )
             row = cur.fetchone()
+    if has_llm_columns and has_publish_columns and has_routing_policy_column:
+        return {
+            "status": "ok",
+            "config": {
+                "project_id": payload.project_id,
+                "min_sources_for_golden": int(row[0]),
+                "conflict_free_days": int(row[1]),
+                "min_score_for_golden": float(row[2]),
+                "operational_short_text_len": int(row[3]),
+                "operational_short_token_len": int(row[4]),
+                "llm_assist_enabled": bool(row[5]),
+                "llm_provider": str(row[6]),
+                "llm_model": str(row[7]),
+                "llm_score_weight": float(row[8]),
+                "llm_min_confidence": float(row[9]),
+                "llm_timeout_ms": int(row[10]),
+                "publish_mode_default": _normalize_publish_mode(row[11]),
+                "publish_mode_by_category": _normalize_publish_mode_map(row[12]),
+                "auto_publish_min_score": float(row[13]),
+                "auto_publish_min_sources": int(row[14]),
+                "auto_publish_require_golden": bool(row[15]),
+                "auto_publish_allow_conflicts": bool(row[16]),
+                "routing_policy": _normalize_gatekeeper_routing_policy(row[17]),
+                "updated_by": row[18],
+                "created_at": row[19].isoformat(),
+                "updated_at": row[20].isoformat(),
+                "source": "project_override",
+            },
+        }
     if has_llm_columns and has_publish_columns:
         return {
             "status": "ok",
@@ -19858,6 +20187,7 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
                 "auto_publish_min_sources": int(row[14]),
                 "auto_publish_require_golden": bool(row[15]),
                 "auto_publish_allow_conflicts": bool(row[16]),
+                "routing_policy": routing_policy,
                 "updated_by": row[17],
                 "created_at": row[18].isoformat(),
                 "updated_at": row[19].isoformat(),
@@ -19882,6 +20212,7 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
                 "llm_timeout_ms": int(row[10]),
                 "publish_mode_default": "auto_publish",
                 "publish_mode_by_category": {},
+                "routing_policy": routing_policy,
                 "auto_publish_min_score": 0.9,
                 "auto_publish_min_sources": 3,
                 "auto_publish_require_golden": True,
@@ -19909,6 +20240,7 @@ def upsert_gatekeeper_config(payload: GatekeeperConfigUpsertRequest) -> dict[str
             "llm_timeout_ms": 3500,
             "publish_mode_default": "auto_publish",
             "publish_mode_by_category": {},
+            "routing_policy": routing_policy,
             "auto_publish_min_score": 0.9,
             "auto_publish_min_sources": 3,
             "auto_publish_require_golden": True,

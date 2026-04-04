@@ -96,6 +96,59 @@ STOP_WORDS = {
     "as",
 }
 
+DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
+    "blocked_category_keywords": [
+        "order",
+        "заказ",
+        "telemetry",
+        "trace",
+        "runtime_event",
+        "event_stream",
+        "status_update",
+        "message_log",
+        "task_event",
+    ],
+    "blocked_source_system_keywords": [
+        "order_stream",
+        "event_stream",
+        "telemetry",
+        "trace",
+        "runtime",
+        "queue",
+        "webhook_events",
+        "task_runtime",
+    ],
+    "event_stream_token_keywords": [
+        "order",
+        "заказ",
+        "event",
+        "telemetry",
+        "trace",
+        "log",
+        "queue",
+        "task",
+        "status",
+        "state",
+        "created",
+        "updated",
+        "assigned",
+        "shipped",
+        "delivered",
+        "cancelled",
+        "processing",
+        "completed",
+        "shipment",
+        "dispatch",
+        "delivery",
+    ],
+    "event_stream_min_numeric_token_ratio": 0.45,
+    "event_stream_min_token_hits": 2,
+    "require_multi_source_for_wiki": True,
+    "min_sources_for_wiki_candidate": 2,
+    "min_evidence_for_wiki_candidate": 2,
+    "allow_policy_or_incident_override": True,
+}
+
 BACKFILL_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "access": (
         "access",
@@ -303,6 +356,7 @@ class GatekeeperConfig:
     llm_timeout_ms: int = 3500
     publish_mode_default: str = "auto_publish"
     publish_mode_by_category: dict[str, str] | None = None
+    routing_policy: dict[str, Any] | None = None
     auto_publish_min_score: float = 0.9
     auto_publish_min_sources: int = 3
     auto_publish_require_golden: bool = True
@@ -499,6 +553,7 @@ class WikiSynthesisEngine:
         self._claims_has_fingerprint_column_cache: bool | None = None
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
         self._gatekeeper_config_has_publish_columns_cache: bool | None = None
+        self._gatekeeper_config_has_routing_policy_column_cache: bool | None = None
         self._routing_feedback_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._page_context_cache: dict[str, tuple[float, str]] = {}
         self.routing_feedback_cache_ttl_sec = max(
@@ -1184,8 +1239,21 @@ class WikiSynthesisEngine:
     ) -> GatekeeperDecision:
         text = self._normalize_text(claim.claim_text)
         tokens = self._tokens(claim.claim_text)
+        token_set = set(tokens)
         evidence_count = len(claim.evidence)
         is_short = len(text) < config.operational_short_text_len or len(tokens) < config.operational_short_token_len
+        routing_policy = self._normalize_gatekeeper_routing_policy(config.routing_policy)
+        event_stream_token_keywords = set(
+            str(item).strip().lower() for item in routing_policy.get("event_stream_token_keywords", []) if str(item).strip()
+        )
+        blocked_category_keywords = list(routing_policy.get("blocked_category_keywords", []))
+        blocked_source_system_keywords = list(routing_policy.get("blocked_source_system_keywords", []))
+        event_stream_min_numeric_token_ratio = float(routing_policy.get("event_stream_min_numeric_token_ratio", 0.45))
+        event_stream_min_token_hits = int(routing_policy.get("event_stream_min_token_hits", 2))
+        require_multi_source_for_wiki = bool(routing_policy.get("require_multi_source_for_wiki", True))
+        min_sources_for_wiki_candidate = int(routing_policy.get("min_sources_for_wiki_candidate", 2))
+        min_evidence_for_wiki_candidate = int(routing_policy.get("min_evidence_for_wiki_candidate", 2))
+        allow_policy_or_incident_override = bool(routing_policy.get("allow_policy_or_incident_override", True))
         operational_verbs = {
             "sent",
             "send",
@@ -1210,9 +1278,9 @@ class WikiSynthesisEngine:
             "готово",
             "позвонил",
         }
-        has_operational_pattern = bool(set(tokens) & operational_verbs)
+        has_operational_pattern = bool(token_set & operational_verbs)
         policy_words = {"must", "required", "only", "forbidden", "until", "closed", "open", "policy", "quarantine"}
-        has_policy_signal = bool(set(tokens) & policy_words)
+        has_policy_signal = bool(token_set & policy_words)
         high_priority_words = {
             "blocked",
             "outage",
@@ -1233,10 +1301,29 @@ class WikiSynthesisEngine:
             "закрыт",
             "карантин",
         }
-        has_high_priority_signal = bool(set(tokens) & high_priority_words)
+        has_high_priority_signal = bool(token_set & high_priority_words)
         category_hint = self._category_to_page_type(claim.category)
+        normalized_category = self._normalize_text(claim.category)
         incoming_source_systems = self._extract_source_systems(claim.evidence)
         source_diversity = max(historical_source_count, len(incoming_source_ids))
+        source_system_blob = " ".join(incoming_source_systems)
+        blocked_by_category = any(keyword in normalized_category for keyword in blocked_category_keywords if keyword)
+        blocked_by_source_system = any(keyword in source_system_blob for keyword in blocked_source_system_keywords if keyword)
+        numeric_token_count = sum(1 for token in tokens if any(ch.isdigit() for ch in token))
+        numeric_token_ratio = float(numeric_token_count) / float(max(len(tokens), 1))
+        event_stream_token_hits = sum(1 for token in token_set if token in event_stream_token_keywords)
+        has_order_like_id_pattern = bool(
+            re.search(
+                r"\b(order|заказ|task|event|ticket|shipment|delivery)[\s_:#-]{0,12}[a-z0-9_-]{3,}\b",
+                text,
+            )
+        )
+        has_event_stream_shape = (
+            event_stream_token_hits >= event_stream_min_token_hits
+            and (numeric_token_ratio >= event_stream_min_numeric_token_ratio or has_order_like_id_pattern)
+        )
+        has_override_signal = allow_policy_or_incident_override and (has_policy_signal or has_high_priority_signal)
+        routing_hard_block = (blocked_by_category or blocked_by_source_system or has_event_stream_shape) and not has_override_signal
         runtime_source_systems = {
             "runtime_memory",
             "sdk_monitor",
@@ -1279,7 +1366,10 @@ class WikiSynthesisEngine:
         score = max(0.0, min(1.0, round(score, 4)))
         score_before_llm = score
 
-        if looks_like_runtime_noise:
+        if routing_hard_block:
+            tier = "operational_memory"
+            rationale = "routing policy rejected event-stream style memory for wiki ingestion"
+        elif looks_like_runtime_noise:
             tier = "operational_memory"
             rationale = "single-source runtime operational event without durable policy signal"
         elif is_single_source_one_off:
@@ -1307,23 +1397,46 @@ class WikiSynthesisEngine:
             tier = "golden_candidate"
             rationale = "auto-promoted by source diversity threshold and conflict-free horizon"
 
-        llm_assessment = llm_assessment_override or self._run_gatekeeper_llm_assessment(
-            claim=claim,
-            config=config,
-            features={
-                "evidence_count": evidence_count,
-                "repeated_count": repeated_count,
-                "historical_source_count": historical_source_count,
-                "incoming_source_count": len(incoming_source_ids),
-                "source_diversity": source_diversity,
-                "is_short": is_short,
-                "has_operational_pattern": has_operational_pattern,
-                "has_policy_signal": has_policy_signal,
-                "has_recent_open_conflict": has_recent_open_conflict,
-                "heuristic_score": score,
-                "heuristic_tier": tier,
-            },
+        insufficient_support = (
+            require_multi_source_for_wiki
+            and source_diversity < min_sources_for_wiki_candidate
+            and evidence_count < min_evidence_for_wiki_candidate
+            and not has_override_signal
         )
+        if insufficient_support and tier != "operational_memory":
+            tier = "operational_memory"
+            rationale = "routing policy requires independent source/evidence support before wiki routing"
+
+        llm_assessment: GatekeeperLLMAssessment
+        if llm_assessment_override is not None:
+            llm_assessment = llm_assessment_override
+        elif routing_hard_block:
+            llm_assessment = GatekeeperLLMAssessment(
+                status="skipped",
+                provider=config.llm_provider,
+                model=config.llm_model,
+                error="routing_policy_hard_block",
+            )
+        else:
+            llm_assessment = self._run_gatekeeper_llm_assessment(
+                claim=claim,
+                config=config,
+                features={
+                    "evidence_count": evidence_count,
+                    "repeated_count": repeated_count,
+                    "historical_source_count": historical_source_count,
+                    "incoming_source_count": len(incoming_source_ids),
+                    "source_diversity": source_diversity,
+                    "is_short": is_short,
+                    "has_operational_pattern": has_operational_pattern,
+                    "has_policy_signal": has_policy_signal,
+                    "has_recent_open_conflict": has_recent_open_conflict,
+                    "heuristic_score": score,
+                    "heuristic_tier": tier,
+                    "routing_hard_block": routing_hard_block,
+                    "insufficient_support": insufficient_support,
+                },
+            )
         llm_applied = False
         llm_weight = config.llm_score_weight
         if (
@@ -1363,10 +1476,21 @@ class WikiSynthesisEngine:
             "incoming_source_systems": incoming_source_systems,
             "all_runtime_sources": all_runtime_sources,
             "looks_like_runtime_noise": looks_like_runtime_noise,
+            "routing_policy": routing_policy,
+            "routing_hard_block": routing_hard_block,
+            "blocked_by_category": blocked_by_category,
+            "blocked_by_source_system": blocked_by_source_system,
+            "has_event_stream_shape": has_event_stream_shape,
+            "has_order_like_id_pattern": has_order_like_id_pattern,
+            "event_stream_token_hits": event_stream_token_hits,
+            "numeric_token_count": numeric_token_count,
+            "numeric_token_ratio": round(numeric_token_ratio, 4),
+            "insufficient_support": insufficient_support,
             "is_short": is_short,
             "has_operational_pattern": has_operational_pattern,
             "has_policy_signal": has_policy_signal,
             "has_high_priority_signal": has_high_priority_signal,
+            "has_override_signal": has_override_signal,
             "has_recent_open_conflict": has_recent_open_conflict,
             "gatekeeper_min_sources_for_golden": config.min_sources_for_golden,
             "gatekeeper_conflict_free_days": config.conflict_free_days,
@@ -1480,6 +1604,23 @@ class WikiSynthesisEngine:
         self._gatekeeper_config_has_publish_columns_cache = required.issubset(present)
         return self._gatekeeper_config_has_publish_columns_cache
 
+    def _gatekeeper_config_has_routing_policy_column(self, conn) -> bool:
+        if self._gatekeeper_config_has_routing_policy_column_cache is not None:
+            return self._gatekeeper_config_has_routing_policy_column_cache
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'gatekeeper_project_configs'
+                  AND column_name = 'routing_policy'
+                LIMIT 1
+                """
+            )
+            self._gatekeeper_config_has_routing_policy_column_cache = cur.fetchone() is not None
+        return self._gatekeeper_config_has_routing_policy_column_cache
+
     def _normalize_publish_mode(self, value: Any) -> str:
         raw = str(value or "").strip().lower()
         if raw not in {"human_required", "conditional", "auto_publish"}:
@@ -1498,11 +1639,103 @@ class WikiSynthesisEngine:
             out[category[:64]] = mode
         return out
 
+    def _normalize_policy_keyword_list(self, value: Any, *, fallback: list[str], limit: int = 64) -> list[str]:
+        if not isinstance(value, list):
+            return list(fallback)
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = unicodedata.normalize("NFKC", str(item or "")).strip().lower()
+            text = re.sub(r"\s+", " ", text)
+            if not text:
+                continue
+            if len(text) > 96:
+                text = text[:96]
+            if text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+            if len(out) >= limit:
+                break
+        if not out:
+            return list(fallback)
+        return out
+
+    def _normalize_gatekeeper_routing_policy(self, value: Any) -> dict[str, Any]:
+        base = dict(DEFAULT_GATEKEEPER_ROUTING_POLICY)
+        if not isinstance(value, dict):
+            return base
+        normalized = dict(base)
+        normalized["blocked_category_keywords"] = self._normalize_policy_keyword_list(
+            value.get("blocked_category_keywords"),
+            fallback=list(base["blocked_category_keywords"]),
+        )
+        normalized["blocked_source_system_keywords"] = self._normalize_policy_keyword_list(
+            value.get("blocked_source_system_keywords"),
+            fallback=list(base["blocked_source_system_keywords"]),
+        )
+        normalized["event_stream_token_keywords"] = self._normalize_policy_keyword_list(
+            value.get("event_stream_token_keywords"),
+            fallback=list(base["event_stream_token_keywords"]),
+        )
+        try:
+            min_numeric_ratio = float(value.get("event_stream_min_numeric_token_ratio", 0.45))
+        except Exception:
+            min_numeric_ratio = 0.45
+        normalized["event_stream_min_numeric_token_ratio"] = max(0.0, min(1.0, min_numeric_ratio))
+        try:
+            token_hits = int(value.get("event_stream_min_token_hits", 2))
+        except Exception:
+            token_hits = 2
+        normalized["event_stream_min_token_hits"] = max(1, min(20, token_hits))
+        normalized["require_multi_source_for_wiki"] = bool(value.get("require_multi_source_for_wiki", True))
+        try:
+            min_sources = int(value.get("min_sources_for_wiki_candidate", 2))
+        except Exception:
+            min_sources = 2
+        try:
+            min_evidence = int(value.get("min_evidence_for_wiki_candidate", 2))
+        except Exception:
+            min_evidence = 2
+        normalized["min_sources_for_wiki_candidate"] = max(1, min(20, min_sources))
+        normalized["min_evidence_for_wiki_candidate"] = max(1, min(20, min_evidence))
+        normalized["allow_policy_or_incident_override"] = bool(value.get("allow_policy_or_incident_override", True))
+        return normalized
+
     def _resolve_gatekeeper_config(self, conn, project_id: str) -> GatekeeperConfig:
         has_llm_columns = self._gatekeeper_config_has_llm_columns(conn)
         has_publish_columns = self._gatekeeper_config_has_publish_columns(conn)
+        has_routing_policy_column = self._gatekeeper_config_has_routing_policy_column(conn)
         with conn.cursor() as cur:
-            if has_llm_columns and has_publish_columns:
+            if has_llm_columns and has_publish_columns and has_routing_policy_column:
+                cur.execute(
+                    """
+                    SELECT
+                      min_sources_for_golden,
+                      conflict_free_days,
+                      min_score_for_golden,
+                      operational_short_text_len,
+                      operational_short_token_len,
+                      llm_assist_enabled,
+                      llm_provider,
+                      llm_model,
+                      llm_score_weight,
+                      llm_min_confidence,
+                      llm_timeout_ms,
+                      publish_mode_default,
+                      publish_mode_by_category,
+                      auto_publish_min_score,
+                      auto_publish_min_sources,
+                      auto_publish_require_golden,
+                      auto_publish_allow_conflicts,
+                      routing_policy
+                    FROM gatekeeper_project_configs
+                    WHERE project_id = %s
+                    LIMIT 1
+                    """,
+                    (project_id,),
+                )
+            elif has_llm_columns and has_publish_columns:
                 cur.execute(
                     """
                     SELECT
@@ -1582,13 +1815,14 @@ class WikiSynthesisEngine:
                 llm_timeout_ms=self.gatekeeper_llm_timeout_ms,
                 publish_mode_default="auto_publish",
                 publish_mode_by_category={},
+                routing_policy=self._normalize_gatekeeper_routing_policy(None),
                 auto_publish_min_score=0.9,
                 auto_publish_min_sources=3,
                 auto_publish_require_golden=True,
                 auto_publish_allow_conflicts=False,
             )
         else:
-            if has_llm_columns and has_publish_columns:
+            if has_llm_columns and has_publish_columns and has_routing_policy_column:
                 config = GatekeeperConfig(
                     min_sources_for_golden=max(2, int(row[0])),
                     conflict_free_days=max(1, int(row[1])),
@@ -1607,6 +1841,28 @@ class WikiSynthesisEngine:
                     auto_publish_min_sources=max(1, int(row[14])),
                     auto_publish_require_golden=bool(row[15]),
                     auto_publish_allow_conflicts=bool(row[16]),
+                    routing_policy=self._normalize_gatekeeper_routing_policy(row[17]),
+                )
+            elif has_llm_columns and has_publish_columns:
+                config = GatekeeperConfig(
+                    min_sources_for_golden=max(2, int(row[0])),
+                    conflict_free_days=max(1, int(row[1])),
+                    min_score_for_golden=max(0.0, min(1.0, float(row[2]))),
+                    operational_short_text_len=max(8, int(row[3])),
+                    operational_short_token_len=max(1, int(row[4])),
+                    llm_assist_enabled=bool(row[5]),
+                    llm_provider=str(row[6] or "openai").strip().lower(),
+                    llm_model=str(row[7] or "gpt-4.1-mini"),
+                    llm_score_weight=max(0.0, min(1.0, float(row[8]))),
+                    llm_min_confidence=max(0.0, min(1.0, float(row[9]))),
+                    llm_timeout_ms=max(200, int(row[10])),
+                    publish_mode_default=self._normalize_publish_mode(row[11]),
+                    publish_mode_by_category=self._normalize_publish_mode_map(row[12]),
+                    auto_publish_min_score=max(0.0, min(1.0, float(row[13]))),
+                    auto_publish_min_sources=max(1, int(row[14])),
+                    auto_publish_require_golden=bool(row[15]),
+                    auto_publish_allow_conflicts=bool(row[16]),
+                    routing_policy=self._normalize_gatekeeper_routing_policy(None),
                 )
             elif has_llm_columns:
                 config = GatekeeperConfig(
@@ -1623,6 +1879,7 @@ class WikiSynthesisEngine:
                     llm_timeout_ms=max(200, int(row[10])),
                     publish_mode_default="auto_publish",
                     publish_mode_by_category={},
+                    routing_policy=self._normalize_gatekeeper_routing_policy(None),
                     auto_publish_min_score=0.9,
                     auto_publish_min_sources=3,
                     auto_publish_require_golden=True,
@@ -1643,6 +1900,7 @@ class WikiSynthesisEngine:
                     llm_timeout_ms=self.gatekeeper_llm_timeout_ms,
                     publish_mode_default="auto_publish",
                     publish_mode_by_category={},
+                    routing_policy=self._normalize_gatekeeper_routing_policy(None),
                     auto_publish_min_score=0.9,
                     auto_publish_min_sources=3,
                     auto_publish_require_golden=True,

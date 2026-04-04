@@ -111,6 +111,7 @@ Environment:
 - `GET /v1/gatekeeper/decisions?project_id=...&tier=golden_candidate`
 - `GET /v1/gatekeeper/config?project_id=...`
 - `PUT /v1/gatekeeper/config`
+- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, source/category deny keywords, and minimum independent evidence rules before wiki routing).
 - `GET /v1/gatekeeper/config/snapshots?project_id=...&source=calibration_cycle&limit=20`
 - `POST /v1/gatekeeper/config/snapshots`
 - `GET /v1/gatekeeper/calibration/trends?project_id=...&limit=24`
@@ -302,6 +303,7 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Gatekeeper config snapshot endpoints depend on migration `017_gatekeeper_config_snapshots.sql`.
 - Gatekeeper calibration schedule endpoints depend on migration `018_gatekeeper_calibration_schedules.sql`.
 - Gatekeeper alert target/attempt endpoints depend on migration `019_gatekeeper_alert_delivery.sql`.
+- Gatekeeper routing-policy fields depend on migration `049_gatekeeper_routing_policy.sql`.
 - Rollback approval workflow endpoints depend on migration `020_gatekeeper_rollback_requests.sql`.
 - Calibration run-history endpoints depend on migration `021_gatekeeper_calibration_run_history.sql`.
 - Agent Simulator read endpoints depend on migration `013_agent_simulator.sql`.
