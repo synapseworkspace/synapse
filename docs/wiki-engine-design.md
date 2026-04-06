@@ -86,7 +86,7 @@ Before Step A, Gatekeeper triage decides whether claim is even eligible for wiki
 1. `operational_memory`: execution noise, not promoted to draft wiki pages.
 2. `insight_candidate`: useful but requires standard moderation.
 3. `golden_candidate`: high-value pattern/policy fact, prioritized in moderation queues.
-4. `assertion_class`: every claim is typed as `policy | preference | incident | event | fact` for routing clarity.
+4. `assertion_class`: every claim is typed as `policy | process | preference | incident | event | fact` for routing clarity.
 
 Knowledge Utility Gate (default):
 1. deny-list checks by `category`, `source_system`, `source_type`, `entity_key`, and `source_id`;
@@ -99,7 +99,7 @@ This is what prevents `order_snapshot`/invoice/status streams from flooding wiki
 Assertion-class aware publication:
 1. project policy can define `publish_mode_by_assertion_class` in `routing_policy`;
 2. class mode is resolved before category fallback;
-3. typical default: `incident/event -> human_required`, `policy/fact -> conditional`, `preference -> auto_publish`.
+3. typical default: `incident/event -> human_required`, `policy/process/fact -> conditional`, `preference -> auto_publish`.
 
 Auto-promotion from `insight_candidate` to `golden_candidate` can happen when:
 1. source diversity reaches configured threshold;
@@ -218,7 +218,7 @@ Flow:
 
 Control and safety:
 1. Chunk-level idempotency keys prevent duplicate ingestion retries.
-2. `memory_backfill_batches` tracks lifecycle (`collecting`, `ready`, `processing`, `completed`, `failed`).
+2. `memory_backfill_batches` tracks lifecycle (`collecting`, `ready`, `processing`, `completed`, `failed`) and routing-quality counters (`dropped_event_like`, `kept_durable`, `trusted_bypass`).
 3. `event_pipeline_state` tracks extraction checkpoint per event for resume/retry semantics.
 4. Backfill records can include explicit `valid_from`/`valid_to` fields; worker uses them with highest precedence.
 

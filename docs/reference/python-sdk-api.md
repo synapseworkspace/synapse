@@ -20,6 +20,7 @@ Canonical entrypoint: `from synapse_sdk import ...`
 | `Task` | `synapse_sdk.types` |
 | `TaskComment` | `synapse_sdk.types` |
 | `TaskLink` | `synapse_sdk.types` |
+| `AgentProfile` | `synapse_sdk.types` |
 | `SynapseTransportError` | `synapse_sdk.errors` |
 | `MCPContextHelper` | `synapse_sdk.mcp` |
 | `MCPToolCaller` | `synapse_sdk.mcp` |

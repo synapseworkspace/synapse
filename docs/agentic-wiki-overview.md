@@ -5,6 +5,7 @@ Last updated: 2026-04-02
 ## One-Line Definition
 
 Synapse is an open-source Agentic Wiki layer that turns runtime agent experience into a human-curated, MCP-readable source of truth.
+It also serves as an L2 Cognitive State Layer between short-lived runtime memory and long-lived operating knowledge.
 
 ## Problem
 

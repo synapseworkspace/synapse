@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ try:
     from shared.retrieval import (
         RetrievalContextPolicyConfig,
         RetrievalGraphConfig,
+        apply_intent_reranking,
         build_retrieval_explain_fields,
         build_retrieval_search_plan,
         clean_optional_filter as _clean_optional,
@@ -24,6 +26,7 @@ try:
         normalize_context_policy_mode,
         normalize_float_value as _normalize_float,
         normalize_limit_value as _normalize_limit,
+        normalize_retrieval_intent,
         query_tokens as _query_tokens,
         resolve_context_policy_config,
         serialize_context_policy_config,
@@ -35,6 +38,7 @@ except ModuleNotFoundError:
     from shared.retrieval import (
         RetrievalContextPolicyConfig,
         RetrievalGraphConfig,
+        apply_intent_reranking,
         build_retrieval_explain_fields,
         build_retrieval_search_plan,
         clean_optional_filter as _clean_optional,
@@ -43,6 +47,7 @@ except ModuleNotFoundError:
         normalize_context_policy_mode,
         normalize_float_value as _normalize_float,
         normalize_limit_value as _normalize_limit,
+        normalize_retrieval_intent,
         query_tokens as _query_tokens,
         resolve_context_policy_config,
         serialize_context_policy_config,
@@ -57,6 +62,96 @@ def _iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.astimezone(UTC).isoformat()
+
+
+def _normalize_space_key(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "general"
+
+
+def _wiki_publish_checklist_preset_from_metadata(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return "none"
+    preset = str(metadata.get("publish_checklist_preset") or "").strip().lower()
+    if preset in {"ops_standard", "policy_strict"}:
+        return preset
+    return "none"
+
+
+def _empty_space_policy_adoption_summary() -> dict[str, Any]:
+    return {
+        "total_updates": 0,
+        "unique_actors": 0,
+        "top_actor": None,
+        "top_actor_updates": 0,
+        "avg_update_interval_days": None,
+        "checklist_usage": {
+            "none": 0,
+            "ops_standard": 0,
+            "policy_strict": 0,
+        },
+        "checklist_transitions": 0,
+        "first_updated_at": None,
+        "last_updated_at": None,
+    }
+
+
+def _summarize_space_policy_audit_rows(rows: list[Any]) -> dict[str, Any]:
+    if not rows:
+        return _empty_space_policy_adoption_summary()
+
+    actor_counts: dict[str, int] = {}
+    checklist_usage = {"none": 0, "ops_standard": 0, "policy_strict": 0}
+    checklist_transitions = 0
+    timestamps: list[datetime] = []
+
+    for row in rows:
+        changed_by = str(row[1] or "").strip() if len(row) > 1 else ""
+        actor = changed_by or "unknown"
+        actor_counts[actor] = actor_counts.get(actor, 0) + 1
+
+        before_policy = row[2] if len(row) > 2 and isinstance(row[2], dict) else {}
+        after_policy = row[3] if len(row) > 3 and isinstance(row[3], dict) else {}
+        before_preset = _wiki_publish_checklist_preset_from_metadata(before_policy.get("metadata"))
+        after_preset = _wiki_publish_checklist_preset_from_metadata(after_policy.get("metadata"))
+        checklist_usage[after_preset] = checklist_usage.get(after_preset, 0) + 1
+        if before_preset != after_preset:
+            checklist_transitions += 1
+
+        created_at = row[6] if len(row) > 6 else None
+        if isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            timestamps.append(created_at.astimezone(UTC))
+
+    top_actor = None
+    top_actor_updates = 0
+    if actor_counts:
+        top_actor, top_actor_updates = max(actor_counts.items(), key=lambda item: item[1])
+
+    avg_interval_days: float | None = None
+    timestamps_sorted = sorted(timestamps)
+    if len(timestamps_sorted) >= 2:
+        deltas = [
+            (timestamps_sorted[idx] - timestamps_sorted[idx - 1]).total_seconds()
+            for idx in range(1, len(timestamps_sorted))
+        ]
+        if deltas:
+            avg_interval_days = round(sum(deltas) / len(deltas) / 86400.0, 4)
+
+    return {
+        "total_updates": len(rows),
+        "unique_actors": len(actor_counts),
+        "top_actor": top_actor,
+        "top_actor_updates": top_actor_updates,
+        "avg_update_interval_days": avg_interval_days,
+        "checklist_usage": checklist_usage,
+        "checklist_transitions": checklist_transitions,
+        "first_updated_at": _iso(timestamps_sorted[0]) if timestamps_sorted else None,
+        "last_updated_at": _iso(timestamps_sorted[-1]) if timestamps_sorted else None,
+    }
 
 
 @dataclass(slots=True)
@@ -125,6 +220,23 @@ class KnowledgeStore(Protocol):
         events_limit: int,
         links_limit: int,
     ) -> dict[str, Any] | None: ...
+
+    def get_onboarding_pack(
+        self,
+        *,
+        project_id: str,
+        role: str | None,
+        max_items_per_section: int,
+        freshness_days: int,
+    ) -> dict[str, Any]: ...
+
+    def get_space_policy_adoption_summary(
+        self,
+        *,
+        project_id: str,
+        space_key: str,
+        limit: int,
+    ) -> dict[str, Any]: ...
 
 
 class PostgresKnowledgeStore:
@@ -240,9 +352,13 @@ class PostgresKnowledgeStore:
                                 "page_type": row[10],
                             },
                             "category": row[11] or None,
-                            "score": round(float(row[12]), 4),
-                            "graph_hops": int(row[13]) if row[13] is not None else None,
-                            "graph_boost": round(float(row[14]), 4),
+                            "claim_id": row[12] or None,
+                            "claim_metadata": row[13] if isinstance(row[13], dict) else {},
+                            "claim_evidence": row[14] if isinstance(row[14], list) else [],
+                            "claim_observed_at": _iso(row[15]) if row[15] is not None else None,
+                            "score": round(float(row[16]), 4),
+                            "graph_hops": int(row[17]) if row[17] is not None else None,
+                            "graph_boost": round(float(row[18]), 4),
                         }
                     )
         return results
@@ -725,6 +841,200 @@ class PostgresKnowledgeStore:
             "links": links,
         }
 
+    def get_onboarding_pack(
+        self,
+        *,
+        project_id: str,
+        role: str | None,
+        max_items_per_section: int,
+        freshness_days: int,
+    ) -> dict[str, Any]:
+        normalized_role = str(role or "").strip().lower()
+        section_limit = max(1, min(20, int(max_items_per_section)))
+        freshness_days = max(1, min(90, int(freshness_days)))
+        rows: list[dict[str, Any]] = []
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      st.id::text,
+                      st.statement_text,
+                      st.section_key,
+                      st.created_at,
+                      p.title,
+                      p.slug,
+                      p.page_type,
+                      p.entity_key,
+                      p.updated_at,
+                      COALESCE(claim_meta.category, '')
+                    FROM wiki_statements st
+                    JOIN wiki_pages p ON p.id = st.page_id
+                    LEFT JOIN LATERAL (
+                      SELECT c.category
+                      FROM claims c
+                      WHERE c.project_id = st.project_id
+                        AND c.claim_fingerprint = st.claim_fingerprint
+                      ORDER BY c.updated_at DESC
+                      LIMIT 1
+                    ) claim_meta ON TRUE
+                    WHERE st.project_id = %s
+                      AND p.status = 'published'
+                      AND st.status = 'active'
+                      AND (st.valid_from IS NULL OR st.valid_from <= NOW())
+                      AND (st.valid_to IS NULL OR st.valid_to >= NOW())
+                      AND p.page_type IN ('process', 'policy', 'incident', 'general')
+                    ORDER BY p.updated_at DESC, st.created_at DESC
+                    LIMIT 800
+                    """,
+                    (project_id,),
+                )
+                for row in cur.fetchall():
+                    statement_text = str(row[1] or "")
+                    title_text = str(row[4] or "")
+                    entity_text = str(row[7] or "")
+                    role_match = 0
+                    if normalized_role:
+                        haystack = f"{statement_text} {title_text} {entity_text}".lower()
+                        if normalized_role in haystack:
+                            role_match = 1
+                    rows.append(
+                        {
+                            "statement_id": row[0],
+                            "statement_text": statement_text,
+                            "section_key": str(row[2] or ""),
+                            "created_at": _iso(row[3]),
+                            "page": {
+                                "title": title_text,
+                                "slug": str(row[5] or ""),
+                                "page_type": str(row[6] or ""),
+                                "entity_key": entity_text,
+                                "updated_at": _iso(row[8]),
+                            },
+                            "category": str(row[9] or "") or None,
+                            "role_match": role_match,
+                        }
+                    )
+
+        def _priority(item: dict[str, Any]) -> tuple[int, str]:
+            created_at = str(item.get("created_at") or "")
+            return (int(item.get("role_match") or 0), created_at)
+
+        escalation_tokens = ("escalat", "tier", "handoff", "pager", "on-call", "эскалац")
+        forbidden_tokens = ("must not", "forbidden", "prohibited", "do not", "never", "запрещ", "нельзя")
+        fresh_cutoff = _now_utc() - timedelta(days=freshness_days)
+
+        critical_playbooks: list[dict[str, Any]] = []
+        escalation_rules: list[dict[str, Any]] = []
+        forbidden_actions: list[dict[str, Any]] = []
+        fresh_changes: list[dict[str, Any]] = []
+        seen_statement_ids: set[str] = set()
+
+        for item in sorted(rows, key=_priority, reverse=True):
+            statement_id = str(item.get("statement_id") or "")
+            if not statement_id or statement_id in seen_statement_ids:
+                continue
+            seen_statement_ids.add(statement_id)
+
+            page = item.get("page") if isinstance(item.get("page"), dict) else {}
+            page_type = str(page.get("page_type") or "").lower()
+            section_key = str(item.get("section_key") or "").lower()
+            text = str(item.get("statement_text") or "").lower()
+            created_at_text = str(item.get("created_at") or "").strip()
+            is_fresh = False
+            if created_at_text:
+                try:
+                    created_at = datetime.fromisoformat(created_at_text.replace("Z", "+00:00"))
+                    is_fresh = created_at >= fresh_cutoff
+                except Exception:
+                    is_fresh = False
+
+            if (
+                len(critical_playbooks) < section_limit
+                and page_type == "process"
+                and section_key in {"triggers", "steps", "exceptions", "verification"}
+            ):
+                critical_playbooks.append(item)
+            if (
+                len(escalation_rules) < section_limit
+                and (
+                    section_key == "escalation"
+                    or page_type == "incident"
+                    or any(token in text for token in escalation_tokens)
+                )
+            ):
+                escalation_rules.append(item)
+            if (
+                len(forbidden_actions) < section_limit
+                and page_type in {"policy", "process"}
+                and any(token in text for token in forbidden_tokens)
+            ):
+                forbidden_actions.append(item)
+            if len(fresh_changes) < section_limit and is_fresh:
+                fresh_changes.append(item)
+
+            if (
+                len(critical_playbooks) >= section_limit
+                and len(escalation_rules) >= section_limit
+                and len(forbidden_actions) >= section_limit
+                and len(fresh_changes) >= section_limit
+            ):
+                break
+
+        return {
+            "project_id": project_id,
+            "role": normalized_role or None,
+            "freshness_days": freshness_days,
+            "sections": {
+                "critical_playbooks": critical_playbooks[:section_limit],
+                "escalation_rules": escalation_rules[:section_limit],
+                "forbidden_actions": forbidden_actions[:section_limit],
+                "fresh_changes": fresh_changes[:section_limit],
+            },
+        }
+
+    def get_space_policy_adoption_summary(
+        self,
+        *,
+        project_id: str,
+        space_key: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        normalized_space_key = _normalize_space_key(space_key)
+        normalized_limit = max(1, min(2000, int(limit)))
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('public.wiki_space_policy_audit')::text")
+                table_row = cur.fetchone()
+                table_name = str(table_row[0] or "").strip() if table_row is not None else ""
+                if not table_name.endswith("wiki_space_policy_audit"):
+                    return {
+                        "project_id": project_id,
+                        "space_key": normalized_space_key,
+                        "summary": _empty_space_policy_adoption_summary(),
+                        "available": False,
+                        "meta": {"sampled_entries": 0, "limit": normalized_limit},
+                    }
+                cur.execute(
+                    """
+                    SELECT id::text, changed_by, before_policy, after_policy, changed_fields, reason, created_at
+                    FROM wiki_space_policy_audit
+                    WHERE project_id = %s
+                      AND space_key = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, normalized_space_key, normalized_limit),
+                )
+                rows = cur.fetchall()
+        return {
+            "project_id": project_id,
+            "space_key": normalized_space_key,
+            "summary": _summarize_space_policy_audit_rows(rows),
+            "available": True,
+            "meta": {"sampled_entries": len(rows), "limit": normalized_limit},
+        }
+
     def _conn(self):
         try:
             import psycopg
@@ -743,11 +1053,15 @@ class SynapseKnowledgeRuntime:
         cache_ttl_seconds: int = 5,
         max_cache_entries: int = 5000,
         context_policy: RetrievalContextPolicyConfig | None = None,
+        default_retrieval_intent: str = "auto",
+        max_context_snippets: int = 3,
     ) -> None:
         self._store = store
         self._cache_ttl = max(1, int(cache_ttl_seconds))
         self._max_cache_entries = max(100, int(max_cache_entries))
         self._context_policy = context_policy or load_context_policy_config_from_env()
+        self._default_retrieval_intent = normalize_retrieval_intent(default_retrieval_intent, default="auto")
+        self._max_context_snippets = _normalize_limit(max_context_snippets, default=3, minimum=1, maximum=10)
         self._project_revisions: dict[str, str] = {}
         self._cache: dict[str, CacheEntry] = {}
         self._lock = threading.RLock()
@@ -762,6 +1076,8 @@ class SynapseKnowledgeRuntime:
         category: str | None = None,
         page_type: str | None = None,
         related_entity_key: str | None = None,
+        retrieval_intent: str | None = None,
+        max_context_snippets: int | None = None,
         context_policy_mode: str | None = None,
         min_retrieval_confidence: float | None = None,
         min_total_score: float | None = None,
@@ -772,6 +1088,13 @@ class SynapseKnowledgeRuntime:
         normalized_query = query.strip()
         resolved_query_tokens = _query_tokens(normalized_query)
         normalized_related = _clean_optional(related_entity_key)
+        resolved_intent = normalize_retrieval_intent(retrieval_intent, default=self._default_retrieval_intent)
+        resolved_max_context_snippets = _normalize_limit(
+            max_context_snippets if max_context_snippets is not None else self._max_context_snippets,
+            default=self._max_context_snippets,
+            minimum=1,
+            maximum=10,
+        )
         effective_context_policy = resolve_context_policy_config(
             base=self._context_policy,
             mode=context_policy_mode,
@@ -794,7 +1117,10 @@ class SynapseKnowledgeRuntime:
                     "query_tokens": [],
                     "related_entity_key": normalized_related,
                     "context_policy": context_policy_payload,
+                    "intent": resolved_intent,
+                    "max_context_snippets": resolved_max_context_snippets,
                 },
+                "context_injection": {"snippets": [], "intent": resolved_intent},
             }
 
         return self._cached_tool_call(
@@ -807,6 +1133,8 @@ class SynapseKnowledgeRuntime:
                 "category": _clean_optional(category),
                 "page_type": _clean_optional(page_type),
                 "related_entity_key": _clean_optional(related_entity_key),
+                "retrieval_intent": resolved_intent,
+                "max_context_snippets": resolved_max_context_snippets,
                 "context_policy_mode": normalize_context_policy_mode(effective_context_policy.mode),
                 "min_retrieval_confidence": _normalize_float(
                     effective_context_policy.min_confidence,
@@ -843,6 +1171,8 @@ class SynapseKnowledgeRuntime:
                 related_entity_key=related_entity_key,
                 normalized_related=normalized_related,
                 resolved_query_tokens=resolved_query_tokens,
+                retrieval_intent=resolved_intent,
+                max_context_snippets=resolved_max_context_snippets,
                 effective_context_policy=effective_context_policy,
                 context_policy_payload=context_policy_payload,
             ),
@@ -903,6 +1233,8 @@ class SynapseKnowledgeRuntime:
         related_entity_key: str | None,
         normalized_related: str | None,
         resolved_query_tokens: list[str],
+        retrieval_intent: str,
+        max_context_snippets: int,
         effective_context_policy: RetrievalContextPolicyConfig,
         context_policy_payload: dict[str, Any],
     ) -> dict[str, Any]:
@@ -933,17 +1265,31 @@ class SynapseKnowledgeRuntime:
                 if isinstance(row.get("context_policy"), dict) and bool(row["context_policy"].get("eligible"))
             ]
             filtered_out = max(0, total_before - len(results))
+        reranked_results, intent_payload = apply_intent_reranking(
+            query=normalized_query,
+            results=results,
+            explicit_intent=retrieval_intent,
+            max_context_snippets=max_context_snippets,
+            query_tokens_override=resolved_query_tokens,
+        )
+        explainability = {
+            "version": "v1",
+            "query_tokens": resolved_query_tokens,
+            "related_entity_key": normalized_related,
+            "context_policy": context_policy_payload,
+        }
+        if isinstance(intent_payload.get("explainability"), dict):
+            explainability.update(intent_payload["explainability"])
         return {
             "project_id": project_id,
             "query": normalized_query,
-            "results": results,
+            "results": reranked_results,
             "policy_filtered_out": filtered_out,
-            "explainability": {
-                "version": "v1",
-                "query_tokens": resolved_query_tokens,
-                "related_entity_key": normalized_related,
-                "context_policy": context_policy_payload,
+            "context_injection": {
+                "intent": explainability.get("intent", retrieval_intent),
+                "snippets": intent_payload.get("context_snippets") or [],
             },
+            "explainability": explainability,
         }
 
     def get_recent_changes(
@@ -1071,6 +1417,56 @@ class SynapseKnowledgeRuntime:
             },
         )
 
+    def get_onboarding_pack(
+        self,
+        *,
+        project_id: str,
+        role: str | None = None,
+        max_items_per_section: int = 5,
+        freshness_days: int = 14,
+    ) -> dict[str, Any]:
+        normalized_role = str(role or "").strip().lower() or None
+        normalized_items = _normalize_limit(max_items_per_section, default=5, minimum=1, maximum=20)
+        normalized_freshness = _normalize_limit(freshness_days, default=14, minimum=1, maximum=90)
+        return self._cached_tool_call(
+            project_id=project_id,
+            tool_name="get_onboarding_pack",
+            args={
+                "role": normalized_role,
+                "max_items_per_section": normalized_items,
+                "freshness_days": normalized_freshness,
+            },
+            compute=lambda: self._store.get_onboarding_pack(
+                project_id=project_id,
+                role=normalized_role,
+                max_items_per_section=normalized_items,
+                freshness_days=normalized_freshness,
+            ),
+        )
+
+    def get_space_policy_adoption_summary(
+        self,
+        *,
+        project_id: str,
+        space_key: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        normalized_space_key = _normalize_space_key(space_key)
+        normalized_limit = _normalize_limit(limit, default=200, minimum=1, maximum=2000)
+        return self._cached_tool_call(
+            project_id=project_id,
+            tool_name="get_space_policy_adoption_summary",
+            args={
+                "space_key": normalized_space_key,
+                "limit": normalized_limit,
+            },
+            compute=lambda: self._store.get_space_policy_adoption_summary(
+                project_id=project_id,
+                space_key=normalized_space_key,
+                limit=normalized_limit,
+            ),
+        )
+
     def _cached_tool_call(
         self,
         *,
@@ -1149,6 +1545,13 @@ def build_runtime_from_env() -> SynapseKnowledgeRuntime:
         minimum=100,
         maximum=100_000,
     )
+    default_intent = normalize_retrieval_intent(os.getenv("SYNAPSE_MCP_RETRIEVAL_INTENT_DEFAULT", "auto"), default="auto")
+    max_context_snippets = _normalize_limit(
+        os.getenv("SYNAPSE_MCP_CONTEXT_MAX_SNIPPETS", "3"),
+        default=3,
+        minimum=1,
+        maximum=10,
+    )
     graph_config = load_graph_config_from_env()
     store = PostgresKnowledgeStore(
         database_url=database_url,
@@ -1158,4 +1561,10 @@ def build_runtime_from_env() -> SynapseKnowledgeRuntime:
         graph_boost_hop3=graph_config.boost_hop3,
         graph_boost_other=graph_config.boost_other,
     )
-    return SynapseKnowledgeRuntime(store, cache_ttl_seconds=cache_ttl, max_cache_entries=cache_size)
+    return SynapseKnowledgeRuntime(
+        store,
+        cache_ttl_seconds=cache_ttl,
+        max_cache_entries=cache_size,
+        default_retrieval_intent=default_intent,
+        max_context_snippets=max_context_snippets,
+    )

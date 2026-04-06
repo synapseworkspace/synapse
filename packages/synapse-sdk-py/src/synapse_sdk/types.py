@@ -128,3 +128,20 @@ class TaskLink:
     link_ref: str
     note: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AgentProfile:
+    agent_id: str
+    display_name: str | None = None
+    team: str | None = None
+    role: str | None = None
+    status: Literal["active", "idle", "paused", "offline", "retired"] = "active"
+    responsibilities: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    data_sources: list[str] = field(default_factory=list)
+    limits: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    ensure_scaffold: bool = True
+    include_daily_report_stub: bool = True
+    last_seen_at: str | None = None

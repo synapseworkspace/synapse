@@ -58,10 +58,10 @@ Phase 1 (now):
 - deterministic Utility Gate hardening;
 - source-id + payload-shape suppression;
 - unit tests for noisy backfill and valid policy facts.
-- assertion class tagging in Gatekeeper output (`policy|preference|incident|event|fact`).
+- assertion class tagging in Gatekeeper output (`policy|process|preference|incident|event|fact`).
 
 Phase 2:
-- assertion classes (`policy`, `preference`, `incident`, `event`);
+- assertion classes (`policy`, `process`, `preference`, `incident`, `event`);
 - per-class publish matrix and confidence calibration.
 
 Phase 3:

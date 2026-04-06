@@ -23,7 +23,8 @@ def create_mcp_server(runtime: SynapseKnowledgeRuntime | None = None) -> Any:
         description=(
             "Semantic search over approved Synapse knowledge statements with project-level filters; "
             "returns explainability fields (`retrieval_reason`, `score_breakdown`, `retrieval_confidence`) per result. "
-            "Supports context-injection policy controls (`context_policy_mode`, confidence/score thresholds)."
+            "Supports intent-aware context injection (`retrieval_intent`, `max_context_snippets`) and "
+            "context-policy controls (`context_policy_mode`, confidence/score thresholds)."
         ),
     )
     def search_knowledge(
@@ -34,6 +35,8 @@ def create_mcp_server(runtime: SynapseKnowledgeRuntime | None = None) -> Any:
         category: str | None = None,
         page_type: str | None = None,
         related_entity_key: str | None = None,
+        retrieval_intent: str | None = None,
+        max_context_snippets: int | None = None,
         context_policy_mode: str | None = None,
         min_retrieval_confidence: float | None = None,
         min_total_score: float | None = None,
@@ -48,6 +51,8 @@ def create_mcp_server(runtime: SynapseKnowledgeRuntime | None = None) -> Any:
             category=category,
             page_type=page_type,
             related_entity_key=related_entity_key,
+            retrieval_intent=retrieval_intent,
+            max_context_snippets=max_context_snippets,
             context_policy_mode=context_policy_mode,
             min_retrieval_confidence=min_retrieval_confidence,
             min_total_score=min_total_score,
@@ -138,6 +143,44 @@ def create_mcp_server(runtime: SynapseKnowledgeRuntime | None = None) -> Any:
             task_id=task_id,
             events_limit=events_limit,
             links_limit=links_limit,
+        )
+
+    @server.tool(
+        name="get_onboarding_pack",
+        description=(
+            "Generate a day-0 onboarding pack from published wiki knowledge: "
+            "critical playbooks, escalation rules, forbidden actions, and fresh changes."
+        ),
+    )
+    def get_onboarding_pack(
+        project_id: str,
+        role: str | None = None,
+        max_items_per_section: int = 5,
+        freshness_days: int = 14,
+    ) -> dict[str, Any]:
+        return runtime_impl.get_onboarding_pack(
+            project_id=project_id,
+            role=role,
+            max_items_per_section=max_items_per_section,
+            freshness_days=freshness_days,
+        )
+
+    @server.tool(
+        name="get_space_policy_adoption_summary",
+        description=(
+            "Summarize governance adoption for one wiki space (who updates policy, cadence, checklist usage, "
+            "and transition count) for retrieval-friendly operational context."
+        ),
+    )
+    def get_space_policy_adoption_summary(
+        project_id: str,
+        space_key: str,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        return runtime_impl.get_space_policy_adoption_summary(
+            project_id=project_id,
+            space_key=space_key,
+            limit=limit,
         )
 
     return server

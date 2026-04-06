@@ -146,6 +146,77 @@ def parse_args() -> argparse.Namespace:
         default=str(os.getenv("SYNAPSE_AUTOPUBLISH_REVIEWED_BY", "synapse_autopublisher") or "synapse_autopublisher"),
         help="Actor identity used for auto-publish approvals.",
     )
+    parser.add_argument(
+        "--enable-agent-worklogs",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_ENABLE_AGENT_WORKLOGS", True),
+        help="Enable periodic per-agent daily worklog generation.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-interval-sec",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_INTERVAL_SEC", 86400),
+        help="Interval for agent worklog scheduler job.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-discover-limit",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_DISCOVER_LIMIT", 500),
+        help="Maximum projects discovered from agent directory per scheduler run.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-days-back",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_DAYS_BACK", 1),
+        help="How many days to regenerate on each scheduler run.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-max-agents",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_MAX_AGENTS", 500),
+        help="Maximum agents processed per project on each scheduler run.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-max-logs-per-agent-page",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_MAX_LOGS_PER_PAGE", 14),
+        help="Maximum daily report entries retained per agent page.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-generated-by",
+        default=str(os.getenv("SYNAPSE_AGENT_WORKLOG_GENERATED_BY", "agent_worklog_scheduler") or "agent_worklog_scheduler"),
+        help="Actor label used for generated worklog updates.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-include-retired",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_AGENT_WORKLOGS_INCLUDE_RETIRED", False),
+        help="Include retired agents in periodic worklog generation.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-respect-schedule",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_AGENT_WORKLOGS_RESPECT_SCHEDULE", True),
+        help="Respect project local daily worklog schedule in batch mode.",
+    )
+    parser.add_argument(
+        "--enable-agent-worklogs-realtime",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_ENABLE_AGENT_WORKLOGS_REALTIME", True),
+        help="Enable realtime worklog refresh on session/task close signals.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-realtime-interval-sec",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_INTERVAL_SEC", 300),
+        help="Interval for realtime worklog trigger job.",
+    )
+    parser.add_argument(
+        "--agent-worklogs-realtime-lookback-minutes",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_LOOKBACK_MINUTES", 15),
+        help="Lookback window for session/task close trigger scan.",
+    )
     return parser.parse_args()
 
 
@@ -206,6 +277,71 @@ def build_jobs(args: argparse.Namespace) -> list[JobSpec]:
                 enabled=True,
             )
         )
+    if args.enable_agent_worklogs:
+        agent_worklogs_cmd = [
+            python_bin,
+            str(SCRIPT_DIR / "run_agent_worklog_scheduler.py"),
+            "--all-projects",
+            "--discover-limit",
+            str(max(1, int(args.agent_worklogs_discover_limit))),
+            "--trigger-mode",
+            "daily_batch",
+            "--days-back",
+            str(max(1, min(30, int(args.agent_worklogs_days_back)))),
+            "--max-agents",
+            str(max(1, min(2000, int(args.agent_worklogs_max_agents)))),
+            "--max-logs-per-agent-page",
+            str(max(1, min(60, int(args.agent_worklogs_max_logs_per_agent_page)))),
+            "--generated-by",
+            str(args.agent_worklogs_generated_by).strip() or "agent_worklog_scheduler",
+            "--fail-on-errors",
+        ]
+        if bool(args.agent_worklogs_respect_schedule):
+            agent_worklogs_cmd.append("--respect-project-schedule")
+        else:
+            agent_worklogs_cmd.append("--no-respect-project-schedule")
+        if bool(args.agent_worklogs_include_retired):
+            agent_worklogs_cmd.append("--include-retired")
+        jobs.append(
+            JobSpec(
+                name="agent_worklog_scheduler",
+                argv=agent_worklogs_cmd,
+                interval_sec=max(1, int(args.agent_worklogs_interval_sec)),
+                enabled=True,
+            )
+        )
+        if bool(args.enable_agent_worklogs_realtime):
+            realtime_worklogs_cmd = [
+                python_bin,
+                str(SCRIPT_DIR / "run_agent_worklog_scheduler.py"),
+                "--all-projects",
+                "--discover-limit",
+                str(max(1, int(args.agent_worklogs_discover_limit))),
+                "--trigger-mode",
+                "realtime",
+                "--trigger-lookback-minutes",
+                str(max(1, min(240, int(args.agent_worklogs_realtime_lookback_minutes)))),
+                "--days-back",
+                "1",
+                "--max-agents",
+                str(max(1, min(2000, int(args.agent_worklogs_max_agents)))),
+                "--max-logs-per-agent-page",
+                str(max(1, min(60, int(args.agent_worklogs_max_logs_per_agent_page)))),
+                "--generated-by",
+                str(args.agent_worklogs_generated_by).strip() or "agent_worklog_scheduler",
+                "--no-respect-project-schedule",
+                "--fail-on-errors",
+            ]
+            if bool(args.agent_worklogs_include_retired):
+                realtime_worklogs_cmd.append("--include-retired")
+            jobs.append(
+                JobSpec(
+                    name="agent_worklog_realtime",
+                    argv=realtime_worklogs_cmd,
+                    interval_sec=max(1, int(args.agent_worklogs_realtime_interval_sec)),
+                    enabled=True,
+                )
+            )
     return jobs
 
 

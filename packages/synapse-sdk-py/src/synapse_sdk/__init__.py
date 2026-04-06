@@ -41,6 +41,7 @@ from synapse_sdk.integrations import (
     monitor_openclaw_runtime,
 )
 from synapse_sdk.types import (
+    AgentProfile,
     AdoptionMode,
     Claim,
     BootstrapMemoryOptions,
@@ -71,6 +72,7 @@ __all__ = [
     "Task",
     "TaskComment",
     "TaskLink",
+    "AgentProfile",
     "SynapseTransportError",
     "MCPContextHelper",
     "MCPToolCaller",

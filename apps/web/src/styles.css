@@ -39,55 +39,72 @@ body {
 
 .confluence-shell {
   width: min(1840px, 98vw);
-  margin: 12px auto 16px;
+  margin: 10px auto 20px;
   min-height: calc(100vh - 24px);
   display: grid;
-  grid-template-rows: 62px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
 }
 
 .confluence-topbar {
-  border: 1px solid #d9e0ea;
-  border-radius: 10px;
+  border: 1px solid rgba(143, 162, 184, 0.32);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  padding: 10px 16px;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+  position: sticky;
+  top: 8px;
+  z-index: 30;
+}
+
+.confluence-topbar-actions .mantine-Button-root {
+  font-weight: 600;
+  border-color: #dce6f4;
+}
+
+.confluence-topbar-search .mantine-Input-input {
   background: #fff;
-  padding: 10px 14px;
-  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
+  border-color: #dce6f4;
 }
 
 .confluence-layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 280px;
-  gap: 10px;
+  grid-template-columns: 320px minmax(0, 1fr) 292px;
+  gap: 12px;
 }
 
 .confluence-left-rail,
 .confluence-main,
 .confluence-right-rail {
   min-height: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fff;
+  border-color: #dfe7f2;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.03);
 }
 
 .confluence-left-rail {
-  padding: 10px;
-}
-
-.confluence-main {
   padding: 12px;
 }
 
+.confluence-main {
+  padding: 16px 18px;
+}
+
 .confluence-right-rail {
-  padding: 10px;
+  padding: 12px;
+  border-left: 1px solid #edf1f7;
 }
 
 .confluence-tree {
-  padding-right: 6px;
+  padding-right: 4px;
 }
 
 .confluence-tree-row {
-  min-height: 28px;
-  border-radius: 6px;
+  min-height: 30px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -111,6 +128,28 @@ body {
   border: 1px solid #e4e9f1;
   box-shadow: none;
   background: #fff;
+}
+
+.confluence-page-toolbar {
+  padding: 2px 0 10px;
+  border-bottom: 1px solid #edf1f7;
+}
+
+.confluence-page-actions .mantine-Button-root {
+  min-width: 88px;
+  font-weight: 600;
+}
+
+.confluence-right-rail .mantine-Paper-root {
+  border-radius: 10px;
+}
+
+.confluence-right-rail .mantine-Button-root {
+  line-height: 1.25;
+}
+
+.confluence-right-rail .mantine-Button-inner {
+  justify-content: flex-start;
 }
 
 .wiki-page-sticky-toolbar {
@@ -144,6 +183,10 @@ body {
 
   .confluence-topbar {
     padding: 10px;
+  }
+
+  .confluence-topbar-search {
+    min-width: 180px;
   }
 
   .confluence-layout {
@@ -379,6 +422,11 @@ body {
 .wiki-page-header-card {
   background: linear-gradient(180deg, rgba(241, 249, 255, 0.8), rgba(255, 255, 255, 0.96));
   border-color: rgba(14, 116, 144, 0.22);
+}
+
+.wiki-lifecycle-card {
+  background: linear-gradient(180deg, rgba(255, 248, 237, 0.74), rgba(255, 255, 255, 0.96));
+  border-color: rgba(217, 119, 6, 0.22);
 }
 
 .wiki-page-edit-card {

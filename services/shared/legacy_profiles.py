@@ -43,6 +43,92 @@ _PROFILE_ALIASES = {
     "memory-item-table": "memory_items",
 }
 
+_SYNC_RUNNER_CONTRACTS: dict[str, dict[str, Any]] = {
+    "polling": {
+        "contract_key": "postgres_sql.polling",
+        "source_type": "postgres_sql",
+        "sync_mode": "polling",
+        "sync_mode_aliases": ["query"],
+        "label": "Incremental SQL Polling",
+        "description": (
+            "Runs parameterized SQL query on schedule, tracks cursor in source config, "
+            "and uploads only incremental rows."
+        ),
+        "required_config": ["sql_dsn or sql_dsn_env"],
+        "optional_config": [
+            "sql_profile",
+            "sql_profile_table",
+            "sql_query",
+            "sql_query_file",
+            "sql_query_params",
+            "sql_cursor_state_key",
+            "sql_cursor_param",
+            "sql_cursor_column",
+            "sql_source_id_prefix",
+            "chunk_size",
+            "max_records",
+        ],
+        "state_keys": [
+            "sql_last_cursor",
+            "sql_last_synced_at",
+            "sql_profile_resolved_table",
+            "sql_profile_resolved_at",
+        ],
+        "runner": {
+            "scheduler_script": "python services/worker/scripts/run_legacy_sync_scheduler.py --all-projects",
+            "recommended_interval_minutes": 5,
+            "supports_cron": True,
+            "supports_continuous": False,
+            "run_modes": ["manual", "scheduled"],
+        },
+        "cursor_semantics": {
+            "default_state_key": "sql_last_cursor",
+            "cursor_param": "cursor",
+            "order": "ascending",
+        },
+    },
+    "wal_cdc": {
+        "contract_key": "postgres_sql.wal_cdc",
+        "source_type": "postgres_sql",
+        "sync_mode": "wal_cdc",
+        "sync_mode_aliases": ["wal", "cdc"],
+        "label": "Postgres WAL CDC",
+        "description": (
+            "Reads changes from logical replication slot, converts rows into backfill records, "
+            "and tracks LSN cursor for near-real-time sync."
+        ),
+        "required_config": ["sql_dsn or sql_dsn_env", "wal_slot"],
+        "optional_config": [
+            "wal_publication",
+            "wal_tables",
+            "wal_start_lsn",
+            "wal_cursor_state_key",
+            "wal_timeout_seconds",
+            "wal_max_changes",
+            "sql_source_id_prefix",
+            "chunk_size",
+            "max_records",
+        ],
+        "state_keys": [
+            "sql_last_lsn",
+            "wal_last_lsn",
+            "sql_last_synced_at",
+        ],
+        "runner": {
+            "scheduler_script": "python services/worker/scripts/run_legacy_sync_scheduler.py --all-projects",
+            "recommended_interval_minutes": 1,
+            "supports_cron": True,
+            "supports_continuous": True,
+            "run_modes": ["manual", "scheduled"],
+        },
+        "cursor_semantics": {
+            "default_state_key": "sql_last_lsn",
+            "cursor_param": "wal_lsn",
+            "order": "lsn_ascending",
+        },
+    },
+}
+
 
 def list_postgres_sql_profiles() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
@@ -61,6 +147,47 @@ def get_postgres_sql_profile_preset(profile: str | None) -> dict[str, Any] | Non
     return deepcopy(preset) if isinstance(preset, dict) else None
 
 
+def list_legacy_mapper_templates(
+    *,
+    source_type: str = "postgres_sql",
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    if _normalize_simple_key(source_type) != "postgres_sql":
+        return []
+
+    selected_profile = normalize_postgres_sql_profile(profile)
+    out: list[dict[str, Any]] = []
+    for profile_name, preset in sorted(POSTGRES_SQL_PROFILE_PRESETS.items()):
+        if selected_profile and selected_profile not in {"auto", profile_name}:
+            continue
+        out.append(_build_postgres_sql_mapper_template(profile_name, preset, sync_mode="polling"))
+        out.append(_build_postgres_sql_mapper_template(profile_name, preset, sync_mode="wal_cdc"))
+    return out
+
+
+def list_legacy_sync_runner_contracts(
+    *,
+    source_type: str = "postgres_sql",
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    if _normalize_simple_key(source_type) != "postgres_sql":
+        return []
+    normalized_profile = normalize_postgres_sql_profile(profile)
+    profile_hints: list[str] = []
+    if normalized_profile and normalized_profile != "auto":
+        profile_hints = [normalized_profile]
+    else:
+        profile_hints = sorted(POSTGRES_SQL_PROFILE_PRESETS.keys())
+
+    out: list[dict[str, Any]] = []
+    for sync_mode in ("polling", "wal_cdc"):
+        base = deepcopy(_SYNC_RUNNER_CONTRACTS[sync_mode])
+        base["profile_hints"] = profile_hints
+        base["recommended_profiles"] = profile_hints
+        out.append(base)
+    return out
+
+
 def normalize_postgres_sql_profile(value: str | None) -> str | None:
     if value is None:
         return None
@@ -75,6 +202,73 @@ def normalize_postgres_sql_profile(value: str | None) -> str | None:
     if alias:
         return alias
     return None
+
+
+def _build_postgres_sql_mapper_template(profile: str, preset: dict[str, Any], *, sync_mode: str) -> dict[str, Any]:
+    default_table = str(preset.get("default_table") or "").strip()
+    observed_candidates = preset.get("observed_at_fields") if isinstance(preset.get("observed_at_fields"), list) else []
+    observed_field = str(observed_candidates[0]).strip() if observed_candidates else ""
+    source_prefix = str(preset.get("default_source_id_prefix") or profile).strip() or profile
+    mapping = {
+        "source_id_field": _first_non_empty_list_item(preset.get("source_id_fields")),
+        "entity_key_field": _first_non_empty_list_item(preset.get("entity_key_fields")),
+        "category_field": _first_non_empty_list_item(preset.get("category_fields")),
+        "observed_at_field": observed_field,
+        "content_fields": list(preset.get("content_fields") or []),
+        "metadata_fields": list(preset.get("metadata_fields") or []),
+    }
+    if sync_mode == "polling":
+        config_patch: dict[str, Any] = {
+            "sql_profile": profile,
+            "sql_sync_mode": "polling",
+            "sql_profile_table": default_table,
+            "sql_source_id_prefix": source_prefix,
+            "sql_cursor_state_key": "sql_last_cursor",
+            "sql_cursor_param": "cursor",
+            "max_records": 5000,
+            "chunk_size": 100,
+            "sql_mapping": mapping,
+        }
+        if observed_field:
+            config_patch["sql_cursor_column"] = observed_field
+        template_key = f"postgres_sql.{profile}.polling"
+        label_suffix = "Polling"
+    else:
+        config_patch = {
+            "sql_profile": profile,
+            "sql_sync_mode": "wal_cdc",
+            "wal_slot": f"synapse_{profile}_slot",
+            "wal_publication": f"synapse_{profile}_publication",
+            "wal_tables": [default_table] if default_table else [],
+            "wal_cursor_state_key": "sql_last_lsn",
+            "sql_source_id_prefix": source_prefix,
+            "max_records": 5000,
+            "chunk_size": 100,
+            "sql_mapping": mapping,
+        }
+        template_key = f"postgres_sql.{profile}.wal_cdc"
+        label_suffix = "WAL CDC"
+
+    return {
+        "template_key": template_key,
+        "source_type": "postgres_sql",
+        "profile": profile,
+        "sync_mode": sync_mode,
+        "label": f"{preset.get('label') or profile} ({label_suffix})",
+        "description": str(preset.get("description") or "").strip(),
+        "config_patch": config_patch,
+        "runner_contract_key": f"postgres_sql.{sync_mode}",
+    }
+
+
+def _first_non_empty_list_item(values: Any) -> str:
+    if not isinstance(values, list):
+        return ""
+    for item in values:
+        text = str(item or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def infer_postgres_sql_profile(source_ref: str, *, config: dict[str, Any] | None = None) -> str | None:

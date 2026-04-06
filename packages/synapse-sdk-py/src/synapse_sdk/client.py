@@ -10,12 +10,14 @@ from pathlib import Path
 import re
 from threading import Lock
 from typing import Any, Callable, Protocol, Sequence
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from synapse_sdk.extractors import ExtractedInsight, Extractor, InsightContext, default_extractors
 from synapse_sdk.synthesizers import SynthesisContext, Synthesizer, default_synthesizers
 from synapse_sdk.transports.http import HttpTransport
 from synapse_sdk.types import (
+    AgentProfile,
     AdoptionMode,
     BootstrapMemoryInput,
     BootstrapMemoryOptions,
@@ -33,6 +35,7 @@ from synapse_sdk.types import (
 _TRACE_ID: ContextVar[str | None] = ContextVar("synapse_trace_id", default=None)
 _SPAN_ID: ContextVar[str | None] = ContextVar("synapse_span_id", default=None)
 UTC = timezone.utc
+_WIKI_PUBLISH_CHECKLIST_PRESETS = {"none", "ops_standard", "policy_strict"}
 
 
 class Transport(Protocol):
@@ -420,6 +423,158 @@ class SynapseClient:
         )
         return resolved_batch_id
 
+    def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/wiki/drafts/bootstrap-approve/recommendation",
+            method="GET",
+            params={"project_id": self._config.project_id},
+        )
+
+    def list_legacy_import_profiles(
+        self,
+        *,
+        source_type: str = "postgres_sql",
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/legacy-import/profiles",
+            method="GET",
+            params={
+                "source_type": str(source_type or "postgres_sql").strip().lower() or "postgres_sql",
+            },
+        )
+
+    def list_legacy_import_mapper_templates(
+        self,
+        *,
+        source_type: str = "postgres_sql",
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "source_type": str(source_type or "postgres_sql").strip().lower() or "postgres_sql",
+        }
+        if profile is not None and str(profile).strip():
+            params["profile"] = str(profile).strip()
+        return self._request_json(
+            "/v1/legacy-import/mapper-templates",
+            method="GET",
+            params=params,
+        )
+
+    def list_legacy_import_sync_contracts(
+        self,
+        *,
+        source_type: str = "postgres_sql",
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "source_type": str(source_type or "postgres_sql").strip().lower() or "postgres_sql",
+        }
+        if profile is not None and str(profile).strip():
+            params["profile"] = str(profile).strip()
+        return self._request_json(
+            "/v1/legacy-import/sync-contracts",
+            method="GET",
+            params=params,
+        )
+
+    def list_legacy_import_sources(
+        self,
+        *,
+        enabled: bool | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "limit": max(1, min(500, int(limit))),
+        }
+        if enabled is not None:
+            params["enabled"] = "true" if enabled else "false"
+        return self._request_json(
+            "/v1/legacy-import/sources",
+            method="GET",
+            params=params,
+        )
+
+    def upsert_legacy_import_source(
+        self,
+        *,
+        source_type: str,
+        source_ref: str,
+        updated_by: str,
+        enabled: bool = True,
+        sync_interval_minutes: int = 60,
+        next_run_at: str | None = None,
+        config: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "source_type": str(source_type or "").strip().lower(),
+            "source_ref": str(source_ref or "").strip(),
+            "enabled": bool(enabled),
+            "sync_interval_minutes": max(1, min(10080, int(sync_interval_minutes))),
+            "updated_by": str(updated_by or "").strip(),
+            "config": dict(config or {}),
+        }
+        if not payload["source_type"]:
+            raise ValueError("source_type is required")
+        if not payload["source_ref"]:
+            raise ValueError("source_ref is required")
+        if not payload["updated_by"]:
+            raise ValueError("updated_by is required")
+        if next_run_at is not None and str(next_run_at).strip():
+            payload["next_run_at"] = str(next_run_at).strip()
+        return self._request_json(
+            "/v1/legacy-import/sources",
+            method="PUT",
+            payload=payload,
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def queue_legacy_import_source_sync(
+        self,
+        source_id: str,
+        *,
+        requested_by: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_source_id = str(source_id or "").strip()
+        if not normalized_source_id:
+            raise ValueError("source_id is required")
+        normalized_requested_by = str(requested_by or "").strip()
+        if not normalized_requested_by:
+            raise ValueError("requested_by is required")
+        return self._request_json(
+            f"/v1/legacy-import/sources/{quote(normalized_source_id)}/sync",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "requested_by": normalized_requested_by,
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def list_legacy_import_sync_runs(
+        self,
+        *,
+        source_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "limit": max(1, min(500, int(limit))),
+        }
+        if source_id is not None and str(source_id).strip():
+            params["source_id"] = str(source_id).strip()
+        if status is not None and str(status).strip():
+            params["status"] = str(status).strip().lower()
+        return self._request_json(
+            "/v1/legacy-import/runs",
+            method="GET",
+            params=params,
+        )
+
     def list_tasks(
         self,
         *,
@@ -551,6 +706,445 @@ class SynapseClient:
                 "link_ref": link.link_ref,
                 "note": link.note,
                 "metadata": dict(link.metadata),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def list_agents(
+        self,
+        *,
+        status: str | None = None,
+        team: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "limit": max(1, min(500, int(limit))),
+        }
+        if status:
+            params["status"] = status
+        if team:
+            params["team"] = team
+        return self._request_json("/v1/agents", method="GET", params=params)
+
+    def get_agent_publish_policy(self, *, agent_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/publish-policy",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "agent_id": agent_id,
+            },
+        )
+
+    def upsert_agent_publish_policy(
+        self,
+        *,
+        agent_id: str,
+        updated_by: str,
+        default_mode: str = "auto_publish",
+        by_page_type: dict[str, str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/publish-policy",
+            method="PUT",
+            payload={
+                "project_id": self._config.project_id,
+                "agent_id": agent_id,
+                "updated_by": updated_by,
+                "default_mode": default_mode,
+                "by_page_type": dict(by_page_type or {}),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def get_wiki_space_policy(self, space_key: str) -> dict[str, Any]:
+        normalized_space_key = _normalize_space_key(space_key)
+        return self._request_json(
+            f"/v1/wiki/spaces/{quote(normalized_space_key, safe='')}/policy",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+            },
+        )
+
+    def list_wiki_space_policy_audit(self, space_key: str, *, limit: int = 40) -> dict[str, Any]:
+        normalized_space_key = _normalize_space_key(space_key)
+        return self._request_json(
+            f"/v1/wiki/spaces/{quote(normalized_space_key, safe='')}/policy/audit",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "limit": max(1, min(200, int(limit))),
+            },
+        )
+
+    def upsert_wiki_space_policy(
+        self,
+        *,
+        space_key: str,
+        updated_by: str,
+        write_mode: str = "open",
+        comment_mode: str = "open",
+        review_assignment_required: bool = False,
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_space_key = _normalize_space_key(space_key)
+        normalized_write_mode = _normalize_wiki_space_mode(write_mode)
+        normalized_comment_mode = _normalize_wiki_space_mode(comment_mode)
+        return self._request_json(
+            f"/v1/wiki/spaces/{quote(normalized_space_key, safe='')}/policy",
+            method="PUT",
+            payload={
+                "project_id": self._config.project_id,
+                "space_key": normalized_space_key,
+                "updated_by": str(updated_by or "").strip(),
+                "write_mode": normalized_write_mode,
+                "comment_mode": normalized_comment_mode,
+                "review_assignment_required": bool(review_assignment_required),
+                "metadata": dict(metadata or {}),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def get_wiki_space_publish_checklist_preset(
+        self,
+        *,
+        space_key: str,
+        fallback: str = "none",
+    ) -> str:
+        normalized_fallback = _normalize_publish_checklist_preset(fallback)
+        policy = self.get_wiki_space_policy(space_key)
+        policy_payload = policy.get("policy") if isinstance(policy.get("policy"), dict) else {}
+        metadata = policy_payload.get("metadata") if isinstance(policy_payload.get("metadata"), dict) else {}
+        return _normalize_publish_checklist_preset(metadata.get("publish_checklist_preset"), fallback=normalized_fallback)
+
+    def set_wiki_space_publish_checklist_preset(
+        self,
+        *,
+        space_key: str,
+        preset: str,
+        updated_by: str,
+        reason: str | None = None,
+        metadata_patch: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_space_key = _normalize_space_key(space_key)
+        normalized_preset = _normalize_publish_checklist_preset(preset)
+        current = self.get_wiki_space_policy(normalized_space_key)
+        current_policy = current.get("policy") if isinstance(current.get("policy"), dict) else {}
+        current_metadata = current_policy.get("metadata") if isinstance(current_policy.get("metadata"), dict) else {}
+        merged_metadata = dict(current_metadata)
+        merged_metadata["publish_checklist_preset"] = normalized_preset
+        if reason is not None and str(reason).strip():
+            merged_metadata["policy_change_reason"] = str(reason).strip()
+        if metadata_patch:
+            merged_metadata.update(dict(metadata_patch))
+
+        return self.upsert_wiki_space_policy(
+            space_key=normalized_space_key,
+            updated_by=updated_by,
+            write_mode=str(current_policy.get("write_mode") or "open"),
+            comment_mode=str(current_policy.get("comment_mode") or "open"),
+            review_assignment_required=bool(current_policy.get("review_assignment_required")),
+            metadata=merged_metadata,
+            idempotency_key=idempotency_key,
+        )
+
+    def get_wiki_lifecycle_stats(
+        self,
+        *,
+        stale_days: int = 21,
+        critical_days: int = 45,
+        stale_limit: int = 20,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_stale_days = max(1, min(365, int(stale_days)))
+        normalized_critical_days = max(normalized_stale_days, min(365, int(critical_days)))
+        normalized_stale_limit = max(1, min(200, int(stale_limit)))
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "stale_days": normalized_stale_days,
+            "critical_days": normalized_critical_days,
+            "stale_limit": normalized_stale_limit,
+        }
+        if space_key is not None and str(space_key).strip():
+            params["space_key"] = _normalize_space_key(str(space_key))
+        return self._request_json(
+            "/v1/wiki/lifecycle/stats",
+            method="GET",
+            params=params,
+        )
+
+    def get_wiki_lifecycle_telemetry(
+        self,
+        *,
+        days: int = 7,
+        action_key: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "days": max(1, min(90, int(days))),
+        }
+        normalized_action_key = _normalize_lifecycle_action_key(action_key)
+        if normalized_action_key:
+            params["action_key"] = normalized_action_key
+        return self._request_json(
+            "/v1/wiki/lifecycle/telemetry",
+            method="GET",
+            params=params,
+        )
+
+    def snapshot_wiki_lifecycle_telemetry(
+        self,
+        *,
+        session_id: str,
+        empty_scope_action_shown: dict[str, int] | None = None,
+        empty_scope_action_applied: dict[str, int] | None = None,
+        observed_at: str | None = None,
+        source: str = "sdk_client",
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "session_id": normalized_session_id,
+            "source": str(source or "sdk_client").strip() or "sdk_client",
+            "empty_scope_action_shown": _normalize_lifecycle_action_counts(empty_scope_action_shown),
+            "empty_scope_action_applied": _normalize_lifecycle_action_counts(empty_scope_action_applied),
+        }
+        if observed_at is not None and str(observed_at).strip():
+            payload["observed_at"] = str(observed_at).strip()
+        return self._request_json(
+            "/v1/wiki/lifecycle/telemetry/snapshot",
+            method="POST",
+            payload=payload,
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def register_agent_profile(
+        self,
+        profile: AgentProfile,
+        *,
+        updated_by: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "agent_id": profile.agent_id,
+            "updated_by": updated_by,
+            "display_name": profile.display_name,
+            "team": profile.team,
+            "role": profile.role,
+            "status": profile.status,
+            "responsibilities": list(profile.responsibilities),
+            "tools": list(profile.tools),
+            "data_sources": list(profile.data_sources),
+            "limits": list(profile.limits),
+            "metadata": dict(profile.metadata),
+            "ensure_scaffold": bool(profile.ensure_scaffold),
+            "include_daily_report_stub": bool(profile.include_daily_report_stub),
+            "last_seen_at": profile.last_seen_at,
+        }
+        return self._request_json(
+            "/v1/agents/register",
+            method="POST",
+            payload=payload,
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def sync_agent_worklogs(
+        self,
+        *,
+        generated_by: str,
+        worklog_date: str | None = None,
+        timezone: str | None = None,
+        days_back: int = 1,
+        max_agents: int = 200,
+        include_retired: bool = False,
+        include_idle_days: bool = False,
+        min_activity_score: int = 1,
+        trigger_mode: str = "daily_batch",
+        trigger_reason: str | None = None,
+        max_logs_per_agent_page: int = 14,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/worklogs/sync",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "generated_by": generated_by,
+                "worklog_date": worklog_date,
+                "timezone": timezone,
+                "days_back": max(1, min(30, int(days_back))),
+                "max_agents": max(1, min(2000, int(max_agents))),
+                "include_retired": bool(include_retired),
+                "include_idle_days": bool(include_idle_days),
+                "min_activity_score": max(0, min(1000, int(min_activity_score))),
+                "trigger_mode": str(trigger_mode or "daily_batch"),
+                "trigger_reason": str(trigger_reason).strip() if trigger_reason is not None else None,
+                "max_logs_per_agent_page": max(1, min(60, int(max_logs_per_agent_page))),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def get_agent_capability_matrix(
+        self,
+        *,
+        min_confidence: float = 0.0,
+        max_agents: int = 500,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/capability-matrix",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "min_confidence": max(0.0, min(1.0, float(min_confidence))),
+                "max_agents": max(1, min(5000, int(max_agents))),
+            },
+        )
+
+    def sync_agent_capability_matrix(
+        self,
+        *,
+        generated_by: str,
+        min_confidence: float = 0.0,
+        max_agents: int = 500,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/capability-matrix/sync",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "generated_by": generated_by,
+                "min_confidence": max(0.0, min(1.0, float(min_confidence))),
+                "max_agents": max(1, min(5000, int(max_agents))),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def get_agent_handoffs(
+        self,
+        *,
+        max_edges: int = 1000,
+        include_retired: bool = False,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/handoffs",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "max_edges": max(1, min(10000, int(max_edges))),
+                "include_retired": "true" if include_retired else "false",
+            },
+        )
+
+    def sync_agent_handoffs(
+        self,
+        *,
+        generated_by: str,
+        max_edges: int = 1000,
+        include_retired: bool = False,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/handoffs/sync",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "generated_by": generated_by,
+                "max_edges": max(1, min(10000, int(max_edges))),
+                "include_retired": bool(include_retired),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def get_agent_scorecards(
+        self,
+        *,
+        max_agents: int = 500,
+        lookback_days: int = 14,
+        include_retired: bool = False,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/scorecards",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "max_agents": max(1, min(5000, int(max_agents))),
+                "lookback_days": max(1, min(90, int(lookback_days))),
+                "include_retired": "true" if include_retired else "false",
+            },
+        )
+
+    def sync_agent_scorecards(
+        self,
+        *,
+        generated_by: str,
+        max_agents: int = 500,
+        lookback_days: int = 14,
+        include_retired: bool = False,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/agents/scorecards/sync",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "generated_by": generated_by,
+                "max_agents": max(1, min(5000, int(max_agents))),
+                "lookback_days": max(1, min(90, int(lookback_days))),
+                "include_retired": bool(include_retired),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def list_agent_provenance(
+        self,
+        *,
+        agent_id: str | None = None,
+        page_slug: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "limit": max(1, min(500, int(limit))),
+        }
+        if agent_id:
+            params["agent_id"] = agent_id
+        if page_slug:
+            params["page_slug"] = page_slug
+        return self._request_json(
+            "/v1/agents/provenance",
+            method="GET",
+            params=params,
+        )
+
+    def rollback_agent_activity(
+        self,
+        activity_id: str,
+        *,
+        rolled_back_by: str,
+        require_latest_activity: bool = True,
+        status: str | None = None,
+        change_summary: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            f"/v1/agents/provenance/{activity_id}/rollback",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "rolled_back_by": rolled_back_by,
+                "require_latest_activity": bool(require_latest_activity),
+                "status": status,
+                "change_summary": change_summary,
             },
             idempotency_key=idempotency_key or str(uuid4()),
         )
@@ -1569,10 +2163,30 @@ class Synapse(SynapseClient):
         openclaw_bootstrap_cursor: str | None = None,
         openclaw_bootstrap_chunk_size: int = 100,
         openclaw_auto_bootstrap: bool = True,
+        register_agent_directory: bool | None = None,
+        agent_profile: AgentProfile | dict[str, Any] | None = None,
+        agent_display_name: str | None = None,
+        agent_team: str | None = None,
+        agent_role: str | None = None,
+        agent_responsibilities: Sequence[str] | None = None,
+        agent_tools: Sequence[str] | None = None,
+        agent_data_sources: Sequence[str] | None = None,
+        agent_limits: Sequence[str] | None = None,
+        agent_directory_status: str = "active",
     ) -> Any:
         resolved_integration = integration or self._detect_integration(target)
         resolved_adoption_mode = _normalize_adoption_mode(
             _coerce_str_or_none(adoption_mode) or _coerce_str_or_none(os.getenv("SYNAPSE_ADOPTION_MODE"))
+        )
+        resolved_register_agent_directory = (
+            _coerce_bool_or_default(
+                register_agent_directory,
+                default=_coerce_bool_or_default(
+                    _coerce_str_or_none(os.getenv("SYNAPSE_AGENT_DIRECTORY_AUTO_REGISTER")),
+                    default=True,
+                ),
+            )
+            and bool(_coerce_str_or_none(agent_id))
         )
         self._emit_debug(
             "attach_started",
@@ -1581,6 +2195,7 @@ class Synapse(SynapseClient):
                 "target_type": type(target).__name__,
                 "auto_bootstrap_enabled": bool(openclaw_auto_bootstrap),
                 "adoption_mode": resolved_adoption_mode,
+                "agent_directory_auto_register": bool(resolved_register_agent_directory),
             },
         )
         resolved_bootstrap_memory = bootstrap_memory
@@ -1731,6 +2346,98 @@ class Synapse(SynapseClient):
                 },
             )
             return target
+
+        if resolved_register_agent_directory and _coerce_str_or_none(agent_id):
+            try:
+                profile_obj: AgentProfile
+                if isinstance(agent_profile, AgentProfile):
+                    profile_obj = agent_profile
+                elif isinstance(agent_profile, dict):
+                    profile_obj = AgentProfile(
+                        agent_id=_coerce_str_or_none(agent_profile.get("agent_id")) or str(agent_id),
+                        display_name=_coerce_str_or_none(agent_profile.get("display_name") or agent_display_name),
+                        team=_coerce_str_or_none(agent_profile.get("team") or agent_team),
+                        role=_coerce_str_or_none(agent_profile.get("role") or agent_role),
+                        status=_coerce_str_or_none(agent_profile.get("status")) or str(agent_directory_status or "active"),
+                        responsibilities=[
+                            str(item).strip()
+                            for item in (
+                                agent_profile.get("responsibilities")
+                                if isinstance(agent_profile.get("responsibilities"), list)
+                                else (agent_responsibilities or [])
+                            )
+                            if str(item).strip()
+                        ],
+                        tools=[
+                            str(item).strip()
+                            for item in (
+                                agent_profile.get("tools")
+                                if isinstance(agent_profile.get("tools"), list)
+                                else (agent_tools or [])
+                            )
+                            if str(item).strip()
+                        ],
+                        data_sources=[
+                            str(item).strip()
+                            for item in (
+                                agent_profile.get("data_sources")
+                                if isinstance(agent_profile.get("data_sources"), list)
+                                else (agent_data_sources or [])
+                            )
+                            if str(item).strip()
+                        ],
+                        limits=[
+                            str(item).strip()
+                            for item in (
+                                agent_profile.get("limits")
+                                if isinstance(agent_profile.get("limits"), list)
+                                else (agent_limits or [])
+                            )
+                            if str(item).strip()
+                        ],
+                        metadata=dict(agent_profile.get("metadata")) if isinstance(agent_profile.get("metadata"), dict) else {},
+                        ensure_scaffold=bool(agent_profile.get("ensure_scaffold", True)),
+                        include_daily_report_stub=bool(agent_profile.get("include_daily_report_stub", True)),
+                        last_seen_at=_coerce_str_or_none(agent_profile.get("last_seen_at")),
+                    )
+                else:
+                    profile_obj = AgentProfile(
+                        agent_id=str(agent_id),
+                        display_name=agent_display_name,
+                        team=agent_team,
+                        role=agent_role,
+                        status=str(agent_directory_status or "active"),
+                        responsibilities=[str(item).strip() for item in (agent_responsibilities or []) if str(item).strip()],
+                        tools=[str(item).strip() for item in (agent_tools or []) if str(item).strip()],
+                        data_sources=[str(item).strip() for item in (agent_data_sources or []) if str(item).strip()],
+                        limits=[str(item).strip() for item in (agent_limits or []) if str(item).strip()],
+                        metadata={"integration": resolved_integration, "attached_via": "synapse_sdk_py"},
+                        ensure_scaffold=True,
+                        include_daily_report_stub=True,
+                        last_seen_at=datetime.now(UTC).isoformat(),
+                    )
+                self.register_agent_profile(
+                    profile_obj,
+                    updated_by=_coerce_str_or_none(agent_id) or "synapse_sdk_attach",
+                )
+                self._emit_debug(
+                    "attach_agent_directory_registered",
+                    {
+                        "agent_id": profile_obj.agent_id,
+                        "integration": resolved_integration,
+                        "status": profile_obj.status,
+                    },
+                )
+            except Exception as exc:
+                self._emit_debug(
+                    "attach_agent_directory_register_failed",
+                    {
+                        "agent_id": _coerce_str_or_none(agent_id),
+                        "integration": resolved_integration,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                )
         monitored = self.monitor(
             target,
             integration=resolved_integration,
@@ -1972,6 +2679,55 @@ class Synapse(SynapseClient):
         )
 
 
+def _normalize_space_key(space_key: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(space_key or "").strip().lower())
+    normalized = re.sub(r"-+", "-", normalized).strip("-")
+    if not normalized:
+        raise ValueError("space_key cannot be empty")
+    return normalized
+
+
+def _normalize_wiki_space_mode(mode: str, *, fallback: str = "open") -> str:
+    normalized = str(mode or fallback).strip().lower()
+    if normalized not in {"open", "owners_only"}:
+        raise ValueError(f"unsupported wiki space mode: {mode}")
+    return normalized
+
+
+def _normalize_publish_checklist_preset(value: Any, *, fallback: str = "none") -> str:
+    normalized_fallback = str(fallback or "none").strip().lower() or "none"
+    if normalized_fallback not in _WIKI_PUBLISH_CHECKLIST_PRESETS:
+        normalized_fallback = "none"
+    normalized = str(value or normalized_fallback).strip().lower()
+    if normalized not in _WIKI_PUBLISH_CHECKLIST_PRESETS:
+        return normalized_fallback
+    return normalized
+
+
+def _normalize_lifecycle_action_key(value: str | None) -> str:
+    normalized = re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    if not normalized:
+        return ""
+    return normalized[:96]
+
+
+def _normalize_lifecycle_action_counts(raw: dict[str, int] | None) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, value in raw.items():
+        action_key = _normalize_lifecycle_action_key(str(key or ""))
+        if not action_key:
+            continue
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            continue
+        normalized[action_key] = max(0, min(1_000_000_000, numeric))
+    return normalized
+
+
 def _make_claim_idempotency_key(claim_id: str) -> str:
     return f"claim:v1:{claim_id}"
 
@@ -2013,6 +2769,20 @@ def _coerce_str_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def _coerce_bool_or_default(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = _coerce_str_or_none(value)
+    if text is None:
+        return bool(default)
+    normalized = text.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _infer_project_id_from_cwd() -> str:

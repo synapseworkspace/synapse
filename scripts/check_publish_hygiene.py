@@ -128,6 +128,8 @@ def _validate_docs_consistency(errors: list[str]) -> None:
     compatibility = (ROOT_DIR / "docs" / "compatibility-matrix.md").read_text(encoding="utf-8")
     root_readme = (ROOT_DIR / "README.md").read_text(encoding="utf-8")
     quickstart_openclaw = (ROOT_DIR / "docs" / "openclaw-quickstart-5-min.md").read_text(encoding="utf-8")
+    onboarding_benchmark = (ROOT_DIR / "docs" / "agentic-onboarding-benchmark.md").read_text(encoding="utf-8")
+    release_workflow_ci = (ROOT_DIR / ".github" / "workflows" / "release-packages.yml").read_text(encoding="utf-8")
 
     required_release_mentions = [
         "synapseworkspace-sdk",
@@ -137,6 +139,11 @@ def _validate_docs_consistency(errors: list[str]) -> None:
     ]
     for pkg in required_release_mentions:
         _assert(pkg in release_workflow, f"docs/release-workflow.md: missing package mention {pkg}", errors)
+    _assert(
+        "generate_release_evidence_bundle.py" in release_workflow,
+        "docs/release-workflow.md: missing release evidence bundle script reference",
+        errors,
+    )
 
     required_compat_rows = [
         "`synapseworkspace-sdk` (Python)",
@@ -158,23 +165,101 @@ def _validate_docs_consistency(errors: list[str]) -> None:
         errors,
     )
     _assert(
-        "Package Registry Status" in root_readme,
-        "README.md: missing explicit package registry status section",
+        "Package Install Modes" in root_readme,
+        "README.md: missing package install modes section",
         errors,
     )
     _assert(
-        "pip install -e packages/synapse-sdk-py" in root_readme,
-        "README.md: missing repo-local Python install path for preview period",
+        "pip install synapseworkspace-sdk" in root_readme,
+        "README.md: missing registry Python install command",
         errors,
     )
     _assert(
-        "Current status (as of" in quickstart_openclaw,
-        "docs/openclaw-quickstart-5-min.md: missing explicit registry status note",
+        "npm install @synapseworkspace/sdk" in root_readme,
+        "README.md: missing registry npm install command",
+        errors,
+    )
+    _assert(
+        "check_registry_package_availability.py" in root_readme,
+        "README.md: missing registry availability verification command",
+        errors,
+    )
+    _assert(
+        "agentic-onboarding-benchmark.md" in root_readme,
+        "README.md: missing Agentic onboarding benchmark docs link",
+        errors,
+    )
+    _assert(
+        "buyer-roi-rollout.md" in root_readme and "architecture-diagram-pack.md" in root_readme,
+        "README.md: missing buyer-facing packaging docs links",
+        errors,
+    )
+    _assert(
+        "pip install synapseworkspace-sdk" in quickstart_openclaw,
+        "docs/openclaw-quickstart-5-min.md: missing registry install command",
         errors,
     )
     _assert(
         "pip install -e packages/synapse-sdk-py" in quickstart_openclaw,
-        "docs/openclaw-quickstart-5-min.md: missing repo-local install command",
+        "docs/openclaw-quickstart-5-min.md: missing editable install fallback command",
+        errors,
+    )
+    _assert(
+        "benchmark_agentic_onboarding.py" in onboarding_benchmark,
+        "docs/agentic-onboarding-benchmark.md: missing benchmark command reference",
+        errors,
+    )
+    _assert(
+        "first_useful_answer" in onboarding_benchmark
+        and "first_approved_draft" in onboarding_benchmark
+        and "first_policy_safe_publish" in onboarding_benchmark,
+        "docs/agentic-onboarding-benchmark.md: missing KPI card names",
+        errors,
+    )
+    _assert(
+        "not published yet" not in root_readme.lower(),
+        "README.md: should not contain 'not published yet' wording",
+        errors,
+    )
+    _assert(
+        "not published yet" not in quickstart_openclaw.lower(),
+        "docs/openclaw-quickstart-5-min.md: should not contain 'not published yet' wording",
+        errors,
+    )
+    _assert(
+        "not published yet" not in release_workflow.lower(),
+        "docs/release-workflow.md: should not contain 'not published yet' wording",
+        errors,
+    )
+
+    _assert(
+        "pypa/gh-action-pypi-publish@release/v1" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing trusted publishing action for PyPI",
+        errors,
+    )
+    _assert(
+        "npm publish \"$pkg\" --access public --provenance" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing npm provenance publish command",
+        errors,
+    )
+    _assert(
+        "check_registry_package_availability.py" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing post-publish registry verification",
+        errors,
+    )
+    _assert(
+        "softprops/action-gh-release@v2" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing draft GitHub release automation",
+        errors,
+    )
+    _assert(
+        "verify-artifact-install-matrix" in release_workflow_ci and "verify-install-matrix" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing install matrix verification jobs",
+        errors,
+    )
+    _assert(
+        "RELEASE_PUBLISH_ENABLED" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing publish guard variable",
         errors,
     )
 
@@ -205,6 +290,7 @@ def main() -> int:
                         "README.md",
                         "docs/release-workflow.md",
                         "docs/compatibility-matrix.md",
+                        "docs/agentic-onboarding-benchmark.md",
                     ],
                 },
             },

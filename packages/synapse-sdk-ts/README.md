@@ -147,6 +147,24 @@ const manual = buildOpenClawBootstrapOptions({ preset: "event_log", maxRecords: 
 synapse.attach(openclawRuntime, { integration: "openclaw", bootstrapMemory: manual });
 ```
 
+## Wiki Space Policy Helpers
+
+```ts
+const policy = await synapse.getWikiSpacePolicy("operations");
+console.log(policy.policy.metadata?.publish_checklist_preset);
+
+await synapse.setWikiSpacePublishChecklistPreset("operations", {
+  preset: "ops_standard", // none | ops_standard | policy_strict
+  updatedBy: "ops_admin",
+  reason: "Enable standard publish checklist for support rollout"
+});
+
+const audit = await synapse.listWikiSpacePolicyAudit("operations", { limit: 20 });
+console.log(audit.entries.length);
+```
+
+These APIs map to `/v1/wiki/spaces/{space_key}/policy*` and let you automate governance without custom scripts.
+
 ## collectInsight Wrapper
 
 ```ts
@@ -301,6 +319,50 @@ const attached = synapse.attach(existingRunner, {
 });
 ```
 
+## Legacy Memory Sync (No Custom Importer)
+
+```ts
+// Optional: ask server for safe bootstrap migration defaults
+const preset = await synapse.getBootstrapMigrationRecommendation();
+console.log((preset as any).recommended);
+
+// 1) discover built-in Postgres profiles
+const profiles = await synapse.listLegacyImportProfiles({ sourceType: "postgres_sql" });
+
+// 2) discover mapper templates + sync contracts
+const templates = await synapse.listLegacyImportMapperTemplates({
+  sourceType: "postgres_sql",
+  profile: "ops_kb_items"
+});
+const contracts = await synapse.listLegacyImportSyncContracts({ sourceType: "postgres_sql" });
+
+console.log((templates as any).templates?.[0]?.runner_contract_key);
+console.log((contracts as any).contracts?.[0]?.runner?.scheduler_script);
+
+// 3) create/update a reusable legacy source
+const upserted = await synapse.upsertLegacyImportSource({
+  sourceType: "postgres_sql",
+  sourceRef: "hw_memory",
+  updatedBy: "ops_admin",
+  syncIntervalMinutes: 5,
+  config: {
+    sql_dsn_env: "HW_MEMORY_DSN",
+    sql_profile: "ops_kb_items",
+    max_records: 5000,
+    chunk_size: 100
+  }
+});
+
+const sourceId = String((upserted as any).source.id);
+
+// 4) queue a run + inspect status history
+await synapse.queueLegacyImportSourceSync({ sourceId, requestedBy: "ops_admin" });
+const runs = await synapse.listLegacyImportSyncRuns({ sourceId, limit: 20 });
+console.log((runs as any).runs?.[0]?.status);
+```
+
+These SDK calls map to `/v1/legacy-import/*` and remove the need for per-project importer scripts by using reusable mapping templates and sync runner contracts.
+
 ## Task Core Helpers
 
 ```ts
@@ -322,6 +384,36 @@ await synapse.linkTask(taskId, { linkType: "draft", linkRef: "draft-id-123" }, {
 ```
 
 Task helpers map to `/v1/tasks*` and are designed for agentic execution loops.
+
+## Wiki Lifecycle Telemetry Helpers
+
+```ts
+// Read stale-page diagnostics (same contract as /v1/wiki/lifecycle/stats)
+const lifecycleStats = await synapse.getWikiLifecycleStats({
+  staleDays: 21,
+  criticalDays: 45,
+  staleLimit: 20,
+  spaceKey: "operations"
+});
+console.log((lifecycleStats as { counts?: { stale_warning_pages?: number } }).counts?.stale_warning_pages);
+
+// Push monotonic per-session counters (server computes delta)
+await synapse.snapshotWikiLifecycleTelemetry({
+  sessionId: "web-session-42",
+  emptyScopeActionShown: { create_page: 3, review_open_drafts: 2 },
+  emptyScopeActionApplied: { create_page: 1 },
+  source: "wiki_ui"
+});
+
+// Pull telemetry summary, optionally filtered by one action key
+const actionTelemetry = await synapse.getWikiLifecycleTelemetry({
+  days: 7,
+  actionKey: "create_page"
+});
+console.log((actionTelemetry as { summary?: { apply_rate?: number } }).summary?.apply_rate);
+```
+
+These helpers map to `/v1/wiki/lifecycle/stats` and `/v1/wiki/lifecycle/telemetry*`.
 
 ## Cookbook Examples
 

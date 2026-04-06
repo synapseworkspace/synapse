@@ -1,6 +1,6 @@
 # Self-Hosted Deployment Guide (API + Worker + MCP)
 
-Last updated: 2026-04-03
+Last updated: 2026-04-05
 
 This guide runs Synapse core services in Docker Compose with production-like defaults:
 - PostgreSQL (`pgvector`)
@@ -32,6 +32,8 @@ Minimum required edits in `.env.selfhost`:
 3. Optional: set `OPENAI_API_KEY` if you use LLM-assisted Gatekeeper mode.
 4. Optional: set `SYNAPSE_OPENCLAW_PROVENANCE_SECRET` for signed OpenClaw evidence provenance.
 5. Keep `SYNAPSE_BIND_HOST=127.0.0.1` unless you intentionally expose services outside localhost.
+6. Daily agent reports are enabled by default in worker loop (`SYNAPSE_WORKER_ENABLE_AGENT_WORKLOGS=1`) and generated every 24h (`SYNAPSE_WORKER_AGENT_WORKLOGS_INTERVAL_SEC=86400`) with per-project local timezone schedule support.
+7. Realtime worklog refresh is enabled by default (`SYNAPSE_WORKER_ENABLE_AGENT_WORKLOGS_REALTIME=1`) and reacts to recent session/task close signals.
 
 ## 3. Boot the Stack
 
@@ -52,7 +54,23 @@ Expected:
 - API responds with `{"status":"ok"}`.
 - Services `api`, `worker`, `mcp`, `postgres` are `Up`.
 
-## 5. Core Loop Smoke Test
+## 5. Verify UI Routes (Wiki vs Operations)
+
+After `apps/web` is running, validate the route split:
+
+1. Wiki-first workspace:
+   - `http://localhost:5173/wiki?project=omega_demo`
+2. Draft inbox (clean mode):
+   - `http://localhost:5173/wiki?project=omega_demo&core_tab=drafts`
+3. Operations route (migration/gatekeeper tools):
+   - `http://localhost:5173/operations?project=omega_demo&core_tab=drafts`
+
+Expected behavior:
+- `Drafts` under `/wiki` stays inbox/detail focused.
+- Migration and bootstrap controls appear on `/operations`.
+- Reviewer/notifications controls are in `Settings` drawer (not in the core first viewport).
+
+## 6. Core Loop Smoke Test
 
 From repository root:
 
@@ -79,7 +97,7 @@ CI opt-in path:
    - `SYNAPSE_RUN_SELFHOST_DR_ACCEPTANCE=1 ./scripts/ci_checks.sh`
    - `SYNAPSE_RUN_SELFHOST_CHAOS_DRILL=1 ./scripts/ci_checks.sh`
 
-## 6. Operations
+## 7. Operations
 
 Restart services:
 
@@ -92,6 +110,8 @@ View logs:
 ```bash
 docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml logs -f api worker mcp
 ```
+
+Look for `agent_worklog_scheduler` events in worker logs to confirm daily-report sync runs.
 
 Scale worker replicas (for higher ingestion throughput):
 
@@ -111,7 +131,7 @@ python3 scripts/run_performance_tuning_advisor.py \
 Runbook reference:
 - `/Users/maksimborisov/synapse/docs/performance-tuning.md`
 
-## 7. Backup and Restore (PostgreSQL)
+## 8. Backup and Restore (PostgreSQL)
 
 Backup:
 
@@ -148,7 +168,7 @@ Automated chaos/recovery drill (baseline core loop + fault injection + post-faul
 Detailed runbook:
 - `/Users/maksimborisov/synapse/docs/backup-restore-drill.md`
 
-## 8. Production Hardening Checklist
+## 9. Production Hardening Checklist
 
 1. Put API and MCP behind TLS reverse proxy (Nginx/Traefik/Cloudflare Tunnel).
 2. Restrict network exposure (no direct Postgres access from public internet).
@@ -156,9 +176,12 @@ Detailed runbook:
 4. Enable external logging/metrics pipeline (OpenTelemetry and container logs).
 5. Schedule regular DB backups and restore drills.
 
-## 9. Optional SDK Observability Stack
+## 10. Optional SDK Observability Stack
 
 For a local OpenTelemetry dashboard stack (collector + Prometheus + Tempo + Grafana) and Datadog quick pack:
 
 - `/Users/maksimborisov/synapse/docs/sdk-trace-observability.md`
 - `/Users/maksimborisov/synapse/infra/observability/README.md`
+
+UI visual reference (from CI snapshot artifacts):
+- `/Users/maksimborisov/synapse/docs/wiki-ui-visual-gallery.md`

@@ -1,6 +1,6 @@
 # Synapse OSS Release Workflow
 
-Last updated: 2026-04-02
+Last updated: 2026-04-05
 
 This runbook defines how Synapse OSS packages are released to PyPI and npm.
 
@@ -16,14 +16,30 @@ Practical step-by-step checklist:
 
 All packages must share the same version (enforced by `scripts/check_release_versions.py`).
 
-## Current Registry Status
+## Registry Verification
 
-As of **April 3, 2026**:
-- PyPI: first publish pending.
-- npm: first publish pending.
+Do not rely on static status text in docs. Verify package availability from registries:
 
-Before first public release, `pip index versions synapseworkspace-sdk` / `npm view @synapseworkspace/*` will return `not found`.
-This is expected until trusted publishing is enabled and first `v*` release publish run completes.
+```bash
+python3 scripts/check_registry_package_availability.py --require-available
+```
+
+Check a specific release version across all packages:
+
+```bash
+python3 scripts/check_registry_package_availability.py --require-available --expected-version 0.1.2
+```
+
+Generate release evidence bundle from workflow artifacts (local/manual):
+
+```bash
+python3 scripts/generate_release_evidence_bundle.py \
+  --version 0.1.2 \
+  --registry-report artifacts/release/registry-availability.json \
+  --workflow-run-url "https://github.com/synapseworkspace/synapse/actions/runs/<run_id>" \
+  --output-md artifacts/release/release-evidence.md \
+  --output-json artifacts/release/release-evidence.json
+```
 
 ## CI/CD Workflow
 
@@ -40,10 +56,21 @@ Pipeline stages:
 4. Build artifacts:
    - Python wheel/sdist via `python -m build`
    - npm tarballs via `npm pack`
-5. Generate provenance attestations for build artifacts.
-6. Publish:
+5. Verify clean-room install/import matrix from local release artifacts (`verify-artifact-install-matrix`, Linux + macOS).
+6. Generate provenance attestations for build artifacts.
+7. Publish:
    - PyPI via trusted publishing (`pypa/gh-action-pypi-publish`)
    - npm with provenance (`npm publish --provenance`)
+8. Verify public registry propagation:
+   - run `scripts/check_registry_package_availability.py` with retries and expected version;
+   - upload verification report as CI artifact.
+9. Verify clean-room install/import matrix from registries:
+   - run Linux + macOS checks for `pip install synapseworkspace-sdk==<version>`;
+   - run Linux + macOS checks for npm scoped packages (`@synapseworkspace/sdk`, `@synapseworkspace/schema`, `@synapseworkspace/openclaw-plugin`) at the same version.
+10. Generate release evidence bundle (`release-evidence.md` + `release-evidence.json`) from workflow outputs.
+11. Create/update draft GitHub Release for the tag with combined body:
+   - optional product notes from `docs/releases/vX.Y.Z.md` (if file exists);
+   - release evidence bundle appendix from workflow artifacts.
 
 Publishing guard:
 - release workflow publishes only when repository variable `RELEASE_PUBLISH_ENABLED=true`.
@@ -81,7 +108,10 @@ Publishing guard:
 3. Create and push a release tag:
    - `vX.Y.Z`
 4. Confirm workflow `release-packages` succeeded.
-5. Create GitHub Release notes referencing `CHANGELOG.md`.
+5. Validate draft GitHub Release body for tag `vX.Y.Z`:
+   - includes `docs/releases/vX.Y.Z.md` when present;
+   - includes release evidence appendix.
+6. Publish or edit draft Release notes as needed.
 
 ## RC Dress Rehearsal
 

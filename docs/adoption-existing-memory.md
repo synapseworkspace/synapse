@@ -42,6 +42,29 @@ Synapse resolves table + column mapping automatically, generates safe polling SQ
 Discover available profiles:
 
 - `GET /v1/legacy-import/profiles?source_type=postgres_sql`
+- `GET /v1/legacy-import/mapper-templates?source_type=postgres_sql`
+- `GET /v1/legacy-import/sync-contracts?source_type=postgres_sql`
+
+SDK parity (no custom importer script):
+
+- Python: `list_legacy_import_profiles`, `list_legacy_import_mapper_templates`, `list_legacy_import_sync_contracts`, `upsert_legacy_import_source`, `queue_legacy_import_source_sync`, `list_legacy_import_sync_runs`
+- TypeScript: `listLegacyImportProfiles`, `listLegacyImportMapperTemplates`, `listLegacyImportSyncContracts`, `upsertLegacyImportSource`, `queueLegacyImportSourceSync`, `listLegacyImportSyncRuns`
+
+### Mapper Templates + Sync Contracts (Out of the Box)
+
+For `postgres_sql` sources, Synapse now exposes two explicit contracts:
+
+- **Mapper templates**: ready-to-apply `config_patch` payloads for common schemas (`ops_kb_items`, `memory_items`) and sync modes (`polling`, `wal_cdc`).
+- **Sync runner contracts**: required/optional config keys, state keys (`sql_last_cursor`, `sql_last_lsn`), and scheduler contract (`run_legacy_sync_scheduler.py` cadence guidance).
+
+Example:
+
+```bash
+curl "http://localhost:8080/v1/legacy-import/mapper-templates?source_type=postgres_sql&profile=ops_kb_items"
+curl "http://localhost:8080/v1/legacy-import/sync-contracts?source_type=postgres_sql"
+```
+
+This is the canonical way to build cron/CDC sync services without writing one-off importer scripts.
 
 ## Memory Tier Routing (Default Safety)
 
@@ -65,6 +88,10 @@ Tune via Gatekeeper config `routing_policy` (`GET/PUT /v1/gatekeeper/config`):
 - `event_stream_min_kv_hits`
 - `min_durable_signal_hits`
 - `min_durable_signal_hits_for_backfill`
+- `backfill_llm_classifier_mode` (`off|assist|enforce`)
+- `backfill_llm_classifier_min_confidence`
+- `backfill_llm_classifier_ambiguous_only`
+- `backfill_llm_classifier_model` (optional override)
 - `publish_mode_by_assertion_class` (`policy|preference|incident|event|fact`)
 - `retrieval_feedback_window_days`
 - `retrieval_feedback_min_events`
@@ -131,6 +158,22 @@ Runtime enforcement uses `X-Synapse-Source-System` and can run in `off|advisory|
 4. `full_loop`:
    - enable category-by-category;
    - keep default `auto_publish` for low-risk/high-confidence flows and tune policy (`human_required|conditional|auto_publish`) by risk level.
+
+## Core UI Fast Path (Self-Hosted)
+
+For first adoption in self-hosted mode, use the wiki-first UI without opening advanced controls:
+
+1. Go to `Wiki Tree` and run **Connect Existing Agent Memory** wizard.
+2. Open `Drafts` tab.
+3. Use **Preview recommended** (auto-fills trusted sources + safe confidence/batch defaults).
+4. Review sample candidates.
+5. Use **Apply recommended** (same settings, conflict-safe batch).
+
+Preset source:
+- `GET /v1/wiki/drafts/bootstrap-approve/recommendation?project_id=...` provides server-side defaults based on
+  source ownership, legacy connectors, queue pressure, and backfill quality counters (`dropped_event_like`, `kept_durable`, `trusted_bypass`).
+
+The UI intentionally keeps migration controls collapsed by default and exposes advanced filters only on demand.
 
 ## CLI Workflow
 

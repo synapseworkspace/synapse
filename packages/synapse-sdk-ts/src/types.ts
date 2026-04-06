@@ -93,6 +93,16 @@ export interface MonitorOptions {
   openclawSearchKnowledge?: OpenClawSearchKnowledgeResolver;
   openclawListTasks?: OpenClawListTasksResolver;
   openclawUpdateTaskStatus?: OpenClawUpdateTaskStatusResolver;
+  registerAgentDirectory?: boolean;
+  agentProfile?: AgentProfileInput;
+  agentDisplayName?: string;
+  agentTeam?: string;
+  agentRole?: string;
+  agentResponsibilities?: string[];
+  agentTools?: string[];
+  agentDataSources?: string[];
+  agentLimits?: string[];
+  agentDirectoryStatus?: "active" | "idle" | "paused" | "offline" | "retired";
 }
 
 export type AttachOptions = MonitorOptions;
@@ -391,6 +401,63 @@ export interface TaskLinkInput {
   linkRef: string;
   note?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface AgentProfileInput {
+  agentId: string;
+  displayName?: string;
+  team?: string;
+  role?: string;
+  status?: "active" | "idle" | "paused" | "offline" | "retired";
+  responsibilities?: string[];
+  tools?: string[];
+  dataSources?: string[];
+  limits?: string[];
+  metadata?: Record<string, unknown>;
+  ensureScaffold?: boolean;
+  includeDailyReportStub?: boolean;
+  lastSeenAt?: string;
+}
+
+export type WikiSpacePolicyMode = "open" | "owners_only";
+export type WikiPublishChecklistPreset = "none" | "ops_standard" | "policy_strict";
+
+export interface WikiSpacePolicyRecord {
+  write_mode: WikiSpacePolicyMode;
+  comment_mode: WikiSpacePolicyMode;
+  review_assignment_required: boolean;
+  metadata: Record<string, unknown>;
+  exists?: boolean;
+  updated_by?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface WikiSpacePolicyResponse {
+  project_id: string;
+  space_key: string;
+  status?: "updated" | "no_change";
+  policy: WikiSpacePolicyRecord;
+  audit?: {
+    changed_fields?: string[];
+  };
+}
+
+export interface WikiSpacePolicyAuditEntry {
+  id: string;
+  changed_by: string;
+  before_policy: Record<string, unknown>;
+  after_policy: Record<string, unknown>;
+  changed_fields: string[];
+  reason?: string | null;
+  created_at?: string | null;
+}
+
+export interface WikiSpacePolicyAuditResponse {
+  project_id: string;
+  space_key: string;
+  entries: WikiSpacePolicyAuditEntry[];
+  available: boolean;
 }
 
 export interface SynapseTransport {

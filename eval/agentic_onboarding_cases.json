@@ -1,0 +1,238 @@
+{
+  "dataset_version": "2026-04-04",
+  "description": "Day-0 support onboarding benchmark for Synapse Agentic Wiki learning loop.",
+  "seed_published_knowledge": [
+    "kb.auth.reset_2fa",
+    "kb.support.language_handoff"
+  ],
+  "knowledge_catalog": [
+    {
+      "knowledge_id": "kb.auth.reset_2fa",
+      "title": "2FA reset checklist",
+      "risk_tier": "ops"
+    },
+    {
+      "knowledge_id": "kb.support.language_handoff",
+      "title": "Language handoff process",
+      "risk_tier": "ops"
+    },
+    {
+      "knowledge_id": "kb.shipping.lost_package_runbook",
+      "title": "Lost package runbook",
+      "risk_tier": "ops"
+    },
+    {
+      "knowledge_id": "kb.customer.vip_escalation",
+      "title": "VIP escalation matrix",
+      "risk_tier": "ops"
+    },
+    {
+      "knowledge_id": "kb.billing.chargeback_refund_rule",
+      "title": "Chargeback refund rule",
+      "risk_tier": "finance"
+    },
+    {
+      "knowledge_id": "kb.compliance.data_deletion_sla",
+      "title": "Data deletion SLA",
+      "risk_tier": "policy"
+    },
+    {
+      "knowledge_id": "kb.incident.statuspage_update_protocol",
+      "title": "Statuspage incident update protocol",
+      "risk_tier": "incident"
+    }
+  ],
+  "tickets": [
+    {
+      "ticket_id": "SUP-001",
+      "intent": "account_recovery",
+      "required_knowledge": [
+        "kb.auth.reset_2fa"
+      ],
+      "discoveries": []
+    },
+    {
+      "ticket_id": "SUP-002",
+      "intent": "chargeback_refund",
+      "required_knowledge": [
+        "kb.billing.chargeback_refund_rule"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.billing.chargeback_refund_rule",
+          "source_id": "chat_1002",
+          "confidence": 0.91,
+          "risk_tier": "finance"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-003",
+      "intent": "lost_package",
+      "required_knowledge": [
+        "kb.shipping.lost_package_runbook"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.shipping.lost_package_runbook",
+          "source_id": "ticket_403",
+          "confidence": 0.88,
+          "risk_tier": "ops"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-004",
+      "intent": "lost_package",
+      "required_knowledge": [
+        "kb.shipping.lost_package_runbook"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.shipping.lost_package_runbook",
+          "source_id": "ticket_417",
+          "confidence": 0.84,
+          "risk_tier": "ops"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-005",
+      "intent": "lost_package",
+      "required_knowledge": [
+        "kb.shipping.lost_package_runbook"
+      ],
+      "discoveries": []
+    },
+    {
+      "ticket_id": "SUP-006",
+      "intent": "vip_escalation",
+      "required_knowledge": [
+        "kb.customer.vip_escalation"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.customer.vip_escalation",
+          "source_id": "supervisor_playbook_2",
+          "confidence": 0.86,
+          "risk_tier": "ops"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-007",
+      "intent": "vip_escalation",
+      "required_knowledge": [
+        "kb.customer.vip_escalation"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.customer.vip_escalation",
+          "source_id": "qa_review_45",
+          "confidence": 0.83,
+          "risk_tier": "ops"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-008",
+      "intent": "vip_escalation",
+      "required_knowledge": [
+        "kb.customer.vip_escalation"
+      ],
+      "discoveries": []
+    },
+    {
+      "ticket_id": "SUP-009",
+      "intent": "chargeback_refund",
+      "required_knowledge": [
+        "kb.billing.chargeback_refund_rule"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.billing.chargeback_refund_rule",
+          "source_id": "finance_note_22",
+          "confidence": 0.9,
+          "risk_tier": "finance"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-010",
+      "intent": "language_handoff",
+      "required_knowledge": [
+        "kb.support.language_handoff"
+      ],
+      "discoveries": []
+    },
+    {
+      "ticket_id": "SUP-011",
+      "intent": "chargeback_refund",
+      "required_knowledge": [
+        "kb.billing.chargeback_refund_rule"
+      ],
+      "discoveries": []
+    },
+    {
+      "ticket_id": "SUP-012",
+      "intent": "data_deletion_sla",
+      "required_knowledge": [
+        "kb.compliance.data_deletion_sla"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.compliance.data_deletion_sla",
+          "source_id": "policy_update_9",
+          "confidence": 0.92,
+          "risk_tier": "policy"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-013",
+      "intent": "incident_statuspage",
+      "required_knowledge": [
+        "kb.incident.statuspage_update_protocol"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.incident.statuspage_update_protocol",
+          "source_id": "incident_retro_77",
+          "confidence": 0.82,
+          "risk_tier": "incident"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-014",
+      "intent": "incident_statuspage",
+      "required_knowledge": [
+        "kb.incident.statuspage_update_protocol"
+      ],
+      "discoveries": [
+        {
+          "knowledge_id": "kb.incident.statuspage_update_protocol",
+          "source_id": "incident_runbook_88",
+          "confidence": 0.8,
+          "risk_tier": "incident"
+        }
+      ]
+    },
+    {
+      "ticket_id": "SUP-015",
+      "intent": "incident_statuspage",
+      "required_knowledge": [
+        "kb.incident.statuspage_update_protocol"
+      ],
+      "discoveries": []
+    },
+    {
+      "ticket_id": "SUP-016",
+      "intent": "data_deletion_sla",
+      "required_knowledge": [
+        "kb.compliance.data_deletion_sla"
+      ],
+      "discoveries": []
+    }
+  ]
+}

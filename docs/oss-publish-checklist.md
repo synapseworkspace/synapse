@@ -1,6 +1,6 @@
 # Synapse OSS Publish Checklist (Walkthrough)
 
-Last updated: 2026-04-02
+Last updated: 2026-04-05
 
 Use this checklist when cutting a new public release.
 
@@ -37,7 +37,7 @@ Expected:
 
 Recommended values in GitHub "Create repository" form:
 
-- Owner: `maksbdev`
+- Owner: `synapseworkspace` (or your org name)
 - Repository name: `synapse`
 - Description: `Cognitive state layer for AI agents (observe -> synthesize -> curate -> execute via MCP).`
 - Visibility: `Public` (for OSS launch)
@@ -86,6 +86,14 @@ git push origin vX.Y.Z
 ```
 
 - [ ] Wait for `.github/workflows/release-packages.yml` to finish.
+- [ ] Confirm jobs are green:
+  - `build`
+  - `verify-artifact-install-matrix`
+  - `publish-pypi` / `publish-npm`
+  - `verify-registry`
+  - `verify-install-matrix`
+  - `release-evidence-pack`
+  - `create-release-draft`
 
 ## D) Post-Release Verification
 
@@ -103,7 +111,8 @@ npm view @synapseworkspace/schema version
 npm view @synapseworkspace/openclaw-plugin version
 ```
 
-- [ ] Publish GitHub Release notes referencing `CHANGELOG.md`.
+- [ ] Review auto-generated draft GitHub Release for tag `vX.Y.Z` (job `create-release-draft`).
+- [ ] Publish/edit Release notes as needed and verify release evidence appendix is present.
 
 ## E) If Release Fails
 

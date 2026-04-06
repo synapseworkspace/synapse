@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVICES_ROOT = ROOT / "services"
 API_MAIN_PATH = SERVICES_ROOT / "api" / "app" / "main.py"
 MCP_RUNTIME_PATH = SERVICES_ROOT / "mcp" / "app" / "runtime.py"
+MCP_SERVER_PATH = SERVICES_ROOT / "mcp" / "app" / "server.py"
 
 if str(SERVICES_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICES_ROOT))
@@ -87,8 +88,20 @@ def _assert_api_uses_shared_retrieval_contract() -> None:
         assert fragment not in source, f"API still carries duplicated retrieval helper: {fragment}"
 
 
+def _assert_mcp_server_space_policy_tool_contract() -> None:
+    source = MCP_SERVER_PATH.read_text(encoding="utf-8")
+    required = (
+        'name="get_space_policy_adoption_summary"',
+        "def get_space_policy_adoption_summary(",
+        "return runtime_impl.get_space_policy_adoption_summary(",
+    )
+    for fragment in required:
+        assert fragment in source, f"missing MCP tool registration/call contract fragment: {fragment}"
+
+
 def main() -> int:
     _assert_api_uses_shared_retrieval_contract()
+    _assert_mcp_server_space_policy_tool_contract()
     runtime_module = _load_mcp_runtime_module()
     PostgresKnowledgeStore = runtime_module.PostgresKnowledgeStore
     SynapseKnowledgeRuntime = runtime_module.SynapseKnowledgeRuntime
@@ -130,6 +143,10 @@ def main() -> int:
             "bc_omega",
             "location",
             "delivery_rules",
+            "claim-1",
+            {"operator_decision": {"ticket_ids": ["SUP-42"], "outcome": "resolved"}},
+            [{"source_id": "dialog-42", "source_type": "tool_result"}],
+            datetime(2026, 4, 2, 12, 2, tzinfo=UTC),
             1.42,
             1,
             0.31,
@@ -173,6 +190,29 @@ def main() -> int:
         def get_task_details(self, **kwargs):
             return None
 
+        def get_space_policy_adoption_summary(self, **kwargs):
+            return {
+                "project_id": kwargs["project_id"],
+                "space_key": kwargs["space_key"],
+                "summary": {
+                    "total_updates": 2,
+                    "unique_actors": 1,
+                    "top_actor": "ops_manager",
+                    "top_actor_updates": 2,
+                    "avg_update_interval_days": 1.0,
+                    "checklist_usage": {
+                        "none": 0,
+                        "ops_standard": 2,
+                        "policy_strict": 0,
+                    },
+                    "checklist_transitions": 1,
+                    "first_updated_at": "2026-04-01T00:00:00+00:00",
+                    "last_updated_at": "2026-04-02T00:00:00+00:00",
+                },
+                "available": True,
+                "meta": {"sampled_entries": kwargs["limit"], "limit": kwargs["limit"]},
+            }
+
     policy = RetrievalContextPolicyConfig(mode="advisory")
     runtime = SynapseKnowledgeRuntime(
         _RuntimeFakeStore(),
@@ -193,6 +233,22 @@ def main() -> int:
     assert expected_runtime_result["retrieval_reason"] == mcp_result["retrieval_reason"]
     assert expected_runtime_result["retrieval_confidence"] == mcp_result["retrieval_confidence"]
     assert expected_runtime_result["context_policy"] == mcp_result["context_policy"]
+
+    policy_summary = runtime.get_space_policy_adoption_summary(
+        project_id="omega_demo",
+        space_key="Operations / Access",
+        limit=9999,
+    )
+    assert policy_summary["space_key"] == "operations_access"
+    assert policy_summary["summary"]["top_actor"] == "ops_manager"
+    assert policy_summary["meta"]["limit"] == 2000
+    assert policy_summary["cached"] is False
+    cached_policy_summary = runtime.get_space_policy_adoption_summary(
+        project_id="omega_demo",
+        space_key="operations_access",
+        limit=2000,
+    )
+    assert cached_policy_summary["cached"] is True
 
     print("mcp/api retrieval parity smoke ok")
     return 0

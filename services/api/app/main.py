@@ -21,6 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +40,7 @@ from app.idempotency import (
 
 try:
     from shared.retrieval import (
+        apply_intent_reranking,
         build_context_policy_headers,
         build_graph_config_headers,
         build_retrieval_explain_fields,
@@ -48,6 +50,7 @@ try:
         load_graph_config_from_env,
         normalize_context_policy_mode,
         normalize_limit_value,
+        normalize_retrieval_intent,
         query_tokens,
         resolve_context_policy_config,
         serialize_context_policy_config,
@@ -55,6 +58,8 @@ try:
     )
     from shared.legacy_profiles import (
         apply_postgres_sql_profile_defaults,
+        list_legacy_mapper_templates,
+        list_legacy_sync_runner_contracts,
         list_postgres_sql_profiles,
         normalize_postgres_sql_profile,
     )
@@ -63,6 +68,7 @@ except ModuleNotFoundError:
     if str(services_root) not in sys.path:
         sys.path.append(str(services_root))
     from shared.retrieval import (
+        apply_intent_reranking,
         build_context_policy_headers,
         build_graph_config_headers,
         build_retrieval_explain_fields,
@@ -72,6 +78,7 @@ except ModuleNotFoundError:
         load_graph_config_from_env,
         normalize_context_policy_mode,
         normalize_limit_value,
+        normalize_retrieval_intent,
         query_tokens,
         resolve_context_policy_config,
         serialize_context_policy_config,
@@ -79,6 +86,8 @@ except ModuleNotFoundError:
     )
     from shared.legacy_profiles import (
         apply_postgres_sql_profile_defaults,
+        list_legacy_mapper_templates,
+        list_legacy_sync_runner_contracts,
         list_postgres_sql_profiles,
         normalize_postgres_sql_profile,
     )
@@ -115,6 +124,7 @@ class ClaimIn(BaseModel):
     observed_at: datetime | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ClaimProposal(BaseModel):
@@ -282,6 +292,15 @@ class RetrievalFeedbackWriteRequest(BaseModel):
     source_system: str | None = Field(default=None, max_length=128)
     usefulness_score: float | None = Field(default=None, ge=-1.0, le=1.0)
     metadata: dict[str, Any] | None = None
+
+
+class WikiLifecycleTelemetrySnapshotRequest(BaseModel):
+    project_id: str
+    session_id: str = Field(min_length=1, max_length=256)
+    observed_at: datetime | None = None
+    empty_scope_action_shown: dict[str, int] = Field(default_factory=dict)
+    empty_scope_action_applied: dict[str, int] = Field(default_factory=dict)
+    source: str | None = Field(default=None, max_length=128)
 
 
 class WikiBootstrapApproveRunRequest(BaseModel):
@@ -761,6 +780,7 @@ class WikiPageUpdateRequest(BaseModel):
     page_type: str | None = Field(default=None, min_length=1, max_length=128)
     status: str | None = Field(default=None, pattern="^(draft|reviewed|published|archived)$")
     change_summary: str | None = Field(default=None, max_length=4000)
+    confirm_high_risk_publish: bool = False
 
 
 class WikiPageMoveRequest(BaseModel):
@@ -796,6 +816,85 @@ class WikiPageRollbackRequest(BaseModel):
     target_version: int = Field(ge=1, le=1000000)
     status: str | None = Field(default=None, pattern="^(draft|reviewed|published|archived)$")
     change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class WikiProcessSimulationRequest(BaseModel):
+    project_id: str
+    page_slug: str | None = Field(default=None, min_length=1, max_length=512)
+    proposed_markdown: str = Field(min_length=1, max_length=200000)
+    baseline_markdown: str | None = Field(default=None, max_length=200000)
+    sample_limit: int = Field(default=12, ge=1, le=50)
+
+
+class AgentDirectoryRegisterRequest(BaseModel):
+    project_id: str
+    agent_id: str = Field(min_length=1, max_length=256)
+    updated_by: str = Field(min_length=1, max_length=256)
+    display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    team: str | None = Field(default=None, min_length=1, max_length=128)
+    role: str | None = Field(default=None, min_length=1, max_length=128)
+    status: str = Field(default="active", pattern="^(active|idle|paused|offline|retired)$")
+    responsibilities: list[str] = Field(default_factory=list, max_length=200)
+    tools: list[str] = Field(default_factory=list, max_length=300)
+    data_sources: list[str] = Field(default_factory=list, max_length=300)
+    limits: list[str] = Field(default_factory=list, max_length=200)
+    metadata: dict[str, Any] | None = None
+    ensure_scaffold: bool = True
+    include_daily_report_stub: bool = True
+    last_seen_at: datetime | None = None
+
+
+class AgentDailyWorklogSyncRequest(BaseModel):
+    project_id: str
+    generated_by: str = Field(min_length=1, max_length=256)
+    worklog_date: date | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=128)
+    days_back: int = Field(default=1, ge=1, le=30)
+    max_agents: int = Field(default=200, ge=1, le=2000)
+    include_retired: bool = False
+    include_idle_days: bool = False
+    min_activity_score: int = Field(default=1, ge=0, le=1000)
+    trigger_mode: str = Field(default="daily_batch", pattern="^(daily_batch|session_close|task_close|manual)$")
+    trigger_reason: str | None = Field(default=None, max_length=512)
+    max_logs_per_agent_page: int = Field(default=14, ge=1, le=60)
+
+
+class AgentCapabilityMatrixSyncRequest(BaseModel):
+    project_id: str
+    generated_by: str = Field(min_length=1, max_length=256)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_agents: int = Field(default=500, ge=1, le=5000)
+
+
+class AgentHandoffSyncRequest(BaseModel):
+    project_id: str
+    generated_by: str = Field(min_length=1, max_length=256)
+    max_edges: int = Field(default=1000, ge=1, le=10000)
+    include_retired: bool = False
+
+
+class AgentScorecardsSyncRequest(BaseModel):
+    project_id: str
+    generated_by: str = Field(min_length=1, max_length=256)
+    max_agents: int = Field(default=500, ge=1, le=5000)
+    lookback_days: int = Field(default=14, ge=1, le=90)
+    include_retired: bool = False
+
+
+class AgentProvenanceRollbackRequest(BaseModel):
+    project_id: str
+    rolled_back_by: str = Field(min_length=1, max_length=256)
+    require_latest_activity: bool = True
+    status: str | None = Field(default=None, pattern="^(draft|reviewed|published|archived)$")
+    change_summary: str | None = Field(default=None, max_length=4000)
+
+
+class AgentPublishPolicyUpsertRequest(BaseModel):
+    project_id: str
+    agent_id: str = Field(min_length=1, max_length=256)
+    updated_by: str = Field(min_length=1, max_length=256)
+    default_mode: str = Field(default="auto_publish", pattern="^(auto_publish|conditional|human_required)$")
+    by_page_type: dict[str, str] | None = None
 
 
 class WikiPageAliasCreateRequest(BaseModel):
@@ -1121,6 +1220,101 @@ def _load_wiki_space_policy(cur: Any, *, project_id: str, space_key: str) -> dic
         "review_assignment_required": bool(row[2]),
         "metadata": row[3] if isinstance(row[3], dict) else {},
         "exists": True,
+    }
+
+
+def _normalized_wiki_space_policy_snapshot(*, write_mode: str, comment_mode: str, review_assignment_required: bool, metadata: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "write_mode": str(write_mode or "open"),
+        "comment_mode": str(comment_mode or "open"),
+        "review_assignment_required": bool(review_assignment_required),
+        "metadata": dict(metadata or {}),
+    }
+
+
+def _wiki_space_policy_changed_fields(before_policy: dict[str, Any], after_policy: dict[str, Any]) -> list[str]:
+    changed: list[str] = []
+    if str(before_policy.get("write_mode") or "open") != str(after_policy.get("write_mode") or "open"):
+        changed.append("write_mode")
+    if str(before_policy.get("comment_mode") or "open") != str(after_policy.get("comment_mode") or "open"):
+        changed.append("comment_mode")
+    if bool(before_policy.get("review_assignment_required")) != bool(after_policy.get("review_assignment_required")):
+        changed.append("review_assignment_required")
+    before_metadata = before_policy.get("metadata") if isinstance(before_policy.get("metadata"), dict) else {}
+    after_metadata = after_policy.get("metadata") if isinstance(after_policy.get("metadata"), dict) else {}
+    if before_metadata != after_metadata:
+        changed.append("metadata")
+        before_preset = str(before_metadata.get("publish_checklist_preset") or "").strip().lower()
+        after_preset = str(after_metadata.get("publish_checklist_preset") or "").strip().lower()
+        if before_preset != after_preset:
+            changed.append("publish_checklist_preset")
+    return changed
+
+
+def _wiki_publish_checklist_preset_from_metadata(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return "none"
+    preset = str(metadata.get("publish_checklist_preset") or "").strip().lower()
+    if preset in {"ops_standard", "policy_strict"}:
+        return preset
+    return "none"
+
+
+def _summarize_wiki_space_policy_audit_rows(rows: list[Any]) -> dict[str, Any]:
+    checklist_usage = {"none": 0, "ops_standard": 0, "policy_strict": 0}
+    actor_counts: dict[str, int] = {}
+    checklist_transitions = 0
+    timeline_ts: list[datetime] = []
+
+    for row in rows:
+        changed_by = str(row[1] or "").strip() or "unknown"
+        actor_counts[changed_by] = actor_counts.get(changed_by, 0) + 1
+
+        before_policy = row[2] if isinstance(row[2], dict) else {}
+        after_policy = row[3] if isinstance(row[3], dict) else {}
+        before_preset = _wiki_publish_checklist_preset_from_metadata(before_policy.get("metadata"))
+        after_preset = _wiki_publish_checklist_preset_from_metadata(after_policy.get("metadata"))
+        checklist_usage[after_preset] += 1
+        if before_preset != after_preset:
+            checklist_transitions += 1
+
+        created_at = row[6]
+        if isinstance(created_at, datetime):
+            timeline_ts.append(created_at)
+
+    sorted_actor_counts = sorted(actor_counts.items(), key=lambda item: (-item[1], item[0]))
+    top_actor = None
+    top_actor_updates = 0
+    if sorted_actor_counts:
+        top_actor = sorted_actor_counts[0][0]
+        top_actor_updates = int(sorted_actor_counts[0][1])
+
+    avg_update_interval_days: float | None = None
+    first_updated_at: str | None = None
+    last_updated_at: str | None = None
+    if timeline_ts:
+        timeline_ts_sorted = sorted(timeline_ts)
+        first_updated_at = timeline_ts_sorted[0].isoformat()
+        last_updated_at = timeline_ts_sorted[-1].isoformat()
+        if len(timeline_ts_sorted) >= 2:
+            deltas_seconds: list[float] = []
+            previous = timeline_ts_sorted[0]
+            for current in timeline_ts_sorted[1:]:
+                deltas_seconds.append(max(0.0, (current - previous).total_seconds()))
+                previous = current
+            if deltas_seconds:
+                avg_update_interval_days = float(sum(deltas_seconds) / len(deltas_seconds) / 86400.0)
+
+    return {
+        "total_updates": len(rows),
+        "unique_actors": len(actor_counts),
+        "top_actor": top_actor,
+        "top_actor_updates": top_actor_updates,
+        "avg_update_interval_days": avg_update_interval_days,
+        "checklist_usage": checklist_usage,
+        "checklist_transitions": checklist_transitions,
+        "first_updated_at": first_updated_at,
+        "last_updated_at": last_updated_at,
     }
 
 
@@ -1554,6 +1748,1330 @@ def _serialize_task_link_row(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+_AGENT_DIRECTORY_ALLOWED_STATUSES = {"active", "idle", "paused", "offline", "retired"}
+_AGENT_PUBLISH_POLICY_MODES = {"auto_publish", "conditional", "human_required"}
+
+
+def _normalize_agent_directory_items(values: list[str] | None, *, limit: int) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values or []:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value[:400])
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _normalize_agent_publish_policy(value: dict[str, Any] | None) -> dict[str, Any]:
+    policy = value if isinstance(value, dict) else {}
+    default_mode = str(policy.get("default_mode") or "auto_publish").strip().lower()
+    if default_mode not in _AGENT_PUBLISH_POLICY_MODES:
+        default_mode = "auto_publish"
+    by_page_type_raw = policy.get("by_page_type") if isinstance(policy.get("by_page_type"), dict) else {}
+    by_page_type: dict[str, str] = {}
+    for key, mode in by_page_type_raw.items():
+        page_type = re.sub(r"[^a-z0-9_/-]+", "_", str(key or "").strip().lower()).strip("_")
+        if not page_type:
+            continue
+        normalized_mode = str(mode or "").strip().lower()
+        if normalized_mode not in _AGENT_PUBLISH_POLICY_MODES:
+            continue
+        by_page_type[page_type] = normalized_mode
+    return {
+        "default_mode": default_mode,
+        "by_page_type": by_page_type,
+    }
+
+
+def _load_agent_publish_policy(cur: Any, *, project_id: str, agent_id: str) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT metadata
+        FROM agent_directory_profiles
+        WHERE project_id = %s
+          AND lower(agent_id) = lower(%s)
+        LIMIT 1
+        """,
+        (project_id, agent_id),
+    )
+    row = cur.fetchone()
+    metadata = row[0] if row and isinstance(row[0], dict) else {}
+    publish_policy = metadata.get("publish_policy") if isinstance(metadata.get("publish_policy"), dict) else {}
+    normalized = _normalize_agent_publish_policy(publish_policy)
+    normalized["agent_id"] = agent_id
+    normalized["configured"] = bool(publish_policy)
+    return normalized
+
+
+def _resolve_agent_publish_mode(
+    cur: Any,
+    *,
+    project_id: str,
+    actor: str,
+    page_type: str,
+) -> dict[str, Any]:
+    normalized_actor = str(actor or "").strip()
+    if not normalized_actor:
+        return {
+            "agent_id": None,
+            "configured": False,
+            "mode": "auto_publish",
+            "policy": _normalize_agent_publish_policy(None),
+        }
+    policy = _load_agent_publish_policy(cur, project_id=project_id, agent_id=normalized_actor)
+    normalized_page_type = re.sub(r"[^a-z0-9_/-]+", "_", str(page_type or "").strip().lower()).strip("_")
+    by_page_type = policy.get("by_page_type") if isinstance(policy.get("by_page_type"), dict) else {}
+    mode = str(by_page_type.get(normalized_page_type) or policy.get("default_mode") or "auto_publish").strip().lower()
+    if mode not in _AGENT_PUBLISH_POLICY_MODES:
+        mode = "auto_publish"
+    return {
+        "agent_id": normalized_actor,
+        "configured": bool(policy.get("configured")),
+        "mode": mode,
+        "policy": policy,
+        "page_type": normalized_page_type,
+    }
+
+
+def _agent_directory_table_exists(conn) -> bool:
+    global _AGENT_DIRECTORY_TABLE_EXISTS
+    if _AGENT_DIRECTORY_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _AGENT_DIRECTORY_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.agent_directory_profiles")
+    return bool(_AGENT_DIRECTORY_TABLE_EXISTS)
+
+
+def _agent_daily_worklogs_table_exists(conn) -> bool:
+    global _AGENT_DAILY_WORKLOGS_TABLE_EXISTS
+    if _AGENT_DAILY_WORKLOGS_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _AGENT_DAILY_WORKLOGS_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.agent_daily_worklogs")
+    return bool(_AGENT_DAILY_WORKLOGS_TABLE_EXISTS)
+
+
+def _render_agent_folder_markdown(
+    *,
+    profile: dict[str, Any],
+    folder_slug: str,
+) -> str:
+    profile_slug = str(profile.get("profile_slug") or folder_slug).strip() or folder_slug
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    lines: list[str] = [
+        f"# {display_name}",
+        "",
+        "## Profile",
+        f"- Agent ID: `{profile.get('agent_id')}`",
+        f"- Role: {profile.get('role') or 'n/a'}",
+        f"- Team: {profile.get('team') or 'n/a'}",
+        f"- Status: {profile.get('status') or 'active'}",
+        f"- Last seen: {profile.get('last_seen_at') or 'n/a'}",
+        "",
+        "## Folder",
+        f"- [Overview](/wiki/{profile_slug}/overview)",
+        f"- [Runbooks](/wiki/{profile_slug}/runbooks)",
+        f"- [Daily Reports](/wiki/{profile_slug}/daily-reports)",
+        f"- [Created Pages](/wiki/{profile_slug}/created-pages)",
+        f"- [Incidents](/wiki/{profile_slug}/incidents)",
+        f"- [Changelog](/wiki/{profile_slug}/changelog)",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _render_agent_overview_markdown(*, profile: dict[str, Any], include_daily_report_stub: bool) -> str:
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    responsibilities = profile.get("responsibilities") if isinstance(profile.get("responsibilities"), list) else []
+    tools = profile.get("tools") if isinstance(profile.get("tools"), list) else []
+    data_sources = profile.get("data_sources") if isinstance(profile.get("data_sources"), list) else []
+    limits = profile.get("limits") if isinstance(profile.get("limits"), list) else []
+    lines: list[str] = [
+        f"# {display_name} Overview",
+        "",
+        "## Responsibilities",
+    ]
+    if responsibilities:
+        lines.extend([f"- {item}" for item in responsibilities])
+    else:
+        lines.append("- Define responsibilities for this agent.")
+    lines.extend(["", "## Tools"])
+    if tools:
+        lines.extend([f"- {item}" for item in tools])
+    else:
+        lines.append("- Add primary tools used by this agent.")
+    lines.extend(["", "## Data Sources"])
+    if data_sources:
+        lines.extend([f"- {item}" for item in data_sources])
+    else:
+        lines.append("- Add core data sources this agent reads from.")
+    lines.extend(["", "## Limits"])
+    if limits:
+        lines.extend([f"- {item}" for item in limits])
+    else:
+        lines.append("- Define explicit guardrails and forbidden actions.")
+    lines.extend(
+        [
+            "",
+            "## Reporting",
+            f"- Status: {profile.get('status') or 'active'}",
+            f"- Last seen: {profile.get('last_seen_at') or 'n/a'}",
+        ]
+    )
+    if include_daily_report_stub:
+        lines.extend(
+            [
+                "",
+                "## Daily Report Stub",
+                f"- [{date.today().isoformat()} report](/wiki/{profile.get('profile_slug')}/daily-reports)",
+            ]
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_agent_runbooks_markdown(*, profile: dict[str, Any]) -> str:
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    return (
+        f"# {display_name} Runbooks\n\n"
+        "## Primary Flows\n"
+        "- Document trigger -> action -> outcome runbooks here.\n\n"
+        "## Escalations\n"
+        "- Define when this agent escalates and to whom.\n\n"
+        "## Exceptions\n"
+        "- Capture customer or process-specific exceptions.\n"
+    )
+
+
+def _render_agent_daily_reports_markdown(*, profile: dict[str, Any]) -> str:
+    today = date.today().isoformat()
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    return (
+        f"# {display_name} Daily Reports\n\n"
+        f"## {today}\n"
+        "- Completed:\n"
+        "- Blockers:\n"
+        "- Escalations:\n"
+        "- Impact:\n"
+    )
+
+
+def _render_agent_created_pages_markdown(*, profile: dict[str, Any], created_pages: list[dict[str, Any]]) -> str:
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    lines: list[str] = [f"# {display_name} Created Pages", ""]
+    if not created_pages:
+        lines.extend(["No authored pages found yet.", ""])
+        return "\n".join(lines)
+    lines.extend(["## Recent pages", ""])
+    for page in created_pages:
+        lines.append(
+            f"- [{page['title']}](/wiki/{page['slug']}) "
+            f"(v{page['version']}, {page['created_at']}, by `{page['created_by']}`)"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_agent_incidents_markdown(*, profile: dict[str, Any]) -> str:
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    return (
+        f"# {display_name} Incidents\n\n"
+        "## Active\n"
+        "- No active incidents logged.\n\n"
+        "## Resolved\n"
+        "- Add incident summaries with linked ticket IDs and outcomes.\n"
+    )
+
+
+def _render_agent_changelog_markdown(*, profile: dict[str, Any], actor: str) -> str:
+    timestamp = datetime.now(UTC).isoformat()
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    return (
+        f"# {display_name} Changelog\n\n"
+        "## Latest update\n"
+        f"- {timestamp}: profile synchronized by `{actor}`\n"
+    )
+
+
+def _upsert_wiki_page_system(
+    cur: Any,
+    *,
+    project_id: str,
+    actor: str,
+    slug: str,
+    title: str,
+    page_type: str,
+    entity_key: str,
+    markdown: str,
+    status: str = "published",
+    change_summary: str | None = None,
+) -> dict[str, Any]:
+    normalized_slug = _normalize_wiki_slug(slug, title)
+    normalized_title = str(title or "").strip() or normalized_slug
+    normalized_page_type = str(page_type or "operations").strip().lower() or "operations"
+    normalized_entity_key = str(entity_key or normalized_slug).strip() or normalized_slug
+    normalized_status = str(status or "published").strip().lower()
+    if normalized_status not in {"draft", "reviewed", "published", "archived"}:
+        normalized_status = "published"
+    prepared_markdown = str(markdown or "").strip()
+    if not prepared_markdown:
+        prepared_markdown = f"# {normalized_title}\n\n## Overview\n- Pending details.\n"
+    if not prepared_markdown.endswith("\n"):
+        prepared_markdown = f"{prepared_markdown}\n"
+    summary = str(change_summary or "").strip() or f"System sync by {actor}"
+
+    row = _resolve_wiki_page_row_by_slug_or_alias(
+        cur,
+        project_id=project_id,
+        slug_or_alias=normalized_slug,
+        for_update=True,
+    )
+    page_id: UUID
+    current_version: int
+    operation: str
+    if row is None:
+        operation = "created"
+        page_id = uuid4()
+        current_version = 0
+        cur.execute(
+            """
+            INSERT INTO wiki_pages (
+              id, project_id, page_type, title, slug, entity_key, status, current_version, metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s)
+            """,
+            (
+                page_id,
+                project_id,
+                normalized_page_type,
+                normalized_title,
+                normalized_slug,
+                normalized_entity_key,
+                normalized_status,
+                Jsonb({"source": "agent_directory_sync", "updated_by": actor}),
+            ),
+        )
+    else:
+        page_id = row[0]
+        current_version = int(row[6] or 0)
+        existing_title = str(row[1] or normalized_title)
+        existing_slug = str(row[2] or normalized_slug)
+        existing_entity_key = str(row[3] or normalized_entity_key)
+        existing_page_type = str(row[4] or normalized_page_type)
+        existing_status = str(row[5] or normalized_status)
+        cur.execute(
+            """
+            SELECT markdown
+            FROM wiki_page_versions
+            WHERE page_id = %s
+              AND version = %s
+            LIMIT 1
+            """,
+            (page_id, current_version),
+        )
+        latest = cur.fetchone()
+        latest_markdown = str(latest[0] or "") if latest is not None else ""
+        if (
+            latest_markdown.strip() == prepared_markdown.strip()
+            and existing_title == normalized_title
+            and existing_slug == normalized_slug
+            and existing_entity_key == normalized_entity_key
+            and existing_page_type == normalized_page_type
+            and existing_status == normalized_status
+        ):
+            return {
+                "status": "no_change",
+                "page": {
+                    "id": str(page_id),
+                    "slug": existing_slug,
+                    "title": existing_title,
+                    "page_type": existing_page_type,
+                    "entity_key": existing_entity_key,
+                    "status": existing_status,
+                    "current_version": current_version,
+                },
+            }
+        operation = "updated"
+        cur.execute(
+            """
+            UPDATE wiki_statements
+            SET status = 'superseded',
+                valid_to = COALESCE(valid_to, NOW()),
+                updated_at = NOW(),
+                metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+            WHERE page_id = %s
+              AND status = 'active'
+            """,
+            (Jsonb({"superseded_by": actor, "sync_source": "agent_directory"}), page_id),
+        )
+
+    next_version = current_version + 1
+    cur.execute(
+        """
+        INSERT INTO wiki_page_versions (
+          id, page_id, version, markdown, ast_json, source, created_by, change_summary
+        )
+        VALUES (%s, %s, %s, %s, %s, 'system', %s, %s)
+        """,
+        (uuid4(), page_id, next_version, prepared_markdown, Jsonb([]), actor, summary),
+    )
+
+    sections = _extract_sections_from_markdown(prepared_markdown)
+    section_keys: list[str] = []
+    for index, section in enumerate(sections):
+        section_key = str(section.get("section_key") or f"section_{index + 1}").strip() or f"section_{index + 1}"
+        section_keys.append(section_key)
+        heading = str(section.get("heading") or _section_heading_from_key(section_key)).strip() or _section_heading_from_key(section_key)
+        statements = [str(item).strip() for item in (section.get("statements") or []) if str(item).strip()]
+        cur.execute(
+            """
+            INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (page_id, section_key) DO UPDATE
+            SET heading = EXCLUDED.heading,
+                order_index = EXCLUDED.order_index,
+                statement_count = EXCLUDED.statement_count
+            """,
+            (page_id, section_key, heading, index, len(statements)),
+        )
+        for statement in statements:
+            cur.execute(
+                """
+                INSERT INTO wiki_statements (
+                  id, project_id, page_id, section_key, statement_text, normalized_text,
+                  claim_fingerprint, status, metadata, valid_from
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                """,
+                (
+                    uuid4(),
+                    project_id,
+                    page_id,
+                    section_key,
+                    statement,
+                    _normalize_statement_text(statement),
+                    _compute_claim_fingerprint(project_id, normalized_entity_key, normalized_page_type, statement),
+                    Jsonb(
+                        {
+                            "source": "agent_directory_sync",
+                            "updated_by": actor,
+                            "page_version": next_version,
+                        }
+                    ),
+                ),
+            )
+
+    if section_keys:
+        cur.execute(
+            """
+            DELETE FROM wiki_sections
+            WHERE page_id = %s
+              AND NOT (section_key = ANY(%s::text[]))
+            """,
+            (page_id, section_keys),
+        )
+    else:
+        cur.execute("DELETE FROM wiki_sections WHERE page_id = %s", (page_id,))
+
+    cur.execute(
+        """
+        UPDATE wiki_pages
+        SET title = %s,
+            slug = %s,
+            page_type = %s,
+            entity_key = %s,
+            status = %s,
+            current_version = %s,
+            metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (
+            normalized_title,
+            normalized_slug,
+            normalized_page_type,
+            normalized_entity_key,
+            normalized_status,
+            next_version,
+            Jsonb({"source": "agent_directory_sync", "updated_by": actor, "last_change_summary": summary}),
+            page_id,
+        ),
+    )
+    snapshot_id = uuid4()
+    cur.execute(
+        """
+        INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (snapshot_id, project_id, actor, summary),
+    )
+    cur.execute(
+        """
+        INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+        VALUES (%s, %s, %s)
+        """,
+        (snapshot_id, page_id, next_version),
+    )
+    return {
+        "status": operation,
+        "page": {
+            "id": str(page_id),
+            "slug": normalized_slug,
+            "title": normalized_title,
+            "page_type": normalized_page_type,
+            "entity_key": normalized_entity_key,
+            "status": normalized_status,
+            "current_version": next_version,
+        },
+    }
+
+
+def _load_agent_created_pages(cur: Any, *, project_id: str, agent_id: str, limit: int = 25) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+          p.slug,
+          p.title,
+          v.version,
+          v.created_by,
+          v.created_at
+        FROM wiki_page_versions v
+        JOIN wiki_pages p ON p.id = v.page_id
+        WHERE p.project_id = %s
+          AND lower(COALESCE(v.created_by, '')) = lower(%s)
+        ORDER BY v.created_at DESC
+        LIMIT %s
+        """,
+        (project_id, agent_id, max(1, min(100, int(limit)))),
+    )
+    rows = cur.fetchall() or []
+    return [
+        {
+            "slug": str(row[0] or ""),
+            "title": str(row[1] or row[0] or ""),
+            "version": int(row[2] or 0),
+            "created_by": str(row[3] or ""),
+            "created_at": row[4].isoformat() if row[4] is not None else None,
+        }
+        for row in rows
+        if row and row[0]
+    ]
+
+
+def _sync_agent_directory_pages(
+    cur: Any,
+    *,
+    project_id: str,
+    actor: str,
+    profile: dict[str, Any],
+    ensure_scaffold: bool,
+    include_daily_report_stub: bool,
+) -> dict[str, Any]:
+    profile_slug = f"agents/{_slugify_segment(str(profile.get('agent_id') or 'agent'))}"
+    profile["profile_slug"] = profile_slug
+    created_pages = _load_agent_created_pages(cur, project_id=project_id, agent_id=str(profile.get("agent_id") or ""))
+    page_results: dict[str, Any] = {}
+    page_results["folder"] = _upsert_wiki_page_system(
+        cur,
+        project_id=project_id,
+        actor=actor,
+        slug=profile_slug,
+        title=str(profile.get("display_name") or profile.get("agent_id") or "Agent"),
+        page_type="operations",
+        entity_key=str(profile.get("agent_id") or profile_slug),
+        markdown=_render_agent_folder_markdown(profile=profile, folder_slug=profile_slug),
+        status="published",
+        change_summary=f"Synced agent directory folder for {profile.get('agent_id')}",
+    )
+    if ensure_scaffold:
+        scaffold_specs = [
+            ("overview", "Overview", "operations", _render_agent_overview_markdown(profile=profile, include_daily_report_stub=include_daily_report_stub)),
+            ("runbooks", "Runbooks", "process", _render_agent_runbooks_markdown(profile=profile)),
+            ("daily-reports", "Daily Reports", "operations", _render_agent_daily_reports_markdown(profile=profile)),
+            ("created-pages", "Created Pages", "operations", _render_agent_created_pages_markdown(profile=profile, created_pages=created_pages)),
+            ("incidents", "Incidents", "incident", _render_agent_incidents_markdown(profile=profile)),
+            ("changelog", "Changelog", "operations", _render_agent_changelog_markdown(profile=profile, actor=actor)),
+        ]
+        for suffix, title, page_type, markdown in scaffold_specs:
+            page_results[suffix] = _upsert_wiki_page_system(
+                cur,
+                project_id=project_id,
+                actor=actor,
+                slug=f"{profile_slug}/{suffix}",
+                title=f"{profile.get('display_name') or profile.get('agent_id')} {title}",
+                page_type=page_type,
+                entity_key=str(profile.get("agent_id") or profile_slug),
+                markdown=markdown,
+                status="published",
+                change_summary=f"Synced agent scaffold page {suffix} for {profile.get('agent_id')}",
+            )
+
+    cur.execute(
+        """
+        SELECT
+          agent_id,
+          display_name,
+          team,
+          role,
+          status,
+          responsibilities,
+          tools,
+          data_sources,
+          limits,
+          updated_at,
+          last_seen_at
+        FROM agent_directory_profiles
+        WHERE project_id = %s
+        ORDER BY
+          COALESCE(NULLIF(trim(team), ''), 'zzz') ASC,
+          COALESCE(NULLIF(trim(role), ''), 'zzz') ASC,
+          lower(agent_id) ASC
+        """,
+        (project_id,),
+    )
+    profile_rows = cur.fetchall() or []
+    index_lines: list[str] = [
+        "# Agents Index",
+        "",
+        "## AI Orgchart",
+        "| Agent | Team | Role | Status | Last Seen | Profile |",
+        "|---|---|---|---|---|---|",
+    ]
+    for item in profile_rows:
+        agent_id = str(item[0] or "").strip()
+        if not agent_id:
+            continue
+        display_name = str(item[1] or agent_id).strip() or agent_id
+        team = str(item[2] or "").strip() or "Unassigned"
+        role = str(item[3] or "").strip() or "Agent"
+        status = str(item[4] or "active").strip() or "active"
+        last_seen_value = item[10] or item[9]
+        last_seen = last_seen_value.isoformat() if last_seen_value is not None else "n/a"
+        agent_slug = f"agents/{_slugify_segment(agent_id)}"
+        index_lines.append(
+            f"| {display_name} (`{agent_id}`) | {team} | {role} | {status} | {last_seen} | [Open](/wiki/{agent_slug}) |"
+        )
+    index_lines.append("")
+    page_results["index"] = _upsert_wiki_page_system(
+        cur,
+        project_id=project_id,
+        actor=actor,
+        slug="agents/index",
+        title="Agents Index",
+        page_type="operations",
+        entity_key="agents_index",
+        markdown="\n".join(index_lines),
+        status="published",
+        change_summary="Synced AI orgchart index",
+    )
+    return page_results
+
+
+def _serialize_agent_profile_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    metadata = row[11] if isinstance(row[11], dict) else {}
+    return {
+        "id": str(row[0]),
+        "project_id": row[1],
+        "agent_id": row[2],
+        "display_name": row[3],
+        "team": row[4],
+        "role": row[5],
+        "status": row[6],
+        "responsibilities": row[7] if isinstance(row[7], list) else [],
+        "tools": row[8] if isinstance(row[8], list) else [],
+        "data_sources": row[9] if isinstance(row[9], list) else [],
+        "limits": row[10] if isinstance(row[10], list) else [],
+        "metadata": metadata,
+        "created_by": row[12],
+        "updated_by": row[13],
+        "last_seen_at": row[14].isoformat() if row[14] is not None else None,
+        "created_at": row[15].isoformat() if row[15] is not None else None,
+        "updated_at": row[16].isoformat() if row[16] is not None else None,
+        "profile_slug": f"agents/{_slugify_segment(str(row[2] or 'agent'))}",
+    }
+
+
+def _resolve_agent_worklog_timezone(
+    conn,
+    *,
+    project_id: str,
+    override_timezone: str | None,
+) -> str:
+    override = _normalize_timezone_name(override_timezone, default="UTC")
+    if str(override_timezone or "").strip():
+        return override
+    policy = _load_project_routing_policy(conn, project_id=project_id)
+    return _normalize_timezone_name(policy.get("agent_worklog_timezone"), default="UTC")
+
+
+def _resolve_agent_worklog_target_date(
+    *,
+    requested_date: date | None,
+    timezone_name: str,
+) -> date:
+    if requested_date is not None:
+        return requested_date
+    tz = ZoneInfo(_normalize_timezone_name(timezone_name, default="UTC"))
+    return datetime.now(UTC).astimezone(tz).date()
+
+
+def _agent_worklog_day_bounds_utc(*, worklog_date: date, timezone_name: str) -> tuple[datetime, datetime]:
+    tz = ZoneInfo(_normalize_timezone_name(timezone_name, default="UTC"))
+    local_start = datetime.combine(worklog_date, datetime.min.time(), tzinfo=tz)
+    local_end = local_start + timedelta(days=1)
+    return (local_start.astimezone(UTC), local_end.astimezone(UTC))
+
+
+def _is_agent_worklog_meaningful(summary: dict[str, Any], *, min_activity_score: int) -> bool:
+    score = int(summary.get("activity_score") or 0)
+    if score >= max(0, int(min_activity_score)):
+        return True
+    events_total = int(summary.get("events_total") or 0)
+    tasks_done = int(summary.get("tasks_done") or 0)
+    pages_authored = int(summary.get("pages_authored") or 0)
+    escalations_total = int(summary.get("escalations_total") or 0)
+    blockers_total = int(summary.get("blockers_total") or 0)
+    return bool(events_total > 0 or tasks_done > 0 or pages_authored > 0 or escalations_total > 0 or blockers_total > 0)
+
+
+def _build_agent_daily_worklog_summary(
+    cur: Any,
+    *,
+    project_id: str,
+    agent_id: str,
+    day_start: datetime,
+    day_end: datetime,
+) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT event_type, COUNT(*)::int
+        FROM events
+        WHERE project_id = %s
+          AND lower(COALESCE(agent_id, '')) = lower(%s)
+          AND observed_at >= %s
+          AND observed_at < %s
+        GROUP BY event_type
+        ORDER BY COUNT(*) DESC, event_type ASC
+        """,
+        (project_id, agent_id, day_start, day_end),
+    )
+    event_rows = cur.fetchall() or []
+    event_counts: dict[str, int] = {}
+    for row in event_rows:
+        event_type = str(row[0] or "").strip()
+        if not event_type:
+            continue
+        event_counts[event_type] = int(row[1] or 0)
+    cur.execute(
+        """
+        SELECT COUNT(DISTINCT COALESCE(session_id, ''))::int
+        FROM events
+        WHERE project_id = %s
+          AND lower(COALESCE(agent_id, '')) = lower(%s)
+          AND observed_at >= %s
+          AND observed_at < %s
+          AND COALESCE(session_id, '') <> ''
+        """,
+        (project_id, agent_id, day_start, day_end),
+    )
+    session_row = cur.fetchone()
+    sessions_count = int(session_row[0] if session_row and session_row[0] is not None else 0)
+    cur.execute(
+        """
+        SELECT status, COUNT(*)::int
+        FROM synapse_tasks
+        WHERE project_id = %s
+          AND lower(COALESCE(updated_by, '')) = lower(%s)
+          AND updated_at >= %s
+          AND updated_at < %s
+        GROUP BY status
+        """,
+        (project_id, agent_id, day_start, day_end),
+    )
+    task_rows = cur.fetchall() or []
+    tasks_by_status: dict[str, int] = {}
+    tasks_touched = 0
+    for row in task_rows:
+        status_name = str(row[0] or "").strip().lower()
+        count = int(row[1] or 0)
+        if not status_name:
+            continue
+        tasks_by_status[status_name] = count
+        tasks_touched += count
+    tasks_done = int(tasks_by_status.get("done") or 0)
+    tasks_blocked = int(tasks_by_status.get("blocked") or 0)
+
+    cur.execute(
+        """
+        SELECT COUNT(*)::int
+        FROM wiki_page_versions v
+        JOIN wiki_pages p ON p.id = v.page_id
+        WHERE p.project_id = %s
+          AND lower(COALESCE(v.created_by, '')) = lower(%s)
+          AND v.created_at >= %s
+          AND v.created_at < %s
+        """,
+        (project_id, agent_id, day_start, day_end),
+    )
+    pages_authored_row = cur.fetchone()
+    pages_authored = int(pages_authored_row[0] if pages_authored_row and pages_authored_row[0] is not None else 0)
+    cur.execute(
+        """
+        SELECT p.title, p.slug, v.created_at
+        FROM wiki_page_versions v
+        JOIN wiki_pages p ON p.id = v.page_id
+        WHERE p.project_id = %s
+          AND lower(COALESCE(v.created_by, '')) = lower(%s)
+          AND v.created_at >= %s
+          AND v.created_at < %s
+        ORDER BY v.created_at DESC
+        LIMIT 5
+        """,
+        (project_id, agent_id, day_start, day_end),
+    )
+    authored_rows = cur.fetchall() or []
+    authored_pages = [
+        {
+            "title": str(row[0] or row[1] or "Untitled").strip() or "Untitled",
+            "slug": str(row[1] or "").strip(),
+            "created_at": row[2].isoformat() if row[2] is not None else None,
+        }
+        for row in authored_rows
+    ]
+
+    cur.execute(
+        """
+        SELECT COUNT(*)::int
+        FROM claim_proposals
+        WHERE project_id = %s
+          AND lower(COALESCE(claim_payload->>'agent_id', '')) = lower(%s)
+          AND created_at >= %s
+          AND created_at < %s
+        """,
+        (project_id, agent_id, day_start, day_end),
+    )
+    drafts_proposed_row = cur.fetchone()
+    drafts_proposed = int(drafts_proposed_row[0] if drafts_proposed_row and drafts_proposed_row[0] is not None else 0)
+
+    session_close_events = int(
+        sum(
+            count
+            for event_name, count in event_counts.items()
+            if ("session" in event_name and ("close" in event_name or "end" in event_name))
+        )
+    )
+    task_close_updates = int(tasks_done + tasks_blocked)
+    escalations_total = int(
+        sum(
+            count
+            for event_name, count in event_counts.items()
+            if any(token in event_name for token in ("escalat", "handoff", "incident"))
+        )
+    )
+    blockers_total = int(tasks_blocked)
+    activity_score = int(
+        sessions_count
+        + tasks_done * 3
+        + tasks_touched
+        + pages_authored * 2
+        + drafts_proposed
+        + escalations_total
+        + blockers_total
+    )
+    return {
+        "events_total": int(sum(event_counts.values())),
+        "sessions_total": sessions_count,
+        "tasks_touched": tasks_touched,
+        "tasks_done": tasks_done,
+        "tasks_blocked": tasks_blocked,
+        "tasks_by_status": tasks_by_status,
+        "pages_authored": pages_authored,
+        "authored_pages": authored_pages,
+        "drafts_proposed": drafts_proposed,
+        "escalations_total": escalations_total,
+        "blockers_total": blockers_total,
+        "session_close_events": session_close_events,
+        "task_close_updates": task_close_updates,
+        "events_by_type": event_counts,
+        "activity_score": activity_score,
+    }
+
+
+def _render_agent_daily_worklog_entry(
+    *,
+    profile: dict[str, Any],
+    worklog_date: date,
+    summary: dict[str, Any],
+) -> str:
+    date_label = worklog_date.isoformat()
+    events_total = int(summary.get("events_total") or 0)
+    sessions_total = int(summary.get("sessions_total") or 0)
+    tasks_touched = int(summary.get("tasks_touched") or 0)
+    tasks_done = int(summary.get("tasks_done") or 0)
+    tasks_blocked = int(summary.get("tasks_blocked") or 0)
+    pages_authored = int(summary.get("pages_authored") or 0)
+    drafts_proposed = int(summary.get("drafts_proposed") or 0)
+    escalations_total = int(summary.get("escalations_total") or 0)
+    blockers_total = int(summary.get("blockers_total") or 0)
+    activity_score = int(summary.get("activity_score") or 0)
+    authored_pages_raw = summary.get("authored_pages")
+    authored_pages = authored_pages_raw if isinstance(authored_pages_raw, list) else []
+    events_by_type_raw = summary.get("events_by_type")
+    events_by_type = events_by_type_raw if isinstance(events_by_type_raw, dict) else {}
+    top_events = sorted(
+        [
+            (str(key), int(value))
+            for key, value in events_by_type.items()
+            if str(key).strip()
+        ],
+        key=lambda item: (-item[1], item[0]),
+    )[:8]
+    lines: list[str] = [
+        f"## {date_label}",
+        f"- Activity score: {activity_score}",
+        f"- Events captured: {events_total}",
+        f"- Sessions touched: {sessions_total}",
+        "",
+        "### Done",
+        f"- Tasks touched: {tasks_touched}",
+        f"- Tasks completed: {tasks_done}",
+        f"- Drafts proposed: {drafts_proposed}",
+        f"- Pages authored: {pages_authored}",
+    ]
+    if authored_pages:
+        lines.append("- Latest page updates:")
+        for item in authored_pages[:3]:
+            title = str(item.get("title") or item.get("slug") or "Untitled")
+            slug = str(item.get("slug") or "").strip()
+            if slug:
+                lines.append(f"  - [{title}](/wiki/{slug})")
+            else:
+                lines.append(f"  - {title}")
+    lines.extend(
+        [
+            "",
+            "### Impact",
+            f"- Knowledge throughput: {drafts_proposed} draft proposals, {pages_authored} page updates.",
+            f"- Operational throughput: {tasks_done} tasks completed across {sessions_total} sessions.",
+            "",
+            "### Blockers",
+            f"- Open blockers observed: {blockers_total} (blocked tasks: {tasks_blocked}).",
+            "",
+            "### Escalations",
+            f"- Escalation signals: {escalations_total}.",
+        ]
+    )
+    if top_events:
+        lines.append("- Top event types:")
+        lines.extend([f"  - `{name}`: {count}" for name, count in top_events])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_agent_daily_reports_page(*, display_name: str, entries: list[str]) -> str:
+    lines = [f"# {display_name} Daily Reports", ""]
+    if not entries:
+        lines.extend(["No daily reports generated yet.", ""])
+        return "\n".join(lines)
+    lines.extend(entries)
+    if not lines[-1].endswith("\n"):
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _compute_agent_capability_confidence(summary: dict[str, Any]) -> float:
+    tasks_touched = int(summary.get("tasks_touched") or 0)
+    tasks_done = int(summary.get("tasks_done") or 0)
+    events_total = int(summary.get("events_total") or 0)
+    confidence = 0.35
+    if tasks_touched > 0:
+        confidence += min(0.35, tasks_done / max(1, tasks_touched) * 0.35)
+    confidence += min(0.2, events_total / 50.0)
+    return round(max(0.0, min(1.0, confidence)), 4)
+
+
+def _build_agent_capability_matrix(
+    cur: Any,
+    *,
+    project_id: str,
+    max_agents: int,
+) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT
+          agent_id,
+          display_name,
+          team,
+          role,
+          status,
+          responsibilities,
+          tools,
+          data_sources,
+          limits
+        FROM agent_directory_profiles
+        WHERE project_id = %s
+        ORDER BY
+          CASE status
+            WHEN 'active' THEN 0
+            WHEN 'idle' THEN 1
+            WHEN 'paused' THEN 2
+            WHEN 'offline' THEN 3
+            ELSE 4
+          END,
+          updated_at DESC
+        LIMIT %s
+        """,
+        (project_id, max(1, min(5000, int(max_agents)))),
+    )
+    rows = cur.fetchall() or []
+    matrix: list[dict[str, Any]] = []
+    for row in rows:
+        agent_id = str(row[0] or "").strip()
+        if not agent_id:
+            continue
+        display_name = str(row[1] or agent_id).strip() or agent_id
+        responsibilities = [str(item).strip() for item in (row[5] or []) if str(item).strip()] if isinstance(row[5], list) else []
+        tools = [str(item).strip() for item in (row[6] or []) if str(item).strip()] if isinstance(row[6], list) else []
+        data_sources = [str(item).strip() for item in (row[7] or []) if str(item).strip()] if isinstance(row[7], list) else []
+        limits = [str(item).strip() for item in (row[8] or []) if str(item).strip()] if isinstance(row[8], list) else []
+        cur.execute(
+            """
+            SELECT
+              worklog_date,
+              summary
+            FROM agent_daily_worklogs
+            WHERE project_id = %s
+              AND agent_id = %s
+            ORDER BY worklog_date DESC
+            LIMIT 14
+            """,
+            (project_id, agent_id),
+        )
+        worklog_rows = cur.fetchall() or []
+        latest_success_at: str | None = None
+        aggregate = {"events_total": 0, "tasks_touched": 0, "tasks_done": 0}
+        evidence: list[dict[str, Any]] = []
+        for item in worklog_rows:
+            worklog_day = item[0]
+            summary = item[1] if isinstance(item[1], dict) else {}
+            aggregate["events_total"] += int(summary.get("events_total") or 0)
+            aggregate["tasks_touched"] += int(summary.get("tasks_touched") or 0)
+            aggregate["tasks_done"] += int(summary.get("tasks_done") or 0)
+            if latest_success_at is None and int(summary.get("tasks_done") or 0) > 0 and worklog_day is not None:
+                latest_success_at = f"{worklog_day.isoformat()}T00:00:00+00:00"
+            if len(evidence) < 5 and worklog_day is not None:
+                evidence.append(
+                    {
+                        "kind": "daily_worklog",
+                        "date": worklog_day.isoformat(),
+                        "tasks_done": int(summary.get("tasks_done") or 0),
+                        "tasks_touched": int(summary.get("tasks_touched") or 0),
+                        "events_total": int(summary.get("events_total") or 0),
+                        "wiki_page": f"agents/{_slugify_segment(agent_id)}/daily-reports",
+                    }
+                )
+        confidence = _compute_agent_capability_confidence(aggregate)
+        matrix.append(
+            {
+                "agent_id": agent_id,
+                "display_name": display_name,
+                "team": str(row[2] or "").strip() or None,
+                "role": str(row[3] or "").strip() or None,
+                "status": str(row[4] or "active").strip() or "active",
+                "responsibilities": responsibilities,
+                "tools": tools,
+                "data_sources": data_sources,
+                "limits": limits,
+                "confidence": confidence,
+                "last_success_at": latest_success_at,
+                "evidence": evidence,
+            }
+        )
+    matrix.sort(key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("agent_id") or "")))
+    return matrix
+
+
+def _render_agent_capability_matrix_markdown(*, matrix: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Agent Capability Matrix",
+        "",
+        "## Coverage",
+        "| Agent | Team | Role | Confidence | Last Success | Core Capabilities |",
+        "|---|---|---|---:|---|---|",
+    ]
+    if not matrix:
+        lines.extend(["| n/a | n/a | n/a | 0.00 | n/a | No data |", ""])
+        return "\n".join(lines)
+    for item in matrix:
+        agent_id = str(item.get("agent_id") or "")
+        display_name = str(item.get("display_name") or agent_id)
+        team = str(item.get("team") or "Unassigned")
+        role = str(item.get("role") or "Agent")
+        confidence = float(item.get("confidence") or 0.0)
+        last_success_at = str(item.get("last_success_at") or "n/a")
+        capabilities = ", ".join(list(item.get("responsibilities") or [])[:3]) or "No responsibilities documented"
+        lines.append(
+            f"| {display_name} (`{agent_id}`) | {team} | {role} | {confidence:.2f} | {last_success_at} | {capabilities} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_agent_handoff_map(
+    cur: Any,
+    *,
+    project_id: str,
+    max_edges: int,
+    include_retired: bool,
+) -> list[dict[str, Any]]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if not include_retired:
+        filters.append("status <> 'retired'")
+    cur.execute(
+        f"""
+        SELECT agent_id, display_name, status, metadata
+        FROM agent_directory_profiles
+        WHERE {' AND '.join(filters)}
+        ORDER BY updated_at DESC
+        """,
+        tuple(params),
+    )
+    rows = cur.fetchall() or []
+    display_by_agent: dict[str, str] = {}
+    for row in rows:
+        agent_id = str(row[0] or "").strip()
+        if not agent_id:
+            continue
+        display_by_agent[agent_id] = str(row[1] or agent_id).strip() or agent_id
+
+    edges: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for row in rows:
+        from_agent = str(row[0] or "").strip()
+        if not from_agent:
+            continue
+        metadata = row[3] if isinstance(row[3], dict) else {}
+        handoffs = metadata.get("handoffs") if isinstance(metadata.get("handoffs"), list) else []
+        for item in handoffs:
+            if not isinstance(item, dict):
+                continue
+            to_agent = str(item.get("to_agent") or item.get("to") or "").strip()
+            if not to_agent:
+                continue
+            input_contract = str(item.get("input_contract") or item.get("input") or "").strip() or "n/a"
+            output_contract = str(item.get("output_contract") or item.get("output") or "").strip() or "n/a"
+            sla = str(item.get("sla") or item.get("sla_target") or "").strip() or "n/a"
+            key = (from_agent, to_agent, input_contract, output_contract, sla)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append(
+                {
+                    "from_agent": from_agent,
+                    "from_display_name": display_by_agent.get(from_agent, from_agent),
+                    "to_agent": to_agent,
+                    "to_display_name": display_by_agent.get(to_agent, to_agent),
+                    "input_contract": input_contract,
+                    "output_contract": output_contract,
+                    "sla": sla,
+                }
+            )
+            if len(edges) >= max(1, min(10000, int(max_edges))):
+                return edges
+    return edges
+
+
+def _render_agent_handoff_markdown(*, edges: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Agent Handoff Map",
+        "",
+        "## Contracts",
+        "| From | To | Input Contract | Output Contract | SLA |",
+        "|---|---|---|---|---|",
+    ]
+    if not edges:
+        lines.extend(["| n/a | n/a | n/a | n/a | n/a |", ""])
+        return "\n".join(lines)
+    for edge in edges:
+        from_agent = str(edge.get("from_agent") or "")
+        to_agent = str(edge.get("to_agent") or "")
+        from_display = str(edge.get("from_display_name") or from_agent)
+        to_display = str(edge.get("to_display_name") or to_agent)
+        lines.append(
+            f"| {from_display} (`{from_agent}`) | {to_display} (`{to_agent}`) | "
+            f"{edge.get('input_contract') or 'n/a'} | {edge.get('output_contract') or 'n/a'} | {edge.get('sla') or 'n/a'} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_agent_scorecards(
+    cur: Any,
+    *,
+    project_id: str,
+    max_agents: int,
+    lookback_days: int,
+    include_retired: bool,
+) -> list[dict[str, Any]]:
+    filters = ["project_id = %s"]
+    params: list[Any] = [project_id]
+    if not include_retired:
+        filters.append("status <> 'retired'")
+    cur.execute(
+        f"""
+        SELECT agent_id, display_name, team, role, status
+        FROM agent_directory_profiles
+        WHERE {' AND '.join(filters)}
+        ORDER BY updated_at DESC
+        LIMIT %s
+        """,
+        tuple([*params, max(1, min(5000, int(max_agents)))]),
+    )
+    profiles = cur.fetchall() or []
+    window_start = date.today() - timedelta(days=max(1, min(90, int(lookback_days))))
+    scorecards: list[dict[str, Any]] = []
+    for row in profiles:
+        agent_id = str(row[0] or "").strip()
+        if not agent_id:
+            continue
+        cur.execute(
+            """
+            SELECT summary
+            FROM agent_daily_worklogs
+            WHERE project_id = %s
+              AND agent_id = %s
+              AND worklog_date >= %s
+            ORDER BY worklog_date DESC
+            """,
+            (project_id, agent_id, window_start),
+        )
+        summaries = [item[0] for item in (cur.fetchall() or []) if isinstance(item[0], dict)]
+        aggregate = {"events_total": 0, "tasks_touched": 0, "tasks_done": 0}
+        for summary in summaries:
+            aggregate["events_total"] += int(summary.get("events_total") or 0)
+            aggregate["tasks_touched"] += int(summary.get("tasks_touched") or 0)
+            aggregate["tasks_done"] += int(summary.get("tasks_done") or 0)
+        reliability = _compute_agent_capability_confidence(aggregate)
+        cur.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = ANY(%s))::int AS active_tasks,
+              COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked_tasks,
+              COUNT(*) FILTER (WHERE status = 'done')::int AS done_tasks
+            FROM synapse_tasks
+            WHERE project_id = %s
+              AND lower(COALESCE(assignee, '')) = lower(%s)
+            """,
+            (list(_TASK_ACTIVE_STATUSES), project_id, agent_id),
+        )
+        task_row = cur.fetchone() or (0, 0, 0)
+        active_tasks = int(task_row[0] or 0)
+        blocked_tasks = int(task_row[1] or 0)
+        done_tasks = int(task_row[2] or 0)
+        escalation_rate = round(blocked_tasks / max(1, active_tasks + done_tasks), 4)
+        quality_score = round(max(0.0, min(1.0, reliability - escalation_rate * 0.2)), 4)
+        scorecards.append(
+            {
+                "agent_id": agent_id,
+                "display_name": str(row[1] or agent_id).strip() or agent_id,
+                "team": str(row[2] or "").strip() or None,
+                "role": str(row[3] or "").strip() or None,
+                "status": str(row[4] or "active").strip() or "active",
+                "reliability_score": reliability,
+                "quality_score": quality_score,
+                "escalation_rate": escalation_rate,
+                "active_tasks": active_tasks,
+                "blocked_tasks": blocked_tasks,
+                "done_tasks": done_tasks,
+                "events_total": aggregate["events_total"],
+                "tasks_touched": aggregate["tasks_touched"],
+                "tasks_done": aggregate["tasks_done"],
+                "evidence_page": f"agents/{_slugify_segment(agent_id)}/daily-reports",
+            }
+        )
+    scorecards.sort(key=lambda item: (-float(item.get("quality_score") or 0.0), str(item.get("agent_id") or "")))
+    return scorecards
+
+
+def _render_agent_scorecards_markdown(*, scorecards: list[dict[str, Any]], lookback_days: int) -> str:
+    lines = [
+        "# Agent Scorecards",
+        "",
+        f"## Window: last {lookback_days} days",
+        "| Agent | Team | Role | Quality | Reliability | Escalation Rate | Active/Blocked | Evidence |",
+        "|---|---|---|---:|---:|---:|---|---|",
+    ]
+    if not scorecards:
+        lines.extend(["| n/a | n/a | n/a | 0.00 | 0.00 | 0.00 | 0/0 | n/a |", ""])
+        return "\n".join(lines)
+    for item in scorecards:
+        agent_id = str(item.get("agent_id") or "")
+        display_name = str(item.get("display_name") or agent_id)
+        team = str(item.get("team") or "Unassigned")
+        role = str(item.get("role") or "Agent")
+        quality = float(item.get("quality_score") or 0.0)
+        reliability = float(item.get("reliability_score") or 0.0)
+        escalation_rate = float(item.get("escalation_rate") or 0.0)
+        active_tasks = int(item.get("active_tasks") or 0)
+        blocked_tasks = int(item.get("blocked_tasks") or 0)
+        evidence_page = str(item.get("evidence_page") or "")
+        evidence = f"[Daily Reports](/wiki/{evidence_page})" if evidence_page else "n/a"
+        lines.append(
+            f"| {display_name} (`{agent_id}`) | {team} | {role} | {quality:.2f} | {reliability:.2f} | "
+            f"{escalation_rate:.2f} | {active_tasks}/{blocked_tasks} | {evidence} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_agent_provenance_activity(
+    *,
+    activity_id: str,
+    page_id: str,
+    slug: str,
+    title: str,
+    page_type: str,
+    page_status: str,
+    current_version: int,
+    version: int,
+    source: str | None,
+    created_by: str | None,
+    change_summary: str | None,
+    created_at: datetime | None,
+) -> dict[str, Any]:
+    can_rollback = version > 1 and current_version == version
+    rollback_reason: str | None = None
+    if version <= 1:
+        rollback_reason = "initial_version_cannot_be_rolled_back"
+    elif current_version != version:
+        rollback_reason = f"activity_not_latest_on_page:current={current_version}:activity={version}"
+    return {
+        "activity_id": activity_id,
+        "page_id": page_id,
+        "slug": slug,
+        "title": title,
+        "page_type": page_type,
+        "page_status": page_status,
+        "version": int(version),
+        "current_version": int(current_version),
+        "source": source or None,
+        "created_by": created_by or None,
+        "change_summary": change_summary or None,
+        "created_at": created_at.isoformat() if created_at is not None else None,
+        "rollback": {
+            "possible": bool(can_rollback),
+            "target_version": int(version - 1) if version > 1 else None,
+            "reason": rollback_reason,
+        },
+    }
+
+
 def _insert_task_event(
     cur,
     *,
@@ -1586,11 +3104,16 @@ _GATEKEEPER_CONFIG_HAS_LLM_COLUMNS: bool | None = None
 _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS: bool | None = None
 _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN: bool | None = None
 _SOURCE_OWNERSHIP_TABLE_EXISTS: bool | None = None
+_BACKFILL_BATCH_HAS_DECISION_COUNTERS: bool | None = None
+_LEGACY_IMPORT_SOURCES_TABLE_EXISTS: bool | None = None
+_MEMORY_BACKFILL_BATCHES_TABLE_EXISTS: bool | None = None
 _ACCESS_POLICY_DECISIONS_TABLE_EXISTS: bool | None = None
 _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS: bool | None = None
 _SCIM_API_TOKENS_TABLE_EXISTS: bool | None = None
 _SCIM_DIRECTORY_USERS_TABLE_EXISTS: bool | None = None
 _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
+_AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
+_AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
 
 _DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS = [
@@ -1701,11 +3224,52 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "min_durable_signal_hits_for_backfill": 1,
     "publish_mode_by_assertion_class": {
         "policy": "conditional",
+        "process": "conditional",
         "preference": "auto_publish",
         "incident": "human_required",
         "event": "human_required",
         "fact": "conditional",
     },
+    "auto_publish_risk_keywords_high": [
+        "legal",
+        "compliance",
+        "privacy",
+        "gdpr",
+        "security",
+        "credential",
+        "payment",
+        "payout",
+        "invoice",
+        "refund",
+        "chargeback",
+        "billing",
+        "pii",
+        "персональн",
+        "платеж",
+        "возврат",
+        "комплаенс",
+        "безопас",
+        "юрид",
+    ],
+    "auto_publish_risk_keywords_medium": [
+        "sla",
+        "finance",
+        "contract",
+        "discount",
+        "pricing",
+        "price",
+        "settlement",
+        "tax",
+        "штраф",
+        "договор",
+        "финанс",
+        "цена",
+        "скидк",
+    ],
+    "auto_publish_force_human_required_levels": ["high"],
+    "process_simulation_require_for_page_types": ["process", "policy", "incident"],
+    "process_simulation_block_levels": ["high"],
+    "process_simulation_sample_limit": 10,
     "retrieval_feedback_window_days": 30,
     "retrieval_feedback_min_events": 3,
     "retrieval_feedback_block_negative_ratio": 0.7,
@@ -1715,6 +3279,17 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "min_evidence_for_wiki_candidate": 2,
     "allow_policy_or_incident_override": True,
     "backfill_requires_policy_signal": True,
+    "backfill_llm_classifier_mode": "off",
+    "backfill_llm_classifier_min_confidence": 0.78,
+    "backfill_llm_classifier_ambiguous_only": True,
+    "backfill_llm_classifier_model": "",
+    "agent_worklog_timezone": "UTC",
+    "agent_worklog_schedule_hour_local": 8,
+    "agent_worklog_schedule_minute_local": 0,
+    "agent_worklog_min_activity_score": 1,
+    "agent_worklog_include_idle_days": False,
+    "agent_worklog_realtime_enabled": True,
+    "agent_worklog_realtime_lookback_minutes": 15,
 }
 
 
@@ -1806,6 +3381,65 @@ def _source_ownership_table_exists(conn) -> bool:
         exists = cur.fetchone() is not None
         if exists:
             _SOURCE_OWNERSHIP_TABLE_EXISTS = True
+    return exists
+
+
+def _backfill_batch_has_decision_counters(conn) -> bool:
+    global _BACKFILL_BATCH_HAS_DECISION_COUNTERS
+    if _BACKFILL_BATCH_HAS_DECISION_COUNTERS is not None:
+        return _BACKFILL_BATCH_HAS_DECISION_COUNTERS
+    required = {"dropped_event_like", "kept_durable", "trusted_bypass"}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'memory_backfill_batches'
+            """
+        )
+        present = {str(row[0]) for row in cur.fetchall()}
+    _BACKFILL_BATCH_HAS_DECISION_COUNTERS = required.issubset(present)
+    return _BACKFILL_BATCH_HAS_DECISION_COUNTERS
+
+
+def _legacy_import_sources_table_exists(conn) -> bool:
+    global _LEGACY_IMPORT_SOURCES_TABLE_EXISTS
+    if _LEGACY_IMPORT_SOURCES_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'legacy_import_sources'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _LEGACY_IMPORT_SOURCES_TABLE_EXISTS = True
+    return exists
+
+
+def _memory_backfill_batches_table_exists(conn) -> bool:
+    global _MEMORY_BACKFILL_BATCHES_TABLE_EXISTS
+    if _MEMORY_BACKFILL_BATCHES_TABLE_EXISTS is True:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'memory_backfill_batches'
+            LIMIT 1
+            """
+        )
+        exists = cur.fetchone() is not None
+        if exists:
+            _MEMORY_BACKFILL_BATCHES_TABLE_EXISTS = True
     return exists
 
 
@@ -2551,6 +4185,17 @@ def _normalize_policy_keyword_list(value: Any, *, fallback: list[str], limit: in
     return out
 
 
+def _normalize_timezone_name(value: Any, *, default: str = "UTC") -> str:
+    timezone_name = str(value or "").strip()
+    if not timezone_name:
+        return default
+    try:
+        ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return default
+    return timezone_name
+
+
 def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     base = dict(_DEFAULT_GATEKEEPER_ROUTING_POLICY)
     if not isinstance(value, dict):
@@ -2583,6 +4228,33 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     normalized["durable_signal_keywords"] = _normalize_policy_keyword_list(
         value.get("durable_signal_keywords"),
         fallback=list(base["durable_signal_keywords"]),
+    )
+    normalized["auto_publish_risk_keywords_high"] = _normalize_policy_keyword_list(
+        value.get("auto_publish_risk_keywords_high"),
+        fallback=list(base["auto_publish_risk_keywords_high"]),
+    )
+    normalized["auto_publish_risk_keywords_medium"] = _normalize_policy_keyword_list(
+        value.get("auto_publish_risk_keywords_medium"),
+        fallback=list(base["auto_publish_risk_keywords_medium"]),
+    )
+    normalized["auto_publish_force_human_required_levels"] = _normalize_policy_keyword_list(
+        value.get("auto_publish_force_human_required_levels"),
+        fallback=list(base["auto_publish_force_human_required_levels"]),
+        limit=5,
+    )
+    normalized["process_simulation_require_for_page_types"] = _normalize_policy_keyword_list(
+        value.get("process_simulation_require_for_page_types"),
+        fallback=list(base["process_simulation_require_for_page_types"]),
+        limit=10,
+    )
+    normalized["process_simulation_block_levels"] = _normalize_policy_keyword_list(
+        value.get("process_simulation_block_levels"),
+        fallback=list(base["process_simulation_block_levels"]),
+        limit=5,
+    )
+    normalized["process_simulation_sample_limit"] = max(
+        1,
+        min(50, _coerce_int(value.get("process_simulation_sample_limit"), int(base["process_simulation_sample_limit"]))),
     )
     normalized["publish_mode_by_assertion_class"] = _normalize_publish_mode_map(
         value.get("publish_mode_by_assertion_class")
@@ -2642,6 +4314,65 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         value.get("backfill_requires_policy_signal"),
         True,
     )
+    llm_mode_raw = str(
+        value.get("backfill_llm_classifier_mode", base["backfill_llm_classifier_mode"]) or ""
+    ).strip().lower()
+    normalized["backfill_llm_classifier_mode"] = (
+        llm_mode_raw if llm_mode_raw in {"off", "assist", "enforce"} else str(base["backfill_llm_classifier_mode"])
+    )
+    normalized["backfill_llm_classifier_min_confidence"] = max(
+        0.0,
+        min(
+            1.0,
+            _coerce_float(
+                value.get(
+                    "backfill_llm_classifier_min_confidence",
+                    base["backfill_llm_classifier_min_confidence"],
+                ),
+                float(base["backfill_llm_classifier_min_confidence"]),
+            ),
+        ),
+    )
+    normalized["backfill_llm_classifier_ambiguous_only"] = _coerce_bool(
+        value.get("backfill_llm_classifier_ambiguous_only"),
+        bool(base["backfill_llm_classifier_ambiguous_only"]),
+    )
+    model_value = str(value.get("backfill_llm_classifier_model") or "").strip()
+    normalized["backfill_llm_classifier_model"] = model_value[:128] if model_value else ""
+    normalized["agent_worklog_timezone"] = _normalize_timezone_name(
+        value.get("agent_worklog_timezone"),
+        default=str(base["agent_worklog_timezone"]),
+    )
+    normalized["agent_worklog_schedule_hour_local"] = max(
+        0,
+        min(23, _coerce_int(value.get("agent_worklog_schedule_hour_local"), int(base["agent_worklog_schedule_hour_local"]))),
+    )
+    normalized["agent_worklog_schedule_minute_local"] = max(
+        0,
+        min(59, _coerce_int(value.get("agent_worklog_schedule_minute_local"), int(base["agent_worklog_schedule_minute_local"]))),
+    )
+    normalized["agent_worklog_min_activity_score"] = max(
+        0,
+        min(1000, _coerce_int(value.get("agent_worklog_min_activity_score"), int(base["agent_worklog_min_activity_score"]))),
+    )
+    normalized["agent_worklog_include_idle_days"] = _coerce_bool(
+        value.get("agent_worklog_include_idle_days"),
+        bool(base["agent_worklog_include_idle_days"]),
+    )
+    normalized["agent_worklog_realtime_enabled"] = _coerce_bool(
+        value.get("agent_worklog_realtime_enabled"),
+        bool(base["agent_worklog_realtime_enabled"]),
+    )
+    normalized["agent_worklog_realtime_lookback_minutes"] = max(
+        1,
+        min(
+            240,
+            _coerce_int(
+                value.get("agent_worklog_realtime_lookback_minutes"),
+                int(base["agent_worklog_realtime_lookback_minutes"]),
+            ),
+        ),
+    )
     return normalized
 
 
@@ -2671,6 +4402,531 @@ def _resolve_publish_mode_for_category(
     return _normalize_publish_mode(default_mode)
 
 
+def _match_policy_keywords(*, text: str, keywords: list[str]) -> list[str]:
+    haystack = str(text or "").strip().lower()
+    if not haystack:
+        return []
+    hits: list[str] = []
+    for keyword in keywords:
+        probe = str(keyword or "").strip().lower()
+        if not probe:
+            continue
+        if probe in haystack:
+            hits.append(probe)
+        if len(hits) >= 12:
+            break
+    return hits
+
+
+def _classify_auto_publish_risk(
+    *,
+    assertion_class: str | None,
+    category: str | None,
+    page_type: str | None,
+    claim_text: str | None,
+    routing_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    policy = routing_policy if isinstance(routing_policy, dict) else {}
+    high_keywords = [
+        str(item).strip().lower()
+        for item in (policy.get("auto_publish_risk_keywords_high") or [])
+        if str(item).strip()
+    ]
+    medium_keywords = [
+        str(item).strip().lower()
+        for item in (policy.get("auto_publish_risk_keywords_medium") or [])
+        if str(item).strip()
+    ]
+    force_levels = [
+        str(item).strip().lower()
+        for item in (policy.get("auto_publish_force_human_required_levels") or ["high"])
+        if str(item).strip()
+    ]
+
+    normalized_assertion_class = str(assertion_class or "").strip().lower()
+    normalized_category = str(category or "").strip().lower()
+    normalized_page_type = str(page_type or "").strip().lower()
+    normalized_claim_text = str(claim_text or "").strip().lower()
+    haystack = " ".join(
+        item
+        for item in (
+            normalized_assertion_class,
+            normalized_category,
+            normalized_page_type,
+            normalized_claim_text,
+        )
+        if item
+    )
+
+    high_hits = _match_policy_keywords(text=haystack, keywords=high_keywords)
+    medium_hits = _match_policy_keywords(text=haystack, keywords=medium_keywords)
+    score = 0
+    if normalized_assertion_class == "policy":
+        score += 2
+    if normalized_assertion_class == "incident":
+        score += 1
+    score += 2 * len(high_hits)
+    score += len(medium_hits)
+
+    level = "low"
+    if score >= 3:
+        level = "high"
+    elif score >= 1:
+        level = "medium"
+
+    force_human = level in set(force_levels)
+    return {
+        "level": level,
+        "score": score,
+        "high_hits": high_hits,
+        "medium_hits": medium_hits,
+        "force_human_required": force_human,
+    }
+
+
+def _extract_text_terms(text: str, *, limit: int = 40) -> list[str]:
+    tokens = re.findall(r"[a-zа-я0-9_]+", str(text or "").strip().lower())
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if len(token) < 3:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _load_project_routing_policy(conn, *, project_id: str) -> dict[str, Any]:
+    default_policy = _normalize_gatekeeper_routing_policy(None)
+    has_routing_policy_column = _gatekeeper_config_has_routing_policy_column(conn)
+    if not has_routing_policy_column:
+        return default_policy
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT routing_policy
+            FROM gatekeeper_project_configs
+            WHERE project_id = %s
+            LIMIT 1
+            """,
+            (project_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return default_policy
+    return _normalize_gatekeeper_routing_policy(row[0] if len(row) > 0 else None)
+
+
+def _classify_process_simulation_risk(
+    *,
+    proposed_markdown: str,
+    changed_terms: list[str],
+    removed_terms: list[str],
+    impacted_pages_total: int,
+    pending_process_drafts: int,
+    open_process_conflicts: int,
+    routing_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    policy = routing_policy if isinstance(routing_policy, dict) else {}
+    high_hits = _match_policy_keywords(
+        text=proposed_markdown,
+        keywords=[str(item) for item in (policy.get("auto_publish_risk_keywords_high") or [])],
+    )
+    medium_hits = _match_policy_keywords(
+        text=proposed_markdown,
+        keywords=[str(item) for item in (policy.get("auto_publish_risk_keywords_medium") or [])],
+    )
+    score = 0
+    score += 2 * len(high_hits)
+    score += len(medium_hits)
+    if len(changed_terms) >= 20:
+        score += 1
+    if removed_terms:
+        score += 1
+    if impacted_pages_total >= 10:
+        score += 2
+    elif impacted_pages_total >= 4:
+        score += 1
+    if pending_process_drafts >= 20:
+        score += 2
+    elif pending_process_drafts >= 8:
+        score += 1
+    if open_process_conflicts > 0:
+        score += 1
+
+    level = "low"
+    if score >= 6:
+        level = "high"
+    elif score >= 3:
+        level = "medium"
+
+    should_block_publish = bool(level == "high" or len(high_hits) > 0)
+    suggested_mode = "human_required" if should_block_publish else ("conditional" if level == "medium" else "auto_publish")
+    return {
+        "level": level,
+        "score": int(score),
+        "high_risk_hits": high_hits,
+        "medium_risk_hits": medium_hits,
+        "should_block_publish": should_block_publish,
+        "suggested_publish_mode": suggested_mode,
+    }
+
+
+def _build_wiki_onboarding_pack(
+    conn,
+    *,
+    project_id: str,
+    role: str | None,
+    max_items_per_section: int,
+    freshness_days: int,
+) -> dict[str, Any]:
+    normalized_role = str(role or "").strip().lower()
+    section_limit = max(1, min(20, int(max_items_per_section)))
+    freshness_days = max(1, min(90, int(freshness_days)))
+    rows: list[dict[str, Any]] = []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              st.id::text,
+              st.statement_text,
+              st.section_key,
+              st.created_at,
+              p.title,
+              p.slug,
+              p.page_type,
+              p.entity_key,
+              p.updated_at,
+              COALESCE(claim_meta.category, '')
+            FROM wiki_statements st
+            JOIN wiki_pages p ON p.id = st.page_id
+            LEFT JOIN LATERAL (
+              SELECT c.category
+              FROM claims c
+              WHERE c.project_id = st.project_id
+                AND c.claim_fingerprint = st.claim_fingerprint
+              ORDER BY c.updated_at DESC
+              LIMIT 1
+            ) claim_meta ON TRUE
+            WHERE st.project_id = %s
+              AND p.status = 'published'
+              AND st.status = 'active'
+              AND (st.valid_from IS NULL OR st.valid_from <= NOW())
+              AND (st.valid_to IS NULL OR st.valid_to >= NOW())
+              AND p.page_type IN ('process', 'policy', 'incident', 'general', 'operations')
+            ORDER BY p.updated_at DESC, st.created_at DESC
+            LIMIT 1000
+            """,
+            (project_id,),
+        )
+        for row in cur.fetchall() or []:
+            statement_text = str(row[1] or "")
+            title_text = str(row[4] or "")
+            entity_text = str(row[7] or "")
+            role_match = 0
+            if normalized_role:
+                haystack = f"{statement_text} {title_text} {entity_text}".lower()
+                if normalized_role in haystack:
+                    role_match = 1
+            rows.append(
+                {
+                    "statement_id": row[0],
+                    "statement_text": statement_text,
+                    "section_key": str(row[2] or ""),
+                    "created_at": row[3].isoformat() if row[3] is not None else None,
+                    "page": {
+                        "title": title_text,
+                        "slug": str(row[5] or ""),
+                        "page_type": str(row[6] or ""),
+                        "entity_key": entity_text,
+                        "updated_at": row[8].isoformat() if row[8] is not None else None,
+                    },
+                    "category": str(row[9] or "") or None,
+                    "role_match": role_match,
+                }
+            )
+
+    def _priority(item: dict[str, Any]) -> tuple[int, str]:
+        created_at = str(item.get("created_at") or "")
+        return (int(item.get("role_match") or 0), created_at)
+
+    escalation_tokens = ("escalat", "tier", "handoff", "pager", "on-call", "эскалац")
+    forbidden_tokens = ("must not", "forbidden", "prohibited", "do not", "never", "запрещ", "нельзя")
+    fresh_cutoff = datetime.now(UTC) - timedelta(days=freshness_days)
+
+    critical_playbooks: list[dict[str, Any]] = []
+    escalation_rules: list[dict[str, Any]] = []
+    forbidden_actions: list[dict[str, Any]] = []
+    fresh_changes: list[dict[str, Any]] = []
+    seen_statement_ids: set[str] = set()
+
+    for item in sorted(rows, key=_priority, reverse=True):
+        statement_id = str(item.get("statement_id") or "")
+        if not statement_id or statement_id in seen_statement_ids:
+            continue
+        seen_statement_ids.add(statement_id)
+
+        page = item.get("page") if isinstance(item.get("page"), dict) else {}
+        page_type = str(page.get("page_type") or "").lower()
+        section_key = str(item.get("section_key") or "").lower()
+        text = str(item.get("statement_text") or "").lower()
+        created_at_text = str(item.get("created_at") or "").strip()
+        is_fresh = False
+        if created_at_text:
+            try:
+                created_at = datetime.fromisoformat(created_at_text.replace("Z", "+00:00"))
+                is_fresh = created_at >= fresh_cutoff
+            except Exception:
+                is_fresh = False
+
+        if (
+            len(critical_playbooks) < section_limit
+            and page_type == "process"
+            and section_key in {"triggers", "steps", "exceptions", "verification"}
+        ):
+            critical_playbooks.append(item)
+        if (
+            len(escalation_rules) < section_limit
+            and (section_key == "escalation" or page_type == "incident" or any(token in text for token in escalation_tokens))
+        ):
+            escalation_rules.append(item)
+        if (
+            len(forbidden_actions) < section_limit
+            and page_type in {"policy", "process"}
+            and any(token in text for token in forbidden_tokens)
+        ):
+            forbidden_actions.append(item)
+        if len(fresh_changes) < section_limit and is_fresh:
+            fresh_changes.append(item)
+
+        if (
+            len(critical_playbooks) >= section_limit
+            and len(escalation_rules) >= section_limit
+            and len(forbidden_actions) >= section_limit
+            and len(fresh_changes) >= section_limit
+        ):
+            break
+
+    return {
+        "project_id": project_id,
+        "role": normalized_role or None,
+        "freshness_days": freshness_days,
+        "sections": {
+            "critical_playbooks": critical_playbooks[:section_limit],
+            "escalation_rules": escalation_rules[:section_limit],
+            "forbidden_actions": forbidden_actions[:section_limit],
+            "fresh_changes": fresh_changes[:section_limit],
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _run_wiki_process_simulation(
+    conn,
+    *,
+    project_id: str,
+    page_slug: str | None,
+    proposed_markdown: str,
+    baseline_markdown: str | None,
+    sample_limit: int,
+) -> dict[str, Any]:
+    normalized_slug = (
+        _normalize_wiki_slug(page_slug, page_slug)
+        if isinstance(page_slug, str) and page_slug.strip()
+        else None
+    )
+    proposed_markdown = str(proposed_markdown or "").strip()
+    baseline_markdown = str(baseline_markdown or "").strip()
+    sample_limit = max(1, min(50, int(sample_limit)))
+    if not proposed_markdown:
+        raise HTTPException(status_code=422, detail={"code": "proposed_markdown_required"})
+
+    routing_policy = _load_project_routing_policy(conn, project_id=project_id)
+    page_context: dict[str, Any] | None = None
+    if normalized_slug:
+        with conn.cursor() as cur:
+            page_row = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=project_id,
+                slug_or_alias=normalized_slug,
+                for_update=False,
+            )
+            if page_row is not None:
+                page_context = {
+                    "id": str(page_row[0]),
+                    "title": str(page_row[1] or ""),
+                    "slug": str(page_row[2] or normalized_slug),
+                    "entity_key": str(page_row[3] or "") or None,
+                    "page_type": str(page_row[4] or "") or None,
+                    "status": str(page_row[5] or "") or None,
+                }
+                if not baseline_markdown:
+                    cur.execute(
+                        """
+                        SELECT markdown
+                        FROM wiki_page_versions
+                        WHERE page_id = %s::uuid
+                        ORDER BY version DESC
+                        LIMIT 1
+                        """,
+                        (str(page_row[0]),),
+                    )
+                    baseline_row = cur.fetchone()
+                    baseline_markdown = str(baseline_row[0] or "").strip() if baseline_row else ""
+
+    proposed_terms = _extract_text_terms(proposed_markdown, limit=50)
+    baseline_terms = _extract_text_terms(baseline_markdown, limit=50)
+    proposed_set = set(proposed_terms)
+    baseline_set = set(baseline_terms)
+    added_terms = sorted(proposed_set - baseline_set)
+    removed_terms = sorted(baseline_set - proposed_set)
+    changed_terms = sorted(set(added_terms + removed_terms))
+    if not changed_terms:
+        changed_terms = proposed_terms[:20]
+    like_patterns = [f"%{term}%" for term in changed_terms[:20]]
+
+    impacted_pages: list[dict[str, Any]] = []
+    pending_process_drafts = 0
+    open_process_conflicts = 0
+    with conn.cursor() as cur:
+        if like_patterns:
+            cur.execute(
+                """
+                SELECT
+                  p.slug,
+                  p.title,
+                  p.page_type,
+                  p.updated_at,
+                  COALESCE(
+                    (
+                      SELECT string_agg(lower(s.statement_text), ' ')
+                      FROM (
+                        SELECT statement_text
+                        FROM wiki_statements s
+                        WHERE s.page_id = p.id
+                          AND s.status = 'active'
+                        ORDER BY s.created_at DESC
+                        LIMIT 20
+                      ) s
+                    ),
+                    ''
+                  ) AS corpus
+                FROM wiki_pages p
+                WHERE p.project_id = %s
+                  AND p.status = 'published'
+                  AND p.page_type IN ('process', 'policy', 'incident', 'operations')
+                  AND (
+                    lower(p.title) LIKE ANY(%s::text[])
+                    OR lower(p.slug) LIKE ANY(%s::text[])
+                    OR EXISTS (
+                      SELECT 1
+                      FROM wiki_statements st
+                      WHERE st.page_id = p.id
+                        AND st.status = 'active'
+                        AND lower(st.statement_text) LIKE ANY(%s::text[])
+                    )
+                  )
+                ORDER BY p.updated_at DESC
+                LIMIT %s
+                """,
+                (project_id, like_patterns, like_patterns, like_patterns, sample_limit),
+            )
+            for row in cur.fetchall() or []:
+                text_haystack = " ".join(
+                    item
+                    for item in (
+                        str(row[0] or "").lower(),
+                        str(row[1] or "").lower(),
+                        str(row[4] or "").lower(),
+                    )
+                    if item
+                )
+                matched_terms = [term for term in changed_terms if term in text_haystack][:8]
+                impacted_pages.append(
+                    {
+                        "slug": str(row[0] or ""),
+                        "title": str(row[1] or ""),
+                        "page_type": str(row[2] or ""),
+                        "updated_at": row[3].isoformat() if row[3] is not None else None,
+                        "matched_terms": matched_terms,
+                    }
+                )
+
+        cur.execute(
+            """
+            SELECT COUNT(*)::bigint
+            FROM wiki_draft_changes d
+            JOIN wiki_pages p ON p.id = d.page_id
+            WHERE d.project_id = %s
+              AND d.status = 'pending_review'
+              AND p.page_type IN ('process', 'policy', 'incident', 'operations')
+            """,
+            (project_id,),
+        )
+        pending_row = cur.fetchone()
+        pending_process_drafts = int(pending_row[0] or 0) if pending_row else 0
+
+        cur.execute(
+            """
+            SELECT COUNT(*)::bigint
+            FROM wiki_conflicts wc
+            JOIN wiki_pages p ON p.id = wc.page_id
+            WHERE wc.project_id = %s
+              AND wc.resolution_status = 'open'
+              AND p.page_type IN ('process', 'policy', 'incident', 'operations')
+            """,
+            (project_id,),
+        )
+        conflict_row = cur.fetchone()
+        open_process_conflicts = int(conflict_row[0] or 0) if conflict_row else 0
+
+    risk = _classify_process_simulation_risk(
+        proposed_markdown=proposed_markdown.lower(),
+        changed_terms=changed_terms,
+        removed_terms=removed_terms,
+        impacted_pages_total=len(impacted_pages),
+        pending_process_drafts=pending_process_drafts,
+        open_process_conflicts=open_process_conflicts,
+        routing_policy=routing_policy,
+    )
+    recommendation = (
+        "Require human review before publish and prepare rollback note."
+        if bool(risk.get("should_block_publish"))
+        else "Safe for conditional/auto publish with monitoring."
+    )
+    return {
+        "status": "ok",
+        "project_id": project_id,
+        "page": page_context,
+        "diff": {
+            "changed_terms_total": len(changed_terms),
+            "added_terms": added_terms[:20],
+            "removed_terms": removed_terms[:20],
+        },
+        "impact": {
+            "candidate_pages_total": len(impacted_pages),
+            "top_impacted_pages": impacted_pages,
+            "pending_process_drafts": pending_process_drafts,
+            "open_process_conflicts": open_process_conflicts,
+        },
+        "risk": risk,
+        "recommendation": {
+            "action": recommendation,
+            "suggested_publish_mode": risk.get("suggested_publish_mode"),
+            "rollback_hint": {
+                "wiki_page_rollback_endpoint": "/v1/wiki/pages/{slug}/rollback",
+                "gatekeeper_rollback_endpoint": "/v1/gatekeeper/config/rollback/preview",
+            },
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _extract_source_diversity(features: dict[str, Any]) -> int:
     for key in ("source_diversity", "historical_source_count", "incoming_source_count"):
         value = features.get(key)
@@ -2686,14 +4942,66 @@ def _extract_source_diversity(features: dict[str, Any]) -> int:
     return 0
 
 
+def _extract_ticket_outcome_signal(claim_metadata: dict[str, Any] | None) -> dict[str, Any]:
+    metadata = claim_metadata if isinstance(claim_metadata, dict) else {}
+    operator_decision = metadata.get("operator_decision") if isinstance(metadata.get("operator_decision"), dict) else {}
+    raw_ticket_ids = (
+        metadata.get("linked_ticket_ids")
+        or metadata.get("ticket_ids")
+        or operator_decision.get("ticket_ids")
+        or []
+    )
+    if not isinstance(raw_ticket_ids, list):
+        raw_ticket_ids = [raw_ticket_ids]
+    ticket_ids: list[str] = []
+    for item in raw_ticket_ids:
+        value = str(item or "").strip()
+        if not value:
+            continue
+        if value in ticket_ids:
+            continue
+        ticket_ids.append(value)
+        if len(ticket_ids) >= 20:
+            break
+
+    outcome = str(
+        metadata.get("resolution_outcome")
+        or metadata.get("outcome")
+        or operator_decision.get("outcome")
+        or ""
+    ).strip().lower()
+    positive_outcomes = {"resolved", "fixed", "completed", "success", "mitigated", "restored"}
+    negative_outcomes = {"failed", "rejected", "escalated_unresolved", "regressed"}
+    positive = outcome in positive_outcomes
+    negative = outcome in negative_outcomes
+
+    bonus = 0.0
+    if ticket_ids:
+        bonus += 0.05
+    if positive:
+        bonus += 0.08
+    elif negative:
+        bonus -= 0.05
+    return {
+        "ticket_ids": ticket_ids,
+        "ticket_count": len(ticket_ids),
+        "outcome": outcome or None,
+        "positive_outcome": positive,
+        "negative_outcome": negative,
+        "score_bonus": round(float(bonus), 4),
+    }
+
+
 def _extract_assertion_class(features: dict[str, Any], *, category: str | None, page_type: str | None) -> str:
     value = str(features.get("assertion_class") or "").strip().lower()
-    if value in {"policy", "preference", "incident", "event", "fact"}:
+    if value in {"policy", "process", "preference", "incident", "event", "fact"}:
         return value
     normalized_page_type = str(page_type or "").strip().lower()
     normalized_category = str(category or "").strip().lower()
     if normalized_page_type in {"access", "operations"}:
         return "policy"
+    if normalized_page_type == "process":
+        return "process"
     if normalized_page_type == "incident":
         return "incident"
     if normalized_page_type == "customer":
@@ -2703,6 +5011,8 @@ def _extract_assertion_class(features: dict[str, Any], *, category: str | None, 
     if any(token in normalized_category for token in ("customer", "client", "preference", "клиент", "предпочт")):
         return "preference"
     if any(token in normalized_category for token in ("policy", "rule", "process", "процесс", "правило")):
+        if "process" in normalized_category or "процесс" in normalized_category:
+            return "process"
         return "policy"
     return "fact"
 
@@ -13045,34 +15355,80 @@ def ingest_memory_backfill(
 @app.get("/v1/backfill/batches/{batch_id}")
 def get_memory_backfill_batch(batch_id: UUID, project_id: str) -> Any:
     with get_conn() as conn:
+        has_decision_counters = _backfill_batch_has_decision_counters(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  id::text,
-                  project_id,
-                  source_system,
-                  agent_id,
-                  session_id,
-                  status,
-                  total_items,
-                  inserted_events,
-                  processed_events,
-                  generated_claims,
-                  cursor,
-                  created_by,
-                  created_at,
-                  updated_at
-                FROM memory_backfill_batches
-                WHERE id = %s
-                  AND project_id = %s
-                LIMIT 1
-                """,
-                (batch_id, project_id),
-            )
+            if has_decision_counters:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      project_id,
+                      source_system,
+                      agent_id,
+                      session_id,
+                      status,
+                      total_items,
+                      inserted_events,
+                      processed_events,
+                      generated_claims,
+                      dropped_event_like,
+                      kept_durable,
+                      trusted_bypass,
+                      cursor,
+                      created_by,
+                      created_at,
+                      updated_at
+                    FROM memory_backfill_batches
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (batch_id, project_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      id::text,
+                      project_id,
+                      source_system,
+                      agent_id,
+                      session_id,
+                      status,
+                      total_items,
+                      inserted_events,
+                      processed_events,
+                      generated_claims,
+                      cursor,
+                      created_by,
+                      created_at,
+                      updated_at
+                    FROM memory_backfill_batches
+                    WHERE id = %s
+                      AND project_id = %s
+                    LIMIT 1
+                    """,
+                    (batch_id, project_id),
+                )
             row = cur.fetchone()
             if row is None:
                 return JSONResponse(status_code=404, content={"error": "backfill_batch_not_found"})
+    if has_decision_counters:
+        dropped_event_like = int(row[10])
+        kept_durable = int(row[11])
+        trusted_bypass = int(row[12])
+        cursor = row[13]
+        created_by = row[14]
+        created_at = row[15]
+        updated_at = row[16]
+    else:
+        dropped_event_like = 0
+        kept_durable = 0
+        trusted_bypass = 0
+        cursor = row[10]
+        created_by = row[11]
+        created_at = row[12]
+        updated_at = row[13]
     return {
         "batch": {
             "id": row[0],
@@ -13085,10 +15441,13 @@ def get_memory_backfill_batch(batch_id: UUID, project_id: str) -> Any:
             "inserted_events": int(row[7]),
             "processed_events": int(row[8]),
             "generated_claims": int(row[9]),
-            "cursor": row[10],
-            "created_by": row[11],
-            "created_at": row[12].isoformat(),
-            "updated_at": row[13].isoformat(),
+            "dropped_event_like": dropped_event_like,
+            "kept_durable": kept_durable,
+            "trusted_bypass": trusted_bypass,
+            "cursor": cursor,
+            "created_by": created_by,
+            "created_at": created_at.isoformat(),
+            "updated_at": updated_at.isoformat(),
         }
     }
 
@@ -13171,6 +15530,29 @@ def create_wiki_page(
                         response_body=response,
                     )
                     return JSONResponse(status_code=403, content=response)
+                agent_publish_guard = _resolve_agent_publish_mode(
+                    cur,
+                    project_id=payload.project_id,
+                    actor=payload.created_by,
+                    page_type=page_type,
+                )
+                if status == "published" and str(agent_publish_guard.get("mode") or "") == "human_required":
+                    response = {
+                        "error": "agent_publish_policy_requires_review",
+                        "project_id": payload.project_id,
+                        "slug": slug,
+                        "page_type": page_type,
+                        "required_status": "reviewed",
+                        "agent_publish_guard": agent_publish_guard,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=409,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=409, content=response)
                 if (
                     status == "published"
                     and bool(policy_check["policy"].get("review_assignment_required"))
@@ -13489,6 +15871,29 @@ def update_wiki_page(
                         if isinstance(payload.change_summary, str) and payload.change_summary.strip()
                         else None
                     ) or f"Page edited by {payload.updated_by}"
+                    agent_publish_guard = _resolve_agent_publish_mode(
+                        cur,
+                        project_id=payload.project_id,
+                        actor=payload.updated_by,
+                        page_type=next_page_type,
+                    )
+                    if next_status == "published" and str(agent_publish_guard.get("mode") or "") == "human_required":
+                        response = {
+                            "error": "agent_publish_policy_requires_review",
+                            "project_id": payload.project_id,
+                            "slug": existing_slug,
+                            "page_type": next_page_type,
+                            "required_status": "reviewed",
+                            "agent_publish_guard": agent_publish_guard,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=409,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=409, content=response)
 
                     cur.execute(
                         """
@@ -13565,6 +15970,57 @@ def update_wiki_page(
                                 response_body=response,
                             )
                             return JSONResponse(status_code=403, content=response)
+
+                    process_simulation_result: dict[str, Any] | None = None
+                    if next_status == "published":
+                        routing_policy = _load_project_routing_policy(conn, project_id=payload.project_id)
+                        enforced_page_types = {
+                            str(item).strip().lower()
+                            for item in (routing_policy.get("process_simulation_require_for_page_types") or [])
+                            if str(item).strip()
+                        }
+                        if not enforced_page_types:
+                            enforced_page_types = {"process", "policy", "incident"}
+                        normalized_next_page_type = str(next_page_type or "").strip().lower()
+                        if normalized_next_page_type in enforced_page_types:
+                            simulation_limit = int(routing_policy.get("process_simulation_sample_limit", 10))
+                            process_simulation_result = _run_wiki_process_simulation(
+                                conn,
+                                project_id=payload.project_id,
+                                page_slug=existing_slug,
+                                proposed_markdown=markdown,
+                                baseline_markdown=latest_markdown,
+                                sample_limit=simulation_limit,
+                            )
+                            risk_obj = (
+                                process_simulation_result.get("risk")
+                                if isinstance(process_simulation_result.get("risk"), dict)
+                                else {}
+                            )
+                            risk_level = str(risk_obj.get("level") or "low").strip().lower()
+                            block_levels = {
+                                str(item).strip().lower()
+                                for item in (routing_policy.get("process_simulation_block_levels") or ["high"])
+                                if str(item).strip()
+                            }
+                            should_block_publish = bool(risk_obj.get("should_block_publish")) or risk_level in block_levels
+                            if should_block_publish and not bool(payload.confirm_high_risk_publish):
+                                response = {
+                                    "error": "publish_blocked_by_process_simulation",
+                                    "project_id": payload.project_id,
+                                    "slug": existing_slug,
+                                    "page_type": next_page_type,
+                                    "required_confirmation": "confirm_high_risk_publish=true",
+                                    "simulation": process_simulation_result,
+                                }
+                                mark_request_completed(
+                                    conn,
+                                    endpoint=endpoint,
+                                    idempotency_key=idempotency_key,
+                                    status_code=409,
+                                    response_body=response,
+                                )
+                                return JSONResponse(status_code=409, content=response)
 
                     next_version = current_version + 1
                     cur.execute(
@@ -13740,6 +16196,9 @@ def update_wiki_page(
                         "superseded_statements": superseded_statements,
                         "inserted_statements": len(inserted_statement_ids),
                     }
+                    if process_simulation_result is not None:
+                        response["process_simulation"] = process_simulation_result
+                        response["process_simulation_acknowledged"] = bool(payload.confirm_high_risk_publish)
                     notification_ids = _insert_wiki_notifications(
                         cur,
                         project_id=payload.project_id,
@@ -15015,6 +17474,565 @@ def list_wiki_pages(
     }
 
 
+_LIFECYCLE_TELEMETRY_KIND_SHOWN = "empty_scope_action_shown"
+_LIFECYCLE_TELEMETRY_KIND_APPLIED = "empty_scope_action_applied"
+_LIFECYCLE_TELEMETRY_KINDS = (_LIFECYCLE_TELEMETRY_KIND_SHOWN, _LIFECYCLE_TELEMETRY_KIND_APPLIED)
+
+
+def _normalize_lifecycle_action_key(value: str | None) -> str:
+    normalized = re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    if not normalized:
+        return ""
+    return normalized[:96]
+
+
+def _normalize_lifecycle_action_counts(raw: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for action, count in raw.items():
+        action_key = _normalize_lifecycle_action_key(str(action or ""))
+        if not action_key:
+            continue
+        try:
+            numeric_count = int(count)
+        except (TypeError, ValueError):
+            continue
+        bounded = max(0, min(1_000_000_000, numeric_count))
+        normalized[action_key] = bounded
+    return normalized
+
+
+def _load_lifecycle_action_telemetry_summary(
+    conn,
+    *,
+    project_id: str,
+    days: int,
+    action_key: str | None = None,
+) -> dict[str, Any]:
+    normalized_days = max(1, min(90, int(days)))
+    normalized_action_key = _normalize_lifecycle_action_key(action_key)
+    since_date = datetime.now(UTC).date() - timedelta(days=normalized_days - 1)
+    until_date = datetime.now(UTC).date()
+
+    action_filter_sql = "AND action_key = %s" if normalized_action_key else ""
+    base_params: tuple[Any, ...] = (
+        _LIFECYCLE_TELEMETRY_KIND_SHOWN,
+        _LIFECYCLE_TELEMETRY_KIND_APPLIED,
+        project_id,
+        since_date,
+    )
+    if normalized_action_key:
+        base_params = (*base_params, normalized_action_key)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+              action_key,
+              COALESCE(SUM(total_count) FILTER (WHERE metric_kind = %s), 0)::bigint AS shown_total,
+              COALESCE(SUM(total_count) FILTER (WHERE metric_kind = %s), 0)::bigint AS applied_total
+            FROM wiki_lifecycle_action_telemetry_daily
+            WHERE project_id = %s
+              AND metric_date >= %s
+              {action_filter_sql}
+            GROUP BY action_key
+            ORDER BY applied_total DESC, shown_total DESC, action_key ASC
+            """,
+            base_params,
+        )
+        action_rows = cur.fetchall() or []
+
+        cur.execute(
+            f"""
+            SELECT
+              metric_date,
+              COALESCE(SUM(total_count) FILTER (WHERE metric_kind = %s), 0)::bigint AS shown_total,
+              COALESCE(SUM(total_count) FILTER (WHERE metric_kind = %s), 0)::bigint AS applied_total
+            FROM wiki_lifecycle_action_telemetry_daily
+            WHERE project_id = %s
+              AND metric_date >= %s
+              {action_filter_sql}
+            GROUP BY metric_date
+            ORDER BY metric_date ASC
+            """,
+            base_params,
+        )
+        daily_rows = cur.fetchall() or []
+
+    action_items: list[dict[str, Any]] = []
+    shown_total_all = 0
+    applied_total_all = 0
+    for row in action_rows:
+        shown_total = int(row[1] or 0)
+        applied_total = int(row[2] or 0)
+        shown_total_all += shown_total
+        applied_total_all += applied_total
+        action_items.append(
+            {
+                "action_key": str(row[0] or ""),
+                "shown_total": shown_total,
+                "applied_total": applied_total,
+                "apply_rate": _safe_ratio(applied_total, max(1, shown_total)),
+            }
+        )
+
+    daily_map: dict[str, dict[str, int]] = {}
+    for row in daily_rows:
+        metric_day: date = row[0]
+        day_key = metric_day.isoformat()
+        daily_map[day_key] = {
+            "shown_total": int(row[1] or 0),
+            "applied_total": int(row[2] or 0),
+        }
+
+    daily_series: list[dict[str, Any]] = []
+    for offset in range(normalized_days):
+        day_value = since_date + timedelta(days=offset)
+        day_key = day_value.isoformat()
+        bucket = daily_map.get(day_key) or {"shown_total": 0, "applied_total": 0}
+        daily_series.append(
+            {
+                "metric_date": day_key,
+                "shown_total": int(bucket["shown_total"]),
+                "applied_total": int(bucket["applied_total"]),
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "action_key": normalized_action_key or None,
+        "days": normalized_days,
+        "since": since_date.isoformat(),
+        "until": until_date.isoformat(),
+        "summary": {
+            "shown_total": shown_total_all,
+            "applied_total": applied_total_all,
+            "apply_rate": _safe_ratio(applied_total_all, max(1, shown_total_all)),
+            "actions": action_items,
+        },
+        "daily": daily_series,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/wiki/lifecycle/stats")
+def get_wiki_lifecycle_stats(
+    project_id: str,
+    stale_days: int = Query(default=21, ge=1, le=365),
+    critical_days: int = Query(default=45, ge=1, le=365),
+    stale_limit: int = Query(default=20, ge=1, le=200),
+    space_key: str | None = Query(default=None),
+) -> dict[str, Any]:
+    normalized_stale_days = max(1, int(stale_days))
+    normalized_critical_days = max(normalized_stale_days, int(critical_days))
+    normalized_limit = normalize_limit_value(stale_limit, default=20, minimum=1, maximum=200)
+    normalized_space_raw = str(space_key or "").strip()
+    normalized_space_key = _slugify_segment(normalized_space_raw) if normalized_space_raw else None
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH draft_metrics AS (
+                  SELECT
+                    page_id,
+                    COUNT(*) FILTER (WHERE status IN ('pending_review', 'blocked_conflict'))::bigint AS open_count,
+                    MAX(created_at) AS latest_draft_at
+                  FROM wiki_draft_changes
+                  WHERE project_id = %s
+                  GROUP BY page_id
+                ),
+                page_activity AS (
+                  SELECT
+                    p.id,
+                    p.slug,
+                    p.title,
+                    p.status,
+                    p.created_at,
+                    p.updated_at,
+                    COALESCE(dm.open_count, 0)::bigint AS open_draft_count,
+                    COALESCE(dm.latest_draft_at, p.updated_at, p.created_at) AS activity_at
+                  FROM wiki_pages p
+                  LEFT JOIN draft_metrics dm ON dm.page_id = p.id
+                  WHERE p.project_id = %s
+                    AND (%s::text IS NULL OR split_part(p.slug, '/', 1) = %s::text)
+                )
+                SELECT
+                  COUNT(*)::bigint AS total,
+                  COUNT(*) FILTER (WHERE status = 'draft')::bigint AS draft_pages,
+                  COUNT(*) FILTER (WHERE status = 'reviewed')::bigint AS reviewed_pages,
+                  COUNT(*) FILTER (WHERE status = 'published')::bigint AS published_pages,
+                  COUNT(*) FILTER (WHERE status = 'archived')::bigint AS archived_pages,
+                  COUNT(*) FILTER (WHERE open_draft_count > 0)::bigint AS pages_with_open_drafts,
+                  COUNT(*) FILTER (
+                    WHERE status = 'published'
+                      AND open_draft_count = 0
+                      AND activity_at < NOW() - (%s::text || ' days')::interval
+                  )::bigint AS stale_warning_pages,
+                  COUNT(*) FILTER (
+                    WHERE status = 'published'
+                      AND open_draft_count = 0
+                      AND activity_at < NOW() - (%s::text || ' days')::interval
+                  )::bigint AS stale_critical_pages,
+                  COUNT(*) FILTER (
+                    WHERE status = 'published'
+                      AND open_draft_count > 0
+                  )::bigint AS published_pages_with_open_drafts,
+                  COUNT(*) FILTER (
+                    WHERE status = 'published'
+                      AND open_draft_count = 0
+                  )::bigint AS published_pages_without_open_drafts,
+                  COUNT(*) FILTER (
+                    WHERE status = 'published'
+                      AND open_draft_count = 0
+                      AND activity_at >= NOW() - (%s::text || ' days')::interval
+                  )::bigint AS published_pages_below_stale_threshold
+                FROM page_activity
+                """,
+                (
+                    project_id,
+                    project_id,
+                    normalized_space_key,
+                    normalized_space_key,
+                    normalized_stale_days,
+                    normalized_critical_days,
+                    normalized_stale_days,
+                ),
+            )
+            summary_row = cur.fetchone() or (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+            cur.execute(
+                """
+                WITH draft_metrics AS (
+                  SELECT
+                    page_id,
+                    COUNT(*) FILTER (WHERE status IN ('pending_review', 'blocked_conflict'))::bigint AS open_count,
+                    MAX(created_at) AS latest_draft_at
+                  FROM wiki_draft_changes
+                  WHERE project_id = %s
+                  GROUP BY page_id
+                ),
+                page_activity AS (
+                  SELECT
+                    p.slug,
+                    p.title,
+                    p.status,
+                    p.updated_at,
+                    COALESCE(dm.open_count, 0)::bigint AS open_draft_count,
+                    COALESCE(dm.latest_draft_at, p.updated_at, p.created_at) AS activity_at
+                  FROM wiki_pages p
+                  LEFT JOIN draft_metrics dm ON dm.page_id = p.id
+                  WHERE p.project_id = %s
+                    AND (%s::text IS NULL OR split_part(p.slug, '/', 1) = %s::text)
+                )
+                SELECT
+                  slug,
+                  title,
+                  status,
+                  open_draft_count,
+                  activity_at,
+                  updated_at,
+                  EXTRACT(EPOCH FROM (NOW() - activity_at)) / 86400.0 AS age_days
+                FROM page_activity
+                WHERE status = 'published'
+                  AND open_draft_count = 0
+                  AND activity_at < NOW() - (%s::text || ' days')::interval
+                ORDER BY activity_at ASC
+                LIMIT %s
+                """,
+                (
+                    project_id,
+                    project_id,
+                    normalized_space_key,
+                    normalized_space_key,
+                    normalized_stale_days,
+                    normalized_limit,
+                ),
+            )
+            stale_rows = cur.fetchall()
+
+    stale_pages: list[dict[str, Any]] = []
+    stale_critical_pages: list[dict[str, Any]] = []
+    for row in stale_rows:
+        age_days = float(row[6]) if row[6] is not None else None
+        item = {
+            "slug": row[0],
+            "title": row[1],
+            "status": row[2],
+            "open_draft_count": int(row[3] or 0),
+            "activity_at": row[4].isoformat() if row[4] is not None else None,
+            "updated_at": row[5].isoformat() if row[5] is not None else None,
+            "age_days": round(age_days, 1) if age_days is not None else None,
+            "severity": "critical" if age_days is not None and age_days >= float(normalized_critical_days) else "warning",
+        }
+        stale_pages.append(item)
+        if item["severity"] == "critical":
+            stale_critical_pages.append(item)
+
+    published_pages = int(summary_row[3] or 0)
+    published_pages_with_open_drafts = int(summary_row[8] or 0)
+    published_pages_without_open_drafts = int(summary_row[9] or 0)
+    published_pages_below_stale_threshold = int(summary_row[10] or 0)
+
+    empty_scope: dict[str, Any] | None = None
+    if len(stale_pages) == 0:
+        if published_pages <= 0:
+            empty_scope = {
+                "code": "no_published",
+                "message": "No published pages in selected scope.",
+                "details": {
+                    "published_pages": published_pages,
+                    "published_pages_with_open_drafts": published_pages_with_open_drafts,
+                    "published_pages_without_open_drafts": published_pages_without_open_drafts,
+                    "published_pages_below_stale_threshold": published_pages_below_stale_threshold,
+                    "stale_days": normalized_stale_days,
+                },
+                "suggested_actions": [
+                    {
+                        "action": "create_page",
+                        "label": "Create first wiki page",
+                        "deep_link": {
+                            "core_tab": "wiki",
+                        },
+                    }
+                ],
+            }
+        elif published_pages_without_open_drafts <= 0 and published_pages_with_open_drafts > 0:
+            empty_scope = {
+                "code": "all_open_drafts",
+                "message": "All published pages currently have open drafts, so stale detection is deferred.",
+                "details": {
+                    "published_pages": published_pages,
+                    "published_pages_with_open_drafts": published_pages_with_open_drafts,
+                    "published_pages_without_open_drafts": published_pages_without_open_drafts,
+                    "published_pages_below_stale_threshold": published_pages_below_stale_threshold,
+                    "stale_days": normalized_stale_days,
+                },
+                "suggested_actions": [
+                    {
+                        "action": "review_open_drafts",
+                        "label": "Review open drafts",
+                        "deep_link": {
+                            "core_tab": "drafts",
+                            "wiki_focus": "draft_inbox",
+                        },
+                    }
+                ],
+            }
+        else:
+            empty_scope = {
+                "code": "below_threshold",
+                "message": "Published pages are within freshness threshold for current stale window.",
+                "details": {
+                    "published_pages": published_pages,
+                    "published_pages_with_open_drafts": published_pages_with_open_drafts,
+                    "published_pages_without_open_drafts": published_pages_without_open_drafts,
+                    "published_pages_below_stale_threshold": published_pages_below_stale_threshold,
+                    "stale_days": normalized_stale_days,
+                },
+                "suggested_actions": [
+                    {
+                        "action": "lower_threshold",
+                        "label": "Use 21/45 preset",
+                    },
+                    {
+                        "action": "create_page",
+                        "label": "Create policy page",
+                        "deep_link": {
+                            "core_tab": "wiki",
+                        },
+                    },
+                ],
+            }
+
+    return {
+        "project_id": project_id,
+        "thresholds": {
+            "stale_days": normalized_stale_days,
+            "critical_days": normalized_critical_days,
+        },
+        "counts": {
+            "total_pages": int(summary_row[0] or 0),
+            "draft_pages": int(summary_row[1] or 0),
+            "reviewed_pages": int(summary_row[2] or 0),
+            "published_pages": int(summary_row[3] or 0),
+            "archived_pages": int(summary_row[4] or 0),
+            "pages_with_open_drafts": int(summary_row[5] or 0),
+            "stale_warning_pages": int(summary_row[6] or 0),
+            "stale_critical_pages": int(summary_row[7] or 0),
+            "published_pages_with_open_drafts": published_pages_with_open_drafts,
+            "published_pages_without_open_drafts": published_pages_without_open_drafts,
+            "published_pages_below_stale_threshold": published_pages_below_stale_threshold,
+        },
+        "stale_pages": stale_pages,
+        "stale_critical_pages": stale_critical_pages,
+        "meta": {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "limit": normalized_limit,
+            "space_key": normalized_space_key,
+            "searched_scope": {
+                "project_id": project_id,
+                "space_key": normalized_space_key,
+                "status_scope": "published_without_open_drafts",
+            },
+            "filters_applied": {
+                "stale_days": normalized_stale_days,
+                "critical_days": normalized_critical_days,
+                "stale_limit": normalized_limit,
+                "space_key": normalized_space_key,
+            },
+            "empty_scope": empty_scope,
+        },
+    }
+
+
+@app.post("/v1/wiki/lifecycle/telemetry/snapshot")
+def upsert_wiki_lifecycle_telemetry_snapshot(payload: WikiLifecycleTelemetrySnapshotRequest) -> dict[str, Any]:
+    observed_at = payload.observed_at or datetime.now(UTC)
+    metric_date = observed_at.date()
+    shown_counts = _normalize_lifecycle_action_counts(payload.empty_scope_action_shown)
+    applied_counts = _normalize_lifecycle_action_counts(payload.empty_scope_action_applied)
+    source = str(payload.source or "web_ui").strip() or "web_ui"
+
+    ingested_rows = 0
+    ingested_by_kind = {
+        _LIFECYCLE_TELEMETRY_KIND_SHOWN: 0,
+        _LIFECYCLE_TELEMETRY_KIND_APPLIED: 0,
+    }
+    delta_by_kind = {
+        _LIFECYCLE_TELEMETRY_KIND_SHOWN: 0,
+        _LIFECYCLE_TELEMETRY_KIND_APPLIED: 0,
+    }
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            for metric_kind, counters in (
+                (_LIFECYCLE_TELEMETRY_KIND_SHOWN, shown_counts),
+                (_LIFECYCLE_TELEMETRY_KIND_APPLIED, applied_counts),
+            ):
+                if not counters:
+                    continue
+                for action_key, counter_value in counters.items():
+                    cur.execute(
+                        """
+                        SELECT counter_value
+                        FROM wiki_lifecycle_action_telemetry_snapshots
+                        WHERE project_id = %s
+                          AND session_id = %s
+                          AND metric_kind = %s
+                          AND action_key = %s
+                        FOR UPDATE
+                        """,
+                        (payload.project_id, payload.session_id, metric_kind, action_key),
+                    )
+                    previous_row = cur.fetchone()
+                    previous_value = int(previous_row[0] or 0) if previous_row is not None else 0
+                    next_value = max(previous_value, int(counter_value))
+                    delta = max(0, next_value - previous_value)
+
+                    if previous_row is None:
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_lifecycle_action_telemetry_snapshots (
+                              project_id,
+                              session_id,
+                              metric_kind,
+                              action_key,
+                              counter_value,
+                              source,
+                              observed_at,
+                              updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                            """,
+                            (
+                                payload.project_id,
+                                payload.session_id,
+                                metric_kind,
+                                action_key,
+                                next_value,
+                                source,
+                                observed_at,
+                            ),
+                        )
+                    elif next_value != previous_value:
+                        cur.execute(
+                            """
+                            UPDATE wiki_lifecycle_action_telemetry_snapshots
+                            SET counter_value = %s,
+                                source = %s,
+                                observed_at = %s,
+                                updated_at = NOW()
+                            WHERE project_id = %s
+                              AND session_id = %s
+                              AND metric_kind = %s
+                              AND action_key = %s
+                            """,
+                            (
+                                next_value,
+                                source,
+                                observed_at,
+                                payload.project_id,
+                                payload.session_id,
+                                metric_kind,
+                                action_key,
+                            ),
+                        )
+
+                    if delta > 0:
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_lifecycle_action_telemetry_daily (
+                              project_id,
+                              metric_date,
+                              metric_kind,
+                              action_key,
+                              total_count,
+                              updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, NOW())
+                            ON CONFLICT (project_id, metric_date, metric_kind, action_key) DO UPDATE
+                            SET total_count = wiki_lifecycle_action_telemetry_daily.total_count + EXCLUDED.total_count,
+                                updated_at = NOW()
+                            """,
+                            (payload.project_id, metric_date, metric_kind, action_key, int(delta)),
+                        )
+                        ingested_rows += 1
+                        ingested_by_kind[metric_kind] = int(ingested_by_kind[metric_kind]) + 1
+                        delta_by_kind[metric_kind] = int(delta_by_kind[metric_kind]) + int(delta)
+
+        summary = _load_lifecycle_action_telemetry_summary(conn, project_id=payload.project_id, days=7)
+
+    return {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "session_id": payload.session_id,
+        "observed_at": observed_at.isoformat(),
+        "metric_date": metric_date.isoformat(),
+        "ingested_rows": ingested_rows,
+        "ingested_by_kind": ingested_by_kind,
+        "delta_by_kind": delta_by_kind,
+        "summary_7d": summary.get("summary") if isinstance(summary, dict) else {},
+    }
+
+
+@app.get("/v1/wiki/lifecycle/telemetry")
+def get_wiki_lifecycle_telemetry(
+    project_id: str,
+    days: int = Query(default=7, ge=1, le=90),
+    action_key: str | None = Query(default=None),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        return _load_lifecycle_action_telemetry_summary(
+            conn,
+            project_id=project_id,
+            days=days,
+            action_key=action_key,
+        )
+
+
 def _compute_wiki_routing_metrics(conn, *, project_id: str, window_days: int) -> dict[str, Any]:
     normalized_window_days = max(1, min(180, int(window_days)))
     with conn.cursor() as cur:
@@ -15299,6 +18317,8 @@ def explain_mcp_retrieval(
     category: str | None = Query(default=None),
     page_type: str | None = Query(default=None),
     related_entity_key: str | None = Query(default=None),
+    retrieval_intent: str | None = Query(default=None),
+    max_context_snippets: int = Query(default=3, ge=1, le=10),
     context_policy_mode: str | None = Query(default=None),
     min_retrieval_confidence: float | None = Query(default=None, ge=0.0, le=1.0),
     min_total_score: float | None = Query(default=None, ge=0.0, le=2.0),
@@ -15308,6 +18328,8 @@ def explain_mcp_retrieval(
     normalized_query = q.strip()
     normalized_limit = normalize_limit_value(limit, default=10, minimum=1, maximum=100)
     normalized_related = clean_optional_filter(related_entity_key)
+    normalized_intent = normalize_retrieval_intent(retrieval_intent, default="auto")
+    normalized_max_context_snippets = normalize_limit_value(max_context_snippets, default=3, minimum=1, maximum=10)
     entity_filter = clean_optional_filter(entity_key)
     category_filter = clean_optional_filter(category)
     page_type_filter = clean_optional_filter(page_type)
@@ -15346,7 +18368,10 @@ def explain_mcp_retrieval(
                 "query_tokens": [],
                 "related_entity_key": normalized_related,
                 "context_policy": context_policy_payload,
+                "intent": normalized_intent,
+                "max_context_snippets": normalized_max_context_snippets,
             },
+            "context_injection": {"intent": normalized_intent, "snippets": []},
         }
     plan = build_retrieval_search_plan(
         project_id=project_id,
@@ -15378,7 +18403,10 @@ def explain_mcp_retrieval(
                 "query_tokens": [],
                 "related_entity_key": normalized_related,
                 "context_policy": context_policy_payload,
+                "intent": normalized_intent,
+                "max_context_snippets": normalized_max_context_snippets,
             },
+            "context_injection": {"intent": normalized_intent, "snippets": []},
         }
 
     with get_conn() as conn:
@@ -15403,9 +18431,13 @@ def explain_mcp_retrieval(
                 "page_type": row[10],
             },
             "category": row[11] or None,
-            "score": round(float(row[12]), 4),
-            "graph_hops": int(row[13]) if row[13] is not None else None,
-            "graph_boost": round(float(row[14]), 4),
+            "claim_id": row[12] or None,
+            "claim_metadata": row[13] if isinstance(row[13], dict) else {},
+            "claim_evidence": row[14] if isinstance(row[14], list) else [],
+            "claim_observed_at": row[15].isoformat() if row[15] is not None else None,
+            "score": round(float(row[16]), 4),
+            "graph_hops": int(row[17]) if row[17] is not None else None,
+            "graph_boost": round(float(row[18]), 4),
         }
         results.append(
             build_retrieval_explain_fields(
@@ -15425,6 +18457,21 @@ def explain_mcp_retrieval(
             if isinstance(row.get("context_policy"), dict) and bool(row["context_policy"].get("eligible"))
         ]
         filtered_out = max(0, before - len(results))
+    reranked_results, intent_payload = apply_intent_reranking(
+        query=plan.query,
+        results=results,
+        explicit_intent=normalized_intent,
+        max_context_snippets=normalized_max_context_snippets,
+        query_tokens_override=plan.query_tokens,
+    )
+    explainability_payload = {
+        "version": "v1",
+        "query_tokens": list(plan.query_tokens),
+        "related_entity_key": plan.related_entity_key,
+        "context_policy": context_policy_payload,
+    }
+    if isinstance(intent_payload.get("explainability"), dict):
+        explainability_payload.update(intent_payload["explainability"])
 
     return {
         "project_id": project_id,
@@ -15436,16 +18483,15 @@ def explain_mcp_retrieval(
             "page_type": plan.page_type,
             "related_entity_key": plan.related_entity_key,
         },
-        "results": results,
+        "results": reranked_results,
         "graph_config": graph_config_payload,
         "context_policy": context_policy_payload,
         "policy_filtered_out": filtered_out,
-        "explainability": {
-            "version": "v1",
-            "query_tokens": list(plan.query_tokens),
-            "related_entity_key": plan.related_entity_key,
-            "context_policy": context_policy_payload,
+        "context_injection": {
+            "intent": explainability_payload.get("intent", normalized_intent),
+            "snippets": intent_payload.get("context_snippets") or [],
         },
+        "explainability": explainability_payload,
     }
 
 
@@ -15583,6 +18629,42 @@ def get_mcp_retrieval_feedback_stats(
         "items": items,
         "generated_at": datetime.now(UTC).isoformat(),
     }
+
+
+@app.post("/v1/wiki/process/simulate")
+def simulate_wiki_process_change(payload: WikiProcessSimulationRequest) -> dict[str, Any]:
+    project_id = payload.project_id.strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _run_wiki_process_simulation(
+            conn,
+            project_id=project_id,
+            page_slug=payload.page_slug,
+            proposed_markdown=payload.proposed_markdown,
+            baseline_markdown=payload.baseline_markdown,
+            sample_limit=payload.sample_limit,
+        )
+
+
+@app.get("/v1/wiki/onboarding-pack")
+def get_wiki_onboarding_pack(
+    project_id: str,
+    role: str | None = Query(default=None),
+    max_items_per_section: int = Query(default=5, ge=1, le=20),
+    freshness_days: int = Query(default=14, ge=1, le=90),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _build_wiki_onboarding_pack(
+            conn,
+            project_id=normalized_project,
+            role=role,
+            max_items_per_section=max_items_per_section,
+            freshness_days=freshness_days,
+        )
 
 
 @app.get("/v1/wiki/pages/{slug}")
@@ -17031,6 +20113,90 @@ def get_wiki_space_policy(space_key: str, project_id: str) -> Any:
     }
 
 
+@app.get("/v1/wiki/spaces/{space_key}/policy/audit")
+def list_wiki_space_policy_audit(space_key: str, project_id: str, limit: int = Query(default=40, ge=1, le=200)) -> Any:
+    normalized_space_key = _slugify_segment(space_key)
+    normalized_limit = normalize_limit_value(limit, default=40, minimum=1, maximum=200)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_space_policy_audit"):
+                return {
+                    "project_id": project_id,
+                    "space_key": normalized_space_key,
+                    "entries": [],
+                    "available": False,
+                }
+            cur.execute(
+                """
+                SELECT id::text, changed_by, before_policy, after_policy, changed_fields, reason, created_at
+                FROM wiki_space_policy_audit
+                WHERE project_id = %s
+                  AND space_key = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (project_id, normalized_space_key, normalized_limit),
+            )
+            rows = cur.fetchall()
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space_key,
+        "entries": [
+            {
+                "id": str(row[0]),
+                "changed_by": str(row[1] or ""),
+                "before_policy": row[2] if isinstance(row[2], dict) else {},
+                "after_policy": row[3] if isinstance(row[3], dict) else {},
+                "changed_fields": [str(item) for item in row[4]] if isinstance(row[4], list) else [],
+                "reason": str(row[5]).strip() if isinstance(row[5], str) and row[5].strip() else None,
+                "created_at": row[6].isoformat() if row[6] is not None else None,
+            }
+            for row in rows
+        ],
+        "available": True,
+    }
+
+
+@app.get("/v1/wiki/spaces/{space_key}/policy/adoption-summary")
+def get_wiki_space_policy_adoption_summary(
+    space_key: str,
+    project_id: str,
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> Any:
+    normalized_space_key = _slugify_segment(space_key)
+    normalized_limit = normalize_limit_value(limit, default=200, minimum=1, maximum=2000)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.wiki_space_policy_audit"):
+                return {
+                    "project_id": project_id,
+                    "space_key": normalized_space_key,
+                    "summary": _summarize_wiki_space_policy_audit_rows([]),
+                    "available": False,
+                    "meta": {"sampled_entries": 0, "limit": normalized_limit},
+                }
+            cur.execute(
+                """
+                SELECT id::text, changed_by, before_policy, after_policy, changed_fields, reason, created_at
+                FROM wiki_space_policy_audit
+                WHERE project_id = %s
+                  AND space_key = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (project_id, normalized_space_key, normalized_limit),
+            )
+            rows = cur.fetchall()
+    summary = _summarize_wiki_space_policy_audit_rows(rows)
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space_key,
+        "summary": summary,
+        "available": True,
+        "meta": {"sampled_entries": len(rows), "limit": normalized_limit},
+    }
+
+
 @app.put("/v1/wiki/spaces/{space_key}/policy", response_model=None)
 def upsert_wiki_space_policy(space_key: str, payload: WikiSpacePolicyUpsertRequest) -> Any:
     normalized_space_key = _slugify_segment(space_key)
@@ -17040,6 +20206,30 @@ def upsert_wiki_space_policy(space_key: str, payload: WikiSpacePolicyUpsertReque
         with conn.cursor() as cur:
             if not _wiki_feature_table_exists(cur, "public.wiki_space_policies"):
                 return JSONResponse(status_code=503, content={"error": "wiki_space_policies_unavailable"})
+            before_policy = _load_wiki_space_policy(cur, project_id=payload.project_id, space_key=normalized_space_key)
+            before_snapshot = _normalized_wiki_space_policy_snapshot(
+                write_mode=str(before_policy.get("write_mode") or "open"),
+                comment_mode=str(before_policy.get("comment_mode") or "open"),
+                review_assignment_required=bool(before_policy.get("review_assignment_required")),
+                metadata=before_policy.get("metadata") if isinstance(before_policy.get("metadata"), dict) else {},
+            )
+            after_snapshot = _normalized_wiki_space_policy_snapshot(
+                write_mode=payload.write_mode,
+                comment_mode=payload.comment_mode,
+                review_assignment_required=bool(payload.review_assignment_required),
+                metadata=payload.metadata if isinstance(payload.metadata, dict) else {},
+            )
+            changed_fields = _wiki_space_policy_changed_fields(before_snapshot, after_snapshot)
+            if bool(before_policy.get("exists")) and not changed_fields:
+                return {
+                    "status": "no_change",
+                    "project_id": payload.project_id,
+                    "space_key": normalized_space_key,
+                    "policy": {
+                        **after_snapshot,
+                        "updated_by": payload.updated_by,
+                    },
+                }
             owner_count = _wiki_space_owner_count(cur, project_id=payload.project_id, space_key=normalized_space_key)
             actor_is_owner = _wiki_actor_is_owner(
                 cur,
@@ -17075,26 +20265,49 @@ def upsert_wiki_space_policy(space_key: str, payload: WikiSpacePolicyUpsertReque
                 (
                     payload.project_id,
                     normalized_space_key,
-                    payload.write_mode,
-                    payload.comment_mode,
-                    bool(payload.review_assignment_required),
-                    Jsonb(payload.metadata or {}),
+                    after_snapshot["write_mode"],
+                    after_snapshot["comment_mode"],
+                    bool(after_snapshot["review_assignment_required"]),
+                    Jsonb(after_snapshot["metadata"]),
                     payload.updated_by,
                 ),
             )
             row = cur.fetchone()
+            if _wiki_feature_table_exists(cur, "public.wiki_space_policy_audit"):
+                reason = None
+                metadata = after_snapshot["metadata"] if isinstance(after_snapshot["metadata"], dict) else {}
+                if isinstance(metadata.get("policy_change_reason"), str) and str(metadata.get("policy_change_reason")).strip():
+                    reason = str(metadata.get("policy_change_reason")).strip()
+                cur.execute(
+                    """
+                    INSERT INTO wiki_space_policy_audit (
+                      id, project_id, space_key, changed_by, before_policy, after_policy, changed_fields, reason
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        uuid4(),
+                        payload.project_id,
+                        normalized_space_key,
+                        payload.updated_by,
+                        Jsonb(before_snapshot),
+                        Jsonb(after_snapshot),
+                        Jsonb(changed_fields),
+                        reason,
+                    ),
+                )
     return {
         "status": "updated",
         "project_id": payload.project_id,
         "space_key": normalized_space_key,
         "policy": {
-            "write_mode": payload.write_mode,
-            "comment_mode": payload.comment_mode,
-            "review_assignment_required": bool(payload.review_assignment_required),
-            "metadata": payload.metadata or {},
+            **after_snapshot,
             "updated_by": payload.updated_by,
             "created_at": row[0].isoformat() if row and row[0] is not None else None,
             "updated_at": row[1].isoformat() if row and row[1] is not None else None,
+        },
+        "audit": {
+            "changed_fields": changed_fields,
         },
     }
 
@@ -17880,6 +21093,58 @@ def list_wiki_drafts(
     return {"drafts": drafts}
 
 
+def _derive_gatekeeper_llm_reason_code(features: dict[str, Any], *, tier: str | None) -> str | None:
+    if not isinstance(features, dict):
+        return None
+    explicit_reason = str(features.get("llm_reason_code") or "").strip()
+    if explicit_reason:
+        return explicit_reason
+
+    llm_error = str(features.get("llm_error") or "").strip()
+    if llm_error:
+        return llm_error
+
+    status = str(features.get("llm_status") or "").strip().lower()
+    if status in {"disabled", "skipped", "error", "timeout"}:
+        return f"llm_{status}"
+    if status and status != "ok":
+        return f"llm_{status}"
+
+    llm_confidence_raw = features.get("llm_confidence")
+    llm_min_confidence_raw = features.get("gatekeeper_llm_min_confidence")
+    llm_confidence = float(llm_confidence_raw) if isinstance(llm_confidence_raw, (int, float)) else None
+    llm_min_confidence = float(llm_min_confidence_raw) if isinstance(llm_min_confidence_raw, (int, float)) else None
+    if llm_confidence is not None and llm_min_confidence is not None and llm_confidence < llm_min_confidence:
+        return "below_confidence_threshold"
+
+    llm_applied = bool(features.get("llm_applied"))
+    suggested_tier = str(features.get("llm_suggested_tier") or "").strip().lower()
+    if llm_applied:
+        if suggested_tier == "operational_memory":
+            return "override_skip_event"
+        if suggested_tier == "golden_candidate":
+            return "override_keep_knowledge"
+        if suggested_tier == "insight_candidate":
+            return "override_route_to_insight"
+        return "assist_blended_score"
+
+    if bool(features.get("routing_hard_block")):
+        return "routing_policy_hard_block"
+    if bool(features.get("blocked_by_source_id")):
+        return "blocked_source_id"
+    if bool(features.get("blocked_by_source_system")):
+        return "blocked_source_system"
+    if bool(features.get("blocked_by_source_type")):
+        return "blocked_source_type"
+    if bool(features.get("blocked_by_entity")):
+        return "blocked_entity"
+    if bool(features.get("blocked_by_category")):
+        return "blocked_category"
+    if tier and str(tier).strip().lower() == "operational_memory":
+        return "heuristic_operational_memory"
+    return "no_override_needed"
+
+
 @app.get("/v1/wiki/drafts/{draft_id}")
 def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
     with get_conn() as conn:
@@ -17910,10 +21175,15 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
                   c.status,
                   c.valid_from,
                   c.valid_to,
-                  c.created_at
+                  c.created_at,
+                  g.tier,
+                  g.score,
+                  g.rationale,
+                  g.features
                 FROM wiki_draft_changes d
                 LEFT JOIN wiki_pages p ON p.id = d.page_id
                 LEFT JOIN claims c ON c.id = d.claim_id
+                LEFT JOIN gatekeeper_decisions g ON g.claim_id = d.claim_id
                 WHERE d.id = %s
                   AND d.project_id = %s
                 LIMIT 1
@@ -17949,6 +21219,10 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
                 claim_valid_from,
                 claim_valid_to,
                 claim_created_at,
+                gatekeeper_tier,
+                gatekeeper_score,
+                gatekeeper_rationale,
+                gatekeeper_features,
             ) = row
 
             cur.execute(
@@ -18027,11 +21301,19 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
         for item in action_rows
     ]
 
+    gatekeeper_features_dict = gatekeeper_features if isinstance(gatekeeper_features, dict) else {}
+    llm_status = gatekeeper_features_dict.get("llm_status")
+    llm_error = gatekeeper_features_dict.get("llm_error")
+    llm_reason_code = _derive_gatekeeper_llm_reason_code(gatekeeper_features_dict, tier=gatekeeper_tier)
+    llm_confidence_raw = gatekeeper_features_dict.get("llm_confidence")
+    llm_confidence = float(llm_confidence_raw) if isinstance(llm_confidence_raw, (int, float)) else None
+    llm_applied = bool(gatekeeper_features_dict.get("llm_applied"))
+
     return {
         "draft": {
             "id": draft_id_text,
             "claim_id": str(claim_id_value),
-            "page_id": str(page_id_value),
+            "page_id": str(page_id_value) if page_id_value is not None else None,
             "section_key": section_key,
             "decision": decision_value,
             "confidence": float(confidence_value),
@@ -18056,6 +21338,32 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
                 "valid_from": claim_valid_from.isoformat() if claim_valid_from is not None else None,
                 "valid_to": claim_valid_to.isoformat() if claim_valid_to is not None else None,
                 "created_at": claim_created_at.isoformat() if claim_created_at is not None else None,
+            },
+        },
+        "gatekeeper": {
+            "tier": gatekeeper_tier,
+            "score": float(gatekeeper_score) if isinstance(gatekeeper_score, (int, float)) else None,
+            "rationale": gatekeeper_rationale,
+            "llm": {
+                "status": str(llm_status) if llm_status is not None else None,
+                "applied": llm_applied,
+                "suggested_tier": (
+                    str(gatekeeper_features_dict.get("llm_suggested_tier"))
+                    if gatekeeper_features_dict.get("llm_suggested_tier") is not None
+                    else None
+                ),
+                "confidence": llm_confidence,
+                "reason_code": llm_reason_code,
+                "provider": str(gatekeeper_features_dict.get("llm_provider")) if gatekeeper_features_dict.get("llm_provider") else None,
+                "model": str(gatekeeper_features_dict.get("llm_model")) if gatekeeper_features_dict.get("llm_model") else None,
+            },
+            "routing": {
+                "hard_block": bool(gatekeeper_features_dict.get("routing_hard_block")),
+                "blocked_by_category": bool(gatekeeper_features_dict.get("blocked_by_category")),
+                "blocked_by_source_system": bool(gatekeeper_features_dict.get("blocked_by_source_system")),
+                "blocked_by_source_type": bool(gatekeeper_features_dict.get("blocked_by_source_type")),
+                "blocked_by_entity": bool(gatekeeper_features_dict.get("blocked_by_entity")),
+                "blocked_by_source_id": bool(gatekeeper_features_dict.get("blocked_by_source_id")),
             },
         },
         "conflicts": conflicts,
@@ -19165,6 +22473,8 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                       d.status,
                       d.created_at,
                       c.category,
+                      c.claim_text,
+                      COALESCE(c.metadata, '{}'::jsonb),
                       p.page_type,
                       g.tier,
                       g.score,
@@ -19181,7 +22491,14 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     LEFT JOIN gatekeeper_decisions g ON g.claim_id = d.claim_id
                     WHERE d.project_id = %s
                       AND d.status = 'pending_review'
-                    ORDER BY d.created_at ASC
+                    ORDER BY
+                      CASE
+                        WHEN lower(COALESCE(c.metadata->>'resolution_outcome', c.metadata->>'outcome', c.metadata->'operator_decision'->>'outcome', ''))
+                          IN ('resolved', 'fixed', 'completed', 'success', 'mitigated', 'restored')
+                        THEN 1
+                        ELSE 0
+                      END DESC,
+                      d.created_at ASC
                     LIMIT %s
                     """,
                     (project_id, payload.limit_per_project),
@@ -19211,13 +22528,29 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
             claim_id_text = str(row[1])
             decision = str(row[2] or "")
             category = str(row[5] or "")
-            page_type = str(row[6] or "")
-            tier = str(row[7] or "")
-            score = float(row[8] or 0.0)
-            features = row[9] if isinstance(row[9], dict) else {}
-            has_open_conflict = bool(row[10])
+            claim_text = str(row[6] or "")
+            claim_metadata = row[7] if isinstance(row[7], dict) else {}
+            page_type = str(row[8] or "")
+            tier = str(row[9] or "")
+            score = float(row[10] or 0.0)
+            features = row[11] if isinstance(row[11], dict) else {}
+            has_open_conflict = bool(row[12])
             source_diversity = _extract_source_diversity(features)
             assertion_class = _extract_assertion_class(features, category=category, page_type=page_type)
+            routing_policy = policy["routing_policy"] if isinstance(policy.get("routing_policy"), dict) else {}
+            ticket_outcome_signal = _extract_ticket_outcome_signal(claim_metadata)
+            score_bonus = float(ticket_outcome_signal.get("score_bonus") or 0.0)
+            effective_score = float(score) + score_bonus
+            effective_min_sources = int(policy["auto_publish_min_sources"])
+            if bool(ticket_outcome_signal.get("positive_outcome")) and int(ticket_outcome_signal.get("ticket_count") or 0) > 0:
+                effective_min_sources = max(1, effective_min_sources - 1)
+            risk = _classify_auto_publish_risk(
+                assertion_class=assertion_class,
+                category=category,
+                page_type=page_type,
+                claim_text=claim_text,
+                routing_policy=routing_policy,
+            )
 
             mode = _resolve_publish_mode_for_category(
                 default_mode=str(policy["publish_mode_default"]),
@@ -19231,6 +22564,8 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                 category=category,
                 page_type=page_type,
             )
+            if bool(risk.get("force_human_required")):
+                mode = "human_required"
 
             outcome = "skipped"
             reason = "human_required"
@@ -19239,7 +22574,13 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
             if decision not in {"new_page", "new_section", "new_statement"}:
                 reason = f"decision_not_auto_publishable:{decision or 'unknown'}"
             elif mode == "human_required":
-                reason = "human_required_by_policy"
+                if bool(risk.get("force_human_required")):
+                    reason = (
+                        "human_required_by_risk_tier:"
+                        f"{risk.get('level')}:{','.join((risk.get('high_hits') or [])[:3])}"
+                    )
+                else:
+                    reason = "human_required_by_policy"
             else:
                 eligible_for_auto = True
                 if has_open_conflict and not bool(policy["auto_publish_allow_conflicts"]):
@@ -19249,16 +22590,16 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     if bool(policy["auto_publish_require_golden"]) and tier != "golden_candidate":
                         eligible_for_auto = False
                         reason = f"tier_below_policy:{tier or 'unknown'}"
-                    elif score < float(policy["auto_publish_min_score"]):
+                    elif effective_score < float(policy["auto_publish_min_score"]):
                         eligible_for_auto = False
                         reason = (
-                            f"score_below_policy:{score:.4f}<{float(policy['auto_publish_min_score']):.4f}"
+                            f"score_below_policy:{effective_score:.4f}<{float(policy['auto_publish_min_score']):.4f}"
                         )
-                    elif source_diversity < int(policy["auto_publish_min_sources"]):
+                    elif source_diversity < int(effective_min_sources):
                         eligible_for_auto = False
                         reason = (
                             f"source_diversity_below_policy:{source_diversity}<"
-                            f"{int(policy['auto_publish_min_sources'])}"
+                            f"{int(effective_min_sources)}"
                         )
                     else:
                         reason = "conditional_policy_matched"
@@ -19266,7 +22607,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     reason = "auto_publish_policy_matched"
 
                 if eligible_for_auto:
-                    feedback_policy = policy["routing_policy"] if isinstance(policy.get("routing_policy"), dict) else {}
+                    feedback_policy = routing_policy
                     feedback = feedback_by_claim.get(claim_id_text) or {}
                     feedback_total = int(feedback.get("total", 0))
                     feedback_negative_ratio = float(feedback.get("negative_ratio", 0.0))
@@ -19302,7 +22643,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                                 section_edits=None,
                                 note=(
                                     f"Auto-published by policy mode={mode}; "
-                                    f"tier={tier or 'unknown'}; score={score:.3f}; sources={source_diversity}"
+                                    f"tier={tier or 'unknown'}; score={effective_score:.3f}; sources={source_diversity}"
                                 ),
                                 force=False,
                             ),
@@ -19330,9 +22671,13 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     "decision": decision,
                     "tier": tier or None,
                     "score": score,
+                    "effective_score": round(effective_score, 4),
                     "source_diversity": source_diversity,
+                    "effective_min_sources": effective_min_sources,
                     "mode": mode,
                     "has_open_conflict": has_open_conflict,
+                    "ticket_outcome_signal": ticket_outcome_signal,
+                    "risk_tier": risk,
                     "outcome": outcome,
                     "reason": reason,
                     "retrieval_feedback": feedback_by_claim.get(claim_id_text) or None,
@@ -19596,6 +22941,231 @@ def run_wiki_bootstrap_approve(payload: WikiBootstrapApproveRunRequest) -> dict[
     if source_ownership_advisories > 0:
         response["source_ownership_advisories"] = source_ownership_advisories
     return response
+
+
+@app.get("/v1/wiki/drafts/bootstrap-approve/recommendation")
+def get_wiki_bootstrap_approve_recommendation(project_id: str) -> dict[str, Any]:
+    fallback_trusted_sources = ["legacy_import", "postgres_sql"]
+    trusted_sources: set[str] = set()
+    ownership_sources: set[str] = set()
+    legacy_source_types: set[str] = set()
+    legacy_declared_source_systems: set[str] = set()
+    used_fallback_sources = False
+    open_queue_count = 0
+    blocked_conflict_count = 0
+    open_conflicts = 0
+    batches_recent = 0
+    processed_events = 0
+    generated_claims = 0
+    dropped_event_like = 0
+    kept_durable = 0
+    trusted_bypass = 0
+
+    with get_conn() as conn:
+        if _source_ownership_table_exists(conn):
+            policies = _load_source_ownership_policies(conn, project_id)
+            for domain_key in ("runtime_memory", "ops_kb_static"):
+                policy = policies.get(domain_key)
+                if not isinstance(policy, dict):
+                    continue
+                write_master = _normalize_source_system(policy.get("write_master"), default="")
+                if write_master:
+                    trusted_sources.add(write_master)
+                    ownership_sources.add(write_master)
+                for item in _normalize_source_system_list(policy.get("allowed_source_systems") or []):
+                    trusted_sources.add(item)
+                    ownership_sources.add(item)
+
+        if _legacy_import_sources_table_exists(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT source_type, config
+                    FROM legacy_import_sources
+                    WHERE project_id = %s
+                      AND enabled = TRUE
+                    ORDER BY updated_at DESC
+                    LIMIT 200
+                    """,
+                    (project_id,),
+                )
+                rows = cur.fetchall() or []
+            for row in rows:
+                source_type = _normalize_source_system(row[0], default="")
+                if source_type:
+                    trusted_sources.add(source_type)
+                    legacy_source_types.add(source_type)
+                config = row[1] if isinstance(row[1], dict) else {}
+                for key in ("source_system", "sql_source_id_prefix", "wal_source_id_prefix"):
+                    value = _normalize_source_system(config.get(key), default="")
+                    if value:
+                        trusted_sources.add(value)
+                        legacy_declared_source_systems.add(value)
+
+        if not trusted_sources:
+            used_fallback_sources = True
+            trusted_sources = set(fallback_trusted_sources)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*) FILTER (
+                    WHERE status = 'pending_review'
+                      AND decision IN ('new_page', 'new_section', 'new_statement')
+                  ),
+                  COUNT(*) FILTER (
+                    WHERE status = 'blocked_conflict'
+                  )
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                """,
+                (project_id,),
+            )
+            queue_row = cur.fetchone() or (0, 0)
+            open_queue_count = int(queue_row[0] or 0)
+            blocked_conflict_count = int(queue_row[1] or 0)
+
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM wiki_conflicts
+                WHERE project_id = %s
+                  AND resolution_status = 'open'
+                """,
+                (project_id,),
+            )
+            conflict_row = cur.fetchone()
+            open_conflicts = int(conflict_row[0] or 0) if conflict_row else 0
+
+            if _memory_backfill_batches_table_exists(conn):
+                if _backfill_batch_has_decision_counters(conn):
+                    cur.execute(
+                        """
+                        SELECT
+                          COUNT(*),
+                          COALESCE(SUM(processed_events), 0),
+                          COALESCE(SUM(generated_claims), 0),
+                          COALESCE(SUM(dropped_event_like), 0),
+                          COALESCE(SUM(kept_durable), 0),
+                          COALESCE(SUM(trusted_bypass), 0)
+                        FROM memory_backfill_batches
+                        WHERE project_id = %s
+                          AND updated_at >= NOW() - INTERVAL '30 days'
+                        """,
+                        (project_id,),
+                    )
+                    batch_row = cur.fetchone() or (0, 0, 0, 0, 0, 0)
+                    batches_recent = int(batch_row[0] or 0)
+                    processed_events = int(batch_row[1] or 0)
+                    generated_claims = int(batch_row[2] or 0)
+                    dropped_event_like = int(batch_row[3] or 0)
+                    kept_durable = int(batch_row[4] or 0)
+                    trusted_bypass = int(batch_row[5] or 0)
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                          COUNT(*),
+                          COALESCE(SUM(processed_events), 0),
+                          COALESCE(SUM(generated_claims), 0)
+                        FROM memory_backfill_batches
+                        WHERE project_id = %s
+                          AND updated_at >= NOW() - INTERVAL '30 days'
+                        """,
+                        (project_id,),
+                    )
+                    batch_row = cur.fetchone() or (0, 0, 0)
+                    batches_recent = int(batch_row[0] or 0)
+                    processed_events = int(batch_row[1] or 0)
+                    generated_claims = int(batch_row[2] or 0)
+
+    queue_total = open_queue_count + blocked_conflict_count
+    if queue_total >= 300:
+        limit = 25
+    elif queue_total >= 100:
+        limit = 40
+    else:
+        limit = 50
+    if open_conflicts >= 20:
+        limit = min(limit, 25)
+    elif open_conflicts >= 5:
+        limit = min(limit, 40)
+    limit = max(10, min(200, int(limit)))
+
+    event_drop_ratio = float(dropped_event_like) / float(max(processed_events, 1))
+    durable_keep_ratio = float(kept_durable + trusted_bypass) / float(max(processed_events, 1))
+    min_confidence = 0.90
+    if processed_events > 0:
+        if event_drop_ratio >= 0.7:
+            min_confidence = 0.95
+        elif event_drop_ratio >= 0.5:
+            min_confidence = 0.93
+        elif durable_keep_ratio >= 0.55 and event_drop_ratio <= 0.35:
+            min_confidence = 0.85
+        elif durable_keep_ratio >= 0.4:
+            min_confidence = 0.88
+    require_conflict_free = open_conflicts > 0 or blocked_conflict_count > 0 or event_drop_ratio >= 0.45
+    sample_size = max(10, min(20, int(round(limit / 2))))
+
+    notes: list[str] = []
+    if used_fallback_sources:
+        notes.append("No configured legacy/source-ownership systems found; fallback trusted sources were applied.")
+    if open_conflicts > 0:
+        notes.append(f"Open conflicts detected ({open_conflicts}); conflict-free filter stays enabled.")
+    if processed_events == 0:
+        notes.append("Backfill quality counters are not available yet; conservative confidence default is used.")
+    elif event_drop_ratio >= 0.5:
+        notes.append("High event-like drop ratio observed; confidence threshold was raised.")
+    elif durable_keep_ratio >= 0.55:
+        notes.append("Durable-signal ratio is healthy; confidence threshold was relaxed for faster migration.")
+
+    return {
+        "status": "ok",
+        "project_id": project_id,
+        "recommended": {
+            "limit": limit,
+            "sample_size": sample_size,
+            "min_confidence": round(float(min_confidence), 2),
+            "require_conflict_free": bool(require_conflict_free),
+            "trusted_source_systems": sorted(trusted_sources),
+            "require_trusted_sources_on_apply": True,
+            "allow_large_batch": False,
+            "dry_run": True,
+        },
+        "diagnostics": {
+            "queue": {
+                "open_pending_review": open_queue_count,
+                "blocked_conflict": blocked_conflict_count,
+                "open_conflicts": open_conflicts,
+            },
+            "backfill_quality": {
+                "batches_recent": batches_recent,
+                "processed_events": processed_events,
+                "generated_claims": generated_claims,
+                "dropped_event_like": dropped_event_like,
+                "kept_durable": kept_durable,
+                "trusted_bypass": trusted_bypass,
+                "event_drop_ratio": round(float(event_drop_ratio), 4),
+                "durable_keep_ratio": round(float(durable_keep_ratio), 4),
+            },
+            "sources": {
+                "ownership_sources": sorted(ownership_sources),
+                "legacy_source_types": sorted(legacy_source_types),
+                "legacy_declared_source_systems": sorted(legacy_declared_source_systems),
+                "fallback_used": used_fallback_sources,
+            },
+            "notes": notes,
+        },
+        "safety": {
+            "apply_limit_soft_cap": 200,
+            "rollback_hint": {
+                "moderation_actions_endpoint": f"/v1/wiki/moderation/actions?project_id={quote(project_id)}",
+                "note": "Use moderation audit feed and page history to revert unintended bootstrap approvals.",
+            },
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 @app.get("/v1/wiki/moderation/actions")
@@ -25453,6 +29023,1246 @@ def get_latest_intelligence_digest(
     }
 
 
+@app.get("/v1/agents")
+def list_agent_directory(
+    project_id: str,
+    status: str | None = Query(default=None, pattern="^(active|idle|paused|offline|retired)$"),
+    team: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return {"profiles": [], "summary": {"total": 0, "status_counts": {}, "team_counts": {}}}
+        filters = ["project_id = %s"]
+        params: list[Any] = [project_id]
+        if isinstance(status, str) and status.strip():
+            filters.append("status = %s")
+            params.append(status.strip().lower())
+        normalized_team = str(team or "").strip()
+        if normalized_team:
+            filters.append("lower(COALESCE(team, '')) = lower(%s)")
+            params.append(normalized_team)
+        params.append(int(limit))
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                  id,
+                  project_id,
+                  agent_id,
+                  display_name,
+                  team,
+                  role,
+                  status,
+                  responsibilities,
+                  tools,
+                  data_sources,
+                  limits,
+                  metadata,
+                  created_by,
+                  updated_by,
+                  last_seen_at,
+                  created_at,
+                  updated_at
+                FROM agent_directory_profiles
+                WHERE {' AND '.join(filters)}
+                ORDER BY
+                  CASE status
+                    WHEN 'active' THEN 0
+                    WHEN 'idle' THEN 1
+                    WHEN 'paused' THEN 2
+                    WHEN 'offline' THEN 3
+                    ELSE 4
+                  END,
+                  updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+            profiles = [_serialize_agent_profile_row(row) for row in rows]
+            cur.execute(
+                """
+                SELECT status, COUNT(*)::int
+                FROM agent_directory_profiles
+                WHERE project_id = %s
+                GROUP BY status
+                """,
+                (project_id,),
+            )
+            status_rows = cur.fetchall() or []
+            status_counts = {str(row[0]): int(row[1]) for row in status_rows if row and row[0]}
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(trim(team), ''), 'Unassigned') AS team_name, COUNT(*)::int
+                FROM agent_directory_profiles
+                WHERE project_id = %s
+                GROUP BY team_name
+                ORDER BY COUNT(*) DESC, team_name ASC
+                LIMIT 50
+                """,
+                (project_id,),
+            )
+            team_rows = cur.fetchall() or []
+            team_counts = {str(row[0]): int(row[1]) for row in team_rows if row and row[0]}
+    return {
+        "profiles": profiles,
+        "summary": {
+            "total": len(profiles),
+            "status_counts": status_counts,
+            "team_counts": team_counts,
+        },
+    }
+
+
+@app.get("/v1/agents/orgchart")
+def get_agent_orgchart(
+    project_id: str,
+    include_handoffs: bool = Query(default=True),
+    include_retired: bool = Query(default=False),
+    max_agents: int = Query(default=1000, ge=1, le=5000),
+    max_edges: int = Query(default=2000, ge=1, le=10000),
+) -> Any:
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return {
+                "nodes": [],
+                "edges": [],
+                "teams": [],
+                "summary": {"nodes_total": 0, "edges_total": 0, "teams_total": 0},
+            }
+        with conn.cursor() as cur:
+            filters = ["project_id = %s"]
+            params: list[Any] = [project_id]
+            if not include_retired:
+                filters.append("status <> 'retired'")
+            params.append(int(max_agents))
+            cur.execute(
+                f"""
+                SELECT
+                  agent_id,
+                  display_name,
+                  team,
+                  role,
+                  status,
+                  last_seen_at,
+                  updated_at
+                FROM agent_directory_profiles
+                WHERE {' AND '.join(filters)}
+                ORDER BY
+                  COALESCE(NULLIF(trim(team), ''), 'zzz') ASC,
+                  COALESCE(NULLIF(trim(role), ''), 'zzz') ASC,
+                  updated_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+            nodes: list[dict[str, Any]] = []
+            team_counts: dict[str, int] = {}
+            node_ids: set[str] = set()
+            for row in rows:
+                agent_id = str(row[0] or "").strip()
+                if not agent_id:
+                    continue
+                display_name = str(row[1] or agent_id).strip() or agent_id
+                team = str(row[2] or "").strip() or "Unassigned"
+                role = str(row[3] or "").strip() or "Agent"
+                status = str(row[4] or "active").strip() or "active"
+                last_seen_at_value = row[5] or row[6]
+                node_ids.add(agent_id)
+                team_counts[team] = int(team_counts.get(team, 0)) + 1
+                nodes.append(
+                    {
+                        "agent_id": agent_id,
+                        "display_name": display_name,
+                        "team": team,
+                        "role": role,
+                        "status": status,
+                        "profile_slug": f"agents/{_slugify_segment(agent_id)}",
+                        "last_seen_at": last_seen_at_value.isoformat() if last_seen_at_value is not None else None,
+                    }
+                )
+            edges: list[dict[str, Any]] = []
+            if include_handoffs:
+                handoffs = _build_agent_handoff_map(
+                    cur,
+                    project_id=project_id,
+                    max_edges=max_edges,
+                    include_retired=include_retired,
+                )
+                for edge in handoffs:
+                    from_agent = str(edge.get("from_agent") or "").strip()
+                    to_agent = str(edge.get("to_agent") or "").strip()
+                    if not from_agent or not to_agent:
+                        continue
+                    if from_agent not in node_ids or to_agent not in node_ids:
+                        continue
+                    edges.append(
+                        {
+                            "from_agent": from_agent,
+                            "to_agent": to_agent,
+                            "input_contract": edge.get("input_contract"),
+                            "output_contract": edge.get("output_contract"),
+                            "sla": edge.get("sla"),
+                        }
+                    )
+    teams = [
+        {"team": team, "agents_total": count}
+        for team, count in sorted(team_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+    ]
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "teams": teams,
+        "summary": {
+            "nodes_total": len(nodes),
+            "edges_total": len(edges),
+            "teams_total": len(teams),
+        },
+    }
+
+
+@app.post("/v1/agents/register", response_model=None)
+def register_agent_directory_profile(
+    payload: AgentDirectoryRegisterRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/register"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_directory_unavailable",
+                    "detail": "Run DB migration 051_agent_directory.sql before registering agent profiles.",
+                },
+            )
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                agent_id = str(payload.agent_id or "").strip()
+                if not agent_id:
+                    raise HTTPException(status_code=422, detail="agent_id_required")
+                display_name = str(payload.display_name or "").strip() or agent_id
+                status = str(payload.status or "active").strip().lower()
+                if status not in _AGENT_DIRECTORY_ALLOWED_STATUSES:
+                    status = "active"
+                responsibilities = _normalize_agent_directory_items(payload.responsibilities, limit=120)
+                tools = _normalize_agent_directory_items(payload.tools, limit=200)
+                data_sources = _normalize_agent_directory_items(payload.data_sources, limit=200)
+                limits = _normalize_agent_directory_items(payload.limits, limit=120)
+                metadata = payload.metadata if isinstance(payload.metadata, dict) else {}
+                team = str(payload.team or "").strip() or None
+                role = str(payload.role or "").strip() or None
+                actor = str(payload.updated_by or "synapse_agent").strip() or "synapse_agent"
+                resolved_last_seen = payload.last_seen_at or datetime.now(UTC)
+
+                cur.execute(
+                    """
+                    INSERT INTO agent_directory_profiles (
+                      id,
+                      project_id,
+                      agent_id,
+                      display_name,
+                      team,
+                      role,
+                      status,
+                      responsibilities,
+                      tools,
+                      data_sources,
+                      limits,
+                      metadata,
+                      created_by,
+                      updated_by,
+                      last_seen_at,
+                      created_at,
+                      updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON CONFLICT (project_id, agent_id) DO UPDATE
+                    SET display_name = EXCLUDED.display_name,
+                        team = EXCLUDED.team,
+                        role = EXCLUDED.role,
+                        status = EXCLUDED.status,
+                        responsibilities = EXCLUDED.responsibilities,
+                        tools = EXCLUDED.tools,
+                        data_sources = EXCLUDED.data_sources,
+                        limits = EXCLUDED.limits,
+                        metadata = EXCLUDED.metadata,
+                        updated_by = EXCLUDED.updated_by,
+                        last_seen_at = EXCLUDED.last_seen_at,
+                        updated_at = NOW()
+                    """,
+                    (
+                        uuid4(),
+                        payload.project_id,
+                        agent_id,
+                        display_name,
+                        team,
+                        role,
+                        status,
+                        Jsonb(responsibilities),
+                        Jsonb(tools),
+                        Jsonb(data_sources),
+                        Jsonb(limits),
+                        Jsonb(metadata),
+                        actor,
+                        actor,
+                        resolved_last_seen,
+                    ),
+                )
+                cur.execute(
+                    """
+                    SELECT
+                      id,
+                      project_id,
+                      agent_id,
+                      display_name,
+                      team,
+                      role,
+                      status,
+                      responsibilities,
+                      tools,
+                      data_sources,
+                      limits,
+                      metadata,
+                      created_by,
+                      updated_by,
+                      last_seen_at,
+                      created_at,
+                      updated_at
+                    FROM agent_directory_profiles
+                    WHERE project_id = %s
+                      AND agent_id = %s
+                    LIMIT 1
+                    """,
+                    (payload.project_id, agent_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=500, detail="agent_directory_upsert_failed")
+                profile = _serialize_agent_profile_row(row)
+                page_sync = _sync_agent_directory_pages(
+                    cur,
+                    project_id=payload.project_id,
+                    actor=actor,
+                    profile=profile,
+                    ensure_scaffold=bool(payload.ensure_scaffold),
+                    include_daily_report_stub=bool(payload.include_daily_report_stub),
+                )
+                response = {
+                    "status": "ok",
+                    "profile": profile,
+                    "page_sync": page_sync,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/agents/publish-policy")
+def get_agent_publish_policy(project_id: str, agent_id: str) -> Any:
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(status_code=409, content={"error": "agent_directory_unavailable"})
+        with conn.cursor() as cur:
+            policy = _load_agent_publish_policy(cur, project_id=project_id, agent_id=agent_id)
+    return {
+        "project_id": project_id,
+        "agent_id": agent_id,
+        "policy": policy,
+    }
+
+
+@app.put("/v1/agents/publish-policy", response_model=None)
+def upsert_agent_publish_policy(
+    payload: AgentPublishPolicyUpsertRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/publish-policy"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(status_code=409, content={"error": "agent_directory_unavailable"})
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                normalized_policy = _normalize_agent_publish_policy(
+                    {
+                        "default_mode": payload.default_mode,
+                        "by_page_type": payload.by_page_type or {},
+                    }
+                )
+                cur.execute(
+                    """
+                    SELECT metadata
+                    FROM agent_directory_profiles
+                    WHERE project_id = %s
+                      AND lower(agent_id) = lower(%s)
+                    LIMIT 1
+                    """,
+                    (payload.project_id, payload.agent_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    response = {
+                        "error": "agent_profile_not_found",
+                        "project_id": payload.project_id,
+                        "agent_id": payload.agent_id,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=404,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=404, content=response)
+                metadata = row[0] if isinstance(row[0], dict) else {}
+                metadata["publish_policy"] = normalized_policy
+                metadata["publish_policy_updated_by"] = payload.updated_by
+                metadata["publish_policy_updated_at"] = datetime.now(UTC).isoformat()
+                cur.execute(
+                    """
+                    UPDATE agent_directory_profiles
+                    SET metadata = %s,
+                        updated_by = %s,
+                        updated_at = NOW()
+                    WHERE project_id = %s
+                      AND lower(agent_id) = lower(%s)
+                    """,
+                    (
+                        Jsonb(metadata),
+                        payload.updated_by,
+                        payload.project_id,
+                        payload.agent_id,
+                    ),
+                )
+                response = {
+                    "status": "ok",
+                    "project_id": payload.project_id,
+                    "agent_id": payload.agent_id,
+                    "policy": normalized_policy,
+                    "updated_by": payload.updated_by,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.post("/v1/agents/worklogs/sync", response_model=None)
+def sync_agent_daily_worklogs(
+    payload: AgentDailyWorklogSyncRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/worklogs/sync"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(status_code=409, content={"error": "agent_directory_unavailable"})
+        if not _agent_daily_worklogs_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_daily_worklogs_unavailable",
+                    "detail": "Run DB migration 052_agent_daily_worklogs.sql before syncing worklogs.",
+                },
+            )
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                target_timezone = _resolve_agent_worklog_timezone(
+                    conn,
+                    project_id=payload.project_id,
+                    override_timezone=payload.timezone,
+                )
+                target_date = _resolve_agent_worklog_target_date(
+                    requested_date=payload.worklog_date,
+                    timezone_name=target_timezone,
+                )
+                agent_filters = ["project_id = %s"]
+                agent_params: list[Any] = [payload.project_id]
+                if not payload.include_retired:
+                    agent_filters.append("status <> 'retired'")
+                cur.execute(
+                    f"""
+                    SELECT
+                      id,
+                      project_id,
+                      agent_id,
+                      display_name,
+                      team,
+                      role,
+                      status,
+                      responsibilities,
+                      tools,
+                      data_sources,
+                      limits,
+                      metadata,
+                      created_by,
+                      updated_by,
+                      last_seen_at,
+                      created_at,
+                      updated_at
+                    FROM agent_directory_profiles
+                    WHERE {' AND '.join(agent_filters)}
+                    ORDER BY
+                      CASE status
+                        WHEN 'active' THEN 0
+                        WHEN 'idle' THEN 1
+                        WHEN 'paused' THEN 2
+                        WHEN 'offline' THEN 3
+                        ELSE 4
+                      END,
+                      updated_at DESC
+                    LIMIT %s
+                    """,
+                    tuple([*agent_params, int(payload.max_agents)]),
+                )
+                profile_rows = cur.fetchall() or []
+                profiles = [_serialize_agent_profile_row(row) for row in profile_rows]
+                scanned = 0
+                generated = 0
+                profiles_with_updates = 0
+                skipped_idle = 0
+                skipped_trigger = 0
+                updated_pages: list[str] = []
+                worklog_dates: list[date] = [target_date - timedelta(days=offset) for offset in range(max(1, int(payload.days_back)))]
+                for profile in profiles:
+                    agent_id = str(profile.get("agent_id") or "").strip()
+                    if not agent_id:
+                        continue
+                    profile_slug = str(profile.get("profile_slug") or f"agents/{_slugify_segment(agent_id)}")
+                    scanned += 1
+                    generated_for_agent = 0
+                    for worklog_date in worklog_dates:
+                        day_start, day_end = _agent_worklog_day_bounds_utc(
+                            worklog_date=worklog_date,
+                            timezone_name=target_timezone,
+                        )
+                        summary = _build_agent_daily_worklog_summary(
+                            cur,
+                            project_id=payload.project_id,
+                            agent_id=agent_id,
+                            day_start=day_start,
+                            day_end=day_end,
+                        )
+                        if payload.trigger_mode == "session_close" and int(summary.get("session_close_events") or 0) <= 0:
+                            skipped_trigger += 1
+                            continue
+                        if payload.trigger_mode == "task_close" and int(summary.get("task_close_updates") or 0) <= 0:
+                            skipped_trigger += 1
+                            continue
+                        meaningful = _is_agent_worklog_meaningful(
+                            summary,
+                            min_activity_score=int(payload.min_activity_score),
+                        )
+                        summary["meaningful"] = bool(meaningful)
+                        summary["timezone"] = target_timezone
+                        summary["trigger_mode"] = payload.trigger_mode
+                        summary["trigger_reason"] = payload.trigger_reason
+                        if not payload.include_idle_days and not meaningful:
+                            skipped_idle += 1
+                            continue
+                        entry_markdown = _render_agent_daily_worklog_entry(
+                            profile=profile,
+                            worklog_date=worklog_date,
+                            summary=summary,
+                        )
+                        cur.execute(
+                            """
+                            INSERT INTO agent_daily_worklogs (
+                              id,
+                              project_id,
+                              agent_id,
+                              worklog_date,
+                              summary,
+                              markdown,
+                              generated_by,
+                              generated_at,
+                              updated_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                            ON CONFLICT (project_id, agent_id, worklog_date) DO UPDATE
+                            SET summary = EXCLUDED.summary,
+                                markdown = EXCLUDED.markdown,
+                                generated_by = EXCLUDED.generated_by,
+                                generated_at = NOW(),
+                                updated_at = NOW()
+                            """,
+                            (
+                                uuid4(),
+                                payload.project_id,
+                                agent_id,
+                                worklog_date,
+                                Jsonb(summary),
+                                entry_markdown,
+                                payload.generated_by,
+                            ),
+                        )
+                        generated += 1
+                        generated_for_agent += 1
+                    if generated_for_agent > 0:
+                        profiles_with_updates += 1
+                    cur.execute(
+                        """
+                        SELECT worklog_date, markdown
+                        FROM agent_daily_worklogs
+                        WHERE project_id = %s
+                          AND agent_id = %s
+                        ORDER BY worklog_date DESC
+                        LIMIT %s
+                        """,
+                        (payload.project_id, agent_id, int(payload.max_logs_per_agent_page)),
+                    )
+                    log_rows = cur.fetchall() or []
+                    if not log_rows and generated_for_agent <= 0:
+                        continue
+                    report_entries = [str(item[1] or "").strip() for item in log_rows if item and item[1]]
+                    reports_markdown = _render_agent_daily_reports_page(
+                        display_name=str(profile.get("display_name") or agent_id),
+                        entries=report_entries,
+                    )
+                    page_result = _upsert_wiki_page_system(
+                        cur,
+                        project_id=payload.project_id,
+                        actor=payload.generated_by,
+                        slug=f"{profile_slug}/daily-reports",
+                        title=f"{profile.get('display_name') or agent_id} Daily Reports",
+                        page_type="operations",
+                        entity_key=agent_id,
+                        markdown=reports_markdown,
+                        status="published",
+                        change_summary=f"Generated daily worklogs for {agent_id}",
+                    )
+                    page_slug = str(page_result.get("page", {}).get("slug") or "")
+                    if page_slug:
+                        updated_pages.append(page_slug)
+                response = {
+                    "status": "ok",
+                    "project_id": payload.project_id,
+                    "target_date": target_date.isoformat(),
+                    "timezone": target_timezone,
+                    "days_back": int(payload.days_back),
+                    "profiles_scanned": scanned,
+                    "profiles_with_updates": profiles_with_updates,
+                    "worklogs_generated": generated,
+                    "include_idle_days": bool(payload.include_idle_days),
+                    "min_activity_score": int(payload.min_activity_score),
+                    "trigger_mode": payload.trigger_mode,
+                    "skipped_idle": skipped_idle,
+                    "skipped_trigger": skipped_trigger,
+                    "updated_daily_report_pages": sorted(set(updated_pages)),
+                    "generated_by": payload.generated_by,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/agents/capability-matrix")
+def get_agent_capability_matrix(
+    project_id: str,
+    min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
+    max_agents: int = Query(default=500, ge=1, le=5000),
+) -> Any:
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return {"matrix": [], "summary": {"total": 0, "avg_confidence": 0.0}}
+        if not _agent_daily_worklogs_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_daily_worklogs_unavailable",
+                    "detail": "Run DB migration 052_agent_daily_worklogs.sql before querying capability matrix.",
+                },
+            )
+        with conn.cursor() as cur:
+            matrix = _build_agent_capability_matrix(
+                cur,
+                project_id=project_id,
+                max_agents=max_agents,
+            )
+    filtered = [item for item in matrix if float(item.get("confidence") or 0.0) >= float(min_confidence)]
+    avg_confidence = round(
+        sum(float(item.get("confidence") or 0.0) for item in filtered) / max(1, len(filtered)),
+        4,
+    )
+    return {
+        "matrix": filtered,
+        "summary": {
+            "total": len(filtered),
+            "avg_confidence": avg_confidence,
+        },
+    }
+
+
+@app.post("/v1/agents/capability-matrix/sync", response_model=None)
+def sync_agent_capability_matrix_page(
+    payload: AgentCapabilityMatrixSyncRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/capability-matrix/sync"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(status_code=409, content={"error": "agent_directory_unavailable"})
+        if not _agent_daily_worklogs_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_daily_worklogs_unavailable",
+                    "detail": "Run DB migration 052_agent_daily_worklogs.sql before syncing capability matrix.",
+                },
+            )
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                matrix = _build_agent_capability_matrix(
+                    cur,
+                    project_id=payload.project_id,
+                    max_agents=payload.max_agents,
+                )
+                filtered = [item for item in matrix if float(item.get("confidence") or 0.0) >= float(payload.min_confidence)]
+                markdown = _render_agent_capability_matrix_markdown(matrix=filtered)
+                page_result = _upsert_wiki_page_system(
+                    cur,
+                    project_id=payload.project_id,
+                    actor=payload.generated_by,
+                    slug="agents/capability-matrix",
+                    title="Agent Capability Matrix",
+                    page_type="operations",
+                    entity_key="agents_capability_matrix",
+                    markdown=markdown,
+                    status="published",
+                    change_summary=f"Synced capability matrix for {len(filtered)} agents",
+                )
+                response = {
+                    "status": "ok",
+                    "project_id": payload.project_id,
+                    "agents_total": len(filtered),
+                    "min_confidence": float(payload.min_confidence),
+                    "page_sync": page_result,
+                    "generated_by": payload.generated_by,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/agents/handoffs")
+def get_agent_handoff_map(
+    project_id: str,
+    max_edges: int = Query(default=1000, ge=1, le=10000),
+    include_retired: bool = Query(default=False),
+) -> Any:
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return {"edges": [], "summary": {"total": 0}}
+        with conn.cursor() as cur:
+            edges = _build_agent_handoff_map(
+                cur,
+                project_id=project_id,
+                max_edges=max_edges,
+                include_retired=include_retired,
+            )
+    return {
+        "edges": edges,
+        "summary": {
+            "total": len(edges),
+        },
+    }
+
+
+@app.post("/v1/agents/handoffs/sync", response_model=None)
+def sync_agent_handoff_page(
+    payload: AgentHandoffSyncRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/handoffs/sync"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(status_code=409, content={"error": "agent_directory_unavailable"})
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                edges = _build_agent_handoff_map(
+                    cur,
+                    project_id=payload.project_id,
+                    max_edges=payload.max_edges,
+                    include_retired=payload.include_retired,
+                )
+                markdown = _render_agent_handoff_markdown(edges=edges)
+                page_result = _upsert_wiki_page_system(
+                    cur,
+                    project_id=payload.project_id,
+                    actor=payload.generated_by,
+                    slug="agents/handoffs",
+                    title="Agent Handoff Map",
+                    page_type="operations",
+                    entity_key="agents_handoffs",
+                    markdown=markdown,
+                    status="published",
+                    change_summary=f"Synced handoff map with {len(edges)} edges",
+                )
+                response = {
+                    "status": "ok",
+                    "project_id": payload.project_id,
+                    "edges_total": len(edges),
+                    "page_sync": page_result,
+                    "generated_by": payload.generated_by,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/agents/scorecards")
+def get_agent_scorecards(
+    project_id: str,
+    max_agents: int = Query(default=500, ge=1, le=5000),
+    lookback_days: int = Query(default=14, ge=1, le=90),
+    include_retired: bool = Query(default=False),
+) -> Any:
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return {"scorecards": [], "summary": {"total": 0, "avg_quality": 0.0}}
+        if not _agent_daily_worklogs_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_daily_worklogs_unavailable",
+                    "detail": "Run DB migration 052_agent_daily_worklogs.sql before querying scorecards.",
+                },
+            )
+        with conn.cursor() as cur:
+            scorecards = _build_agent_scorecards(
+                cur,
+                project_id=project_id,
+                max_agents=max_agents,
+                lookback_days=lookback_days,
+                include_retired=include_retired,
+            )
+    avg_quality = round(
+        sum(float(item.get("quality_score") or 0.0) for item in scorecards) / max(1, len(scorecards)),
+        4,
+    )
+    return {
+        "scorecards": scorecards,
+        "summary": {
+            "total": len(scorecards),
+            "avg_quality": avg_quality,
+        },
+    }
+
+
+@app.post("/v1/agents/scorecards/sync", response_model=None)
+def sync_agent_scorecards_page(
+    payload: AgentScorecardsSyncRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/scorecards/sync"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(status_code=409, content={"error": "agent_directory_unavailable"})
+        if not _agent_daily_worklogs_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_daily_worklogs_unavailable",
+                    "detail": "Run DB migration 052_agent_daily_worklogs.sql before syncing scorecards.",
+                },
+            )
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                scorecards = _build_agent_scorecards(
+                    cur,
+                    project_id=payload.project_id,
+                    max_agents=payload.max_agents,
+                    lookback_days=payload.lookback_days,
+                    include_retired=payload.include_retired,
+                )
+                markdown = _render_agent_scorecards_markdown(
+                    scorecards=scorecards,
+                    lookback_days=payload.lookback_days,
+                )
+                page_result = _upsert_wiki_page_system(
+                    cur,
+                    project_id=payload.project_id,
+                    actor=payload.generated_by,
+                    slug="agents/scorecards",
+                    title="Agent Scorecards",
+                    page_type="operations",
+                    entity_key="agents_scorecards",
+                    markdown=markdown,
+                    status="published",
+                    change_summary=f"Synced agent scorecards for {len(scorecards)} agents",
+                )
+                response = {
+                    "status": "ok",
+                    "project_id": payload.project_id,
+                    "scorecards_total": len(scorecards),
+                    "lookback_days": payload.lookback_days,
+                    "page_sync": page_result,
+                    "generated_by": payload.generated_by,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.get("/v1/agents/provenance")
+def list_agent_provenance(
+    project_id: str,
+    agent_id: str | None = Query(default=None),
+    page_slug: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            filters = ["p.project_id = %s"]
+            params: list[Any] = [project_id]
+            normalized_agent_id = str(agent_id or "").strip()
+            if normalized_agent_id:
+                filters.append("lower(COALESCE(v.created_by, '')) = lower(%s)")
+                params.append(normalized_agent_id)
+            else:
+                filters.append("COALESCE(v.created_by, '') <> ''")
+            normalized_slug = str(page_slug or "").strip()
+            if normalized_slug:
+                filters.append("p.slug = %s")
+                params.append(_normalize_wiki_slug(normalized_slug, normalized_slug))
+            params.append(int(limit))
+            cur.execute(
+                f"""
+                SELECT
+                  v.id::text,
+                  p.id::text,
+                  p.slug,
+                  p.title,
+                  p.page_type,
+                  p.status,
+                  p.current_version,
+                  v.version,
+                  v.source,
+                  v.created_by,
+                  v.change_summary,
+                  v.created_at
+                FROM wiki_page_versions v
+                JOIN wiki_pages p ON p.id = v.page_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY v.created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall() or []
+    activities = [
+        _build_agent_provenance_activity(
+            activity_id=str(row[0]),
+            page_id=str(row[1]),
+            slug=str(row[2] or ""),
+            title=str(row[3] or row[2] or ""),
+            page_type=str(row[4] or "operations"),
+            page_status=str(row[5] or "published"),
+            current_version=int(row[6] or 0),
+            version=int(row[7] or 0),
+            source=str(row[8] or ""),
+            created_by=str(row[9] or ""),
+            change_summary=str(row[10] or ""),
+            created_at=row[11],
+        )
+        for row in rows
+    ]
+    rollback_ready = sum(1 for item in activities if bool(item.get("rollback", {}).get("possible")))
+    return {
+        "activities": activities,
+        "summary": {
+            "total": len(activities),
+            "rollback_ready": rollback_ready,
+            "agent_id": normalized_agent_id or None,
+            "page_slug": _normalize_wiki_slug(normalized_slug, normalized_slug) if normalized_slug else None,
+        },
+    }
+
+
+@app.post("/v1/agents/provenance/{activity_id}/rollback", response_model=None)
+def rollback_agent_provenance_activity(
+    activity_id: UUID,
+    payload: AgentProvenanceRollbackRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  v.id::text,
+                  p.id::text,
+                  p.slug,
+                  p.title,
+                  p.page_type,
+                  p.status,
+                  p.current_version,
+                  v.version,
+                  v.source,
+                  v.created_by,
+                  v.change_summary,
+                  v.created_at
+                FROM wiki_page_versions v
+                JOIN wiki_pages p ON p.id = v.page_id
+                WHERE v.id = %s
+                  AND p.project_id = %s
+                LIMIT 1
+                """,
+                (activity_id, payload.project_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "error": "agent_activity_not_found",
+                        "project_id": payload.project_id,
+                        "activity_id": str(activity_id),
+                    },
+                )
+            activity = _build_agent_provenance_activity(
+                activity_id=str(row[0]),
+                page_id=str(row[1]),
+                slug=str(row[2] or ""),
+                title=str(row[3] or row[2] or ""),
+                page_type=str(row[4] or "operations"),
+                page_status=str(row[5] or "published"),
+                current_version=int(row[6] or 0),
+                version=int(row[7] or 0),
+                source=str(row[8] or ""),
+                created_by=str(row[9] or ""),
+                change_summary=str(row[10] or ""),
+                created_at=row[11],
+            )
+    rollback_meta = activity.get("rollback") if isinstance(activity.get("rollback"), dict) else {}
+    if not bool(rollback_meta.get("possible")):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "agent_activity_rollback_not_allowed",
+                "project_id": payload.project_id,
+                "activity": activity,
+            },
+        )
+    if bool(payload.require_latest_activity) and int(activity.get("current_version") or 0) != int(activity.get("version") or 0):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "agent_activity_not_latest_on_page",
+                "project_id": payload.project_id,
+                "activity": activity,
+            },
+        )
+    target_version = int(rollback_meta.get("target_version") or 0)
+    if target_version <= 0:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "agent_activity_rollback_target_invalid",
+                "project_id": payload.project_id,
+                "activity": activity,
+            },
+        )
+    rollback_summary = (
+        payload.change_summary.strip()
+        if isinstance(payload.change_summary, str) and payload.change_summary.strip()
+        else None
+    ) or (
+        f"One-click rollback of activity {activity.get('activity_id')} "
+        f"(agent={activity.get('created_by') or 'unknown'}) by {payload.rolled_back_by}"
+    )
+    wiki_payload = WikiPageRollbackRequest(
+        project_id=payload.project_id,
+        rolled_back_by=payload.rolled_back_by,
+        target_version=target_version,
+        status=payload.status or str(activity.get("page_status") or "published"),
+        change_summary=rollback_summary,
+    )
+    rollback_result = rollback_wiki_page(
+        slug=str(activity.get("slug") or ""),
+        payload=wiki_payload,
+        request=request,
+        idempotency_key=(
+            f"{idempotency_key}:agent-activity:{str(activity_id)}"
+            if isinstance(idempotency_key, str) and idempotency_key.strip()
+            else None
+        ),
+    )
+    if isinstance(rollback_result, JSONResponse):
+        return rollback_result
+    if isinstance(rollback_result, dict):
+        rollback_result["agent_activity"] = activity
+        rollback_result["agent_activity_rollback"] = {
+            "activity_id": str(activity_id),
+            "target_version": target_version,
+            "rolled_back_by": payload.rolled_back_by,
+        }
+    return rollback_result
+
+
 @app.get("/v1/tasks")
 def list_tasks(
     project_id: str,
@@ -26286,6 +31096,32 @@ def list_legacy_import_profiles(source_type: str = Query(default="postgres_sql")
     if normalized != "postgres_sql":
         return {"profiles": []}
     return {"profiles": list_postgres_sql_profiles()}
+
+
+@app.get("/v1/legacy-import/mapper-templates")
+def list_legacy_import_mapper_templates(
+    source_type: str = Query(default="postgres_sql"),
+    profile: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return {
+        "templates": list_legacy_mapper_templates(
+            source_type=source_type,
+            profile=profile,
+        )
+    }
+
+
+@app.get("/v1/legacy-import/sync-contracts")
+def list_legacy_import_sync_contracts(
+    source_type: str = Query(default="postgres_sql"),
+    profile: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return {
+        "contracts": list_legacy_sync_runner_contracts(
+            source_type=source_type,
+            profile=profile,
+        )
+    }
 
 
 @app.put("/v1/legacy-import/sources")

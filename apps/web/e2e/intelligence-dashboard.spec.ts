@@ -3,15 +3,64 @@ import { expect, test } from "@playwright/test";
 
 const HAS_ADVANCED_UI = false;
 
+async function fillFirstVisibleLabel(page: Page, labels: string[], value: string): Promise<boolean> {
+  for (const label of labels) {
+    const locator = page.getByLabel(label);
+    const count = await locator.count();
+    for (let i = 0; i < count; i += 1) {
+      const input = locator.nth(i);
+      const visible = await input.isVisible().catch(() => false);
+      if (!visible) continue;
+      await input.fill(value);
+      return true;
+    }
+  }
+  return false;
+}
+
 async function openDashboard(page: Page, mode: "core" | "advanced" = "core") {
+  await page.setViewportSize({ width: 1720, height: 1100 });
   await page.goto("/");
   const apiUrlField = page.getByLabel("API URL");
   if ((await apiUrlField.count()) > 0) {
     await apiUrlField.fill("http://127.0.0.1:18180");
   }
-  await page.getByLabel("Project ID").fill("omega_demo");
-  await page.getByLabel("Reviewer").fill("qa_reviewer");
-  await page.getByRole("button", { name: /Refresh (Inbox|drafts)/i }).first().click();
+  const projectFilled = await fillFirstVisibleLabel(page, ["Workspace", "Project ID"], "omega_demo");
+  if (!projectFilled) {
+    const settingsButton = page.getByRole("button", { name: "Settings", exact: true }).first();
+    if ((await settingsButton.count()) > 0) {
+      await settingsButton.click();
+      await fillFirstVisibleLabel(page, ["Project ID"], "omega_demo");
+      await page.keyboard.press("Escape");
+    }
+  }
+  const reviewerFilled = await fillFirstVisibleLabel(page, ["Reviewer", "Your name"], "qa_reviewer");
+  if (!reviewerFilled) {
+    const settingsButton = page.getByRole("button", { name: "Settings", exact: true }).first();
+    if ((await settingsButton.count()) > 0) {
+      await settingsButton.click();
+      await fillFirstVisibleLabel(page, ["Reviewer"], "qa_reviewer");
+      await page.keyboard.press("Escape");
+    }
+  }
+  const onboardingHeader = page.getByText("Welcome to Synapse Wiki").first();
+  if ((await onboardingHeader.count()) > 0) {
+    const isOnboardingVisible = await onboardingHeader.isVisible().catch(() => false);
+    if (isOnboardingVisible) {
+      const skipButton = page.getByRole("button", { name: /Skip|Finish|Close/i }).first();
+      if ((await skipButton.count()) > 0) {
+        await skipButton.click();
+      } else {
+        await page.keyboard.press("Escape");
+      }
+    }
+  }
+  const refreshButton = page.getByRole("button", { name: /Refresh (Inbox|drafts)/i }).first();
+  if ((await refreshButton.count()) > 0) {
+    await refreshButton.click();
+  } else {
+    await page.getByRole("button", { name: /^Sync$/i }).first().click();
+  }
   if (mode === "advanced") {
     if (!HAS_ADVANCED_UI) {
       test.skip(true, "advanced UI profile is disabled in this run");
@@ -250,42 +299,171 @@ test("alert routing management and rollback rejection workflow", async ({ page }
 test("task tracker lifecycle flow", async ({ page }) => {
   test.setTimeout(120000);
   await openDashboard(page, "core");
-  await expect(page.getByRole("button", { name: /Refresh (Inbox|drafts)/i }).first()).toBeVisible();
-  await expect(page.getByText("Review Queue Presets", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("Guided Page Builder", { exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Next Page (Shift+J)", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Sync$/i }).first()).toBeVisible();
   await page.getByRole("button", { name: "Tasks", exact: true }).click();
-  const taskPanel = page.locator(".intelligence-panel").filter({ hasText: "Task Tracker" }).first();
-  await taskPanel.scrollIntoViewIfNeeded();
-  await expect(taskPanel.getByText("Task Tracker", { exact: true })).toBeVisible();
-  await taskPanel.getByRole("button", { name: "Refresh Tasks", exact: true }).click();
-  await expect(taskPanel.getByText("Validate Omega gate access policy", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Task Tracker" }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Refresh Tasks", exact: true }).click();
+  await expect(page.getByText("Validate Omega gate access policy", { exact: true }).first()).toBeVisible();
 
   const taskTitle = `E2E Task ${Date.now().toString(36)}`;
-  await taskPanel.getByLabel("Title").fill(taskTitle);
-  await taskPanel.getByLabel("Description").fill("Task tracker flow coverage from Playwright e2e.");
-  await taskPanel.getByLabel("Assignee").fill("qa_reviewer");
-  await taskPanel.getByLabel("Entity Key").fill("bc_omega");
-  await taskPanel.getByLabel("Category").fill("qa_checks");
-  await taskPanel.getByLabel("Due at (ISO or browser-parseable)").fill("2026-04-10T18:00:00+03:00");
-  await taskPanel.getByRole("button", { name: "Create Task", exact: true }).click();
+  await page.getByLabel("Title").fill(taskTitle);
+  await page.getByLabel("Description").fill("Task tracker flow coverage from Playwright e2e.");
+  await page.getByLabel("Assignee").fill("qa_reviewer");
+  await page.getByLabel("Entity Key").fill("bc_omega");
+  await page.getByLabel("Category").fill("qa_checks");
+  await page.getByLabel("Due at (ISO or browser-parseable)").fill("2026-04-10T18:00:00+03:00");
+  await page.getByRole("button", { name: "Create Task", exact: true }).click();
   await expect(page.getByText("Task created", { exact: true })).toBeVisible();
-  await expect(taskPanel.getByText(taskTitle, { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(taskTitle, { exact: true }).first()).toBeVisible();
 
-  await taskPanel.getByText(taskTitle, { exact: true }).first().click();
-  await taskPanel.getByRole("button", { name: "in progress", exact: true }).click();
-  await taskPanel.getByRole("button", { name: "blocked", exact: true }).click();
-  await taskPanel.getByRole("button", { name: "done", exact: true }).click();
+  await page.getByText(taskTitle, { exact: true }).first().click();
+  await page.getByRole("button", { name: "in progress", exact: true }).click();
+  await page.getByRole("button", { name: "blocked", exact: true }).click();
+  await page.getByRole("button", { name: "done", exact: true }).click();
 
-  await taskPanel.locator("textarea").nth(1).fill("E2E comment: task lifecycle validated.");
-  await taskPanel.getByRole("button", { name: "Add Comment", exact: true }).click();
-  await expect(taskPanel.getByText("comment", { exact: true }).first()).toBeVisible();
+  await page.locator("textarea").nth(1).fill("E2E comment: task lifecycle validated.");
+  await page.getByRole("button", { name: "Add Comment", exact: true }).click();
+  await expect(page.getByText("comment", { exact: true }).first()).toBeVisible();
 
-  await taskPanel.getByLabel("Reference").fill("draft:e2e-synapse-task");
-  await taskPanel.getByLabel("Note").fill("Attached from e2e scenario");
-  await taskPanel.getByRole("button", { name: "Add Link", exact: true }).click();
-  await expect(taskPanel.getByText("draft:e2e-synapse-task", { exact: true })).toBeVisible();
-  await expect(taskPanel.getByText("link_added", { exact: true }).first()).toBeVisible();
+  await page.getByLabel("Reference").fill("draft:e2e-synapse-task");
+  await page.getByLabel("Note").fill("Attached from e2e scenario");
+  await page.getByRole("button", { name: "Add Link", exact: true }).click();
+  await expect(page.getByText("draft:e2e-synapse-task", { exact: true })).toBeVisible();
+  await expect(page.getByText("link_added", { exact: true }).first()).toBeVisible();
+});
+
+test("wiki lifecycle drill-down links and governance quick actions", async ({ page }) => {
+  test.setTimeout(120000);
+  await openDashboard(page, "core");
+  await page.getByRole("button", { name: "Open operations", exact: true }).click();
+  await expect.poll(() => new URL(page.url()).pathname.endsWith("/operations")).toBe(true);
+  const lifecycleCard = page.locator("#core-left-lifecycle");
+  await expect(lifecycleCard).toBeVisible();
+  await expect(lifecycleCard.getByText("Lifecycle", { exact: true })).toBeVisible();
+  await expect(lifecycleCard.getByText(/stale/i).first()).toBeVisible();
+  await lifecycleCard.getByRole("button", { name: "Show details", exact: true }).click();
+  await expect(lifecycleCard.getByTestId("core-lifecycle-action-mix")).toBeVisible();
+  await expect(lifecycleCard.getByText(/Action mix \(/i).first()).toBeVisible();
+  const actionButtons = lifecycleCard.locator('[data-testid^="core-lifecycle-action-open-"]');
+  await expect(actionButtons.first()).toBeVisible();
+  const firstActionTestId = (await actionButtons.first().getAttribute("data-testid")) || "";
+  const expectedActionKey = firstActionTestId.replace("core-lifecycle-action-open-", "");
+  await actionButtons.first().click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_action")).toBe(expectedActionKey);
+  const actionDetail = page.getByTestId("wiki-lifecycle-action-detail").first();
+  await expect(actionDetail).toBeVisible();
+  await expect(actionDetail).toContainText(`Drill-down: ${expectedActionKey}`);
+  await actionDetail.getByRole("button", { name: "Clear" }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_action")).toBeNull();
+  await lifecycleCard.getByTestId("core-lifecycle-preset-critical_45").click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_preset")).toBe("critical_45");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_stale_days")).toBe("45");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_critical_days")).toBe("45");
+  await lifecycleCard.getByTestId("core-lifecycle-preset-custom").click();
+  await lifecycleCard.getByLabel("Stale days").fill("19");
+  await lifecycleCard.getByLabel("Critical days").fill("52");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_preset")).toBe("custom");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_stale_days")).toBe("19");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_critical_days")).toBe("52");
+  await lifecycleCard.getByTestId("core-lifecycle-preset-stale_21").click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_preset")).toBe("stale_21");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_stale_days")).toBe("21");
+  await expect.poll(() => new URL(page.url()).searchParams.get("wiki_lifecycle_critical_days")).toBe("45");
+
+  await page.goto("/operations?project=omega_demo&core_tab=wiki");
+  await expect.poll(() => new URL(page.url()).pathname.endsWith("/operations")).toBe(true);
+  await expect(page.getByRole("button", { name: "Drafts", exact: true })).toBeVisible();
+
+  await page.goto(
+    "/?project=omega_demo&wiki_page=operations%2Fbc-omega-access-policy&core_tab=drafts&wiki_focus=draft_inbox",
+  );
+  await expect(page.getByRole("heading", { name: "Draft Inbox" }).first()).toBeVisible();
+});
+
+test("wiki lifecycle empty-scope fixtures: no_published and all_open_drafts", async ({ page }) => {
+  test.setTimeout(120000);
+  await openDashboard(page, "core");
+  const lifecycleCard = page.locator("#core-left-lifecycle");
+  await expect(lifecycleCard).toBeVisible();
+  await lifecycleCard.getByRole("button", { name: "Show details", exact: true }).click();
+
+  await page.getByLabel("Workspace").fill("fixture_no_published");
+  await page.keyboard.press("Escape");
+  await expect(lifecycleCard.getByTestId("core-lifecycle-empty-scope")).toBeVisible();
+  await expect(lifecycleCard.getByTestId("core-lifecycle-empty-scope")).toContainText("no_published");
+  await expect(lifecycleCard.getByTestId("core-lifecycle-empty-action-create_page")).toBeVisible();
+
+  await page.getByLabel("Workspace").fill("fixture_all_open_drafts");
+  await page.keyboard.press("Escape");
+  await expect(lifecycleCard.getByTestId("core-lifecycle-empty-scope")).toBeVisible();
+  await expect(lifecycleCard.getByTestId("core-lifecycle-empty-scope")).toContainText("all_open_drafts");
+  await expect(lifecycleCard.getByTestId("core-lifecycle-empty-action-review_open_drafts")).toBeVisible();
+});
+
+test("core route split keeps drafts clean and operations tools isolated", async ({ page }) => {
+  test.setTimeout(120000);
+  await openDashboard(page, "core");
+
+  await page.goto("/wiki?project=omega_demo&core_tab=drafts");
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Draft Inbox" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open operations", exact: true })).toBeVisible();
+  await expect(page.getByText("Migration Mode", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Bootstrap Migration", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Open operations", exact: true }).click();
+  await expect.poll(() => new URL(page.url()).pathname.endsWith("/operations")).toBe(true);
+  await expect(page.getByText("Migration Mode", { exact: true })).toBeVisible();
+  await expect(page.getByText("Bootstrap Migration", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back to Drafts", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Back to Drafts", exact: true }).click();
+  await expect.poll(() => new URL(page.url()).pathname.includes("/wiki")).toBe(true);
+  await expect.poll(() => new URL(page.url()).pathname.includes("/operations")).toBe(false);
+  await expect(page.getByRole("heading", { name: "Draft Inbox" }).first()).toBeVisible();
+  await expect(page.getByText("Migration Mode", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Bootstrap Migration", { exact: true })).toHaveCount(0);
+
+  await page.goto("/wiki?project=omega_demo&core_tab=wiki&wiki_page=operations%2Fbc-omega-access-policy");
+  const rightRail = page.locator(".confluence-right-rail");
+  await expect(rightRail.getByTestId("core-right-recent-versions")).toBeVisible();
+  await expect(rightRail.getByText("Recent versions", { exact: true })).toBeVisible();
+  await rightRail.getByTestId("core-right-version-open-2").click();
+  const historyDrawer = page.getByTestId("core-history-drawer");
+  await expect(historyDrawer).toBeVisible();
+  await expect(historyDrawer.getByTestId("core-history-inline-diff")).toBeVisible();
+  await expect(historyDrawer.getByText("Comparing v1 → v2.", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(rightRail.getByText("Review workflow", { exact: true })).toHaveCount(0);
+  await expect(rightRail.getByText("Space governance", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "History", exact: true }).click();
+  await expect(page.getByText("Rollback actions are restricted to Operations route.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open operations", exact: true }).last().click();
+  await expect.poll(() => new URL(page.url()).pathname.endsWith("/operations")).toBe(true);
+  await expect(page.getByText("Rollback", { exact: true })).toBeVisible();
+});
+
+test("core draft detail shows gatekeeper reason code", async ({ page }) => {
+  test.setTimeout(120000);
+  await openDashboard(page, "core");
+
+  await page.goto("/wiki?project=omega_demo&core_tab=drafts&wiki_space=operations");
+  await page.getByRole("button", { name: "Drafts", exact: true }).click();
+  const clearScope = page.getByTestId("core-clear-space-scope");
+  if ((await clearScope.count()) > 0) {
+    await clearScope.click();
+  }
+  await page.getByRole("button", { name: "Sync", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Draft Inbox" }).first()).toBeVisible();
+  const firstDraft = page.locator('[data-testid^="core-draft-list-item-"]').first();
+  await expect(firstDraft).toBeVisible();
+  await firstDraft.click();
+
+  const draftDetailPanel = page.getByTestId("core-draft-detail-panel");
+  await expect(draftDetailPanel).toBeVisible();
+  await expect(draftDetailPanel.getByRole("heading", { name: "Draft Detail" })).toBeVisible();
+  await expect(draftDetailPanel.getByText("Gatekeeper Signal", { exact: true })).toBeVisible();
+  await expect(draftDetailPanel.getByText(/reason\s+(override_skip_event|routing_policy_hard_block)/i)).toBeVisible();
 });
 
 test("retrieval diagnostics shows runtime graph config", async ({ page }) => {

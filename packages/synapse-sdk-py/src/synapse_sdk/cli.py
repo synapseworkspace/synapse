@@ -12,6 +12,7 @@ import shlex
 import subprocess
 import sys
 from typing import Any, Sequence
+from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 import requests
@@ -267,6 +268,293 @@ def _build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--no-mcp", action="store_true", help="Generate snippet without MCP callback wiring.")
     adopt.add_argument("--json", action="store_true", help="Render adoption plan as JSON.")
     adopt.set_defaults(func=_cmd_adopt_existing_memory)
+
+    wiki_space_policy = subparsers.add_parser(
+        "wiki-space-policy",
+        help="Inspect and update wiki space policy (including publish checklist presets).",
+    )
+    wiki_space_policy_subparsers = wiki_space_policy.add_subparsers(dest="wiki_space_policy_command")
+
+    wiki_space_policy_get = wiki_space_policy_subparsers.add_parser(
+        "get",
+        help="Fetch current policy for a wiki space.",
+    )
+    wiki_space_policy_get.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    wiki_space_policy_get.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_space_policy_get.add_argument("--space-key", required=True, help="Space key/slug (e.g. operations).")
+    wiki_space_policy_get.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    wiki_space_policy_get.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_space_policy_get.set_defaults(func=_cmd_wiki_space_policy_get)
+
+    wiki_space_policy_audit = wiki_space_policy_subparsers.add_parser(
+        "audit",
+        help="List recent policy changes for a wiki space.",
+    )
+    wiki_space_policy_audit.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    wiki_space_policy_audit.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_space_policy_audit.add_argument("--space-key", required=True, help="Space key/slug (e.g. operations).")
+    wiki_space_policy_audit.add_argument(
+        "--limit",
+        type=int,
+        default=40,
+        help="Max audit entries to return (1..200, default: 40).",
+    )
+    wiki_space_policy_audit.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    wiki_space_policy_audit.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_space_policy_audit.set_defaults(func=_cmd_wiki_space_policy_audit)
+
+    wiki_space_policy_set = wiki_space_policy_subparsers.add_parser(
+        "set",
+        help="Upsert full policy for a wiki space.",
+    )
+    wiki_space_policy_set.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    wiki_space_policy_set.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_space_policy_set.add_argument("--space-key", required=True, help="Space key/slug (e.g. operations).")
+    wiki_space_policy_set.add_argument("--updated-by", required=True, help="Actor id for audit trail.")
+    wiki_space_policy_set.add_argument(
+        "--write-mode",
+        choices=["open", "owners_only"],
+        default="open",
+        help="Write policy mode (default: open).",
+    )
+    wiki_space_policy_set.add_argument(
+        "--comment-mode",
+        choices=["open", "owners_only"],
+        default="open",
+        help="Comment policy mode (default: open).",
+    )
+    wiki_space_policy_set.add_argument(
+        "--review-assignment-required",
+        action="store_true",
+        help="Require reviewer assignment before publish.",
+    )
+    wiki_space_policy_set.add_argument(
+        "--metadata-json",
+        default=None,
+        help="Optional metadata JSON object merged as policy metadata.",
+    )
+    wiki_space_policy_set.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Optional idempotency key for upsert request.",
+    )
+    wiki_space_policy_set.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    wiki_space_policy_set.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_space_policy_set.set_defaults(func=_cmd_wiki_space_policy_set)
+
+    wiki_space_policy_set_preset = wiki_space_policy_subparsers.add_parser(
+        "set-checklist-preset",
+        help="Update only publish checklist preset while preserving other policy fields.",
+    )
+    wiki_space_policy_set_preset.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    wiki_space_policy_set_preset.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_space_policy_set_preset.add_argument("--space-key", required=True, help="Space key/slug (e.g. operations).")
+    wiki_space_policy_set_preset.add_argument("--updated-by", required=True, help="Actor id for audit trail.")
+    wiki_space_policy_set_preset.add_argument(
+        "--preset",
+        required=True,
+        choices=["none", "ops_standard", "policy_strict"],
+        help="Publish checklist preset.",
+    )
+    wiki_space_policy_set_preset.add_argument(
+        "--reason",
+        default=None,
+        help="Optional policy-change reason persisted in metadata.",
+    )
+    wiki_space_policy_set_preset.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Optional idempotency key for upsert request.",
+    )
+    wiki_space_policy_set_preset.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    wiki_space_policy_set_preset.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_space_policy_set_preset.set_defaults(func=_cmd_wiki_space_policy_set_preset)
+
+    wiki_lifecycle = subparsers.add_parser(
+        "wiki-lifecycle",
+        help="Lifecycle diagnostics helpers for stale-page triage and deep-link generation.",
+    )
+    wiki_lifecycle_subparsers = wiki_lifecycle.add_subparsers(dest="wiki_lifecycle_command")
+
+    wiki_lifecycle_stale = wiki_lifecycle_subparsers.add_parser(
+        "stale",
+        help="List stale wiki pages from lifecycle diagnostics.",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--space",
+        default=None,
+        help="Optional wiki space key scope (for example: operations).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--preset",
+        choices=["stale_21", "critical_45", "custom"],
+        default="stale_21",
+        help="Lifecycle threshold preset (default: stale_21).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--stale-days",
+        type=int,
+        default=21,
+        help="Stale threshold in days (used when --preset=custom, default: 21).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--critical-days",
+        type=int,
+        default=45,
+        help="Critical stale threshold in days (used when --preset=custom, default: 45).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Max stale candidates to fetch (default: 20).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--web-base-url",
+        default=None,
+        help="Optional base URL for deep-link suggestions (default: derive from --api-url).",
+    )
+    wiki_lifecycle_stale.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    wiki_lifecycle_stale.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_lifecycle_stale.set_defaults(func=_cmd_wiki_lifecycle_stale)
+
+    wiki_lifecycle_telemetry = wiki_lifecycle_subparsers.add_parser(
+        "telemetry",
+        help="Show empty-scope lifecycle action telemetry summary.",
+    )
+    wiki_lifecycle_telemetry.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    wiki_lifecycle_telemetry.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_lifecycle_telemetry.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="Telemetry window in days (default: 7, max: 90).",
+    )
+    wiki_lifecycle_telemetry.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        help="Max top actions to print in text mode (default: 5).",
+    )
+    wiki_lifecycle_telemetry.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    wiki_lifecycle_telemetry.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_lifecycle_telemetry.set_defaults(func=_cmd_wiki_lifecycle_telemetry)
+
+    wiki_lifecycle_open_drafts = wiki_lifecycle_subparsers.add_parser(
+        "open-drafts",
+        help="Generate deep-link URL to open drafts inbox for a page.",
+    )
+    wiki_lifecycle_open_drafts.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_lifecycle_open_drafts.add_argument("--page-slug", required=True, help="Wiki page slug.")
+    wiki_lifecycle_open_drafts.add_argument(
+        "--web-base-url",
+        default=None,
+        help="Web app base URL (default: derive from SYNAPSE_WEB_BASE_URL or http://localhost:5173).",
+    )
+    wiki_lifecycle_open_drafts.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_lifecycle_open_drafts.set_defaults(func=_cmd_wiki_lifecycle_open_drafts)
+
+    wiki_lifecycle_open_policy = wiki_lifecycle_subparsers.add_parser(
+        "open-policy",
+        help="Generate deep-link URL to open governance/policy view for a page.",
+    )
+    wiki_lifecycle_open_policy.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    wiki_lifecycle_open_policy.add_argument("--page-slug", required=True, help="Wiki page slug.")
+    wiki_lifecycle_open_policy.add_argument(
+        "--web-base-url",
+        default=None,
+        help="Web app base URL (default: derive from SYNAPSE_WEB_BASE_URL or http://localhost:5173).",
+    )
+    wiki_lifecycle_open_policy.add_argument("--json", action="store_true", help="Render output as JSON.")
+    wiki_lifecycle_open_policy.set_defaults(func=_cmd_wiki_lifecycle_open_policy)
 
     verify = subparsers.add_parser("verify", help="Run end-to-end verification helpers")
     verify_subparsers = verify.add_subparsers(dest="verify_target")
@@ -1142,6 +1430,520 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_wiki_space_policy_get(args: argparse.Namespace) -> int:
+    resolved = _resolve_wiki_space_policy_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    space_key = str(resolved["space_key"])
+    timeout = float(resolved["timeout_seconds"])
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/wiki/spaces/{space_key}/policy",
+        params={"project_id": project_id},
+        timeout=timeout,
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **payload,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
+        metadata = policy.get("metadata") if isinstance(policy.get("metadata"), dict) else {}
+        preset = metadata.get("publish_checklist_preset") or "none"
+        print("Wiki Space Policy")
+        print(f"- project_id: {project_id}")
+        print(f"- space_key: {space_key}")
+        print(f"- http_status: {response['status_code']}")
+        print(f"- write_mode: {policy.get('write_mode') or 'open'}")
+        print(f"- comment_mode: {policy.get('comment_mode') or 'open'}")
+        print(f"- review_assignment_required: {bool(policy.get('review_assignment_required'))}")
+        print(f"- publish_checklist_preset: {preset}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_wiki_space_policy_audit(args: argparse.Namespace) -> int:
+    resolved = _resolve_wiki_space_policy_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    space_key = str(resolved["space_key"])
+    timeout = float(resolved["timeout_seconds"])
+    limit = max(1, min(200, int(args.limit)))
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/wiki/spaces/{space_key}/policy/audit",
+        params={"project_id": project_id, "limit": limit},
+        timeout=timeout,
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    entries = payload.get("entries") if isinstance(payload.get("entries"), list) else []
+    if bool(args.json):
+        _print_json(
+            {
+                **payload,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        print("Wiki Space Policy Audit")
+        print(f"- project_id: {project_id}")
+        print(f"- space_key: {space_key}")
+        print(f"- entries: {len(entries)}")
+        print(f"- http_status: {response['status_code']}")
+        if entries:
+            print("Recent changes:")
+            for entry in entries[:10]:
+                if not isinstance(entry, dict):
+                    continue
+                changed_fields = entry.get("changed_fields") if isinstance(entry.get("changed_fields"), list) else []
+                print(
+                    "- "
+                    f"{entry.get('created_at') or 'n/a'} "
+                    f"by={entry.get('changed_by') or 'unknown'} "
+                    f"fields={','.join(str(item) for item in changed_fields) or '-'}"
+                )
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_wiki_space_policy_set(args: argparse.Namespace) -> int:
+    resolved = _resolve_wiki_space_policy_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    space_key = str(resolved["space_key"])
+    timeout = float(resolved["timeout_seconds"])
+    metadata, metadata_error = _parse_metadata_json(_coerce_text(args.metadata_json))
+    if metadata_error:
+        print(f"[synapse-cli] {metadata_error}", file=sys.stderr)
+        return 2
+    request_payload = {
+        "project_id": project_id,
+        "space_key": space_key,
+        "updated_by": str(args.updated_by).strip(),
+        "write_mode": str(args.write_mode).strip().lower(),
+        "comment_mode": str(args.comment_mode).strip().lower(),
+        "review_assignment_required": bool(args.review_assignment_required),
+        "metadata": metadata,
+    }
+    response = _synapse_api_json(
+        method="PUT",
+        url=f"{api_url}/v1/wiki/spaces/{space_key}/policy",
+        payload=request_payload,
+        timeout=timeout,
+        idempotency_key=_coerce_text(args.idempotency_key),
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **payload,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
+        print("Wiki Space Policy Upsert")
+        print(f"- project_id: {project_id}")
+        print(f"- space_key: {space_key}")
+        print(f"- status: {payload.get('status') or ('ok' if response['ok'] else 'error')}")
+        print(f"- write_mode: {policy.get('write_mode') or request_payload['write_mode']}")
+        print(f"- comment_mode: {policy.get('comment_mode') or request_payload['comment_mode']}")
+        print(
+            "- review_assignment_required: "
+            f"{bool(policy.get('review_assignment_required') if isinstance(policy, dict) else request_payload['review_assignment_required'])}"
+        )
+        audit = payload.get("audit") if isinstance(payload.get("audit"), dict) else {}
+        changed_fields = audit.get("changed_fields") if isinstance(audit.get("changed_fields"), list) else []
+        if changed_fields:
+            print(f"- changed_fields: {', '.join(str(item) for item in changed_fields)}")
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_wiki_space_policy_set_preset(args: argparse.Namespace) -> int:
+    resolved = _resolve_wiki_space_policy_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    space_key = str(resolved["space_key"])
+    timeout = float(resolved["timeout_seconds"])
+    preset = str(args.preset).strip().lower()
+    if preset not in {"none", "ops_standard", "policy_strict"}:
+        print(f"[synapse-cli] unsupported --preset value: {preset}", file=sys.stderr)
+        return 2
+
+    current_response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/wiki/spaces/{space_key}/policy",
+        params={"project_id": project_id},
+        timeout=timeout,
+    )
+    if not bool(current_response["ok"]):
+        print(
+            "[synapse-cli] failed to load current policy before preset update: "
+            f"{current_response.get('error') or current_response.get('status_code')}",
+            file=sys.stderr,
+        )
+        return 1
+    current_payload = current_response["payload"] if isinstance(current_response.get("payload"), dict) else {}
+    current_policy = current_payload.get("policy") if isinstance(current_payload.get("policy"), dict) else {}
+    current_metadata = current_policy.get("metadata") if isinstance(current_policy.get("metadata"), dict) else {}
+    next_metadata = dict(current_metadata)
+    next_metadata["publish_checklist_preset"] = preset
+    reason = _coerce_text(args.reason)
+    if reason:
+        next_metadata["policy_change_reason"] = reason
+
+    request_payload = {
+        "project_id": project_id,
+        "space_key": space_key,
+        "updated_by": str(args.updated_by).strip(),
+        "write_mode": str(current_policy.get("write_mode") or "open").strip().lower(),
+        "comment_mode": str(current_policy.get("comment_mode") or "open").strip().lower(),
+        "review_assignment_required": bool(current_policy.get("review_assignment_required")),
+        "metadata": next_metadata,
+    }
+    response = _synapse_api_json(
+        method="PUT",
+        url=f"{api_url}/v1/wiki/spaces/{space_key}/policy",
+        payload=request_payload,
+        timeout=timeout,
+        idempotency_key=_coerce_text(args.idempotency_key),
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **payload,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        policy = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
+        metadata = policy.get("metadata") if isinstance(policy.get("metadata"), dict) else next_metadata
+        print("Wiki Space Policy Preset Update")
+        print(f"- project_id: {project_id}")
+        print(f"- space_key: {space_key}")
+        print(f"- status: {payload.get('status') or ('ok' if response['ok'] else 'error')}")
+        print(f"- publish_checklist_preset: {metadata.get('publish_checklist_preset') or preset}")
+        audit = payload.get("audit") if isinstance(payload.get("audit"), dict) else {}
+        changed_fields = audit.get("changed_fields") if isinstance(audit.get("changed_fields"), list) else []
+        if changed_fields:
+            print(f"- changed_fields: {', '.join(str(item) for item in changed_fields)}")
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_wiki_lifecycle_stale(args: argparse.Namespace) -> int:
+    resolved = _resolve_lifecycle_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    space_key = _coerce_text(resolved.get("space_key"))
+    timeout = float(resolved["timeout_seconds"])
+    preset = str(_coerce_text(getattr(args, "preset", None)) or "stale_21").strip().lower()
+    if preset not in {"stale_21", "critical_45", "custom"}:
+        preset = "stale_21"
+    if preset == "critical_45":
+        stale_days = 45
+        critical_days = 45
+    elif preset == "custom":
+        stale_days = max(1, int(args.stale_days))
+        critical_days = max(stale_days, int(args.critical_days))
+    else:
+        stale_days = 21
+        critical_days = 45
+    limit = max(1, min(200, int(args.limit)))
+    request_params: dict[str, Any] = {
+        "project_id": project_id,
+        "stale_days": stale_days,
+        "critical_days": critical_days,
+        "stale_limit": limit,
+    }
+    if space_key:
+        request_params["space_key"] = space_key
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/wiki/lifecycle/stats",
+        params=request_params,
+        timeout=timeout,
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    stale_pages = payload.get("stale_pages") if isinstance(payload.get("stale_pages"), list) else []
+    web_base_url = _resolve_web_base_url(args.web_base_url, api_url=api_url)
+    if bool(args.json):
+        with_links: list[dict[str, Any]] = []
+        for item in stale_pages:
+            if not isinstance(item, dict):
+                continue
+            slug = str(item.get("slug") or "").strip()
+            if not slug:
+                continue
+            with_links.append(
+                {
+                    **item,
+                    "deep_links": {
+                        "drafts": _build_wiki_lifecycle_deeplink(
+                            web_base_url,
+                            project_id=project_id,
+                            page_slug=slug,
+                            target="drafts",
+                            space_key=space_key,
+                        ),
+                        "policy": _build_wiki_lifecycle_deeplink(
+                            web_base_url,
+                            project_id=project_id,
+                            page_slug=slug,
+                            target="policy",
+                            space_key=space_key,
+                        ),
+                    },
+                }
+            )
+        _print_json(
+            {
+                **payload,
+                "stale_pages": with_links,
+                "meta_cli": {"web_base_url": web_base_url, "preset": preset},
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+        print("Wiki Lifecycle Stale")
+        print(f"- project_id: {project_id}")
+        print(f"- preset: {preset}")
+        if space_key:
+            print(f"- space: {space_key}")
+        print(f"- stale_days: {stale_days}")
+        print(f"- critical_days: {critical_days}")
+        print(f"- fetched: {len(stale_pages)}")
+        print(
+            "- counts: "
+            f"published={counts.get('published_pages', 0)} "
+            f"stale={counts.get('stale_warning_pages', 0)} "
+            f"critical={counts.get('stale_critical_pages', 0)}"
+        )
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        empty_scope = meta.get("empty_scope") if isinstance(meta.get("empty_scope"), dict) else None
+        if empty_scope:
+            code = str(empty_scope.get("code") or "").strip() or "unknown"
+            message = str(empty_scope.get("message") or "").strip() or "No stale pages in selected scope."
+            print(f"- empty_scope: {code}")
+            print(f"  reason: {message}")
+            details = empty_scope.get("details") if isinstance(empty_scope.get("details"), dict) else {}
+            if details:
+                print(
+                    "  details: "
+                    f"published={details.get('published_pages', 0)} "
+                    f"with_open_drafts={details.get('published_pages_with_open_drafts', 0)} "
+                    f"below_threshold={details.get('published_pages_below_stale_threshold', 0)} "
+                    f"stale_days={details.get('stale_days', stale_days)}"
+                )
+            suggested_actions = (
+                empty_scope.get("suggested_actions") if isinstance(empty_scope.get("suggested_actions"), list) else []
+            )
+            if suggested_actions:
+                print("  suggested_actions:")
+                for raw_action in suggested_actions:
+                    if not isinstance(raw_action, dict):
+                        continue
+                    action = str(raw_action.get("action") or "").strip()
+                    label = str(raw_action.get("label") or action or "action")
+                    deep_link = raw_action.get("deep_link") if isinstance(raw_action.get("deep_link"), dict) else {}
+                    deep_tab = str(deep_link.get("core_tab") or "").strip().lower()
+                    deep_focus = str(deep_link.get("wiki_focus") or "").strip().lower()
+                    if deep_tab in {"wiki", "drafts", "tasks"}:
+                        if deep_focus:
+                            print(
+                                f"    - {label} ({action}) | deep_link: core_tab={deep_tab}, wiki_focus={deep_focus}"
+                            )
+                        else:
+                            print(f"    - {label} ({action}) | deep_link: core_tab={deep_tab}")
+                    else:
+                        print(f"    - {label} ({action})")
+        if stale_pages:
+            print("Stale candidates:")
+            for item in stale_pages[: min(10, len(stale_pages))]:
+                if not isinstance(item, dict):
+                    continue
+                slug = str(item.get("slug") or "").strip()
+                if not slug:
+                    continue
+                title = str(item.get("title") or slug)
+                severity = str(item.get("severity") or "warning")
+                age_days = item.get("age_days")
+                open_draft_count = max(0, int(item.get("open_draft_count") or 0))
+                print(
+                    f"- {title} ({slug}) | severity={severity} age_days={age_days} open_drafts={open_draft_count}"
+                )
+                print(
+                    "  links: "
+                    f"drafts={_build_wiki_lifecycle_deeplink(web_base_url, project_id=project_id, page_slug=slug, target='drafts', space_key=space_key)} "
+                    f"policy={_build_wiki_lifecycle_deeplink(web_base_url, project_id=project_id, page_slug=slug, target='policy', space_key=space_key)}"
+                )
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_wiki_lifecycle_telemetry(args: argparse.Namespace) -> int:
+    resolved = _resolve_lifecycle_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    days = max(1, min(90, int(args.days)))
+    top = max(1, min(30, int(args.top)))
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/wiki/lifecycle/telemetry",
+        params={"project_id": project_id, "days": days},
+        timeout=timeout,
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    actions = summary.get("actions") if isinstance(summary.get("actions"), list) else []
+    daily = payload.get("daily") if isinstance(payload.get("daily"), list) else []
+    if bool(args.json):
+        _print_json(
+            {
+                **payload,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        print("Wiki Lifecycle Telemetry")
+        print(f"- project_id: {project_id}")
+        print(f"- days: {days}")
+        print(f"- shown_total: {int(summary.get('shown_total', 0) or 0)}")
+        print(f"- applied_total: {int(summary.get('applied_total', 0) or 0)}")
+        print(f"- apply_rate: {float(summary.get('apply_rate', 0.0) or 0.0):.4f}")
+        if actions:
+            print("Top actions:")
+            for item in actions[:top]:
+                if not isinstance(item, dict):
+                    continue
+                action_key = str(item.get("action_key") or "").strip() or "unknown"
+                shown_total = int(item.get("shown_total", 0) or 0)
+                applied_total = int(item.get("applied_total", 0) or 0)
+                apply_rate = float(item.get("apply_rate", 0.0) or 0.0)
+                print(
+                    f"- {action_key}: shown={shown_total} applied={applied_total} apply_rate={apply_rate:.4f}"
+                )
+        if daily:
+            print("Daily trend:")
+            for item in daily[-7:]:
+                if not isinstance(item, dict):
+                    continue
+                metric_date = str(item.get("metric_date") or "").strip() or "unknown-date"
+                shown_total = int(item.get("shown_total", 0) or 0)
+                applied_total = int(item.get("applied_total", 0) or 0)
+                print(f"- {metric_date}: shown={shown_total} applied={applied_total}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_wiki_lifecycle_open_drafts(args: argparse.Namespace) -> int:
+    project_id = _sanitize_project_id(args.project_id)
+    page_slug = _coerce_text(args.page_slug)
+    if not project_id:
+        print("[synapse-cli] --project-id is required (or set SYNAPSE_PROJECT_ID)", file=sys.stderr)
+        return 2
+    if not page_slug:
+        print("[synapse-cli] --page-slug is required", file=sys.stderr)
+        return 2
+    web_base_url = _resolve_web_base_url(args.web_base_url, api_url=None)
+    url = _build_wiki_lifecycle_deeplink(web_base_url, project_id=project_id, page_slug=page_slug, target="drafts")
+    payload = {
+        "project_id": project_id,
+        "page_slug": page_slug,
+        "target": "drafts",
+        "url": url,
+    }
+    if bool(args.json):
+        _print_json(payload, pretty=True)
+    else:
+        print("Wiki Lifecycle Deep Link")
+        print(f"- target: drafts")
+        print(f"- project_id: {project_id}")
+        print(f"- page_slug: {page_slug}")
+        print(f"- url: {url}")
+    return 0
+
+
+def _cmd_wiki_lifecycle_open_policy(args: argparse.Namespace) -> int:
+    project_id = _sanitize_project_id(args.project_id)
+    page_slug = _coerce_text(args.page_slug)
+    if not project_id:
+        print("[synapse-cli] --project-id is required (or set SYNAPSE_PROJECT_ID)", file=sys.stderr)
+        return 2
+    if not page_slug:
+        print("[synapse-cli] --page-slug is required", file=sys.stderr)
+        return 2
+    web_base_url = _resolve_web_base_url(args.web_base_url, api_url=None)
+    url = _build_wiki_lifecycle_deeplink(web_base_url, project_id=project_id, page_slug=page_slug, target="policy")
+    payload = {
+        "project_id": project_id,
+        "page_slug": page_slug,
+        "target": "policy",
+        "url": url,
+    }
+    if bool(args.json):
+        _print_json(payload, pretty=True)
+    else:
+        print("Wiki Lifecycle Deep Link")
+        print(f"- target: policy")
+        print(f"- project_id: {project_id}")
+        print(f"- page_slug: {page_slug}")
+        print(f"- url: {url}")
+    return 0
+
+
 def _cmd_verify_core_loop(args: argparse.Namespace) -> int:
     script_path = _resolve_core_loop_script(_coerce_text(args.script))
     if script_path is None:
@@ -1531,6 +2333,149 @@ def _print_json(payload: Any, *, pretty: bool) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     print(json.dumps(payload, ensure_ascii=False))
+
+
+def _resolve_wiki_space_policy_api_args(args: argparse.Namespace) -> dict[str, Any]:
+    api_url = str(_coerce_text(getattr(args, "api_url", None)) or "").strip().rstrip("/")
+    if not api_url:
+        return {"ok": False, "error": "--api-url cannot be empty"}
+    project_id = _sanitize_project_id(getattr(args, "project_id", None))
+    if not project_id:
+        return {"ok": False, "error": "--project-id is required (or set SYNAPSE_PROJECT_ID)"}
+    raw_space_key = _coerce_text(getattr(args, "space_key", None))
+    if not raw_space_key:
+        return {"ok": False, "error": "--space-key is required"}
+    space_key = _sanitize_simple_key(raw_space_key, fallback="")
+    if not space_key:
+        return {"ok": False, "error": "resolved --space-key is empty"}
+    timeout_seconds = max(0.2, float(getattr(args, "timeout_seconds", 6.0)))
+    return {
+        "ok": True,
+        "api_url": api_url,
+        "project_id": project_id,
+        "space_key": space_key,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def _resolve_lifecycle_api_args(args: argparse.Namespace) -> dict[str, Any]:
+    api_url = str(_coerce_text(getattr(args, "api_url", None)) or "").strip().rstrip("/")
+    if not api_url:
+        return {"ok": False, "error": "--api-url cannot be empty"}
+    project_id = _sanitize_project_id(getattr(args, "project_id", None))
+    if not project_id:
+        return {"ok": False, "error": "--project-id is required (or set SYNAPSE_PROJECT_ID)"}
+    raw_space_key = _coerce_text(getattr(args, "space", None))
+    space_key = _sanitize_simple_key(raw_space_key, fallback="") if raw_space_key else ""
+    timeout_seconds = max(0.2, float(getattr(args, "timeout_seconds", 6.0)))
+    return {
+        "ok": True,
+        "api_url": api_url,
+        "project_id": project_id,
+        "space_key": space_key or None,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def _resolve_web_base_url(explicit: str | None, *, api_url: str | None) -> str:
+    if _coerce_text(explicit):
+        return str(explicit).strip().rstrip("/")
+    env_value = _coerce_text(os.getenv("SYNAPSE_WEB_BASE_URL"))
+    if env_value:
+        return env_value.rstrip("/")
+    if _coerce_text(api_url):
+        candidate = str(api_url).strip().rstrip("/")
+        if candidate.endswith(":8080"):
+            return f"{candidate[:-5]}:5173"
+    return "http://localhost:5173"
+
+
+def _build_wiki_lifecycle_deeplink(
+    web_base_url: str,
+    *,
+    project_id: str,
+    page_slug: str,
+    target: str,
+    space_key: str | None = None,
+) -> str:
+    root = str(web_base_url or "http://localhost:5173").strip().rstrip("/")
+    params = {
+        "project": project_id,
+        "wiki_status": "published",
+        "wiki_page": page_slug,
+    }
+    if _coerce_text(space_key):
+        params["wiki_space"] = str(space_key).strip()
+    if target == "drafts":
+        params["core_tab"] = "drafts"
+        params["wiki_focus"] = "draft_inbox"
+    elif target == "policy":
+        params["core_tab"] = "wiki"
+        params["wiki_focus"] = "policy_timeline"
+    else:
+        params["core_tab"] = "wiki"
+    query = urlencode({key: str(value) for key, value in params.items()}, quote_via=quote)
+    return f"{root}/wiki?{query}"
+
+
+def _parse_metadata_json(raw: str | None) -> tuple[dict[str, Any], str | None]:
+    if not raw:
+        return {}, None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {}, f"--metadata-json must be a JSON object: {exc}"
+    if not isinstance(parsed, dict):
+        return {}, "--metadata-json must be a JSON object"
+    return dict(parsed), None
+
+
+def _synapse_api_json(
+    *,
+    method: str,
+    url: str,
+    params: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    timeout: float,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    headers: dict[str, str] = {"content-type": "application/json"}
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            params=params,
+            json=payload if method.upper() != "GET" else None,
+            headers=headers if method.upper() != "GET" or idempotency_key else None,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return {
+            "ok": False,
+            "status_code": None,
+            "payload": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    parsed_payload: dict[str, Any]
+    try:
+        body = response.json()
+        parsed_payload = body if isinstance(body, dict) else {"data": body}
+    except ValueError:
+        parsed_payload = {}
+    error_detail: str | None = None
+    if response.status_code >= 400:
+        if isinstance(parsed_payload, dict):
+            detail = parsed_payload.get("detail") or parsed_payload.get("error")
+            if detail is not None:
+                error_detail = str(detail)
+    return {
+        "ok": response.status_code < 400,
+        "status_code": int(response.status_code),
+        "payload": parsed_payload,
+        "error": error_detail,
+    }
 
 
 def _run_http_check(

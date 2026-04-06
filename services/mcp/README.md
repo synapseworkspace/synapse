@@ -12,7 +12,13 @@ MCP runtime server that exposes published Synapse knowledge to agent frameworks.
   - `score_breakdown.total|lexical|graph`,
   - `score_breakdown.lexical_components` (token overlap and exact/phrase match signals),
   - `retrieval_confidence` + `confidence_breakdown`,
-  - `context_policy` eligibility markers (`eligible`, `blocked_by`, thresholds).
+  - `context_policy` eligibility markers (`eligible`, `blocked_by`, thresholds),
+  - `intent_alignment` and `intent_rank_score`,
+  - `provenance` (`claim_id`, `source_ids`, `ticket_ids`, `outcome`) when claim evidence is available.
+- Search response also includes `context_injection.snippets` (top-k verified snippets selected for runtime injection, with provenance when available).
+- Optional intent controls:
+  - `retrieval_intent=auto|general|process|policy|incident|preference`
+  - `max_context_snippets=1..10`
 - Optional context policy controls:
   - `context_policy_mode=off|advisory|enforced`
   - `min_retrieval_confidence`
@@ -34,6 +40,21 @@ MCP runtime server that exposes published Synapse knowledge to agent frameworks.
 
 6. `get_task_details`
 - Full task context: metadata + timeline events + linked entities (`claim`, `draft`, `page`, `event`, `external`).
+
+7. `get_onboarding_pack`
+- Day-0 role pack generated from published wiki statements:
+  - `critical_playbooks`
+  - `escalation_rules`
+  - `forbidden_actions`
+  - `fresh_changes`
+- Optional parameters: `role`, `max_items_per_section`, `freshness_days`.
+
+8. `get_space_policy_adoption_summary`
+- Governance summary for one wiki space:
+  - `total_updates`, `unique_actors`, `top_actor`, `top_actor_updates`,
+  - `avg_update_interval_days`,
+  - checklist preset distribution (`none`, `ops_standard`, `policy_strict`) and transition count.
+- Useful for agents to explain policy-governance health before auto-publish decisions.
 
 ## Runtime cache + invalidation
 
@@ -57,6 +78,8 @@ Env vars:
 - `SYNAPSE_MCP_CONTEXT_MIN_TOTAL_SCORE` (default `0.20`)
 - `SYNAPSE_MCP_CONTEXT_MIN_LEXICAL_SCORE` (default `0.08`)
 - `SYNAPSE_MCP_CONTEXT_MIN_TOKEN_OVERLAP_RATIO` (default `0.15`)
+- `SYNAPSE_MCP_RETRIEVAL_INTENT_DEFAULT` (default `auto`)
+- `SYNAPSE_MCP_CONTEXT_MAX_SNIPPETS` (default `3`)
 - `SYNAPSE_MCP_TRANSPORT` (`stdio` by default, also `http`/`streamable-http`)
 - `SYNAPSE_MCP_HOST` / `SYNAPSE_MCP_PORT` for HTTP transports
 

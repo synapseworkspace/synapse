@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-04
+Last updated: 2026-04-06
 Owner: Core team
 
 ## Правило актуальности
@@ -42,6 +42,21 @@ Owner: Core team
 15. Process Playbook Intelligence (if/then runbooks, instruction capture, operator-outcome loops).
 16. Agent Directory & Operations Intelligence (AI orgchart, agent folders, daily worklogs, provenance).
 17. Public Launch & Positioning (package publication, onboarding KPI, Cognitive State Layer messaging).
+
+## Agent Worklog Intelligence TODO (April 2026)
+
+Status: `done`
+
+1. `done` Semantic daily summaries:
+   - structure reports as `Done / Impact / Blockers / Escalations` with authored-page highlights and activity score.
+2. `done` Timezone-aware project scheduling:
+   - per-project timezone + local run window from routing policy (`agent_worklog_timezone`, schedule hour/minute).
+3. `done` Orgchart API + Operations UI:
+   - expose graph-ready API (`nodes/edges/teams`) and render operations orgchart (teams + handoffs + profile deep-links).
+4. `done` Anti-noise worklog gating:
+   - skip idle days by default using `min_activity_score` + meaningful-signal checks.
+5. `done` Hybrid trigger model:
+   - keep daily batch plus realtime refresh on `session_close` / `task_close` signals.
 
 ## Recovery Plan: Wiki-First UX + Draft Quality (April 2026)
 
@@ -87,7 +102,7 @@ Checklist:
 4. `done` Regression tests for routing quality:
    - unit tests for snapshot-noise demotion + policy-fact retention.
 5. `done` Assertion class contracts:
-   - typed class labels (`policy`, `preference`, `incident`, `event`) to improve explainability.
+   - typed class labels (`policy`, `process`, `preference`, `incident`, `event`) to improve explainability.
 6. `done` Retrieval-feedback loop:
    - incorporate real runtime usefulness into draft priority and policy suggestions.
 
@@ -128,76 +143,78 @@ Checklist:
    - track TTFV, time-to-first-publish, and click-depth to open/publish.
 
 Next Up (execution order):
-1. Optional publish checklist presets per space (for policy-heavy teams).
+1. Remove dead legacy workspace render branch from `apps/web/src/App.tsx` (keep one canonical shell path).
+2. Consolidate duplicated operations controls that still exist in non-canonical render path before full branch removal.
+3. Split `App.tsx` canonical shell into focused components (`TopBar`, `LeftRail`, `WikiMain`, `DraftMain`) to reduce file-size risk before dead-branch extraction.
 
 ## Process Playbook Intelligence (Support Ops Focus)
 
-Status: `planned`
+Status: `done`
 
 Goal:
 - сделать Wiki не только хранилищем фактов, но и живым справочником процессов;
 - позволить агентам автоматически документировать “как работает операция” в формате шагов и условий.
 
 Checklist:
-1. `planned` Operator decision capture (online):
+1. `done` Operator decision capture (online):
    - ingest live operator decisions from chats/tickets/macros;
    - normalize as `trigger -> action -> outcome` records.
-2. `planned` Template-first process pages:
+2. `done` Template-first process pages:
    - add canonical page templates (`Issue Playbook`, `Escalation Rule`, `Customer Exception`, `Known Incident`);
    - auto-route extracted records into those templates.
-3. `planned` Gatekeeper process-quality routing:
+3. `done` Gatekeeper process-quality routing:
    - block event-stream noise from process wiki pages;
    - promote only repeated/validated workflow signals.
-4. `planned` Risk-tiered publish + rollback:
+4. `done` Risk-tiered publish + rollback:
    - low-risk process updates can auto-publish;
    - policy/financial/legal changes stay `human_required`;
    - full rollback path remains mandatory.
-5. `planned` Intent-aware context injection:
+5. `done` Intent-aware context injection:
    - retrieval injects process steps by task intent, not by keyword-only matching;
    - enforce top-k verified runbook snippets in runtime context.
-6. `planned` Auto onboarding packs:
+6. `done` Auto onboarding packs:
    - generate “day-0” role packs (critical playbooks, escalations, forbidden actions, fresh changes).
-7. `planned` Ticket/outcome linkage:
+7. `done` Ticket/outcome linkage:
    - attach process statements to ticket ids and resolution outcomes;
    - prioritize process knowledge that demonstrably resolved incidents.
-8. `planned` Process instruction provenance:
+8. `done` Process instruction provenance:
    - link each process step to source evidence (operator session, ticket, policy page);
    - expose “why this step exists” in wiki UI and MCP retrieval explain.
-9. `planned` Process simulation safety check:
+9. `done` Process simulation safety check:
    - run “what changes if we update this process step” simulation before broad publish.
 
 ## Agent Directory & Operations Intelligence
 
-Status: `planned`
+Status: `done`
 
 Goal:
 - сделать в Wiki прозрачную структуру “кто из AI-агентов что делает”;
 - добавить self-maintained профили агентов, ежедневные отчеты и связь с реальными артефактами знаний.
 
 Phase 1 (MVP):
-1. `planned` AI Orgchart index:
+1. `done` AI Orgchart index:
    - page `Agents/Index` with team/role hierarchy and status badges.
-2. `planned` Agent self-profile on attach:
+2. `done` Agent self-profile on attach:
    - SDK `attach()` can publish/update agent profile (`responsibilities`, `tools`, `data_sources`, `limits`).
-3. `planned` Standard agent folder scaffold:
+3. `done` Standard agent folder scaffold:
    - `Overview`, `Runbooks`, `Daily Reports`, `Created Pages`, `Incidents`, `Changelog`.
-4. `planned` Auto-generated “Created by agent” page index:
+4. `done` Auto-generated “Created by agent” page index:
    - list pages/statements authored by each agent with timestamps and links.
 
 Phase 2 (Scale):
-5. `planned` Daily worklog synthesis:
+5. `done` Daily worklog synthesis:
    - per-agent daily report with completed actions, blockers, escalations, and impact.
-6. `planned` Capability matrix:
+6. `done` Capability matrix:
    - “which agent handles what” with confidence and last-success evidence.
-7. `planned` Handoff map:
+7. `done` Handoff map:
    - explicit inter-agent handoff graph (`input contract`, `output contract`, `SLA`).
 
 Phase 3 (Governance):
-8. `planned` Agent scorecards:
+8. `done` Agent scorecards:
    - quality/reliability metrics (resolution rate, rollback rate, escalation rate, SLA adherence).
-9. `planned` Agent-level provenance and rollback:
+9. `done` Agent-level provenance and rollback:
    - show evidence trail for agent-authored updates and support one-click rollback.
-10. `planned` Risk-tiered policy enforcement:
+10. `done` Risk-tiered policy enforcement:
     - per-agent publish guardrails (`auto_publish` vs `human_required`) by domain risk.
 
 ## Confluence-Like Wiki Track (Q2-Q3 2026)
@@ -615,7 +632,7 @@ Progress:
 
 ## M15: Public Launch & Positioning (Weeks 37-40)
 
-Status: `planned`
+Status: `done`
 
 Scope:
 - remove “not published yet” friction by shipping registry-verified package installs;
@@ -629,30 +646,35 @@ Exit criteria:
 - top-level docs/README consistently present Synapse as L2 cognitive layer with Agentic Wiki as operational interface.
 
 Checklist:
-1. `planned` Kill “Not Published Yet” docs state:
+1. `done` Kill “Not Published Yet” docs state:
    - complete trusted publishing for PyPI/npm and verify first successful public releases;
    - replace “not published yet” language with versioned install docs and troubleshooting.
-2. `planned` Registry install verification matrix:
+2. `done` Registry install verification matrix:
    - add clean-room install checks on Linux/macOS for Python + Node in CI release path;
    - capture publish provenance and signed artifact references in release notes.
-3. `planned` Agentic Onboarding benchmark kit:
+3. `done` Agentic Onboarding benchmark kit:
    - ship one-command benchmark scenario for “new support agent day-0” with before/after metrics;
    - surface KPI cards in docs (`first useful answer`, `first approved draft`, `first policy-safe publish`).
-4. `planned` Multi-framework onboarding parity:
+4. `done` Multi-framework onboarding parity:
    - add canonical quickstarts for OpenClaw, LangGraph, LangChain, CrewAI with same 5-minute structure;
    - enforce parity via docs lint + smoke contracts.
-5. `planned` Positioning refresh (L2 narrative):
+5. `done` Positioning refresh (L2 narrative):
    - update README/docs hero language to “Cognitive State Layer (L2)” + “Agentic Wiki interface”;
    - keep dual framing: infra buyers (L2 reliability/quality) + operators (wiki governance UI).
-6. `planned` Buyer-facing packaging:
+6. `done` Buyer-facing packaging:
    - add concise “Why now / ROI / rollout modes” one-pager and architecture slide-ready diagram pack;
    - include side-by-side “raw RAG vs Synapse L2” operational comparison.
 
 ## Next Up (Execution Queue)
 
-1. M15.1: complete first fully verified public package release path and remove “not published yet” language from onboarding docs.
-2. M15.3: ship Agentic Onboarding benchmark kit with reproducible metrics and demo dataset.
-3. M15.5: complete positioning refresh to “Cognitive State Layer (L2)” across README/docs.
+1. Canonical shell extraction:
+   - `done`: split current `App.tsx` wiki shell into focused components (`TopBar`, `LeftRail`, `DraftTab`, `WikiMain`) with `/wiki` and `/operations` parity preserved.
+2. Legacy render path removal:
+   - `done`: physically deleted non-canonical advanced workspace render blocks from `App.tsx` (`wiki-command-bar`, legacy task panel, legacy `wiki-core-grid`);
+   - `done`: removed temporary compile-sink and completed direct dead-code cleanup pass for legacy helpers/state not used in canonical wiki/drafts/tasks flow.
+3. Utility Gate observability polish:
+   - `done`: added docs parity CI check for Utility Gate controls in `/operations` runbook;
+   - `done`: added explicit e2e assertion for Draft detail `Gatekeeper Signal` / `gatekeeper.llm.reason_code` rendering in core Draft detail flow.
 
 ## Risks to Watch
 
@@ -667,6 +689,122 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-04-06: Completed Agent Worklog Intelligence UI closure in core Operations route: added project-level worklog policy controls (timezone, local schedule, min activity score, idle-day mode, realtime trigger + lookback), `Sync worklogs now` action, and integrated live AI orgchart view (teams, handoffs, profile deep-links) backed by `GET /v1/agents/orgchart`.
+- 2026-04-06: Started Agent Worklog Intelligence TODO track (5 items): upgraded worklog sync payload with timezone/trigger/noise-gating controls, added richer daily report composition (`Done/Impact/Blockers/Escalations` + authored-page highlights), introduced graph-ready orgchart API (`GET /v1/agents/orgchart`), and extended worker scheduler with daily-batch schedule gating + realtime session/task-close trigger mode.
+- 2026-04-06: Completed self-hosted daily agent reporting automation: added worker job `agent_worklog_scheduler` (enabled by default) that discovers projects from `agent_directory_profiles` and calls `/v1/agents/worklogs/sync` on schedule; wired env/compose defaults (`SYNAPSE_WORKER_AGENT_WORKLOGS_*`), published runbook/docs updates, and added worker unit coverage for job wiring + scheduler helper behavior.
+- 2026-04-06: Completed history UX upgrade for core wiki: `Recent versions` in right rail now deep-links directly into history drawer on selected version, and history drawer now renders colorized inline markdown diff (context/add/remove rows) for faster human review.
+- 2026-04-06: Added core `Page history` drawer (Confluence-like): version selectors, unified markdown diff preview (`+/-` counters), and route-aware rollback controls (rollback CTA only in `/operations`, wiki route shows explicit handoff).
+- 2026-04-06: Completed Confluence-like wiki navigation polish in core right rail: added context-first `Related pages` (same space quick-open) and `Recent versions` (author/date/change summary) blocks for `/wiki`, improving page exploration without opening operations tooling.
+- 2026-04-06: Hardened web regression coverage for route split UX: Playwright core tests now assert `/wiki` keeps Drafts clean and right-rail operations controls are gated behind `/operations`, while Gatekeeper reason-code detail remains visible in core Draft detail.
+- 2026-04-06: Completed right-rail route split in core wiki shell: `/wiki` now shows context-only right rail (page details + sections + open drafts + handoff to operations), while review/governance/policy editing controls are rendered only on `/operations`.
+- 2026-04-06: Completed wiki-first IA simplification pass in core left rail: detailed lifecycle telemetry/remediation controls are now operations-only (`/operations`), while `/wiki` keeps a compact lifecycle summary card with explicit handoff (`Open ops diagnostics`) for deeper triage.
+- 2026-04-06: Completed canonical shell extraction follow-up: right rail is now served by dedicated `CoreWikiRightRail` component, keeping `App.tsx` slimmer while preserving page details + governance context behavior.
+- 2026-04-06: Completed compile-sink retirement in `App.tsx`: removed temporary `__legacyBranchRemovalCompileSink`, deleted remaining dead callbacks/state/helpers from non-canonical legacy moderation branch, and kept build + core e2e green.
+- 2026-04-06: Completed another `App.tsx` dead-code reduction pass: removed unused triage-priority/retrieval-scoring helpers and core-only inactive derived flags/metrics (`showCore*`, queue/triage quick metrics, intent summary) and trimmed compile-sink references; build + core e2e stayed green.
+- 2026-04-06: Removed dead retrieval-diagnostics legacy block from `App.tsx` (`runRetrievalExplain`, retrieval explain state/types, and sink references), further reducing non-canonical complexity without changing core Wiki/Drafts behavior.
+- 2026-04-06: Removed another dead legacy cluster from `apps/web/src/App.tsx` (page aliases/comments/watchers/owners/uploads callbacks + related state/types + stale refresh/effect wiring) and trimmed compile-sink accordingly, keeping core wiki/drafts behavior intact.
+- 2026-04-06: Continued wiki-first UX polish: moved right-rail heavy controls into collapsed accordions (`Review workflow`, `Space governance`) so default Wiki viewport stays page-first and less “control-center” on first open; kept governance actions available on demand.
+- 2026-04-06: Continued legacy cleanup hardening in `App.tsx`: removed stale compile-sink references to deleted legacy symbols and kept strict build green while deeper dead-code extraction remains in progress.
+- 2026-04-06: Added canonical core Draft detail pane inside `CoreDraftTab` (Inbox + Detail layout), wired mock API draft/detail/conflict endpoints for realistic gatekeeper payloads, and added Playwright assertion for Draft detail reason-code rendering (`reason override_skip_event|routing_policy_hard_block`).
+- 2026-04-06: Removed legacy advanced render branch blocks from `App.tsx` and kept build green with a temporary strict-mode compile sink while dead state/helpers are being cleaned incrementally.
+- 2026-04-06: Completed canonical shell extraction step by wiring `CoreWikiMain` into `App.tsx`, preserving page breadcrumbs/create/refresh/edit actions and keeping `/wiki` + `/operations` behavior parity.
+- 2026-04-06: Started legacy branch retirement: disabled non-canonical advanced workspace panels via runtime gate so core users always follow one page-first Wiki/Drafts/Tasks path.
+- 2026-04-06: Added operations runbook parity guardrail (`scripts/check_operations_runbook_parity.py`) and wired it into `scripts/ci_checks.sh` to enforce Utility Gate v2.1 control coverage in docs.
+- 2026-04-05: Continued canonical shell refactor: extracted draft-tab main block into `components/core/CoreDraftTab.tsx` and wired confluence main switch to use the component without changing operations migration behavior.
+- 2026-04-05: Advanced canonical shell extraction pass: moved core confluence top navigation into `components/core/CoreWorkspaceTopBar.tsx` and left rail wrapper into `components/core/CoreWorkspaceLeftRail.tsx` (slot-based lifecycle/tree), keeping route-split behavior and smoke e2e green.
+- 2026-04-05: Completed Utility Gate v2.1 UX + explainability pass: added explicit web controls for `backfill_llm_classifier_mode`/confidence/ambiguous-only/model override in operations workflow, extended `GET /v1/wiki/drafts/{draft_id}` with normalized `gatekeeper` summary (`tier`, `score`, LLM reason-code, routing hard-block flags), and surfaced the new Gatekeeper Signal card in Draft detail UI without exposing raw feature payloads.
+- 2026-04-05: Completed visual-gallery docs pass: added wiki UI visual gallery guide (`docs/wiki-ui-visual-gallery.md`) sourced from CI snapshot artifacts and linked it from README + self-hosted deployment guide.
+- 2026-04-05: Completed visual snapshot CI pass for wiki-first shell: added Playwright visual capture spec (`apps/web/e2e/wiki-visual.spec.ts`) for `/wiki` and `/operations`, added dedicated `web-visual-snapshots` CI job, and published snapshot artifacts from CI for fast UI regression inspection.
+- 2026-04-05: Completed self-hosted route-split runbook alignment: updated deployment guide with explicit `/wiki` and `/operations` validation flow and expected behavior for clean Drafts vs operations tooling.
+- 2026-04-05: Completed route-level onboarding docs/examples pass: added explicit `/wiki` and `/operations` URL examples to README quickstart and published dedicated operations route runbook links in onboarding docs/tutorial index.
+- 2026-04-05: Completed core left-rail simplification for user-friendly default: lifecycle panel now uses progressive disclosure (`Show details`) with compact summary first, reducing first-screen control density while keeping diagnostics/actions available on demand.
+- 2026-04-05: Completed route/UX hardening track from wiki-first cleanup queue: simplified core header by removing duplicate KPI strip, added dedicated operations runbook (`docs/operations-route-runbook.md`) and linked it from onboarding docs, and added Playwright smoke coverage for `/wiki` vs `/operations` split (Drafts stays inbox/detail, migration tools stay on operations route).
+- 2026-04-05: Completed core IA cleanup for wiki-first usability: moved reviewer/notifications controls into a right-side `Settings` drawer (removed from default core viewport), introduced dedicated `/operations` route for migration/gatekeeper workflows, and kept `Drafts` route focused on inbox + detail by default.
+- 2026-04-05: Core wiki UX simplification pass (user-friendly default): collapsed workspace configuration into optional `Workspace settings`, reduced always-on diagnostics noise by default-collapsing lifecycle details behind `Show details`, and moved draft queue analytics behind explicit `Show advanced draft ops` toggle so primary experience stays page-first.
+- 2026-04-05: Completed Utility Gate v2.1 core implementation: added routing-policy controls for ambiguous backfill classification (`backfill_llm_classifier_mode=off|assist|enforce`, confidence threshold, ambiguous-only flag, optional model override), integrated deterministic fallback behavior in worker suppression path, exposed structured LLM reason-codes in suppression metadata (`llm_mode`, `llm_reason_code`, `llm_applied`, status/provider/model/confidence), wired project-level routing policy into backfill extraction, and added regression tests for assist/enforce override semantics.
+- 2026-04-05: Completed Existing-memory bridge ergonomics execution item: added reusable API contracts `GET /v1/legacy-import/mapper-templates` and `GET /v1/legacy-import/sync-contracts` (profile/sync-mode aware template patches + cron/CDC runner semantics), shipped Python/TypeScript SDK parity helpers, added contract tests, extended compat-matrix smoke checks, and updated adoption/API/SDK docs with no-custom-importer flow.
+- 2026-04-05: Completed Adoption-first backfill preset service pass: added API `GET /v1/wiki/drafts/bootstrap-approve/recommendation` with project-aware migration defaults (trusted sources, queue pressure, backfill quality counters, safety hints), wired core wiki UI to consume server recommendations (with diagnostics badges/notes), added SDK helpers (`get_bootstrap_migration_recommendation`, `getBootstrapMigrationRecommendation`), and updated compat-matrix + docs.
+- 2026-04-05: Started Existing-memory bridge ergonomics delivery: added native Python/TypeScript SDK legacy-sync adapters for `/v1/legacy-import/*` (`list profiles/sources`, `upsert source`, `queue sync run`, `list runs`), added SDK README adoption examples, and extended compat-matrix smoke checks to enforce helper contract parity.
+- 2026-04-05: Completed Utility Gate v2 execution queue item: strengthened backfill pre-enqueue suppression in worker (`event-like` detection no longer depends on `category_hint == general`), added structured suppression reasons (`blocked_source_id`, `event_like_low_signal`, `event_transport_low_signal`), and shipped backfill batch explainability counters (`dropped_event_like`, `kept_durable`, `trusted_bypass`) via migration `055_backfill_batch_decision_counters.sql` and `GET /v1/backfill/batches/{batch_id}` response.
+- 2026-04-05: Reprioritized execution queue away from telemetry-first tasks to ingestion quality + adoption ergonomics (`Utility Gate v2`, trusted-source migration mode, existing-memory bridge templates) per product feedback.
+- 2026-04-05: Completed Utility Gate backfill hardening pass: `_should_skip_backfill_claim` now detects event-stream payloads with snake_case token expansion, numeric/kv/order-shape heuristics, and source-transport noise checks independent of `category_hint == general`; added regression coverage for `operations`-inferred event payload suppression while preserving explicit access-policy records.
+- 2026-04-05: Completed execution queue item “SDK lifecycle helper contract checks in matrix CI”: extended `compat-matrix` with Python/Node smoke tests that execute lifecycle helper methods (`get stats`, `get telemetry`, `snapshot telemetry`) against dummy transports and assert normalized payload contracts.
+- 2026-04-05: Completed execution queue item “TS/py SDK lifecycle telemetry client helpers”: added Python methods (`get_wiki_lifecycle_stats`, `get_wiki_lifecycle_telemetry`, `snapshot_wiki_lifecycle_telemetry`) and TypeScript parity (`getWikiLifecycleStats`, `getWikiLifecycleTelemetry`, `snapshotWikiLifecycleTelemetry`) with README usage examples.
+- 2026-04-05: Completed execution queue item “CI ephemeral Postgres lifecycle telemetry integration”: added mandatory `lifecycle-telemetry-integration` GitHub Actions job in `ci.yml` with Postgres service and end-to-end execution of `scripts/integration_lifecycle_telemetry.py`.
+- 2026-04-05: Completed execution queue item “dashboard action-key telemetry drill-down”: added API `action_key` filter support for `GET /v1/wiki/lifecycle/telemetry`, wired web URL/state param `wiki_lifecycle_action`, and added clickable action-mix badges with filtered drill-down panel plus Playwright coverage.
+- 2026-04-05: Completed execution queue item “lifecycle telemetry API integration smoke on real Postgres schema”: added `scripts/integration_lifecycle_telemetry.py` (migrations + API boot + monotonic snapshot checks + summary assertions), wired script into compile checks and optional CI gate via `SYNAPSE_RUN_DB_INTEGRATION=1`.
+- 2026-04-05: Completed execution queue item “telemetry-driven operator thresholds”: extended operator runbook with action-mix threshold rules (`apply_rate`, `review_open_drafts` friction, stale-window tuning via `lower_threshold`, bootstrap guidance for `create_page`).
+- 2026-04-05: Completed execution queue item “server-side lifecycle telemetry persistence”: added migration `054_wiki_lifecycle_action_telemetry.sql` and API endpoints `POST /v1/wiki/lifecycle/telemetry/snapshot` + `GET /v1/wiki/lifecycle/telemetry` with monotonic session snapshots, delta aggregation, and daily project summaries.
+- 2026-04-05: Completed execution queue item “CLI lifecycle telemetry command”: added `synapse-cli wiki-lifecycle telemetry --days ... --top ...` for operator-friendly action-mix summary and trend output.
+- 2026-04-05: Completed execution queue item “UI mini-trend view for action mix”: core/wiki lifecycle diagnostics now show `Action mix (7d)` with top actions and daily `applied/shown` trend chips; web client syncs local empty-scope counters to API via debounced telemetry snapshots.
+- 2026-04-05: Completed execution queue item “lifecycle empty-scope telemetry split by action type”: core wiki now tracks shown/applied counts per empty-scope action (`create_page`, `review_open_drafts`, `lower_threshold`) in lifecycle advisor metrics and surfaces summary badges in the core header.
+- 2026-04-05: Completed execution queue item “lifecycle fixture scenarios in e2e mock”: added deterministic mock lifecycle fixtures for `fixture_no_published` and `fixture_all_open_drafts`, plus Playwright coverage for both empty-scope paths in core diagnostics.
+- 2026-04-05: Completed execution queue item “operator decision rule for empty-scope actions”: extended governance deep-link runbook with explicit rule set for when to use `lower_threshold`, `review_open_drafts`, and `create_page`.
+- 2026-04-05: Completed execution queue item “scope quick-link copy action”: added one-click `Copy scope link` control in core header breadcrumb (`core-copy-scope-link`) that shares current `project/wiki_space/wiki_page/core_tab` context and keeps wiki-first deep-link behavior.
+- 2026-04-05: Completed execution queue item “lifecycle empty-scope suggested actions map”: API `GET /v1/wiki/lifecycle/stats` now returns actionable `meta.empty_scope.suggested_actions` with deep-link hints (`create_page`, `review_open_drafts`, `lower_threshold`), mirrored in web UI cards (core + wiki diagnostics) and e2e mock parity payloads.
+- 2026-04-05: Completed execution queue item “CLI lifecycle empty-scope text rendering”: `synapse-cli wiki-lifecycle stale` now prints `empty_scope` reason/details and suggested actions in non-JSON mode, matching API semantics for operator triage.
+- 2026-04-05: Completed execution queue item “scope breadcrumb in core header”: added `project / space / page` scope breadcrumb (`#core-scope-breadcrumb`) plus one-click `Clear space scope` action that removes `wiki_space` from URL while preserving current page context.
+- 2026-04-05: Completed execution queue item “lifecycle empty-scope explanation”: extended `GET /v1/wiki/lifecycle/stats` with reasoned empty-scope diagnostics (`no_published|all_open_drafts|below_threshold`) and supporting counts; surfaced explanation cards in core lifecycle diagnostics and wiki diagnostics panel.
+- 2026-04-05: Completed execution queue item “CLI lifecycle preset parity”: added `synapse-cli wiki-lifecycle stale --preset <stale_21|critical_45|custom>` aligned with web lifecycle query presets, with preset-aware threshold resolution and output metadata.
+- 2026-04-05: Completed execution queue item “lifecycle query presets + URL persistence”: added preset controls (`Stale >=21d`, `Critical >=45d`, `Custom`) in core lifecycle diagnostics, wired stale/critical thresholds to API requests, and persisted settings via URL params (`wiki_lifecycle_preset`, `wiki_lifecycle_stale_days`, `wiki_lifecycle_critical_days`) across tab switches.
+- 2026-04-05: Completed execution queue item “lifecycle debug meta”: extended `GET /v1/wiki/lifecycle/stats` with debug metadata (`searched_scope`, `filters_applied`) and surfaced scope/filter debug lines in wiki diagnostics UI.
+- 2026-04-05: Completed execution queue item “CLI lifecycle space parity”: added `synapse-cli wiki-lifecycle stale --space <key>` support with API `space_key` forwarding and scoped deep-link generation (`wiki_space` included in drafts/policy links).
+- 2026-04-05: Completed execution queue item “lifecycle `wiki_space` deep-link persistence”: lifecycle space chips now set workspace `wiki_space` scope, URL keeps scope while switching `Wiki/Drafts/Tasks`, and Playwright coverage now asserts `wiki_space` retention across tab switches.
+- 2026-04-05: Completed execution queue item “server-side lifecycle scope filter”: added optional `space_key` support to `GET /v1/wiki/lifecycle/stats` with scoped SQL filtering in API, web client query wiring, and mock API parity for e2e/high-cardinality workspace behavior.
+- 2026-04-05: Completed execution queue item “stale-to-resolved operator drill pack”: extended governance deep-link runbook with step-by-step URL presets and SLA timers for stale-page remediation flow.
+- 2026-04-05: Completed execution queue item “per-space lifecycle triage chips”: added space-scoped stale-page filter chips (`All` + per-space) in core left lifecycle card and wiki diagnostics panel, wired filtering to stale list rendering, and added Playwright coverage for chip-based filtering behavior.
+- 2026-04-05: Completed execution queue item “MCP smoke tool registration contract”: strengthened retrieval parity smoke script to assert `get_space_policy_adoption_summary` MCP tool registration/call fragments and runtime payload contract (normalization + cache path), and added unit smoke test for MCP server tool registry wiring (`test_mcp_runtime_tool_registry.py`).
+- 2026-04-05: Completed execution queue item “incident response runbook extension”: expanded operator deep-link runbook with actionable incident playbooks for policy rollback and reviewer-assignment SLA breach handling (entry URLs, steps, and SLA targets).
+- 2026-04-05: Completed execution queue item “core shell lifecycle discoverability parity”: added compact lifecycle diagnostics card to Confluence core left rail (`#core-left-lifecycle`) with stale/critical counters, top stale page list, and one-click page/policy drill-down actions; lifecycle refresh is now available directly from core left rail.
+- 2026-04-05: Completed execution queue item “MCP adoption-summary test hardening”: extended MCP runtime coverage for space-policy adoption summary with unavailable-audit-table behavior and mixed-metadata/unknown-actor summary handling (`services/worker/tests/test_mcp_runtime_space_policy_adoption_summary.py`).
+- 2026-04-05: Completed execution queue item “operator governance deep-link runbook”: published short operator guide with canonical `core_tab` + `wiki_focus` URL patterns, right-rail quick actions, and troubleshooting (`docs/operator-governance-deeplinks.md`), linked from tutorials and getting-started docs.
+- 2026-04-05: Completed execution queue item “web governance summary API wiring”: `Policy timeline` widgets now use API-backed adoption summary with local audit fallback, and refresh/save flows reload summary consistently (`Refresh`, `saveSpacePolicy`, lifecycle policy drill-down).
+- 2026-04-05: Completed execution queue item “MCP parity for policy adoption summary”: added MCP tool `get_space_policy_adoption_summary` backed by runtime/store support, normalized `space_key` handling, cached runtime responses, and docs update in `services/mcp/README.md`.
+- 2026-04-05: Completed execution queue item “web e2e smoke for lifecycle drill-down + governance quick actions”: added Playwright coverage for deep-link lifecycle focus (`policy_timeline`, `review_assignments`, `draft_inbox`) and quick actions (`Assign reviewer`, `Create review task`), plus mock API support for lifecycle stats, space policy endpoints, adoption-summary, and review-assignment CRUD.
+- 2026-04-05: Completed execution queue item “CLI helper for stale lifecycle triage”: added `synapse-cli wiki-lifecycle` command group with `stale` (fetch stale diagnostics + deep-link hints), `open-drafts`, and `open-policy` URL generators for self-hosted operator workflows; documented commands in Python SDK README.
+- 2026-04-05: Completed execution queue item “Space policy adoption summary API”: added `GET /v1/wiki/spaces/{space_key}/policy/adoption-summary?project_id=...&limit=...` with aggregate metrics (`top_actor`, cadence, checklist usage, transitions, first/last update timestamps) and availability metadata for dashboard/MCP consumers; documented endpoint in API README.
+- 2026-04-05: Completed execution queue item “Wiki governance quick actions from diagnostics”: stale rows now include one-click actions for `Assign reviewer`, `Create review task`, and `Open policy edit` in addition to page/timeline/draft drill-down; added anchored navigation targets (`wiki-governance-panel`, `wiki-review-assignments`) and URL deep-link support via `core_tab` + `wiki_focus` query params.
+- 2026-04-05: Completed execution queue item “Lifecycle diagnostics drill-down links”: stale-page rows in `Wiki lifecycle diagnostics` now provide direct actions (`Open page`, `Policy timeline`, `Draft inbox`) with context-preserving navigation (auto-select page/space, tab switch) and anchored scrolling to target sections (`wiki-policy-timeline`, `wiki-draft-inbox`) for faster stale-page triage.
+- 2026-04-05: Completed execution queue item “Space policy reviewer-adoption summary widgets”: Governance `Policy timeline` panel now includes analytics cards for `who updates policy` (top actor + actor count), `update cadence` (avg interval + total updates), and `checklist usage` (`none|ops_standard|policy_strict` distribution + transition count) computed from policy audit history for faster governance triage.
+- 2026-04-05: Completed execution queue item “SDK+CLI helper for space publish checklist presets”: added Python SDK APIs (`get_wiki_space_policy`, `list_wiki_space_policy_audit`, `upsert_wiki_space_policy`, `get_wiki_space_publish_checklist_preset`, `set_wiki_space_publish_checklist_preset`) and TypeScript parity (`getWikiSpacePolicy`, `listWikiSpacePolicyAudit`, `upsertWikiSpacePolicy`, `getWikiSpacePublishChecklistPreset`, `setWikiSpacePublishChecklistPreset`), plus new `synapse-cli wiki-space-policy` command group (`get`, `audit`, `set`, `set-checklist-preset`) for no-code policy operations; updated SDK READMEs and regenerated TS API reference.
+- 2026-04-05: Completed lifecycle stats exposure in web diagnostics panel: integrated `GET /v1/wiki/lifecycle/stats` into wiki tree diagnostics card with status counters (`draft/reviewed/published/archived`, stale warning/critical), stale candidate list with one-click page jump, project-scoped deep-link context, and manual refresh action.
+- 2026-04-05: Completed `space policy audit timeline` track: added migration `053_wiki_space_policy_audit.sql`, shipped API endpoint `GET /v1/wiki/spaces/{space_key}/policy/audit`, recorded policy change audits from `PUT /v1/wiki/spaces/{space_key}/policy` (before/after snapshot + changed fields + actor + timestamp), and exposed timeline in Governance panel with changed-field badges and checklist preset transition hints.
+- 2026-04-05: Completed lifecycle advisor telemetry baseline: added project-scoped lifecycle metrics storage (`suggestion_shown`, `suggestion_applied`, stale resolve durations) with automatic tracking in wiki page flow, wired lifecycle-action apply counters, and surfaced core badges (`Lifecycle shown/applied`, `Stale resolve avg`) for operator feedback loops.
+- 2026-04-05: Completed wiki lifecycle API stats endpoint for ops diagnostics: added `GET /v1/wiki/lifecycle/stats` with configurable stale/critical thresholds, lifecycle status counters (`draft/reviewed/published/archived`, open-draft coverage), and stale candidate payloads (age/activity/severity) for dashboard and MCP troubleshooting use-cases; documented endpoint in API README.
+- 2026-04-05: Completed next queue item “space-level publish checklist presets”: added per-space publish checklist policy (`none|ops_standard|policy_strict`) persisted in space-policy metadata, Governance UI selector/description, and publish-modal checklist enforcement with acknowledgment tracking before publish.
+- 2026-04-05: Completed lifecycle advisor execution queue items #2/#3 in core wiki UX: added automatic stale-page detection and stale badges in tree/home, introduced page-level lifecycle advisor cards with actionable suggestions (`Open drafts`, `Promote to reviewed`, `Open publish`, `Archive`, `Restore`) driven by activity age + conflict signals + review assignment state, and wired quick lifecycle actions into existing status transition/update flows.
+- 2026-04-05: Completed wiki quality UX item (moderation explainability): replaced raw moderation JSON timeline with human-readable action cards (`Approved/Rejected`, actor, decision/status transitions, “why” text from reason/note/result) while preserving payload/result trace payloads for audit-level debugging.
+- 2026-04-05: Advanced self-hosted adoption UX polish in core wiki flow: reduced first-view filter clutter (progressive `Open filters` UX in `Wiki Tree`), added guided migration nudge in `Drafts` with one-click recommended bootstrap actions (`Preview recommended` / `Apply recommended`), introduced recommended batch preset resolver from connected legacy sources, and auto-prefill of trusted source systems for first migration runs.
+- 2026-04-05: Completed release telemetry polish: `release-packages` now auto-creates/updates draft GitHub Releases from release evidence artifacts (`softprops/action-gh-release@v2`), composing body from `docs/releases/vX.Y.Z.md` (when present) plus `release-evidence.md`; release docs/checklist updated accordingly.
+- 2026-04-05: Completed M15 #1 (registry/trusted publishing doc state closure): removed residual “not published yet” ambiguity from release surface, strengthened publish-hygiene CI to assert trusted publishing/provenance jobs and install-matrix verification in `.github/workflows/release-packages.yml`, and validated full offline CI pipeline (`SYNAPSE_SKIP_WEB_E2E=1 ./scripts/ci_checks.sh`) green.
+- 2026-04-05: Hardened CI reliability: fixed transient broken-`pip` failures in `scripts/ci_checks.sh` by recreating isolated venv deterministically and bootstrapping `python -m pip` safely before SDK smoke stages.
+- 2026-04-05: Improved Gatekeeper routing quality for repeated short operational signals: multi-source insufficiency no longer demotes repeated observations (`repeated_count >= 1`) to `operational_memory`; added regression test (`test_gatekeeper_repeated_short_operational_signal_moves_out_of_l1`) and restored evaluator metrics to 1.0 on `eval/gatekeeper_cases.json`.
+- 2026-04-05: Completed Agent Directory Phase 3 item #10 (risk-tiered policy enforcement): added agent publish guardrail APIs (`GET/PUT /v1/agents/publish-policy`) with per-agent `default_mode` + `by_page_type` overrides, enforced `human_required` mode in wiki page create/update publish paths (returns `agent_publish_policy_requires_review`), and added Python/TypeScript SDK helpers for policy management.
+- 2026-04-05: Completed Agent Directory Phase 3 item #9 (agent-level provenance + one-click rollback): added provenance activity feed API (`GET /v1/agents/provenance`) with rollback-readiness metadata, shipped one-click rollback endpoint (`POST /v1/agents/provenance/{activity_id}/rollback`) that safely reuses page-version rollback flow, added RBAC guard (`agent_provenance_rollback`), and exposed Python/TypeScript SDK methods (`list_agent_provenance`/`rollback_agent_activity`, TS parity).
+- 2026-04-04: Completed Process Playbook item #7 (ticket/outcome linkage): auto-publish runner now enriches each draft with `ticket_outcome_signal` (`ticket_ids`, `outcome`, positive/negative flags), applies outcome-aware `effective_score` and adaptive source-diversity threshold (`effective_min_sources`), prioritizes resolved-ticket evidence in scan order, and exposes these fields in API results for operator explainability.
+- 2026-04-04: Completed Agent Directory MVP Phase 1 (items #1-#4): added migration `051_agent_directory.sql`, shipped Agent Directory APIs (`GET /v1/agents`, `POST /v1/agents/register`), implemented automatic wiki scaffold sync (`agents/index` orgchart + per-agent `overview/runbooks/daily-reports/created-pages/incidents/changelog` pages), and wired attach-time profile registration in Python/TypeScript SDK facades (`attach(...register_agent_directory...)`).
+- 2026-04-04: Completed Agent Directory Phase 2 item #5 (daily worklog synthesis): added migration `052_agent_daily_worklogs.sql`, shipped `POST /v1/agents/worklogs/sync`, generated per-agent daily summaries from runtime/task activity (`events`, sessions, task touches/completions), persisted worklog snapshots, and auto-refreshed `agents/*/daily-reports` wiki pages; added SDK helpers (`sync_agent_worklogs` / `syncAgentWorklogs`) and rendering tests.
+- 2026-04-04: Completed Agent Directory Phase 2 item #6 (capability matrix): shipped capability APIs (`GET /v1/agents/capability-matrix`, `POST /v1/agents/capability-matrix/sync`), added confidence scoring from rolling worklog evidence (`tasks_done/touched`, runtime event volume), included last-success timestamps + evidence links, and published wiki page `agents/capability-matrix` through the sync pipeline with SDK helpers (`get_agent_capability_matrix`, `sync_agent_capability_matrix`, TS parity).
+- 2026-04-04: Completed Agent Directory Phase 2 item #7 (handoff map): added handoff graph APIs (`GET /v1/agents/handoffs`, `POST /v1/agents/handoffs/sync`) that read structured handoff contracts from agent profile metadata and publish `agents/handoffs` wiki page with `from -> to`, input/output contracts, and SLA visibility; added SDK helpers (`get_agent_handoffs`, `sync_agent_handoffs`, TS parity) and markdown rendering tests.
+- 2026-04-04: Completed Agent Directory Phase 3 item #8 (agent scorecards): shipped scorecard APIs (`GET /v1/agents/scorecards`, `POST /v1/agents/scorecards/sync`) with rolling quality/reliability metrics from worklogs + task posture (quality score, reliability score, escalation rate, active/blocked load), and auto-published `agents/scorecards` wiki page; added Python/TS SDK helpers and renderer coverage.
+- 2026-04-04: Completed Process Playbook item #9 (simulation safety check): `PUT /v1/wiki/pages/{slug}` publish path now enforces process simulation for configured page types (`routing_policy.process_simulation_require_for_page_types`) and blocks risky publish with `409 publish_blocked_by_process_simulation` unless explicit `confirm_high_risk_publish=true`; publish modal now supports high-risk acknowledgment checkbox and inline simulation review before publish.
+- 2026-04-04: Completed Process Playbook item #6 (auto onboarding packs): shipped role-aware day-0 packs in MCP (`get_onboarding_pack`) and API (`GET /v1/wiki/onboarding-pack`) with structured sections (`critical_playbooks`, `escalation_rules`, `forbidden_actions`, `fresh_changes`) and freshness window controls.
+- 2026-04-04: Extended Process Playbook simulation UX: wiki publish modal now includes `Run safety simulation` action wired to `/v1/wiki/process/simulate`, showing risk badges, suggested publish mode, changed-term/impact metrics, high-risk keyword hits, and top impacted pages before publish.
+- 2026-04-04: Started Process Playbook item #9 (`in_progress`): added pre-publish process safety simulation endpoint `POST /v1/wiki/process/simulate` that computes change-term diff, scans impacted process/policy/incident pages, reports queue/conflict pressure, assigns risk tier, suggests publish mode (`auto_publish|conditional|human_required`), and returns rollback hints.
+- 2026-04-04: Completed Process Playbook item #8 (process instruction provenance): retrieval explain now carries claim-linked provenance (`claim_id`, `source_ids`, `ticket_ids`, `outcome`) end-to-end, context-injection snippets include provenance payloads, and web Retrieval Diagnostics surfaces “Why this step exists” cards for each statement and injected snippet.
+- 2026-04-04: Started Process Playbook item #6 (`in_progress`): MCP runtime now exposes `get_onboarding_pack` with role-aware day-0 sections (`critical_playbooks`, `escalation_rules`, `forbidden_actions`, `fresh_changes`) generated from published wiki statements and freshness window controls.
+- 2026-04-04: Advanced Process Playbook provenance track (`in_progress`): retrieval SQL now carries latest claim evidence context (`claim_id`, `claim_metadata`, `claim_evidence`, `claim_observed_at`) and MCP/API retrieval explain responses now expose normalized `provenance` payloads (`source_ids`, `ticket_ids`, `outcome`) for each statement so operators can trace why a process step exists.
+- 2026-04-04: Completed Process Playbook Intelligence item #4 (risk-tiered publish + rollback): auto-publish runner now classifies each pending draft into `low|medium|high` risk using configurable routing-policy keywords (`auto_publish_risk_keywords_high|medium`) and force-level guardrails (`auto_publish_force_human_required_levels`), automatically forcing high-risk legal/financial/security-like updates into `human_required`; rollout remains rollback-safe via existing wiki version rollback path and gatekeeper rollback workflows.
+- 2026-04-04: Completed Process Playbook Intelligence item #5 (intent-aware context injection): added shared retrieval intent engine (`auto|general|process|policy|incident|preference`) with deterministic intent inference + explainability, intent-aware result reranking (`intent_alignment`, `intent_rank_score`), and runtime/API `context_injection.snippets` (top-k verified snippets) via new controls (`retrieval_intent`, `max_context_snippets`, env defaults `SYNAPSE_MCP_RETRIEVAL_INTENT_DEFAULT`, `SYNAPSE_MCP_CONTEXT_MAX_SNIPPETS`); added retrieval intent unit tests and kept MCP/API parity smoke green.
+- 2026-04-04: Advanced Process Playbook Intelligence online capture: API now accepts `claim.metadata`, worker normalizes operator decision context for all incoming claims (`process_triplet`, `ticket_ids`, `outcome`) and stores it in `claims.metadata` (`operator_decision`, `linked_ticket_ids`, `resolution_outcome`); process markdown patches now render structured Trigger/Action/Outcome lines for process sections.
+- 2026-04-04: Started Process Playbook Intelligence implementation (`in_progress`): extended knowledge compiler with process-aware page taxonomy (`triggers/steps/exceptions/escalation/verification`), process signal detection and assertion class (`process`) in Gatekeeper routing, process-oriented backfill category inference, trigger→action→outcome triplet extraction for process claims, and worker unit tests for process classification/section routing.
+- 2026-04-04: Extended wiki template layer for process onboarding in UI: added `Issue Playbook`, `Escalation Rule`, `Customer Exception`, and `Known Incident` page templates and bound create-flow `pageType` to selected template for cleaner process-page scaffolding.
+- 2026-04-04: Completed M15.2 automation hardening: added pre-publish clean-room install matrix from built artifacts (`verify-artifact-install-matrix`, Linux + macOS), added post-publish release evidence bundle generator (`scripts/generate_release_evidence_bundle.py`) and workflow artifact (`release-evidence-pack`) to produce markdown/json evidence for release notes with registry verification and install-proof references.
+- 2026-04-04: Completed M15.5 positioning refresh: aligned top-level docs with dual framing (Agentic Wiki interface + L2 Cognitive State Layer), added positioning consistency guard (`scripts/check_positioning_consistency.py`) and wired it into CI to prevent message drift.
+- 2026-04-04: Completed M15.6 buyer-facing packaging: added ROI + rollout one-pager (`docs/buyer-roi-rollout.md`) and architecture diagram pack (`docs/architecture-diagram-pack.md`) including raw-RAG-vs-Synapse-L2 comparison and slide-ready core-loop/adoption/governance diagrams.
+- 2026-04-04: Advanced M15.2 release hardening: added clean-room install matrix job in release workflow (`verify-install-matrix`, Linux + macOS) that performs real registry install/import checks for both Python and npm packages at the tagged release version after registry propagation succeeds.
+- 2026-04-04: Completed M15.3 + M15.4 implementation: added deterministic Agentic Onboarding benchmark kit (`scripts/benchmark_agentic_onboarding.py`, `eval/agentic_onboarding_cases.json`, `docs/agentic-onboarding-benchmark.md`) with KPI cards (`first_useful_answer`, `first_approved_draft`, `first_policy_safe_publish`) and CI guardrail thresholds; added framework quickstart parity validator (`scripts/check_framework_quickstart_parity.py`) wired into CI to enforce 5-minute structure consistency across OpenClaw/LangGraph/LangChain/CrewAI docs.
+- 2026-04-04: Started M15 implementation (`in_progress`): added registry availability validator (`scripts/check_registry_package_availability.py`) and release workflow post-publish verification job (`verify-registry`), removed static “not published yet” wording from core onboarding docs in favor of registry-first installs + fallback editable mode, added LangGraph/LangChain/CrewAI 5-minute quickstarts, and introduced explicit L2 positioning doc (`docs/cognitive-state-layer.md`) linked from README.
 - 2026-04-04: Added roadmap milestone `M15: Public Launch & Positioning` to operationalize GTM feedback: eliminate “not published yet” friction via registry-verified releases, make Agentic Onboarding a measurable primary narrative, enforce OpenClaw/LangGraph/LangChain/CrewAI onboarding parity, and refresh product framing to “Cognitive State Layer (L2)” with wiki as the governance interface.
 - 2026-04-04: Added new roadmap track `Agent Directory & Operations Intelligence` with phased delivery (`MVP -> Scale -> Governance`): AI orgchart index, attach-time self-profile updates, standard agent folder scaffold, agent-authored page index, daily worklog synthesis, capability/handoff maps, agent scorecards, provenance+rollback, and risk-tiered publish guardrails.
 - 2026-04-04: Added new roadmap track `Process Playbook Intelligence (Support Ops Focus)` to move Synapse from fact-only wiki toward process-aware operational documentation; queued operator decision capture, template-first playbook pages, process-quality gatekeeper routing, risk-tiered auto-publish with rollback, intent-aware context injection, auto onboarding packs, ticket/outcome linkage, provenance for process steps, and pre-publish process simulation checks.

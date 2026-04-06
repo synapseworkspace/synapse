@@ -1,8 +1,9 @@
 # Synapse Getting Started (First 15 Minutes)
 
-Last updated: 2026-04-02
+Last updated: 2026-04-04
 
 This guide is optimized for first value with minimal setup decisions.
+Synapse is used here as an **L2 Cognitive State Layer** with **Agentic Wiki** as the operator interface.
 
 ## 1-Command Onboarding (Orchestrated)
 
@@ -39,7 +40,8 @@ synapse-cli verify core-loop --project-id omega_demo --json
 1. **I want proof the core loop works (recommended):** run clean self-hosted acceptance.
 2. **I want a local UI to review drafts:** run self-hosted stack + web app.
 3. **I only want SDK examples without infra:** run cookbook demos (offline transport).
-4. **I want OpenClaw day-0 onboarding:** follow canonical 5-minute OpenClaw path.
+4. **I want framework-specific onboarding:** use the 5-minute path for your runtime (OpenClaw/LangGraph/LangChain/CrewAI).
+5. **I want onboarding KPI metrics:** run the Agentic onboarding benchmark kit.
 
 ## Path 1: Core Loop Proof (Recommended)
 
@@ -103,10 +105,13 @@ python3 /Users/maksimborisov/synapse/demos/cookbook/langgraph_playbook_sync.py
 More options:
 - `/Users/maksimborisov/synapse/demos/cookbook/README.md`
 
-## Path 4: OpenClaw Day-0 Onboarding (Canonical)
+## Path 4: Framework Day-0 Onboarding (5 Minutes)
 
-Start here:
-- `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+Choose your runtime:
+- OpenClaw: `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+- LangGraph: `/Users/maksimborisov/synapse/docs/langgraph-quickstart-5-min.md`
+- LangChain: `/Users/maksimborisov/synapse/docs/langchain-quickstart-5-min.md`
+- CrewAI: `/Users/maksimborisov/synapse/docs/crewai-quickstart-5-min.md`
 
 If you want repo-local demo fixtures (runtime template + seed dataset), run:
 
@@ -120,8 +125,23 @@ python3 /Users/maksimborisov/synapse/demos/openclaw_onboarding/run_onboarding_de
 
 Guide:
 - `/Users/maksimborisov/synapse/docs/openclaw-quickstart-5-min.md`
+- `/Users/maksimborisov/synapse/docs/langgraph-quickstart-5-min.md`
+- `/Users/maksimborisov/synapse/docs/langchain-quickstart-5-min.md`
+- `/Users/maksimborisov/synapse/docs/crewai-quickstart-5-min.md`
 - `/Users/maksimborisov/synapse/demos/openclaw_onboarding/README.md`
 - `/Users/maksimborisov/synapse/docs/tutorials/04-openclaw-onboarding-kit.md`
+
+## Path 5: Agentic Onboarding KPI Benchmark
+
+Run deterministic KPI comparison (`baseline_static` vs Synapse modes):
+
+```bash
+cd /Users/maksimborisov/synapse
+python3 scripts/benchmark_agentic_onboarding.py --scenario all --summary-only
+```
+
+Docs:
+- `/Users/maksimborisov/synapse/docs/agentic-onboarding-benchmark.md`
 
 ## Next Step After First Value
 
@@ -130,3 +150,5 @@ Guide:
 3. Contributor one-command guardrails: `/Users/maksimborisov/synapse/docs/contributor-quickstart.md`
 4. OSS release process: `/Users/maksimborisov/synapse/docs/release-workflow.md`
 5. Publish checklist walkthrough: `/Users/maksimborisov/synapse/docs/oss-publish-checklist.md`
+6. Operator governance deep links: `/Users/maksimborisov/synapse/docs/operator-governance-deeplinks.md`
+7. Operations route runbook: `/Users/maksimborisov/synapse/docs/operations-route-runbook.md`

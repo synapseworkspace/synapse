@@ -16,7 +16,7 @@ Background worker for synthesis pipeline:
 - `wiki_claim_links` (traceability from claim to page/section)
 - `claims` upserts (canonical claim record)
 - `event_pipeline_state` (checkpoint for `memory_backfill` extraction)
-- `memory_backfill_batches` progress (`processed_events`, `generated_claims`, status transitions)
+- `memory_backfill_batches` progress (`processed_events`, `generated_claims`, `dropped_event_like`, `kept_durable`, `trusted_bypass`, status transitions)
 
 Temporal behavior:
 - infers claim validity windows from text (`until`, `from`, `between` patterns; explicit payload fields win),
@@ -59,6 +59,8 @@ Policy is controlled via `gatekeeper_project_configs`:
 - `publish_mode_default`: `human_required|conditional|auto_publish`
 - `publish_mode_by_category`: per-category overrides
 - conditional thresholds: `auto_publish_min_score`, `auto_publish_min_sources`, `auto_publish_require_golden`
+- risk-tier guardrails (in `routing_policy`): `auto_publish_risk_keywords_high`, `auto_publish_risk_keywords_medium`, `auto_publish_force_human_required_levels` (for example keep legal/financial changes `human_required` while low-risk process updates can auto-publish)
+- process simulation enforcement knobs (in `routing_policy`): `process_simulation_require_for_page_types`, `process_simulation_block_levels`, `process_simulation_sample_limit`
 
 Production-like loop runner (used by self-hosted Docker stack):
 
@@ -136,6 +138,33 @@ PYTHONPATH=services/worker python services/worker/scripts/run_intelligence_sched
   --incident-sla-hours 24 \
   --top-n 10
 ```
+
+Agent daily worklog scheduler (keeps `agents/*/daily-reports` fresh from runtime/task activity):
+
+```bash
+PYTHONPATH=services/worker python services/worker/scripts/run_agent_worklog_scheduler.py \
+  --all-projects \
+  --trigger-mode daily_batch \
+  --days-back 1 \
+  --max-agents 500
+```
+
+Realtime close-signal mode (session/task close trigger, low-latency refresh):
+
+```bash
+PYTHONPATH=services/worker python services/worker/scripts/run_agent_worklog_scheduler.py \
+  --all-projects \
+  --trigger-mode realtime \
+  --trigger-lookback-minutes 15
+```
+
+Worker loop integration:
+- enabled by default via `SYNAPSE_WORKER_ENABLE_AGENT_WORKLOGS=1`;
+- default interval is daily (`SYNAPSE_WORKER_AGENT_WORKLOGS_INTERVAL_SEC=86400`);
+- daily batch respects per-project local schedule when `SYNAPSE_WORKER_AGENT_WORKLOGS_RESPECT_SCHEDULE=1`;
+- realtime trigger job is enabled by default via `SYNAPSE_WORKER_ENABLE_AGENT_WORKLOGS_REALTIME=1`;
+- tune realtime cadence with `SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_INTERVAL_SEC` and lookback via `SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_LOOKBACK_MINUTES`;
+- tune batch load with `SYNAPSE_WORKER_AGENT_WORKLOGS_DAYS_BACK` and `SYNAPSE_WORKER_AGENT_WORKLOGS_MAX_AGENTS`.
 
 Synthesis regression evaluator:
 

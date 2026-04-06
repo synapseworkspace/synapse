@@ -49,6 +49,78 @@ jobs:
       - name: Run CI checks
         run: ./scripts/ci_checks.sh
 
+  web-visual-snapshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install web dependencies
+        run: npm --prefix apps/web install --silent
+
+      - name: Install Playwright browser
+        run: npm --prefix apps/web run e2e:install
+
+      - name: Capture wiki-first visual snapshots
+        run: npm --prefix apps/web run e2e -- --grep "visual snapshot:"
+
+      - name: Upload visual snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-visual-snapshots
+          path: |
+            apps/web/e2e/.artifacts/visual-snapshots/*.png
+            apps/web/playwright-report/**
+          if-no-files-found: warn
+
+  lifecycle-telemetry-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: synapse
+          POSTGRES_PASSWORD: synapse
+          POSTGRES_DB: synapse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U synapse -d synapse"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e services/api
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Run lifecycle telemetry integration smoke
+        env:
+          DATABASE_URL: postgresql://synapse:synapse@127.0.0.1:5432/synapse
+        run: |
+          python scripts/integration_lifecycle_telemetry.py \
+            --database-url "$DATABASE_URL" \
+            --api-python "$(command -v python)"
+
   selfhost-acceptance:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_selfhost_acceptance == true }}
     runs-on: ubuntu-latest

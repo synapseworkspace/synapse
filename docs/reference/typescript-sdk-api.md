@@ -10,6 +10,7 @@ Source: `packages/synapse-sdk-ts/src/types.ts`
 
 Exports:
 - `AdoptionMode`
+- `AgentProfileInput`
 - `AttachBootstrapMemoryOptions`
 - `AttachOptions`
 - `BindCrewAiOptions`
@@ -57,6 +58,12 @@ Exports:
 - `TaskSource`
 - `TaskStatus`
 - `TelemetrySink`
+- `WikiPublishChecklistPreset`
+- `WikiSpacePolicyAuditEntry`
+- `WikiSpacePolicyAuditResponse`
+- `WikiSpacePolicyMode`
+- `WikiSpacePolicyRecord`
+- `WikiSpacePolicyResponse`
 
 ### `./client`
 

@@ -250,7 +250,31 @@ const state = {
       status: "published",
       current_version: 2,
       created_at: "2026-03-31T09:00:00Z",
-      updated_at: "2026-04-01T10:20:00Z",
+      updated_at: "2026-02-12T10:20:00Z",
+    },
+    {
+      id: "4c258c7a-5f8d-4a5e-a181-bf93d8fe80aa",
+      project_id: projectIdDefault,
+      title: "Dispatch Escalation Policy",
+      slug: "policies/dispatch/escalation-path",
+      entity_key: "dispatch_policy",
+      page_type: "policy",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-02-20T09:30:00Z",
+      updated_at: "2026-02-25T09:30:00Z",
+    },
+    {
+      id: "72aacfb1-8c62-4fdc-9d8c-42a5f72de8ab",
+      project_id: projectIdDefault,
+      title: "Customer Priority Queue Rules",
+      slug: "customers/priority-queue/rules",
+      entity_key: "customer_priority",
+      page_type: "customer",
+      status: "published",
+      current_version: 1,
+      created_at: "2026-02-15T08:10:00Z",
+      updated_at: "2026-02-19T08:10:00Z",
     },
     {
       id: "22d8f6a4-40ab-4fdb-8b87-3bb5b1e9f101",
@@ -348,6 +372,28 @@ const state = {
       created_at: "2026-04-01T10:20:00Z",
     },
     {
+      id: "85ca4eef-a081-42a1-8f47-c57fc6a28f76",
+      page_id: "4c258c7a-5f8d-4a5e-a181-bf93d8fe80aa",
+      version: 1,
+      markdown:
+        "# Dispatch Escalation Policy\n\n## Escalation Path\n- If access policy drifts from execution behavior, open governance review task within 4 hours.\n- Notify on-call owner in #ops-escalation.\n",
+      source: "human",
+      created_by: "ops_manager",
+      change_summary: "Initial escalation policy baseline",
+      created_at: "2026-02-25T09:30:00Z",
+    },
+    {
+      id: "e6e2c3b2-c6bb-49bc-9fd7-8f4aa4d2e9d7",
+      page_id: "72aacfb1-8c62-4fdc-9d8c-42a5f72de8ab",
+      version: 1,
+      markdown:
+        "# Customer Priority Queue Rules\n\n## Routing\n- VIP accounts bypass standard queue when delivery risk is critical.\n- Escalate to shift lead for manual override approvals.\n",
+      source: "human",
+      created_by: "customer_ops",
+      change_summary: "Priority queue guidance for support team",
+      created_at: "2026-02-19T08:10:00Z",
+    },
+    {
       id: "9a372924-afdb-4a97-8105-14e8ff11f201",
       page_id: "22d8f6a4-40ab-4fdb-8b87-3bb5b1e9f101",
       version: 1,
@@ -422,6 +468,354 @@ const state = {
       created_by: "incident_commander",
       change_summary: "Incident page published",
       created_at: "2026-04-03T08:15:00Z",
+    },
+  ],
+  wikiDrafts: [
+    {
+      id: "7b4a2e49-1d85-4f31-86fe-919f03a2f6a1",
+      claim_id: "63a9b712-e232-4d1d-8a5f-7beafad14a11",
+      page_id: "8f9f1ea2-18ea-4d3d-bf7d-4ebaf2cb5e0e",
+      section_key: "access-rules",
+      decision: "append_statement",
+      confidence: 0.93,
+      rationale: "Repeated signal from independent dispatch sessions.",
+      status: "pending_review",
+      created_at: "2026-04-05T08:50:00Z",
+      project_id: projectIdDefault,
+      page: {
+        title: "BC Omega Access Policy",
+        slug: "operations/bc-omega-access-policy",
+      },
+    },
+    {
+      id: "6c07ee3e-c70a-4d95-b43d-c9898d1fc6a2",
+      claim_id: "2e46843b-0505-4ca0-a05e-7f7a8f12912b",
+      page_id: "4c258c7a-5f8d-4a5e-a181-bf93d8fe80aa",
+      section_key: "escalation-path",
+      decision: "replace_statement",
+      confidence: 0.81,
+      rationale: "Potential contradiction with current escalation owner.",
+      status: "blocked_conflict",
+      created_at: "2026-04-05T06:10:00Z",
+      project_id: projectIdDefault,
+      page: {
+        title: "Dispatch Escalation Policy",
+        slug: "policies/dispatch/escalation-path",
+      },
+    },
+  ],
+  wikiDraftDetails: {
+    "7b4a2e49-1d85-4f31-86fe-919f03a2f6a1": {
+      draft: {
+        id: "7b4a2e49-1d85-4f31-86fe-919f03a2f6a1",
+        claim_id: "63a9b712-e232-4d1d-8a5f-7beafad14a11",
+        page_id: "8f9f1ea2-18ea-4d3d-bf7d-4ebaf2cb5e0e",
+        section_key: "access-rules",
+        decision: "append_statement",
+        confidence: 0.93,
+        rationale: "Repeated signal from independent dispatch sessions.",
+        status: "pending_review",
+        created_at: "2026-04-05T08:50:00Z",
+        updated_at: "2026-04-05T09:15:00Z",
+        markdown_patch: "+- Require dispatcher confirmation if key-card is missing.\n",
+        semantic_diff: {
+          before: ["Entry requires card after 10:00."],
+          after: [
+            "Entry requires card after 10:00.",
+            "Require dispatcher confirmation if key-card is missing.",
+          ],
+        },
+        evidence: [
+          {
+            source_id: "session_284",
+            excerpt: "Driver could not enter because card was forgotten.",
+          },
+          {
+            source_id: "session_289",
+            excerpt: "Dispatch requested manual confirmation when card absent.",
+          },
+        ],
+        page: {
+          title: "BC Omega Access Policy",
+          slug: "operations/bc-omega-access-policy",
+          page_type: "operations",
+          entity_key: "bc_omega",
+        },
+        claim: {
+          claim_text: "Require dispatcher confirmation if key-card is missing.",
+          category: "access_policy",
+          entity_key: "bc_omega",
+          status: "active",
+          valid_from: null,
+          valid_to: null,
+          created_at: "2026-04-05T08:49:00Z",
+        },
+      },
+      gatekeeper: {
+        tier: "insight_candidate",
+        score: 0.93,
+        rationale: "Cross-session signal with concrete operational impact.",
+        llm: {
+          status: "scored",
+          applied: true,
+          suggested_tier: "insight_candidate",
+          confidence: 0.89,
+          reason_code: "override_skip_event",
+          provider: "openai",
+          model: "gpt-4.1-mini",
+        },
+        routing: {
+          hard_block: false,
+          blocked_by_category: false,
+          blocked_by_source_system: false,
+          blocked_by_source_type: false,
+          blocked_by_entity: false,
+          blocked_by_source_id: false,
+        },
+      },
+      conflicts: [],
+      moderation_actions: [
+        {
+          id: "b5d6c9a8-8b17-4f2e-bf77-95b9285e4d77",
+          action_type: "proposed",
+          reviewed_by: null,
+          decision_before: null,
+          decision_after: "append_statement",
+          draft_status_before: null,
+          draft_status_after: "pending_review",
+          note: "Draft created by synthesis worker.",
+          reason: null,
+          payload: null,
+          result: null,
+          created_at: "2026-04-05T08:50:00Z",
+        },
+      ],
+      project_id: projectIdDefault,
+    },
+    "6c07ee3e-c70a-4d95-b43d-c9898d1fc6a2": {
+      draft: {
+        id: "6c07ee3e-c70a-4d95-b43d-c9898d1fc6a2",
+        claim_id: "2e46843b-0505-4ca0-a05e-7f7a8f12912b",
+        page_id: "4c258c7a-5f8d-4a5e-a181-bf93d8fe80aa",
+        section_key: "escalation-path",
+        decision: "replace_statement",
+        confidence: 0.81,
+        rationale: "Potential contradiction with current escalation owner.",
+        status: "blocked_conflict",
+        created_at: "2026-04-05T06:10:00Z",
+        updated_at: "2026-04-05T06:12:00Z",
+        markdown_patch: "- Notify on-call owner in #ops-escalation.\n+ Notify policy owner in #dispatch-governance.\n",
+        semantic_diff: {
+          before: ["Notify on-call owner in #ops-escalation."],
+          after: ["Notify policy owner in #dispatch-governance."],
+        },
+        evidence: [
+          {
+            source_id: "incident_77",
+            excerpt: "Escalations were redirected to dispatch governance queue.",
+          },
+        ],
+        page: {
+          title: "Dispatch Escalation Policy",
+          slug: "policies/dispatch/escalation-path",
+          page_type: "policy",
+          entity_key: "dispatch_policy",
+        },
+        claim: {
+          claim_text: "Notify policy owner in #dispatch-governance.",
+          category: "process",
+          entity_key: "dispatch_policy",
+          status: "active",
+          valid_from: null,
+          valid_to: null,
+          created_at: "2026-04-05T06:09:00Z",
+        },
+      },
+      gatekeeper: {
+        tier: "insight_candidate",
+        score: 0.81,
+        rationale: "Signal conflicts with currently published policy owner mapping.",
+        llm: {
+          status: "scored",
+          applied: false,
+          suggested_tier: "insight_candidate",
+          confidence: 0.78,
+          reason_code: "routing_policy_hard_block",
+          provider: "openai",
+          model: "gpt-4.1-mini",
+        },
+        routing: {
+          hard_block: true,
+          blocked_by_category: true,
+          blocked_by_source_system: false,
+          blocked_by_source_type: false,
+          blocked_by_entity: false,
+          blocked_by_source_id: false,
+        },
+      },
+      conflicts: [
+        {
+          id: "6a40399a-e453-4ab0-8ed5-a2f2d6ae8ea1",
+          conflict_type: "statement_contradiction",
+          resolution_status: "open",
+          details: {
+            message: "Escalation owner differs from published policy.",
+          },
+          resolved_by: null,
+          resolved_at: null,
+          created_at: "2026-04-05T06:11:00Z",
+        },
+      ],
+      moderation_actions: [],
+      project_id: projectIdDefault,
+    },
+  },
+  wikiDraftConflictExplain: {
+    "6c07ee3e-c70a-4d95-b43d-c9898d1fc6a2": [
+      {
+        conflict_id: "6a40399a-e453-4ab0-8ed5-a2f2d6ae8ea1",
+        conflict_type: "statement_contradiction",
+        resolution_status: "open",
+        created_at: "2026-04-05T06:11:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        details: { message: "Escalation owner differs from published policy." },
+        root_cause: "Policy page references on-call owner while incoming claim routes to governance owner.",
+        recommendation: "Resolve owner mapping first, then re-run synthesis for escalation-path section.",
+        page: {
+          id: "4c258c7a-5f8d-4a5e-a181-bf93d8fe80aa",
+          title: "Dispatch Escalation Policy",
+          slug: "policies/dispatch/escalation-path",
+          entity_key: "dispatch_policy",
+        },
+        incoming_claim: {
+          id: "2e46843b-0505-4ca0-a05e-7f7a8f12912b",
+          entity_key: "dispatch_policy",
+          category: "process",
+          claim_text: "Notify policy owner in #dispatch-governance.",
+          valid_from: null,
+          valid_to: null,
+        },
+        conflicting_statement: {
+          id: "stmt_dispatch_owner",
+          section_key: "escalation-path",
+          statement_text: "Notify on-call owner in #ops-escalation.",
+          valid_from: null,
+          valid_to: null,
+        },
+        rank_score: 0.91,
+      },
+    ],
+  },
+  wikiPageReviewAssignments: [],
+  wikiSpacePolicies: [
+    {
+      id: "fbe90a12-8fa8-4482-9f31-c699f403a000",
+      project_id: projectIdDefault,
+      space_key: "operations",
+      write_mode: "open",
+      comment_mode: "open",
+      review_assignment_required: false,
+      metadata: {
+        publish_checklist_preset: "ops_standard",
+      },
+      updated_by: "ops_manager",
+      updated_at: "2026-04-01T10:30:00Z",
+    },
+  ],
+  wikiSpacePolicyAudit: [
+    {
+      id: "adc0c8f7-c69f-4f15-913f-0d8818dc1001",
+      project_id: projectIdDefault,
+      space_key: "operations",
+      changed_by: "ops_manager",
+      before_policy: {
+        write_mode: "open",
+        comment_mode: "open",
+        review_assignment_required: false,
+        metadata: {},
+      },
+      after_policy: {
+        write_mode: "open",
+        comment_mode: "open",
+        review_assignment_required: false,
+        metadata: { publish_checklist_preset: "ops_standard" },
+      },
+      changed_fields: ["publish_checklist_preset"],
+      reason: "Set baseline checklist for operations updates.",
+      created_at: "2026-04-01T10:30:00Z",
+    },
+    {
+      id: "c2f7dffe-7f6b-4f78-9880-c349fa1a1002",
+      project_id: projectIdDefault,
+      space_key: "operations",
+      changed_by: "qa_reviewer",
+      before_policy: {
+        write_mode: "open",
+        comment_mode: "open",
+        review_assignment_required: false,
+        metadata: { publish_checklist_preset: "ops_standard" },
+      },
+      after_policy: {
+        write_mode: "owners_only",
+        comment_mode: "open",
+        review_assignment_required: true,
+        metadata: { publish_checklist_preset: "policy_strict" },
+      },
+      changed_fields: ["write_mode", "review_assignment_required", "publish_checklist_preset"],
+      reason: "Enable stricter governance after incident review.",
+      created_at: "2026-04-03T08:15:00Z",
+    },
+  ],
+  wikiLifecycleTelemetrySnapshots: [],
+  wikiLifecycleTelemetryDaily: [
+    {
+      project_id: projectIdDefault,
+      metric_date: "2026-04-01",
+      metric_kind: "empty_scope_action_shown",
+      action_key: "lower_threshold",
+      total_count: 2,
+      updated_at: "2026-04-01T12:00:00Z",
+    },
+    {
+      project_id: projectIdDefault,
+      metric_date: "2026-04-01",
+      metric_kind: "empty_scope_action_applied",
+      action_key: "lower_threshold",
+      total_count: 1,
+      updated_at: "2026-04-01T12:05:00Z",
+    },
+    {
+      project_id: projectIdDefault,
+      metric_date: "2026-04-02",
+      metric_kind: "empty_scope_action_shown",
+      action_key: "review_open_drafts",
+      total_count: 3,
+      updated_at: "2026-04-02T11:00:00Z",
+    },
+    {
+      project_id: projectIdDefault,
+      metric_date: "2026-04-02",
+      metric_kind: "empty_scope_action_applied",
+      action_key: "review_open_drafts",
+      total_count: 2,
+      updated_at: "2026-04-02T11:10:00Z",
+    },
+    {
+      project_id: projectIdDefault,
+      metric_date: "2026-04-03",
+      metric_kind: "empty_scope_action_shown",
+      action_key: "create_page",
+      total_count: 2,
+      updated_at: "2026-04-03T10:40:00Z",
+    },
+    {
+      project_id: projectIdDefault,
+      metric_date: "2026-04-03",
+      metric_kind: "empty_scope_action_applied",
+      action_key: "create_page",
+      total_count: 1,
+      updated_at: "2026-04-03T10:50:00Z",
     },
   ],
 };
@@ -823,6 +1217,335 @@ function listWikiPageVersions(pageId) {
   return state.wikiPageVersions
     .filter((item) => String(item.page_id || "").trim() === pid)
     .sort((a, b) => Number(b.version || 0) - Number(a.version || 0));
+}
+
+function normalizeWikiSpaceKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "") || "general";
+}
+
+function wikiSpaceKeyFromSlug(slug) {
+  const candidate = String(slug || "").trim().replace(/\\/g, "/");
+  if (!candidate) return "general";
+  const parts = candidate
+    .split("/")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return "general";
+  return normalizeWikiSpaceKey(parts[0]);
+}
+
+function findWikiSpacePolicy(projectId, spaceKey) {
+  const pid = String(projectId || "").trim();
+  const normalizedSpaceKey = normalizeWikiSpaceKey(spaceKey);
+  return (
+    state.wikiSpacePolicies.find(
+      (item) =>
+        String(item.project_id || "").trim() === pid &&
+        String(item.space_key || "").trim() === normalizedSpaceKey,
+    ) || null
+  );
+}
+
+function listWikiSpacePolicyAudit(projectId, spaceKey, limit = 40) {
+  const pid = String(projectId || "").trim();
+  const normalizedSpaceKey = normalizeWikiSpaceKey(spaceKey);
+  const cap = Math.max(1, Math.min(2000, Number(limit || 40)));
+  return state.wikiSpacePolicyAudit
+    .filter(
+      (item) =>
+        String(item.project_id || "").trim() === pid &&
+        String(item.space_key || "").trim() === normalizedSpaceKey,
+    )
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+    .slice(0, cap)
+    .map((item) => ({ ...item }));
+}
+
+function summarizeWikiSpacePolicyAdoption(entries) {
+  const actorCounts = new Map();
+  const checklistUsage = {
+    none: 0,
+    ops_standard: 0,
+    policy_strict: 0,
+  };
+  let checklistTransitions = 0;
+  const timestamps = [];
+
+  for (const entry of entries) {
+    const actor = String(entry.changed_by || "").trim() || "unknown";
+    actorCounts.set(actor, (actorCounts.get(actor) || 0) + 1);
+    const beforePreset =
+      String(entry.before_policy?.metadata?.publish_checklist_preset || "none").trim().toLowerCase() || "none";
+    const afterPreset =
+      String(entry.after_policy?.metadata?.publish_checklist_preset || "none").trim().toLowerCase() || "none";
+    const normalizedAfter =
+      afterPreset === "ops_standard" || afterPreset === "policy_strict" ? afterPreset : "none";
+    checklistUsage[normalizedAfter] += 1;
+    if (beforePreset !== afterPreset) {
+      checklistTransitions += 1;
+    }
+    const ts = Date.parse(String(entry.created_at || ""));
+    if (!Number.isNaN(ts)) {
+      timestamps.push(ts);
+    }
+  }
+
+  const sortedActors = [...actorCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const topActor = sortedActors.length > 0 ? sortedActors[0][0] : null;
+  const topActorUpdates = sortedActors.length > 0 ? sortedActors[0][1] : 0;
+
+  timestamps.sort((a, b) => a - b);
+  let avgUpdateIntervalDays = null;
+  if (timestamps.length >= 2) {
+    let totalDelta = 0;
+    for (let idx = 1; idx < timestamps.length; idx += 1) {
+      totalDelta += timestamps[idx] - timestamps[idx - 1];
+    }
+    avgUpdateIntervalDays = Number((totalDelta / (timestamps.length - 1) / (1000 * 60 * 60 * 24)).toFixed(4));
+  }
+
+  return {
+    total_updates: entries.length,
+    unique_actors: actorCounts.size,
+    top_actor: topActor,
+    top_actor_updates: topActorUpdates,
+    avg_update_interval_days: avgUpdateIntervalDays,
+    checklist_usage: checklistUsage,
+    checklist_transitions: checklistTransitions,
+    first_updated_at: timestamps.length > 0 ? new Date(timestamps[0]).toISOString() : null,
+    last_updated_at: timestamps.length > 0 ? new Date(timestamps[timestamps.length - 1]).toISOString() : null,
+  };
+}
+
+function normalizeLifecycleTelemetryKind(value) {
+  const kind = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (kind === "empty_scope_action_shown" || kind === "empty_scope_action_applied") {
+    return kind;
+  }
+  return null;
+}
+
+function normalizeLifecycleTelemetryActionKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 96);
+}
+
+function normalizeLifecycleTelemetryCounts(raw) {
+  const payload = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    const actionKey = normalizeLifecycleTelemetryActionKey(key);
+    if (!actionKey) continue;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) continue;
+    out[actionKey] = Math.max(0, Math.min(1000000000, Math.trunc(numeric)));
+  }
+  return out;
+}
+
+function isoDay(value) {
+  const parsed = Date.parse(String(value || ""));
+  if (Number.isNaN(parsed)) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  return new Date(parsed).toISOString().slice(0, 10);
+}
+
+function shiftIsoDay(day, offset) {
+  const parsed = Date.parse(`${day}T00:00:00.000Z`);
+  if (Number.isNaN(parsed)) return day;
+  return new Date(parsed + offset * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function upsertLifecycleTelemetrySnapshot({
+  projectId,
+  sessionId,
+  observedAt,
+  shownCounts,
+  appliedCounts,
+  source,
+}) {
+  const project = String(projectId || "").trim();
+  const session = String(sessionId || "").trim() || "web-ui";
+  const observedIso = String(observedAt || nowIso()).trim() || nowIso();
+  const metricDate = isoDay(observedIso);
+  const normalizedSource = String(source || "web_ui").trim() || "web_ui";
+  let ingestedRows = 0;
+  const ingestedByKind = {
+    empty_scope_action_shown: 0,
+    empty_scope_action_applied: 0,
+  };
+  const deltaByKind = {
+    empty_scope_action_shown: 0,
+    empty_scope_action_applied: 0,
+  };
+
+  const processKind = (metricKind, counters) => {
+    const kind = normalizeLifecycleTelemetryKind(metricKind);
+    if (!kind) return;
+    for (const [actionKey, rawValue] of Object.entries(counters || {})) {
+      const nextValue = Math.max(0, Math.min(1000000000, Number(rawValue || 0)));
+      const snapshotIndex = state.wikiLifecycleTelemetrySnapshots.findIndex(
+        (item) =>
+          String(item.project_id || "").trim() === project &&
+          String(item.session_id || "").trim() === session &&
+          String(item.metric_kind || "").trim() === kind &&
+          String(item.action_key || "").trim() === actionKey,
+      );
+      const prevValue =
+        snapshotIndex >= 0 ? Math.max(0, Number(state.wikiLifecycleTelemetrySnapshots[snapshotIndex].counter_value || 0)) : 0;
+      const boundedNext = Math.max(prevValue, nextValue);
+      const delta = Math.max(0, boundedNext - prevValue);
+
+      if (snapshotIndex >= 0) {
+        state.wikiLifecycleTelemetrySnapshots[snapshotIndex] = {
+          ...state.wikiLifecycleTelemetrySnapshots[snapshotIndex],
+          counter_value: boundedNext,
+          source: normalizedSource,
+          observed_at: observedIso,
+          updated_at: nowIso(),
+        };
+      } else {
+        state.wikiLifecycleTelemetrySnapshots.push({
+          project_id: project,
+          session_id: session,
+          metric_kind: kind,
+          action_key: actionKey,
+          counter_value: boundedNext,
+          source: normalizedSource,
+          observed_at: observedIso,
+          updated_at: nowIso(),
+        });
+      }
+
+      if (delta > 0) {
+        const dailyIndex = state.wikiLifecycleTelemetryDaily.findIndex(
+          (item) =>
+            String(item.project_id || "").trim() === project &&
+            String(item.metric_date || "").trim() === metricDate &&
+            String(item.metric_kind || "").trim() === kind &&
+            String(item.action_key || "").trim() === actionKey,
+        );
+        if (dailyIndex >= 0) {
+          state.wikiLifecycleTelemetryDaily[dailyIndex] = {
+            ...state.wikiLifecycleTelemetryDaily[dailyIndex],
+            total_count: Math.max(0, Number(state.wikiLifecycleTelemetryDaily[dailyIndex].total_count || 0) + delta),
+            updated_at: nowIso(),
+          };
+        } else {
+          state.wikiLifecycleTelemetryDaily.push({
+            project_id: project,
+            metric_date: metricDate,
+            metric_kind: kind,
+            action_key: actionKey,
+            total_count: delta,
+            updated_at: nowIso(),
+          });
+        }
+        ingestedRows += 1;
+        ingestedByKind[kind] += 1;
+        deltaByKind[kind] += delta;
+      }
+    }
+  };
+
+  processKind("empty_scope_action_shown", shownCounts);
+  processKind("empty_scope_action_applied", appliedCounts);
+  return {
+    ingestedRows,
+    ingestedByKind,
+    deltaByKind,
+    metricDate,
+  };
+}
+
+function getLifecycleTelemetrySummary(projectId, days = 7, actionKey = null) {
+  const project = String(projectId || "").trim();
+  const normalizedDays = Math.max(1, Math.min(90, Number(days || 7)));
+  const normalizedActionKey = normalizeLifecycleTelemetryActionKey(actionKey || "");
+  const until = new Date().toISOString().slice(0, 10);
+  const since = shiftIsoDay(until, -normalizedDays + 1);
+  const dailyRows = state.wikiLifecycleTelemetryDaily.filter(
+    (item) =>
+      String(item.project_id || "").trim() === project &&
+      String(item.metric_date || "").trim() >= since &&
+      String(item.metric_date || "").trim() <= until &&
+      (!normalizedActionKey || String(item.action_key || "").trim() === normalizedActionKey),
+  );
+  const actionMap = new Map();
+  const dayMap = new Map();
+  for (const row of dailyRows) {
+    const actionKey = String(row.action_key || "").trim() || "unknown";
+    const metricKind = normalizeLifecycleTelemetryKind(row.metric_kind);
+    if (!metricKind) continue;
+    const totalCount = Math.max(0, Number(row.total_count || 0));
+    const actionItem = actionMap.get(actionKey) || {
+      action_key: actionKey,
+      shown_total: 0,
+      applied_total: 0,
+      apply_rate: 0,
+    };
+    if (metricKind === "empty_scope_action_shown") {
+      actionItem.shown_total += totalCount;
+    } else {
+      actionItem.applied_total += totalCount;
+    }
+    actionMap.set(actionKey, actionItem);
+
+    const dayKey = String(row.metric_date || "").trim();
+    const dayItem = dayMap.get(dayKey) || { shown_total: 0, applied_total: 0 };
+    if (metricKind === "empty_scope_action_shown") {
+      dayItem.shown_total += totalCount;
+    } else {
+      dayItem.applied_total += totalCount;
+    }
+    dayMap.set(dayKey, dayItem);
+  }
+  const actions = [...actionMap.values()]
+    .map((item) => ({
+      ...item,
+      apply_rate: item.shown_total > 0 ? Number((item.applied_total / item.shown_total).toFixed(6)) : 0,
+    }))
+    .sort((a, b) => b.applied_total - a.applied_total || b.shown_total - a.shown_total || a.action_key.localeCompare(b.action_key));
+  const shownTotal = actions.reduce((sum, item) => sum + Number(item.shown_total || 0), 0);
+  const appliedTotal = actions.reduce((sum, item) => sum + Number(item.applied_total || 0), 0);
+  const daily = [];
+  for (let idx = 0; idx < normalizedDays; idx += 1) {
+    const day = shiftIsoDay(since, idx);
+    const bucket = dayMap.get(day) || { shown_total: 0, applied_total: 0 };
+    daily.push({
+      metric_date: day,
+      shown_total: Number(bucket.shown_total || 0),
+      applied_total: Number(bucket.applied_total || 0),
+    });
+  }
+  return {
+    project_id: project,
+    action_key: normalizedActionKey || null,
+    days: normalizedDays,
+    since,
+    until,
+    summary: {
+      shown_total: shownTotal,
+      applied_total: appliedTotal,
+      apply_rate: shownTotal > 0 ? Number((appliedTotal / shownTotal).toFixed(6)) : 0,
+      actions,
+    },
+    daily,
+    generated_at: nowIso(),
+  };
 }
 
 function normalizePublishMode(value) {
@@ -5917,6 +6640,546 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === "/v1/wiki/lifecycle/stats" && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const spaceKeyRaw = String(queryParam(url, "space_key") || "").trim();
+    const scopedSpaceKey = spaceKeyRaw ? normalizeWikiSpaceKey(spaceKeyRaw) : null;
+    const staleDaysRaw = Number(queryParam(url, "stale_days") || 21);
+    const criticalDaysRaw = Number(queryParam(url, "critical_days") || 45);
+    const limitRaw = Number(queryParam(url, "stale_limit") || 20);
+    const staleDays = Number.isFinite(staleDaysRaw) ? Math.max(1, Math.min(365, Math.trunc(staleDaysRaw))) : 21;
+    const criticalDays = Number.isFinite(criticalDaysRaw) ? Math.max(staleDays, Math.min(365, Math.trunc(criticalDaysRaw))) : 45;
+    const staleLimit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.trunc(limitRaw))) : 20;
+    if (projectId === "fixture_no_published") {
+      sendJson(res, 200, {
+        project_id: projectId,
+        thresholds: {
+          stale_days: staleDays,
+          critical_days: criticalDays,
+        },
+        counts: {
+          total_pages: 0,
+          draft_pages: 0,
+          reviewed_pages: 0,
+          published_pages: 0,
+          archived_pages: 0,
+          pages_with_open_drafts: 0,
+          stale_warning_pages: 0,
+          stale_critical_pages: 0,
+          published_pages_with_open_drafts: 0,
+          published_pages_without_open_drafts: 0,
+          published_pages_below_stale_threshold: 0,
+        },
+        stale_pages: [],
+        stale_critical_pages: [],
+        meta: {
+          generated_at: nowIso(),
+          limit: staleLimit,
+          space_key: scopedSpaceKey,
+          searched_scope: {
+            project_id: projectId,
+            space_key: scopedSpaceKey,
+            status_scope: "published_without_open_drafts",
+          },
+          filters_applied: {
+            stale_days: staleDays,
+            critical_days: criticalDays,
+            stale_limit: staleLimit,
+            space_key: scopedSpaceKey,
+          },
+          empty_scope: {
+            code: "no_published",
+            message: "No published pages in selected scope.",
+            details: {
+              published_pages: 0,
+              published_pages_with_open_drafts: 0,
+              published_pages_without_open_drafts: 0,
+              published_pages_below_stale_threshold: 0,
+              stale_days: staleDays,
+            },
+            suggested_actions: [
+              {
+                action: "create_page",
+                label: "Create first wiki page",
+                deep_link: {
+                  core_tab: "wiki",
+                },
+              },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    if (projectId === "fixture_all_open_drafts") {
+      sendJson(res, 200, {
+        project_id: projectId,
+        thresholds: {
+          stale_days: staleDays,
+          critical_days: criticalDays,
+        },
+        counts: {
+          total_pages: 2,
+          draft_pages: 0,
+          reviewed_pages: 0,
+          published_pages: 2,
+          archived_pages: 0,
+          pages_with_open_drafts: 2,
+          stale_warning_pages: 0,
+          stale_critical_pages: 0,
+          published_pages_with_open_drafts: 2,
+          published_pages_without_open_drafts: 0,
+          published_pages_below_stale_threshold: 0,
+        },
+        stale_pages: [],
+        stale_critical_pages: [],
+        meta: {
+          generated_at: nowIso(),
+          limit: staleLimit,
+          space_key: scopedSpaceKey,
+          searched_scope: {
+            project_id: projectId,
+            space_key: scopedSpaceKey,
+            status_scope: "published_without_open_drafts",
+          },
+          filters_applied: {
+            stale_days: staleDays,
+            critical_days: criticalDays,
+            stale_limit: staleLimit,
+            space_key: scopedSpaceKey,
+          },
+          empty_scope: {
+            code: "all_open_drafts",
+            message: "All published pages currently have open drafts, so stale detection is deferred.",
+            details: {
+              published_pages: 2,
+              published_pages_with_open_drafts: 2,
+              published_pages_without_open_drafts: 0,
+              published_pages_below_stale_threshold: 0,
+              stale_days: staleDays,
+            },
+            suggested_actions: [
+              {
+                action: "review_open_drafts",
+                label: "Review open drafts",
+                deep_link: {
+                  core_tab: "drafts",
+                  wiki_focus: "draft_inbox",
+                },
+              },
+            ],
+          },
+        },
+      });
+      return;
+    }
+    const nowMs = Date.now();
+    const openDraftCountByPage = new Map();
+    for (const draft of state.wikiDrafts || []) {
+      const pageId = String(draft.page_id || "").trim();
+      const status = String(draft.status || "").trim().toLowerCase();
+      if (!pageId || !["pending_review", "blocked_conflict"].includes(status)) continue;
+      openDraftCountByPage.set(pageId, Number(openDraftCountByPage.get(pageId) || 0) + 1);
+    }
+    const pages = state.wikiPages.filter((item) => {
+      if (String(item.project_id || "").trim() !== projectId) return false;
+      if (!scopedSpaceKey) return true;
+      return wikiSpaceKeyFromSlug(item.slug) === scopedSpaceKey;
+    });
+    const counts = {
+      total_pages: pages.length,
+      draft_pages: 0,
+      reviewed_pages: 0,
+      published_pages: 0,
+      archived_pages: 0,
+      pages_with_open_drafts: 0,
+      stale_warning_pages: 0,
+      stale_critical_pages: 0,
+      published_pages_with_open_drafts: 0,
+      published_pages_without_open_drafts: 0,
+      published_pages_below_stale_threshold: 0,
+    };
+    const stalePages = [];
+
+    for (const page of pages) {
+      const status = String(page.status || "published").trim().toLowerCase();
+      if (status === "draft") counts.draft_pages += 1;
+      else if (status === "reviewed") counts.reviewed_pages += 1;
+      else if (status === "archived") counts.archived_pages += 1;
+      else counts.published_pages += 1;
+      const openDraftCount = Number(openDraftCountByPage.get(page.id) || 0);
+      if (openDraftCount > 0) {
+        counts.pages_with_open_drafts += 1;
+      }
+      if (status !== "published") continue;
+      if (openDraftCount > 0) {
+        counts.published_pages_with_open_drafts += 1;
+        continue;
+      }
+      counts.published_pages_without_open_drafts += 1;
+      const activityAt = String(page.updated_at || page.created_at || "").trim() || null;
+      const ts = activityAt ? Date.parse(activityAt) : Number.NaN;
+      if (Number.isNaN(ts)) continue;
+      const ageDays = (nowMs - ts) / (1000 * 60 * 60 * 24);
+      if (ageDays < staleDays) {
+        counts.published_pages_below_stale_threshold += 1;
+        continue;
+      }
+      const severity = ageDays >= criticalDays ? "critical" : "warning";
+      if (severity === "critical") counts.stale_critical_pages += 1;
+      else counts.stale_warning_pages += 1;
+      stalePages.push({
+        slug: page.slug,
+        title: page.title,
+        status: page.status,
+        open_draft_count: openDraftCount,
+        activity_at: activityAt,
+        updated_at: page.updated_at || null,
+        age_days: Number(ageDays.toFixed(2)),
+        severity,
+      });
+    }
+    stalePages.sort((a, b) => Number(b.age_days || 0) - Number(a.age_days || 0));
+    let emptyScope = null;
+    if (stalePages.length === 0) {
+      if (counts.published_pages <= 0) {
+        emptyScope = {
+          code: "no_published",
+          message: "No published pages in selected scope.",
+          details: {
+            published_pages: counts.published_pages,
+            published_pages_with_open_drafts: counts.published_pages_with_open_drafts,
+            published_pages_without_open_drafts: counts.published_pages_without_open_drafts,
+            published_pages_below_stale_threshold: counts.published_pages_below_stale_threshold,
+            stale_days: staleDays,
+          },
+          suggested_actions: [
+            {
+              action: "create_page",
+              label: "Create first wiki page",
+              deep_link: {
+                core_tab: "wiki",
+              },
+            },
+          ],
+        };
+      } else if (counts.published_pages_without_open_drafts <= 0 && counts.published_pages_with_open_drafts > 0) {
+        emptyScope = {
+          code: "all_open_drafts",
+          message: "All published pages currently have open drafts, so stale detection is deferred.",
+          details: {
+            published_pages: counts.published_pages,
+            published_pages_with_open_drafts: counts.published_pages_with_open_drafts,
+            published_pages_without_open_drafts: counts.published_pages_without_open_drafts,
+            published_pages_below_stale_threshold: counts.published_pages_below_stale_threshold,
+            stale_days: staleDays,
+          },
+          suggested_actions: [
+            {
+              action: "review_open_drafts",
+              label: "Review open drafts",
+              deep_link: {
+                core_tab: "drafts",
+                wiki_focus: "draft_inbox",
+              },
+            },
+          ],
+        };
+      } else {
+        emptyScope = {
+          code: "below_threshold",
+          message: "Published pages are within freshness threshold for current stale window.",
+          details: {
+            published_pages: counts.published_pages,
+            published_pages_with_open_drafts: counts.published_pages_with_open_drafts,
+            published_pages_without_open_drafts: counts.published_pages_without_open_drafts,
+            published_pages_below_stale_threshold: counts.published_pages_below_stale_threshold,
+            stale_days: staleDays,
+          },
+          suggested_actions: [
+            {
+              action: "lower_threshold",
+              label: "Use 21/45 preset",
+            },
+            {
+              action: "create_page",
+              label: "Create policy page",
+              deep_link: {
+                core_tab: "wiki",
+              },
+            },
+          ],
+        };
+      }
+    }
+    sendJson(res, 200, {
+      project_id: projectId,
+      thresholds: {
+        stale_days: staleDays,
+        critical_days: criticalDays,
+      },
+      counts,
+      stale_pages: stalePages.slice(0, staleLimit),
+      stale_critical_pages: stalePages.filter((item) => item.severity === "critical").slice(0, staleLimit),
+      meta: {
+        generated_at: nowIso(),
+        limit: staleLimit,
+        space_key: scopedSpaceKey,
+        searched_scope: {
+          project_id: projectId,
+          space_key: scopedSpaceKey,
+          status_scope: "published_without_open_drafts",
+        },
+        filters_applied: {
+          stale_days: staleDays,
+          critical_days: criticalDays,
+          stale_limit: staleLimit,
+          space_key: scopedSpaceKey,
+        },
+        empty_scope: emptyScope,
+      },
+    });
+    return;
+  }
+
+  if (url.pathname === "/v1/wiki/lifecycle/telemetry" && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const daysRaw = Number(queryParam(url, "days") || 7);
+    const days = Number.isFinite(daysRaw) ? Math.max(1, Math.min(90, Math.trunc(daysRaw))) : 7;
+    const actionKey = normalizeLifecycleTelemetryActionKey(String(queryParam(url, "action_key") || ""));
+    sendJson(res, 200, getLifecycleTelemetrySummary(projectId, days, actionKey || null));
+    return;
+  }
+
+  if (url.pathname === "/v1/wiki/lifecycle/telemetry/snapshot" && req.method === "POST") {
+    const body = await readJsonBody(req).catch(() => ({}));
+    const projectId = String(body.project_id || "").trim();
+    const sessionId = String(body.session_id || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    if (!sessionId) {
+      sendJson(res, 422, { detail: "session_id_required" });
+      return;
+    }
+    const observedAt = String(body.observed_at || "").trim() || nowIso();
+    const shownCounts = normalizeLifecycleTelemetryCounts(body.empty_scope_action_shown || {});
+    const appliedCounts = normalizeLifecycleTelemetryCounts(body.empty_scope_action_applied || {});
+    const source = String(body.source || "web_ui").trim() || "web_ui";
+    const upsert = upsertLifecycleTelemetrySnapshot({
+      projectId,
+      sessionId,
+      observedAt,
+      shownCounts,
+      appliedCounts,
+      source,
+    });
+    const summary7d = getLifecycleTelemetrySummary(projectId, 7);
+    sendJson(res, 200, {
+      status: "ok",
+      project_id: projectId,
+      session_id: sessionId,
+      observed_at: observedAt,
+      metric_date: upsert.metricDate,
+      ingested_rows: upsert.ingestedRows,
+      ingested_by_kind: upsert.ingestedByKind,
+      delta_by_kind: upsert.deltaByKind,
+      summary_7d: summary7d.summary,
+    });
+    return;
+  }
+
+  const wikiSpacePolicyAuditMatch = url.pathname.match(/^\/v1\/wiki\/spaces\/([^/]+)\/policy\/audit$/);
+  if (wikiSpacePolicyAuditMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const spaceKey = normalizeWikiSpaceKey(decodeURIComponent(wikiSpacePolicyAuditMatch[1]));
+    const limitRaw = Number(queryParam(url, "limit") || 40);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 40;
+    sendJson(res, 200, {
+      project_id: projectId,
+      space_key: spaceKey,
+      entries: listWikiSpacePolicyAudit(projectId, spaceKey, limit),
+      available: true,
+    });
+    return;
+  }
+
+  const wikiSpacePolicyAdoptionSummaryMatch = url.pathname.match(/^\/v1\/wiki\/spaces\/([^/]+)\/policy\/adoption-summary$/);
+  if (wikiSpacePolicyAdoptionSummaryMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const spaceKey = normalizeWikiSpaceKey(decodeURIComponent(wikiSpacePolicyAdoptionSummaryMatch[1]));
+    const limitRaw = Number(queryParam(url, "limit") || 200);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, Math.trunc(limitRaw))) : 200;
+    const entries = listWikiSpacePolicyAudit(projectId, spaceKey, limit);
+    sendJson(res, 200, {
+      project_id: projectId,
+      space_key: spaceKey,
+      summary: summarizeWikiSpacePolicyAdoption(entries),
+      available: true,
+      meta: {
+        sampled_entries: entries.length,
+        limit,
+      },
+    });
+    return;
+  }
+
+  const wikiSpacePolicyMatch = url.pathname.match(/^\/v1\/wiki\/spaces\/([^/]+)\/policy$/);
+  if (wikiSpacePolicyMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const spaceKey = normalizeWikiSpaceKey(decodeURIComponent(wikiSpacePolicyMatch[1]));
+    const existing = findWikiSpacePolicy(projectId, spaceKey);
+    sendJson(res, 200, {
+      project_id: projectId,
+      space_key: spaceKey,
+      policy: existing
+        ? {
+            write_mode: existing.write_mode,
+            comment_mode: existing.comment_mode,
+            review_assignment_required: Boolean(existing.review_assignment_required),
+            metadata: existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {},
+            exists: true,
+          }
+        : {
+            write_mode: "open",
+            comment_mode: "open",
+            review_assignment_required: false,
+            metadata: {},
+            exists: false,
+          },
+    });
+    return;
+  }
+
+  if (wikiSpacePolicyMatch && req.method === "PUT") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const updatedBy = String(body.updated_by || "").trim();
+    if (!projectId || !updatedBy) {
+      sendJson(res, 422, { detail: "project_id_updated_by_required" });
+      return;
+    }
+    const spaceKey = normalizeWikiSpaceKey(decodeURIComponent(wikiSpacePolicyMatch[1]));
+    const existing = findWikiSpacePolicy(projectId, spaceKey);
+    const beforePolicy = existing
+      ? {
+          write_mode: String(existing.write_mode || "open"),
+          comment_mode: String(existing.comment_mode || "open"),
+          review_assignment_required: Boolean(existing.review_assignment_required),
+          metadata: existing.metadata && typeof existing.metadata === "object" ? { ...existing.metadata } : {},
+        }
+      : {
+          write_mode: "open",
+          comment_mode: "open",
+          review_assignment_required: false,
+          metadata: {},
+        };
+    const nextPolicy = {
+      write_mode: String(body.write_mode || "open").trim().toLowerCase() === "owners_only" ? "owners_only" : "open",
+      comment_mode: String(body.comment_mode || "open").trim().toLowerCase() === "owners_only" ? "owners_only" : "open",
+      review_assignment_required: Boolean(body.review_assignment_required),
+      metadata: body.metadata && typeof body.metadata === "object" ? { ...body.metadata } : {},
+    };
+    const now = nowIso();
+    if (existing) {
+      existing.write_mode = nextPolicy.write_mode;
+      existing.comment_mode = nextPolicy.comment_mode;
+      existing.review_assignment_required = nextPolicy.review_assignment_required;
+      existing.metadata = nextPolicy.metadata;
+      existing.updated_by = updatedBy;
+      existing.updated_at = now;
+    } else {
+      state.wikiSpacePolicies.unshift({
+        id: randomUUID(),
+        project_id: projectId,
+        space_key: spaceKey,
+        write_mode: nextPolicy.write_mode,
+        comment_mode: nextPolicy.comment_mode,
+        review_assignment_required: nextPolicy.review_assignment_required,
+        metadata: nextPolicy.metadata,
+        updated_by: updatedBy,
+        updated_at: now,
+      });
+    }
+    const changedFields = [];
+    if (beforePolicy.write_mode !== nextPolicy.write_mode) changedFields.push("write_mode");
+    if (beforePolicy.comment_mode !== nextPolicy.comment_mode) changedFields.push("comment_mode");
+    if (beforePolicy.review_assignment_required !== nextPolicy.review_assignment_required) {
+      changedFields.push("review_assignment_required");
+    }
+    const beforePreset = String(beforePolicy.metadata?.publish_checklist_preset || "").trim().toLowerCase() || "none";
+    const afterPreset = String(nextPolicy.metadata?.publish_checklist_preset || "").trim().toLowerCase() || "none";
+    if (beforePreset !== afterPreset) changedFields.push("publish_checklist_preset");
+    if (changedFields.length > 0) {
+      state.wikiSpacePolicyAudit.unshift({
+        id: randomUUID(),
+        project_id: projectId,
+        space_key: spaceKey,
+        changed_by: updatedBy,
+        before_policy: beforePolicy,
+        after_policy: nextPolicy,
+        changed_fields: changedFields,
+        reason: String(body.reason || "").trim() || "Updated from web UI.",
+        created_at: now,
+      });
+    }
+    sendJson(res, 200, {
+      status: "updated",
+      project_id: projectId,
+      space_key: spaceKey,
+      policy: {
+        ...nextPolicy,
+        updated_by: updatedBy,
+      },
+    });
+    return;
+  }
+
+  const wikiSpaceOwnersMatch = url.pathname.match(/^\/v1\/wiki\/spaces\/([^/]+)\/owners$/);
+  if (wikiSpaceOwnersMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    sendJson(res, 200, {
+      owners: [
+        {
+          owner: "ops_manager",
+          role: "owner",
+          metadata: {},
+          created_at: "2026-04-01T08:00:00Z",
+        },
+      ],
+    });
+    return;
+  }
+
   if (url.pathname === "/v1/wiki/pages/search" && req.method === "GET") {
     const projectId = String(queryParam(url, "project_id") || "").trim();
     const query = String(queryParam(url, "q") || "").trim().toLowerCase();
@@ -6230,6 +7493,128 @@ const server = http.createServer(async (req, res) => {
         context_policy: contextPolicy,
       },
     }, graphHeaders);
+    return;
+  }
+
+  const wikiPageReviewAssignmentsMatch = url.pathname.match(/^\/v1\/wiki\/pages\/([^/]+(?:\/[^/]+)*)\/review-assignments$/);
+  if (wikiPageReviewAssignmentsMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const slug = decodeURIComponent(wikiPageReviewAssignmentsMatch[1]);
+    const page = findWikiPageBySlug(projectId, slug);
+    if (!page) {
+      sendJson(res, 200, { assignments: [] });
+      return;
+    }
+    const limitRaw = Number(queryParam(url, "limit") || 100);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 100;
+    const assignments = state.wikiPageReviewAssignments
+      .filter(
+        (item) =>
+          String(item.project_id || "").trim() === projectId &&
+          String(item.page_id || "").trim() === String(page.id || "").trim(),
+      )
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+      .slice(0, limit)
+      .map((item) => ({ ...item }));
+    sendJson(res, 200, { assignments });
+    return;
+  }
+
+  if (wikiPageReviewAssignmentsMatch && req.method === "PUT") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const createdBy = String(body.created_by || "").trim();
+    const assignee = String(body.assignee || "").trim();
+    if (!projectId || !createdBy || !assignee) {
+      sendJson(res, 422, { detail: "project_id_created_by_assignee_required" });
+      return;
+    }
+    const slug = decodeURIComponent(wikiPageReviewAssignmentsMatch[1]);
+    const page = findWikiPageBySlug(projectId, slug);
+    if (!page) {
+      sendJson(res, 404, { error: "page_not_found" });
+      return;
+    }
+    const now = nowIso();
+    const existing = state.wikiPageReviewAssignments.find(
+      (item) =>
+        String(item.project_id || "").trim() === projectId &&
+        String(item.page_id || "").trim() === String(page.id || "").trim() &&
+        String(item.assignee || "").trim().toLowerCase() === assignee.toLowerCase() &&
+        String(item.status || "").trim() === "open",
+    );
+    if (existing) {
+      existing.note = String(body.note || existing.note || "").trim() || null;
+      existing.role = String(body.role || existing.role || "reviewer").trim() || "reviewer";
+      existing.due_at = body.due_at ? new Date(String(body.due_at)).toISOString() : null;
+      sendJson(res, 200, { status: "assigned", assignment: { ...existing } });
+      return;
+    }
+    const assignment = {
+      id: randomUUID(),
+      assignee,
+      role: String(body.role || "reviewer").trim() || "reviewer",
+      status: "open",
+      note: String(body.note || "").trim() || null,
+      due_at: body.due_at ? new Date(String(body.due_at)).toISOString() : null,
+      created_by: createdBy,
+      resolved_by: null,
+      resolution_note: null,
+      created_at: now,
+      resolved_at: null,
+      project_id: projectId,
+      page_id: page.id,
+    };
+    state.wikiPageReviewAssignments.unshift(assignment);
+    sendJson(res, 200, { status: "assigned", assignment: { ...assignment } });
+    return;
+  }
+
+  const wikiPageReviewAssignmentsResolveMatch = url.pathname.match(
+    /^\/v1\/wiki\/pages\/([^/]+(?:\/[^/]+)*)\/review-assignments\/([^/]+)\/resolve$/,
+  );
+  if (wikiPageReviewAssignmentsResolveMatch && req.method === "POST") {
+    const body = await readJsonBody(req).catch(() => null);
+    if (!body || typeof body !== "object") {
+      sendJson(res, 400, { detail: "invalid_json" });
+      return;
+    }
+    const projectId = String(body.project_id || "").trim();
+    const resolvedBy = String(body.resolved_by || "").trim();
+    if (!projectId || !resolvedBy) {
+      sendJson(res, 422, { detail: "project_id_resolved_by_required" });
+      return;
+    }
+    const slug = decodeURIComponent(wikiPageReviewAssignmentsResolveMatch[1]);
+    const assignmentId = decodeURIComponent(wikiPageReviewAssignmentsResolveMatch[2]);
+    const page = findWikiPageBySlug(projectId, slug);
+    if (!page) {
+      sendJson(res, 404, { error: "page_not_found" });
+      return;
+    }
+    const assignment = state.wikiPageReviewAssignments.find(
+      (item) =>
+        String(item.id || "").trim() === assignmentId &&
+        String(item.project_id || "").trim() === projectId &&
+        String(item.page_id || "").trim() === String(page.id || "").trim(),
+    );
+    if (!assignment) {
+      sendJson(res, 404, { error: "assignment_not_found" });
+      return;
+    }
+    assignment.status = "resolved";
+    assignment.resolved_by = resolvedBy;
+    assignment.resolution_note = String(body.resolution_note || "").trim() || null;
+    assignment.resolved_at = nowIso();
+    sendJson(res, 200, { status: "resolved", assignment: { ...assignment } });
     return;
   }
 
@@ -6610,8 +7995,136 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const wikiDraftConflictExplainMatch = url.pathname.match(/^\/v1\/wiki\/drafts\/([^/]+)\/conflicts\/explain$/);
+  if (wikiDraftConflictExplainMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const draftId = decodeURIComponent(wikiDraftConflictExplainMatch[1]);
+    const detail = state.wikiDraftDetails[draftId];
+    if (!detail || String(detail.project_id || "").trim() !== projectId) {
+      sendJson(res, 404, { error: "draft_not_found" });
+      return;
+    }
+    const conflicts = state.wikiDraftConflictExplain[draftId] || [];
+    sendJson(res, 200, {
+      project_id: projectId,
+      draft_id: draftId,
+      source: "mock",
+      scope: {
+        claim_id: String(detail.draft?.claim_id || ""),
+        entity_key: String(detail.draft?.claim?.entity_key || "") || null,
+      },
+      resolution_status: conflicts.some((item) => String(item.resolution_status || "") === "open") ? "open" : null,
+      conflicts,
+    });
+    return;
+  }
+
+  const wikiDraftDetailMatch = url.pathname.match(/^\/v1\/wiki\/drafts\/([^/]+)$/);
+  if (wikiDraftDetailMatch && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const draftId = decodeURIComponent(wikiDraftDetailMatch[1]);
+    const detail = state.wikiDraftDetails[draftId];
+    if (!detail || String(detail.project_id || "").trim() !== projectId) {
+      sendJson(res, 404, { error: "draft_not_found" });
+      return;
+    }
+    sendJson(res, 200, JSON.parse(JSON.stringify(detail)));
+    return;
+  }
+
   if (url.pathname === "/v1/wiki/drafts" && req.method === "GET") {
-    sendJson(res, 200, { drafts: [] });
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    const status = String(queryParam(url, "status") || "").trim().toLowerCase();
+    const limitRaw = Number(queryParam(url, "limit") || 120);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.trunc(limitRaw))) : 120;
+    const drafts = (state.wikiDrafts || [])
+      .filter((item) => String(item.project_id || "").trim() === projectId)
+      .filter((item) => {
+        if (!status) return true;
+        return String(item.status || "").trim().toLowerCase() === status;
+      })
+      .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
+      .slice(0, limit)
+      .map((item) => ({
+        id: item.id,
+        claim_id: item.claim_id,
+        page_id: item.page_id,
+        section_key: item.section_key,
+        decision: item.decision,
+        confidence: Number(item.confidence || 0),
+        rationale: item.rationale,
+        status: item.status,
+        created_at: item.created_at,
+        page: item.page,
+      }));
+    sendJson(res, 200, { drafts });
+    return;
+  }
+
+  if (url.pathname === "/v1/wiki/drafts/bootstrap-approve/recommendation" && req.method === "GET") {
+    const projectId = String(queryParam(url, "project_id") || "").trim();
+    if (!projectId) {
+      sendJson(res, 422, { detail: "project_id_required" });
+      return;
+    }
+    sendJson(res, 200, {
+      status: "ok",
+      project_id: projectId,
+      recommended: {
+        limit: 50,
+        sample_size: 15,
+        min_confidence: 0.9,
+        require_conflict_free: true,
+        trusted_source_systems: ["legacy_import", "postgres_sql"],
+        require_trusted_sources_on_apply: true,
+        allow_large_batch: false,
+        dry_run: true,
+      },
+      diagnostics: {
+        queue: {
+          open_pending_review: 12,
+          blocked_conflict: 1,
+          open_conflicts: 1,
+        },
+        backfill_quality: {
+          batches_recent: 2,
+          processed_events: 120,
+          generated_claims: 38,
+          dropped_event_like: 55,
+          kept_durable: 31,
+          trusted_bypass: 7,
+          event_drop_ratio: 0.4583,
+          durable_keep_ratio: 0.3167,
+        },
+        sources: {
+          ownership_sources: ["legacy_import"],
+          legacy_source_types: ["postgres_sql"],
+          legacy_declared_source_systems: ["legacy_import"],
+          fallback_used: false,
+        },
+        notes: ["Open conflicts detected (1); conflict-free filter stays enabled."],
+      },
+      safety: {
+        apply_limit_soft_cap: 200,
+        rollback_hint: {
+          moderation_actions_endpoint: `/v1/wiki/moderation/actions?project_id=${encodeURIComponent(projectId)}`,
+          note: "Use moderation audit feed and page history to revert unintended bootstrap approvals.",
+        },
+      },
+      generated_at: nowIso(),
+    });
     return;
   }
 

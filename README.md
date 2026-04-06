@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Synapse: The Agentic Wiki and Cognitive State Layer for AI Agents.</strong><br/>
-  Convert ephemeral agent experience into a shared, human-curated source of truth.
+  L2 memory and governance layer for AI agents, with a human-curated Wiki interface.
 </p>
 
 <p align="center">
@@ -39,18 +39,45 @@ Synapse is middleware between your agent runtime (OpenClaw, LangGraph, CrewAI, c
 
 This is your live **single source of truth** for agent behavior.
 
+## Synapse As L2 Cognitive State Layer
+
+- **L0**: model weights and system prompt.
+- **L1**: ephemeral session context and short-term runtime memory.
+- **L2 (Synapse)**: durable, governed cognitive state (facts + process rules + operational playbooks).
+
+Agentic Wiki is the operating interface for humans.  
+The product core is the **L2 state layer** used by every connected runtime through SDK + MCP.
+
 ## Synapse For OpenClaw Agents
 
 Give OpenClaw agents a long-term collaborative brain.
 
-### Package Registry Status
+### Package Install Modes
 
-As of **April 3, 2026**:
-- PyPI package `synapseworkspace-sdk`: **not published yet**.
-- npm packages `@synapseworkspace/sdk`, `@synapseworkspace/schema`, `@synapseworkspace/openclaw-plugin`: **not published yet**.
+Registry install (recommended):
 
-Until first public package release, use repo-local install paths shown below.
-Canonical package names are already fixed and are used consistently across release tooling/docs.
+```bash
+pip install synapseworkspace-sdk
+npm install @synapseworkspace/sdk
+```
+
+Monorepo editable install (for local development in this repository):
+
+```bash
+pip install -e packages/synapse-sdk-py
+```
+
+Source install fallback (if registry propagation is still in progress):
+
+```bash
+pip install "git+https://github.com/synapseworkspace/synapse.git#subdirectory=packages/synapse-sdk-py"
+```
+
+Validate live registry availability:
+
+```bash
+python3 scripts/check_registry_package_availability.py --require-available
+```
 
 ### Why Synapse + OpenClaw
 
@@ -60,10 +87,10 @@ Canonical package names are already fixed and are used consistently across relea
 
 ### Quick Start (OpenClaw)
 
-Install Python SDK (current preview path):
+Install Python SDK:
 
 ```bash
-pip install -e packages/synapse-sdk-py
+pip install synapseworkspace-sdk
 ```
 
 Connect Synapse to OpenClaw:
@@ -102,6 +129,11 @@ synapse.attach(
 Canonical 5-minute path:
 - [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
 
+Additional 5-minute paths:
+- [docs/langgraph-quickstart-5-min.md](docs/langgraph-quickstart-5-min.md)
+- [docs/langchain-quickstart-5-min.md](docs/langchain-quickstart-5-min.md)
+- [docs/crewai-quickstart-5-min.md](docs/crewai-quickstart-5-min.md)
+
 TypeScript can use the same one-line attach flow:
 
 ```ts
@@ -117,10 +149,6 @@ synapse.attach(openclawRuntime, { integration: "openclaw", adoptionMode: "observ
 
 Optional advanced runtime-embedding package: `@synapseworkspace/openclaw-plugin`  
 Source path: [packages/synapse-openclaw-plugin](packages/synapse-openclaw-plugin)
-
-After first registry publication, install commands will be:
-- `pip install synapseworkspace-sdk`
-- `npm install @synapseworkspace/sdk`
 
 ## Product Capabilities
 
@@ -157,6 +185,29 @@ cd apps/web && npm install && npm run dev
 
 Open `http://localhost:5173`.
 
+Recommended route split:
+- Wiki-first workspace: `http://localhost:5173/wiki?project=omega_demo`
+- Draft inbox (clean mode): `http://localhost:5173/wiki?project=omega_demo&core_tab=drafts`
+- Operations tools (migration/gatekeeper): `http://localhost:5173/operations?project=omega_demo&core_tab=drafts`
+
+Operations includes:
+- Agent Worklog Policy: project-level timezone/schedule, idle-day gating, realtime trigger mode.
+- AI Agent Orgchart: teams, handoffs, and direct links to agent wiki profiles.
+- Migration Mode: trusted-source bootstrap preview/apply flows for existing-memory adoption.
+
+## Agentic Onboarding Benchmark
+
+Measure day-0 onboarding KPI in one command:
+
+```bash
+python3 scripts/benchmark_agentic_onboarding.py --scenario all --summary-only
+```
+
+KPI cards emitted per scenario:
+- `first_useful_answer`
+- `first_approved_draft`
+- `first_policy_safe_publish`
+
 ## Open-Core Stack
 
 ### Synapse Core (OSS)
@@ -180,12 +231,21 @@ Open `http://localhost:5173`.
 - Agentic Wiki overview: [docs/agentic-wiki-overview.md](docs/agentic-wiki-overview.md)
 - Getting started: [docs/getting-started.md](docs/getting-started.md)
 - OpenClaw 5-minute quickstart: [docs/openclaw-quickstart-5-min.md](docs/openclaw-quickstart-5-min.md)
+- LangGraph 5-minute quickstart: [docs/langgraph-quickstart-5-min.md](docs/langgraph-quickstart-5-min.md)
+- LangChain 5-minute quickstart: [docs/langchain-quickstart-5-min.md](docs/langchain-quickstart-5-min.md)
+- CrewAI 5-minute quickstart: [docs/crewai-quickstart-5-min.md](docs/crewai-quickstart-5-min.md)
 - OpenClaw integration: [docs/openclaw-integration.md](docs/openclaw-integration.md)
 - Existing-memory adoption playbook: [docs/adoption-existing-memory.md](docs/adoption-existing-memory.md)
 - Knowledge compiler RFC: [docs/knowledge-compiler-rfc.md](docs/knowledge-compiler-rfc.md)
 - Framework integrations: [docs/framework-integrations.md](docs/framework-integrations.md)
+- Cognitive State Layer (L2) positioning: [docs/cognitive-state-layer.md](docs/cognitive-state-layer.md)
+- Agentic onboarding benchmark kit: [docs/agentic-onboarding-benchmark.md](docs/agentic-onboarding-benchmark.md)
+- Buyer ROI + rollout one-pager: [docs/buyer-roi-rollout.md](docs/buyer-roi-rollout.md)
+- Architecture diagram pack: [docs/architecture-diagram-pack.md](docs/architecture-diagram-pack.md)
+- Operations route runbook: [docs/operations-route-runbook.md](docs/operations-route-runbook.md)
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
 - Wiki UX roles and metrics: [docs/wiki-ux-roles-metrics.md](docs/wiki-ux-roles-metrics.md)
+- Wiki UI visual gallery (CI artifacts): [docs/wiki-ui-visual-gallery.md](docs/wiki-ui-visual-gallery.md)
 - MCP runtime: [docs/mcp-runtime.md](docs/mcp-runtime.md)
 - Reliability and SLO guardrails: [docs/reliability-slo.md](docs/reliability-slo.md)
 - Core vs enterprise scope: [docs/core-vs-enterprise.md](docs/core-vs-enterprise.md)

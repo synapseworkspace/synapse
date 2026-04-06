@@ -37,6 +37,84 @@ class RetrievalSearchPlan:
     related_entity_key: str | None
 
 
+_SUPPORTED_RETRIEVAL_INTENTS = {"auto", "general", "process", "policy", "incident", "preference"}
+
+_INTENT_RULES: dict[str, dict[str, Any]] = {
+    "process": {
+        "keywords": (
+            "runbook",
+            "playbook",
+            "workflow",
+            "procedure",
+            "steps",
+            "step",
+            "triage",
+            "escalate",
+            "escalation",
+            "resolve",
+            "resolution",
+            "how to",
+            "when",
+            "if",
+            "then",
+        ),
+        "page_types": {"process"},
+        "categories": {"process", "runbook", "playbook", "workflow", "operations", "incident_response"},
+        "sections": {"triggers", "steps", "exceptions", "escalation", "verification", "runbook"},
+    },
+    "policy": {
+        "keywords": (
+            "policy",
+            "rule",
+            "must",
+            "must not",
+            "compliance",
+            "allowed",
+            "forbidden",
+            "prohibited",
+            "approved",
+            "approval",
+            "sla",
+        ),
+        "page_types": {"policy"},
+        "categories": {"policy", "compliance", "security", "governance"},
+        "sections": {"policy", "rules", "constraints", "exceptions", "access"},
+    },
+    "incident": {
+        "keywords": (
+            "incident",
+            "outage",
+            "error",
+            "failure",
+            "sev",
+            "postmortem",
+            "rollback",
+            "mitigation",
+            "degraded",
+            "downtime",
+        ),
+        "page_types": {"incident", "process"},
+        "categories": {"incident", "incident_response", "outage", "reliability"},
+        "sections": {"incident", "mitigation", "timeline", "escalation", "verification"},
+    },
+    "preference": {
+        "keywords": (
+            "preference",
+            "prefer",
+            "likes",
+            "dislikes",
+            "customer preference",
+            "communication",
+            "tone",
+            "contact method",
+        ),
+        "page_types": {"preference"},
+        "categories": {"preference", "customer_preference", "communication"},
+        "sections": {"preferences", "notes", "exceptions"},
+    },
+}
+
+
 def serialize_graph_config(config: RetrievalGraphConfig) -> dict[str, float | int]:
     return {
         "max_graph_hops": int(config.max_graph_hops),
@@ -205,6 +283,10 @@ SELECT
   p.entity_key,
   p.page_type,
   COALESCE(claim_meta.category, ''),
+  claim_meta.claim_id,
+  COALESCE(claim_meta.metadata, '{}'::jsonb),
+  COALESCE(claim_meta.evidence, '[]'::jsonb),
+  claim_meta.observed_at,
   (
     GREATEST(
       CASE WHEN lower(p.entity_key) = %s THEN 1.00 ELSE 0.00 END,
@@ -225,8 +307,7 @@ SELECT
         WHEN graph_hops.hop_count = 3 THEN %s
         ELSE %s
       END
-  ) AS score
-  ,
+  ) AS score,
   graph_hops.hop_count,
   CASE
     WHEN %s::text IS NULL OR graph_hops.hop_count IS NULL THEN 0.00
@@ -239,7 +320,12 @@ FROM wiki_statements st
 JOIN wiki_pages p ON p.id = st.page_id
 LEFT JOIN graph_hops ON lower(p.entity_key) = graph_hops.entity_key
 LEFT JOIN LATERAL (
-  SELECT c.category
+  SELECT
+    c.id::text AS claim_id,
+    c.category,
+    c.metadata,
+    c.evidence,
+    c.observed_at
   FROM claims c
   WHERE c.project_id = st.project_id
     AND c.claim_fingerprint = st.claim_fingerprint
@@ -316,6 +402,84 @@ def token_overlap(tokens: Sequence[str], text: str) -> tuple[int, float]:
         return (0, 0.0)
     hits = sum(1 for token in tokens if token in haystack)
     return (hits, hits / max(1, len(tokens)))
+
+
+def normalize_retrieval_intent(value: Any, *, default: str = "auto") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _SUPPORTED_RETRIEVAL_INTENTS:
+        return normalized
+    fallback = str(default or "auto").strip().lower()
+    return fallback if fallback in _SUPPORTED_RETRIEVAL_INTENTS else "auto"
+
+
+def _coerce_list_of_strings(value: Any, *, limit: int = 20) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    if isinstance(value, (list, tuple)):
+        iterable = value
+    elif value is None:
+        iterable = []
+    else:
+        iterable = [value]
+    for item in iterable:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def build_retrieval_provenance_fields(result: dict[str, Any]) -> dict[str, Any] | None:
+    claim_id = str(result.get("claim_id") or "").strip()
+    claim_metadata = result.get("claim_metadata") if isinstance(result.get("claim_metadata"), dict) else {}
+    claim_evidence = result.get("claim_evidence") if isinstance(result.get("claim_evidence"), list) else []
+    claim_observed_at = str(result.get("claim_observed_at") or "").strip() or None
+
+    source_ids: list[str] = []
+    for entry in claim_evidence:
+        if not isinstance(entry, dict):
+            continue
+        source_id = str(entry.get("source_id") or entry.get("id") or "").strip()
+        if source_id and source_id not in source_ids:
+            source_ids.append(source_id)
+        if len(source_ids) >= 20:
+            break
+
+    operator_decision = claim_metadata.get("operator_decision") if isinstance(claim_metadata, dict) else {}
+    decision_obj = operator_decision if isinstance(operator_decision, dict) else {}
+    ticket_ids = _coerce_list_of_strings(
+        (claim_metadata.get("linked_ticket_ids") if isinstance(claim_metadata, dict) else None)
+        or (decision_obj.get("ticket_ids") if isinstance(decision_obj, dict) else None)
+        or (claim_metadata.get("ticket_ids") if isinstance(claim_metadata, dict) else None),
+        limit=20,
+    )
+    outcome = (
+        str(claim_metadata.get("resolution_outcome") or "").strip()
+        if isinstance(claim_metadata, dict)
+        else ""
+    )
+    if not outcome and isinstance(decision_obj, dict):
+        outcome = str(decision_obj.get("outcome") or "").strip()
+    if not outcome and isinstance(claim_metadata, dict):
+        outcome = str(claim_metadata.get("outcome") or "").strip()
+    if not outcome:
+        outcome = None
+
+    if not claim_id and not source_ids and not ticket_ids and not outcome:
+        return None
+
+    return {
+        "claim_id": claim_id or None,
+        "claim_observed_at": claim_observed_at,
+        "source_ids": source_ids,
+        "ticket_ids": ticket_ids,
+        "outcome": outcome,
+    }
 
 
 def load_graph_config_from_env(
@@ -570,5 +734,254 @@ def build_retrieval_explain_fields(
         "blocked_by": blockers,
         "thresholds": serialize_context_policy_config(effective_policy),
     }
+    provenance = build_retrieval_provenance_fields(payload)
+    if provenance is not None:
+        payload["provenance"] = provenance
     payload["retrieval_reason"] = "; ".join(reason_parts)
     return payload
+
+
+def infer_retrieval_intent(
+    *,
+    query: str,
+    explicit_intent: str | None = None,
+    query_tokens_override: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    normalized_query = normalize_search_text(query)
+    resolved_tokens = list(query_tokens_override) if query_tokens_override is not None else query_tokens(normalized_query)
+    requested_intent = normalize_retrieval_intent(explicit_intent, default="auto")
+    if requested_intent != "auto":
+        return {
+            "intent": requested_intent,
+            "source": "explicit",
+            "signals": [],
+            "scores": {requested_intent: 1.0},
+            "query_tokens": resolved_tokens,
+        }
+
+    scores: dict[str, float] = {}
+    matched_signals: dict[str, list[str]] = {}
+    for intent_key, rule in _INTENT_RULES.items():
+        keyword_hits: set[str] = set()
+        for keyword in rule["keywords"]:
+            kw_norm = normalize_search_text(keyword)
+            if not kw_norm:
+                continue
+            if " " in kw_norm:
+                if kw_norm in normalized_query:
+                    keyword_hits.add(kw_norm)
+            elif kw_norm in resolved_tokens:
+                keyword_hits.add(kw_norm)
+        if keyword_hits:
+            # Phrase matches carry extra weight over single-token hints.
+            phrase_hits = sum(1 for hit in keyword_hits if " " in hit)
+            score = float(len(keyword_hits)) + (0.35 * float(phrase_hits))
+            scores[intent_key] = round(score, 4)
+            matched_signals[intent_key] = sorted(keyword_hits)
+        else:
+            scores[intent_key] = 0.0
+            matched_signals[intent_key] = []
+
+    best_intent = "general"
+    best_score = 0.0
+    for intent_key in ("process", "policy", "incident", "preference"):
+        current_score = float(scores.get(intent_key, 0.0))
+        if current_score > best_score:
+            best_intent = intent_key
+            best_score = current_score
+    if best_score <= 0.0:
+        return {
+            "intent": "general",
+            "source": "default",
+            "signals": [],
+            "scores": scores,
+            "query_tokens": resolved_tokens,
+        }
+    return {
+        "intent": best_intent,
+        "source": "inferred",
+        "signals": matched_signals.get(best_intent, []),
+        "scores": scores,
+        "query_tokens": resolved_tokens,
+    }
+
+
+def _intent_alignment_for_result(
+    *,
+    result: dict[str, Any],
+    intent_profile: dict[str, Any],
+) -> dict[str, Any]:
+    intent = str(intent_profile.get("intent") or "general")
+    if intent == "general":
+        base_score = float(result.get("score") or 0.0)
+        return {
+            "intent": "general",
+            "score": 0.0,
+            "boost": 0.0,
+            "final_rank_score": round(base_score, 4),
+            "matched_signals": [],
+        }
+
+    rule = _INTENT_RULES.get(intent)
+    if not isinstance(rule, dict):
+        base_score = float(result.get("score") or 0.0)
+        return {
+            "intent": "general",
+            "score": 0.0,
+            "boost": 0.0,
+            "final_rank_score": round(base_score, 4),
+            "matched_signals": [],
+        }
+
+    page = result.get("page") if isinstance(result.get("page"), dict) else {}
+    page_type = normalize_search_text(page.get("page_type"))
+    category = normalize_search_text(result.get("category"))
+    section_key = normalize_search_text(result.get("section_key"))
+    statement_text = normalize_search_text(result.get("statement_text"))
+    title_text = normalize_search_text(page.get("title"))
+    lexical_haystack = f"{statement_text} {title_text}".strip()
+    query_tokens_list = [str(token).strip().lower() for token in (intent_profile.get("query_tokens") or []) if str(token).strip()]
+
+    matched_signals: list[str] = []
+    alignment_score = 0.0
+    if page_type and page_type in rule["page_types"]:
+        alignment_score += 0.46
+        matched_signals.append(f"page_type:{page_type}")
+    if category and category in rule["categories"]:
+        alignment_score += 0.24
+        matched_signals.append(f"category:{category}")
+    if section_key and section_key in rule["sections"]:
+        alignment_score += 0.20
+        matched_signals.append(f"section:{section_key}")
+
+    keyword_set = {normalize_search_text(item) for item in rule["keywords"]}
+    keyword_hits = sorted({kw for kw in keyword_set if kw and kw in lexical_haystack})
+    if keyword_hits:
+        alignment_score += min(0.22, 0.06 * float(len(keyword_hits)))
+        matched_signals.extend([f"keyword:{item}" for item in keyword_hits[:4]])
+
+    # Give a small boost if user query already carries the same intent cues.
+    query_keyword_hits = sum(1 for token in query_tokens_list if token in keyword_set)
+    if query_keyword_hits > 0:
+        alignment_score += min(0.08, 0.03 * float(query_keyword_hits))
+
+    if intent == "process" and section_key == "steps":
+        alignment_score += 0.05
+        matched_signals.append("section:steps_priority")
+
+    normalized_alignment = round(max(0.0, min(1.0, alignment_score)), 4)
+    base_score = float(result.get("score") or 0.0)
+    intent_boost = round(0.38 * normalized_alignment, 4)
+    final_score = round(base_score + intent_boost, 4)
+    return {
+        "intent": intent,
+        "score": normalized_alignment,
+        "boost": intent_boost,
+        "final_rank_score": final_score,
+        "matched_signals": matched_signals[:8],
+    }
+
+
+def apply_intent_reranking(
+    *,
+    query: str,
+    results: Sequence[dict[str, Any]],
+    explicit_intent: str | None = None,
+    max_context_snippets: int = 3,
+    query_tokens_override: Sequence[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    profile = infer_retrieval_intent(
+        query=query,
+        explicit_intent=explicit_intent,
+        query_tokens_override=query_tokens_override,
+    )
+    normalized_max_snippets = normalize_limit_value(max_context_snippets, default=3, minimum=1, maximum=10)
+
+    decorated: list[dict[str, Any]] = []
+    for item in results:
+        payload = dict(item)
+        alignment = _intent_alignment_for_result(result=payload, intent_profile=profile)
+        payload["intent_alignment"] = alignment
+        payload["intent_rank_score"] = alignment.get("final_rank_score", payload.get("score", 0.0))
+        if profile.get("intent") != "general" and alignment.get("matched_signals"):
+            reason_suffix = (
+                f"intent `{profile['intent']}` alignment"
+                f" ({', '.join(str(sig) for sig in alignment['matched_signals'][:3])})"
+            )
+            base_reason = str(payload.get("retrieval_reason") or "").strip()
+            payload["retrieval_reason"] = f"{base_reason}; {reason_suffix}" if base_reason else reason_suffix
+        decorated.append(payload)
+
+    decorated.sort(
+        key=lambda row: (
+            float(row.get("intent_rank_score") or 0.0),
+            float(row.get("retrieval_confidence") or 0.0),
+            float(row.get("score") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    intent_name = str(profile.get("intent") or "general")
+    snippets: list[dict[str, Any]] = []
+    for row in decorated:
+        policy = row.get("context_policy") if isinstance(row.get("context_policy"), dict) else {}
+        if not bool(policy.get("eligible", True)):
+            continue
+        alignment = row.get("intent_alignment") if isinstance(row.get("intent_alignment"), dict) else {}
+        alignment_score = float(alignment.get("score") or 0.0)
+        page = row.get("page") if isinstance(row.get("page"), dict) else {}
+        page_type = normalize_search_text(page.get("page_type"))
+        section_key = normalize_search_text(row.get("section_key"))
+        if intent_name == "process":
+            if page_type != "process" and section_key not in {"steps", "triggers", "escalation", "verification"}:
+                continue
+            if alignment_score < 0.18:
+                continue
+        elif intent_name != "general" and alignment_score < 0.12:
+            continue
+
+        snippets.append(
+            {
+                "statement_id": row.get("statement_id"),
+                "statement_text": row.get("statement_text"),
+                "page_slug": page.get("slug"),
+                "page_title": page.get("title"),
+                "page_type": page.get("page_type"),
+                "section_key": row.get("section_key"),
+                "retrieval_confidence": row.get("retrieval_confidence"),
+                "intent_rank_score": row.get("intent_rank_score"),
+                "provenance": row.get("provenance") if isinstance(row.get("provenance"), dict) else None,
+            }
+        )
+        if len(snippets) >= normalized_max_snippets:
+            break
+
+    if not snippets:
+        # Fallback so callers always get context candidates when retrieval itself succeeded.
+        for row in decorated:
+            page = row.get("page") if isinstance(row.get("page"), dict) else {}
+            snippets.append(
+                {
+                    "statement_id": row.get("statement_id"),
+                    "statement_text": row.get("statement_text"),
+                    "page_slug": page.get("slug"),
+                    "page_title": page.get("title"),
+                    "page_type": page.get("page_type"),
+                    "section_key": row.get("section_key"),
+                    "retrieval_confidence": row.get("retrieval_confidence"),
+                    "intent_rank_score": row.get("intent_rank_score"),
+                    "provenance": row.get("provenance") if isinstance(row.get("provenance"), dict) else None,
+                }
+            )
+            if len(snippets) >= normalized_max_snippets:
+                break
+
+    explainability = {
+        "intent": intent_name,
+        "intent_source": str(profile.get("source") or "default"),
+        "intent_signals": list(profile.get("signals") or []),
+        "intent_scores": profile.get("scores") or {},
+        "max_context_snippets": normalized_max_snippets,
+        "selected_context_snippets": len(snippets),
+    }
+    return decorated, {"explainability": explainability, "context_snippets": snippets}

@@ -58,15 +58,19 @@ Environment:
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
 - `POST /v1/backfill/memory` (bulk historical memory ingestion with `batch_id` and status transitions)
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
+  - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
 - `GET /v1/adoption/source-ownership?project_id=...`
 - `PUT /v1/adoption/source-ownership`
 - `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
 - `GET /v1/wiki/pages/search?project_id=...&q=...` (includes `meta` debug payload: scope, filters, page/draft status counters)
 - `GET /v1/wiki/pages?project_id=...&status=published&updated_by=ops_manager&with_open_drafts=true&q=...&sort_by=activity&sort_dir=desc&limit=200&offset=0` (page index for wiki tree; includes draft counters per page, plus actor/open-draft filters)
 - `GET /v1/wiki/stats?project_id=...` (page/draft status counters and latest update timestamps)
+- `GET /v1/wiki/lifecycle/stats?project_id=...&stale_days=21&critical_days=45&stale_limit=20&space_key=operations` (lifecycle counters + stale page candidates for dashboards/diagnostics; optional `space_key` narrows scope for high-cardinality workspaces; response `meta` includes `searched_scope`, `filters_applied`, and `empty_scope` diagnostics with explanation codes `no_published|all_open_drafts|below_threshold`, details counters, and actionable `suggested_actions` hints)
+- `POST /v1/wiki/lifecycle/telemetry/snapshot` (ingest client-side empty-scope action counters by session; server computes monotonic deltas and updates daily telemetry aggregates)
+- `GET /v1/wiki/lifecycle/telemetry?project_id=...&days=7&action_key=create_page` (7/30/90-day action telemetry summary + daily trend for `empty_scope_action_shown` and `empty_scope_action_applied`; optional `action_key` filter for drill-down)
 - `GET /v1/wiki/routing/metrics?project_id=...&window_days=30` (routing quality counters/rates: precision@1, manual reassign rate, new-page false positives, conflict/ambiguity rates)
 - `GET /v1/wiki/routing/recommendations?project_id=...&window_days=30` (threshold tuning recommendations for `threshold_mid` / `new_page_margin` / `ambiguity_gap`)
-- `GET /v1/mcp/retrieval/explain?project_id=...&q=...&limit=10&related_entity_key=...&context_policy_mode=enforced&min_retrieval_confidence=0.45` (MCP-compatible retrieval diagnostics with score/confidence breakdown, reason traces, and context-injection policy controls)
+- `GET /v1/mcp/retrieval/explain?project_id=...&q=...&limit=10&related_entity_key=...&retrieval_intent=process&max_context_snippets=3&context_policy_mode=enforced&min_retrieval_confidence=0.45` (MCP-compatible retrieval diagnostics with score/confidence breakdown, intent-aware ranking, top-k context injection snippets, per-result provenance links to claim evidence/tickets, and context-policy controls)
 - `POST /v1/mcp/retrieval/feedback` (runtime usefulness feedback for retrieved context; positive/negative/neutral)
 - `GET /v1/mcp/retrieval/feedback/stats?project_id=...&days=30` (feedback aggregates by claim for policy tuning)
 - `POST /v1/wiki/pages` (guided/manual page create with initial version + optional sections/statements from markdown)
@@ -88,6 +92,8 @@ Environment:
 - `POST /v1/wiki/pages/{slug}/review-assignments/{assignment_id}/resolve`
 - `GET /v1/wiki/spaces/{space_key}/policy?project_id=...`
 - `PUT /v1/wiki/spaces/{space_key}/policy`
+- `GET /v1/wiki/spaces/{space_key}/policy/audit?project_id=...&limit=40` (space policy change timeline: who changed what and when)
+- `GET /v1/wiki/spaces/{space_key}/policy/adoption-summary?project_id=...&limit=200` (who-updates/cadence/checklist-usage aggregate over policy audit events)
 - `GET /v1/wiki/spaces/{space_key}/owners?project_id=...`
 - `PUT /v1/wiki/spaces/{space_key}/owners`
 - `GET /v1/wiki/pages/{slug}/owners?project_id=...`
@@ -101,11 +107,29 @@ Environment:
 - `GET /v1/wiki/pages/{slug}?project_id=...`
 - `GET /v1/wiki/pages/{slug}/history?project_id=...&limit=20&include_markdown=true`
 - `PUT /v1/wiki/pages/{slug}/rollback` (create new page version from a selected historical version; keeps audit trail)
+- `POST /v1/wiki/process/simulate` (pre-publish process safety simulation: impact scan + risk tier + suggested publish mode + rollback hints)
+- `PUT /v1/wiki/pages/{slug}` publish path now supports `confirm_high_risk_publish=true`; when process simulation detects blocking risk, API returns `409 publish_blocked_by_process_simulation` until explicit confirmation.
 - `GET /v1/wiki/drafts?project_id=...&status=pending_review`
-- `GET /v1/wiki/drafts/{draft_id}?project_id=...`
+- `GET /v1/wiki/drafts/{draft_id}?project_id=...` (includes normalized `gatekeeper` summary: tier/score, LLM reason-code, routing hard-block flags)
 - `GET /v1/wiki/drafts/{draft_id}/conflicts/explain?project_id=...` (MCP `explain_conflicts` compatible enrichment for UI conflict resolver)
+- `GET /v1/wiki/drafts/bootstrap-approve/recommendation?project_id=...` (server-side migration preset with trusted-source defaults + queue/backfill quality diagnostics)
 - `POST /v1/wiki/auto-publish/run` (policy-driven auto-approve runner for eligible drafts; supports `dry_run`)
+  - includes ticket/outcome-aware prioritization (`ticket_outcome_signal`, `effective_score`, `effective_min_sources`) so resolved incident evidence can be promoted faster than raw low-signal drafts.
 - `POST /v1/wiki/drafts/bootstrap-approve/run` (trusted-source migration helper: confidence/conflict/source-gated bootstrap; apply path enforces trusted sources and soft batch cap unless explicitly overridden)
+- `GET /v1/agents?project_id=...&status=active&team=Support` (agent directory listing with status/team summaries)
+- `GET /v1/agents/orgchart?project_id=...&include_handoffs=true` (graph-ready orgchart payload: nodes + optional handoff edges + team groups)
+- `POST /v1/agents/register` (upsert agent profile and sync Confluence-like agent wiki scaffold: `agents/index`, per-agent folder + `overview/runbooks/daily-reports/created-pages/incidents/changelog`)
+- `GET /v1/agents/publish-policy?project_id=...&agent_id=support_bot` (agent-level publish guardrails by domain/page type)
+- `PUT /v1/agents/publish-policy` (upsert guardrails; `human_required` blocks direct publish and requires review-first status flow)
+- `POST /v1/agents/worklogs/sync` (generate per-agent daily worklogs from runtime/task activity and refresh `daily-reports` wiki pages; supports `timezone`, `include_idle_days`, `min_activity_score`, and trigger metadata `trigger_mode/trigger_reason` for daily batch + realtime close-signal flows)
+- `GET /v1/agents/capability-matrix?project_id=...&min_confidence=0.4` (agent capability view with confidence and evidence links from recent worklogs)
+- `POST /v1/agents/capability-matrix/sync` (publish capability matrix into wiki page `agents/capability-matrix`)
+- `GET /v1/agents/handoffs?project_id=...` (inter-agent handoff graph with input/output contracts and SLA fields)
+- `POST /v1/agents/handoffs/sync` (publish handoff map into wiki page `agents/handoffs`)
+- `GET /v1/agents/scorecards?project_id=...&lookback_days=14` (agent quality/reliability scorecards from rolling worklog + task posture)
+- `POST /v1/agents/scorecards/sync` (publish scorecards into wiki page `agents/scorecards`)
+- `GET /v1/agents/provenance?project_id=...&agent_id=support_bot&limit=100` (agent-authored wiki activity feed with rollback readiness metadata)
+- `POST /v1/agents/provenance/{activity_id}/rollback` (one-click rollback of latest agent-authored page update to the previous version)
 - `GET /v1/wiki/moderation/throughput?project_id=...&window_hours=24&top_reviewers=5` (core moderation throughput/backlog/latency analytics)
 - `POST /v1/wiki/drafts/{draft_id}/approve`
 - `POST /v1/wiki/drafts/{draft_id}/reject`
@@ -113,7 +137,7 @@ Environment:
 - `GET /v1/gatekeeper/decisions?project_id=...&tier=golden_candidate`
 - `GET /v1/gatekeeper/config?project_id=...`
 - `PUT /v1/gatekeeper/config`
-- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, deny keywords for category/source-system/source-type/entity/source_id, durable knowledge-signal thresholds, assertion-class publish-mode map, retrieval-feedback guardrails, minimum independent evidence rules, and backfill policy gating before wiki routing).
+- Gatekeeper config supports `routing_policy` (event-stream/telemetry demotion, deny keywords for category/source-system/source-type/entity/source_id, durable knowledge-signal thresholds, optional backfill LLM classifier mode `off|assist|enforce` with confidence threshold, assertion-class publish-mode map, retrieval-feedback guardrails, auto-publish risk tiers for legal/financial changes, process-simulation publish gate controls, minimum independent evidence rules, and backfill policy gating before wiki routing).
 - `GET /v1/gatekeeper/config/snapshots?project_id=...&source=calibration_cycle&limit=20`
 - `POST /v1/gatekeeper/config/snapshots`
 - `GET /v1/gatekeeper/calibration/trends?project_id=...&limit=24`
@@ -176,6 +200,8 @@ Environment:
 - `GET /v1/intelligence/delivery/attempts?project_id=...&kind=daily|weekly|incident_escalation_daily`
 - `GET /v1/legacy-import/sources?project_id=...`
 - `GET /v1/legacy-import/profiles?source_type=postgres_sql`
+- `GET /v1/legacy-import/mapper-templates?source_type=postgres_sql&profile=ops_kb_items`
+- `GET /v1/legacy-import/sync-contracts?source_type=postgres_sql&profile=ops_kb_items`
 - `PUT /v1/legacy-import/sources`
 - `POST /v1/legacy-import/sources/{source_id}/sync`
 - `GET /v1/legacy-import/runs?project_id=...`
@@ -186,6 +212,8 @@ Legacy source types for `PUT /v1/legacy-import/sources`:
 - `notion_database`
 - `postgres_sql`:
   - profile-driven pull for common schemas (`sql_profile=ops_kb_items|memory_items|auto`) without custom importer scripts;
+  - reusable mapper templates (`/v1/legacy-import/mapper-templates`) with ready `config_patch` payloads by profile/sync-mode;
+  - explicit sync runner contracts (`/v1/legacy-import/sync-contracts`) for cron/CDC services (required config + state keys + scheduler cadence);
   - query-based pull from existing Postgres memory schema (`sql_sync_mode=polling`);
   - low-latency logical-slot ingestion (`sql_sync_mode=wal_cdc`).
 - `POST /v1/simulator/runs`
@@ -334,4 +362,6 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Backfill dedup uses deterministic event id per `batch_id + source_id`; keep `source_id` stable and unique inside a batch.
 - `/v1/events` accepts optional tracing fields (`trace_id`, `span_id`, `parent_span_id`) and stores them in payload metadata (`_synapse.*`).
 - `GET /v1/wiki/pages/{slug}` returns only currently valid active statements (`valid_from <= now <= valid_to`, with open bounds support).
+- `GET /v1/wiki/onboarding-pack?project_id=...&role=support&max_items_per_section=5&freshness_days=14` (day-0 role pack with critical playbooks/escalations/forbidden actions/fresh changes).
+- lifecycle telemetry integration smoke (real API + Postgres schema): `python3 scripts/integration_lifecycle_telemetry.py` (set `DATABASE_URL` as needed).
 - Apply all migrations from repo root via `./scripts/apply_migrations.sh`.

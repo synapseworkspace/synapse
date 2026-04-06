@@ -63,7 +63,7 @@ export class HttpTransport implements SynapseTransport {
   async requestJson<T = Record<string, unknown>>(
     path: string,
     options: {
-      method?: "GET" | "POST";
+      method?: "GET" | "POST" | "PUT";
       payload?: unknown;
       params?: Record<string, string | number | boolean | null | undefined>;
       idempotencyKey?: string;
@@ -89,7 +89,7 @@ export class HttpTransport implements SynapseTransport {
   private async requestWithRetry(
     path: string,
     options: {
-      method: "GET" | "POST";
+      method: "GET" | "POST" | "PUT";
       payload?: unknown;
       params?: Record<string, string | number | boolean | null | undefined>;
       idempotencyKey?: string;
@@ -134,7 +134,7 @@ export class HttpTransport implements SynapseTransport {
   private async fetchWithTimeout(
     path: string,
     options: {
-      method: "GET" | "POST";
+      method: "GET" | "POST" | "PUT";
       payload?: unknown;
       params?: Record<string, string | number | boolean | null | undefined>;
       idempotencyKey?: string;

@@ -1,6 +1,6 @@
 # OpenClaw Quickstart (5 Minutes)
 
-Last updated: 2026-04-02
+Last updated: 2026-04-04
 
 Goal: connect OpenClaw runtime to Synapse and generate first wiki draft from real/seeded memory.
 
@@ -12,17 +12,28 @@ Goal: connect OpenClaw runtime to Synapse and generate first wiki draft from rea
 
 ## 1. Install SDK
 
-Current status (as of April 3, 2026): registry packages are not published yet.
-Use repo-local install path:
+Use registry install by default:
+
+```bash
+pip install synapseworkspace-sdk
+```
+
+If you are developing inside this monorepo, editable install is also valid:
 
 ```bash
 pip install -e packages/synapse-sdk-py
 ```
 
-After first public release, you can switch to:
+Source fallback (if registry propagation is still in progress):
 
 ```bash
-pip install synapseworkspace-sdk
+pip install "git+https://github.com/synapseworkspace/synapse.git#subdirectory=packages/synapse-sdk-py"
+```
+
+Optional registry check:
+
+```bash
+python3 scripts/check_registry_package_availability.py --require-available
 ```
 
 ## 2. Attach Synapse To OpenClaw

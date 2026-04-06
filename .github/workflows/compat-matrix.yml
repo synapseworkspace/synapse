@@ -41,6 +41,67 @@ jobs:
           print("python sdk compat smoke ok")
           PY
 
+      - name: Python SDK lifecycle helper smoke
+        run: |
+          python - <<'PY'
+          from synapse_sdk.client import Synapse
+          from synapse_sdk.types import SynapseConfig
+
+          class DummyTransport:
+              def send_events(self, events, *, idempotency_key=None):
+                  return None
+              def propose_fact(self, claim, *, idempotency_key=None):
+                  return None
+              def ingest_memory_backfill(self, payload, *, idempotency_key=None):
+                  return None
+              def request_json(self, path, *, method="GET", payload=None, params=None, idempotency_key=None):
+                  return {"path": path, "method": method, "payload": payload, "params": params}
+
+          client = Synapse(
+              SynapseConfig(api_url="http://localhost:8080", project_id="compat_matrix"),
+              transport=DummyTransport(),
+          )
+          stats = client.get_wiki_lifecycle_stats(stale_days=30, critical_days=60, stale_limit=12, space_key="ops")
+          assert stats["path"] == "/v1/wiki/lifecycle/stats"
+          assert stats["params"]["space_key"] == "ops"
+          telemetry = client.get_wiki_lifecycle_telemetry(days=14, action_key="Create Page")
+          assert telemetry["path"] == "/v1/wiki/lifecycle/telemetry"
+          assert telemetry["params"]["action_key"] == "create_page"
+          snapshot = client.snapshot_wiki_lifecycle_telemetry(
+              session_id="compat-session",
+              empty_scope_action_shown={"Create Page": 2},
+              empty_scope_action_applied={"Create Page": 1},
+          )
+          assert snapshot["path"] == "/v1/wiki/lifecycle/telemetry/snapshot"
+          profiles = client.list_legacy_import_profiles(source_type="postgres_sql")
+          assert profiles["path"] == "/v1/legacy-import/profiles"
+          assert profiles["params"]["source_type"] == "postgres_sql"
+          mapper_templates = client.list_legacy_import_mapper_templates(source_type="postgres_sql", profile="ops_kb_items")
+          assert mapper_templates["path"] == "/v1/legacy-import/mapper-templates"
+          assert mapper_templates["params"]["profile"] == "ops_kb_items"
+          sync_contracts = client.list_legacy_import_sync_contracts(source_type="postgres_sql")
+          assert sync_contracts["path"] == "/v1/legacy-import/sync-contracts"
+          sources = client.list_legacy_import_sources(enabled=True, limit=20)
+          assert sources["path"] == "/v1/legacy-import/sources"
+          assert sources["params"]["enabled"] == "true"
+          upsert = client.upsert_legacy_import_source(
+              source_type="postgres_sql",
+              source_ref="compat_hw_memory",
+              updated_by="compat_ci",
+              sync_interval_minutes=5,
+              config={"sql_profile": "ops_kb_items"},
+          )
+          assert upsert["path"] == "/v1/legacy-import/sources"
+          queued = client.queue_legacy_import_source_sync("compat-source", requested_by="compat_ci")
+          assert queued["path"] == "/v1/legacy-import/sources/compat-source/sync"
+          runs = client.list_legacy_import_sync_runs(source_id="compat-source", status="running", limit=5)
+          assert runs["path"] == "/v1/legacy-import/runs"
+          assert runs["params"]["source_id"] == "compat-source"
+          recommendation = client.get_bootstrap_migration_recommendation()
+          assert recommendation["path"] == "/v1/wiki/drafts/bootstrap-approve/recommendation"
+          print("python sdk lifecycle helper smoke ok")
+          PY
+
       - name: Python CLI surface smoke
         run: |
           python -m synapse_sdk.cli --help > /dev/null
@@ -86,4 +147,82 @@ jobs:
             throw new Error("Missing context policy profiles");
           }
           console.log("node sdk compat smoke ok");
+          JS
+
+      - name: Node SDK lifecycle helper smoke
+        run: |
+          node --input-type=module - <<'JS'
+          import { Synapse } from "./packages/synapse-sdk-ts/dist/index.js";
+
+          class DummyTransport {
+            async sendEvents() {}
+            async proposeFact() {}
+            async ingestMemoryBackfill() {}
+            async requestJson(path, options = {}) {
+              return { path, method: options.method || "GET", params: options.params || null, payload: options.payload || null };
+            }
+          }
+
+          const client = new Synapse(
+            { apiUrl: "http://localhost:8080", projectId: "compat_matrix" },
+            new DummyTransport()
+          );
+          const stats = await client.getWikiLifecycleStats({ staleDays: 30, criticalDays: 60, staleLimit: 12, spaceKey: "ops" });
+          if (stats.path !== "/v1/wiki/lifecycle/stats" || stats.params?.space_key !== "ops") {
+            throw new Error(`unexpected lifecycle stats payload: ${JSON.stringify(stats)}`);
+          }
+          const telemetry = await client.getWikiLifecycleTelemetry({ days: 14, actionKey: "Create Page" });
+          if (telemetry.path !== "/v1/wiki/lifecycle/telemetry" || telemetry.params?.action_key !== "create_page") {
+            throw new Error(`unexpected lifecycle telemetry payload: ${JSON.stringify(telemetry)}`);
+          }
+          const snapshot = await client.snapshotWikiLifecycleTelemetry({
+            sessionId: "compat-session",
+            emptyScopeActionShown: { "Create Page": 2 },
+            emptyScopeActionApplied: { "Create Page": 1 }
+          });
+          if (snapshot.path !== "/v1/wiki/lifecycle/telemetry/snapshot") {
+            throw new Error(`unexpected lifecycle snapshot payload: ${JSON.stringify(snapshot)}`);
+          }
+          const profiles = await client.listLegacyImportProfiles({ sourceType: "postgres_sql" });
+          if (profiles.path !== "/v1/legacy-import/profiles" || profiles.params?.source_type !== "postgres_sql") {
+            throw new Error(`unexpected legacy profiles payload: ${JSON.stringify(profiles)}`);
+          }
+          const templates = await client.listLegacyImportMapperTemplates({
+            sourceType: "postgres_sql",
+            profile: "ops_kb_items"
+          });
+          if (templates.path !== "/v1/legacy-import/mapper-templates" || templates.params?.profile !== "ops_kb_items") {
+            throw new Error(`unexpected legacy mapper templates payload: ${JSON.stringify(templates)}`);
+          }
+          const contracts = await client.listLegacyImportSyncContracts({ sourceType: "postgres_sql" });
+          if (contracts.path !== "/v1/legacy-import/sync-contracts") {
+            throw new Error(`unexpected legacy sync contracts payload: ${JSON.stringify(contracts)}`);
+          }
+          const sources = await client.listLegacyImportSources({ enabled: true, limit: 20 });
+          if (sources.path !== "/v1/legacy-import/sources" || sources.params?.enabled !== true) {
+            throw new Error(`unexpected legacy sources payload: ${JSON.stringify(sources)}`);
+          }
+          const upsert = await client.upsertLegacyImportSource({
+            sourceType: "postgres_sql",
+            sourceRef: "compat_hw_memory",
+            updatedBy: "compat_ci",
+            syncIntervalMinutes: 5,
+            config: { sql_profile: "ops_kb_items" }
+          });
+          if (upsert.path !== "/v1/legacy-import/sources") {
+            throw new Error(`unexpected legacy upsert payload: ${JSON.stringify(upsert)}`);
+          }
+          const queued = await client.queueLegacyImportSourceSync({ sourceId: "compat-source", requestedBy: "compat_ci" });
+          if (queued.path !== "/v1/legacy-import/sources/compat-source/sync") {
+            throw new Error(`unexpected legacy sync queue payload: ${JSON.stringify(queued)}`);
+          }
+          const runs = await client.listLegacyImportSyncRuns({ sourceId: "compat-source", status: "running", limit: 5 });
+          if (runs.path !== "/v1/legacy-import/runs" || runs.params?.source_id !== "compat-source") {
+            throw new Error(`unexpected legacy runs payload: ${JSON.stringify(runs)}`);
+          }
+          const recommendation = await client.getBootstrapMigrationRecommendation();
+          if (recommendation.path !== "/v1/wiki/drafts/bootstrap-approve/recommendation") {
+            throw new Error(`unexpected bootstrap recommendation payload: ${JSON.stringify(recommendation)}`);
+          }
+          console.log("node sdk lifecycle helper smoke ok");
           JS

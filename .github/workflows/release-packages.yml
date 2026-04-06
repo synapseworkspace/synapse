@@ -12,6 +12,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.resolve_version.outputs.version }}
     permissions:
       contents: read
       id-token: write
@@ -32,6 +34,12 @@ jobs:
 
       - name: Validate package versions
         run: python3 scripts/check_release_versions.py
+
+      - name: Resolve release version
+        id: resolve_version
+        run: |
+          VERSION="$(python3 scripts/check_release_versions.py | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Validate publish hygiene
         run: python3 scripts/check_publish_hygiene.py
@@ -72,8 +80,76 @@ jobs:
           path: dist/npm/*
           if-no-files-found: error
 
-  publish-pypi:
+  verify-artifact-install-matrix:
     needs: build
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Download Python artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/python
+
+      - name: Download npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-dist
+          path: dist/npm
+
+      - name: Verify Python install from local release artifacts
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install dist/python/*.whl
+          python3 - <<'PY'
+          import json
+          from synapse_sdk import Synapse
+          print(json.dumps({"status": "ok", "class": Synapse.__name__}))
+          PY
+
+      - name: Verify npm install from local release artifacts
+        run: |
+          mkdir -p /tmp/synapse-npm-artifact-check
+          cd /tmp/synapse-npm-artifact-check
+          npm init -y >/dev/null 2>&1
+          npm install "${GITHUB_WORKSPACE}"/dist/npm/*.tgz >/dev/null
+          npm ls @synapseworkspace/sdk @synapseworkspace/schema @synapseworkspace/openclaw-plugin >/dev/null
+          test -f node_modules/@synapseworkspace/schema/schemas/v1/observation-event.schema.json
+          node --input-type=module - <<'JS'
+          import * as sdk from "@synapseworkspace/sdk";
+          import * as plugin from "@synapseworkspace/openclaw-plugin";
+          if (!sdk || !plugin) {
+            throw new Error("package import check failed");
+          }
+          console.log(JSON.stringify({
+            status: "ok",
+            sdkExports: Object.keys(sdk).length,
+            pluginExports: Object.keys(plugin).length,
+          }));
+          JS
+
+  publish-pypi:
+    needs:
+      - build
+      - verify-artifact-install-matrix
     if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -94,7 +170,9 @@ jobs:
           attestations: true
 
   publish-npm:
-    needs: build
+    needs:
+      - build
+      - verify-artifact-install-matrix
     if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -129,6 +207,194 @@ jobs:
           for pkg in dist/npm/*.tgz; do
             npm publish "$pkg" --access public --provenance
           done
+
+  verify-registry:
+    needs:
+      - build
+      - publish-pypi
+      - publish-npm
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify package availability on registries
+        run: |
+          mkdir -p artifacts/release
+          python3 scripts/check_registry_package_availability.py \
+            --require-available \
+            --expected-version "${{ needs.build.outputs.release_version }}" \
+            --attempts 18 \
+            --retry-delay-seconds 15 \
+            --output-json artifacts/release/registry-availability.json
+
+      - name: Upload registry verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-availability
+          path: artifacts/release/registry-availability.json
+          if-no-files-found: error
+
+  verify-install-matrix:
+    needs:
+      - build
+      - verify-registry
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify clean-room Python install
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "synapseworkspace-sdk==${{ needs.build.outputs.release_version }}"
+          python3 - <<'PY'
+          import json
+          from synapse_sdk import Synapse
+          payload = {
+              "status": "ok",
+              "class": Synapse.__name__,
+          }
+          print(json.dumps(payload))
+          PY
+
+      - name: Verify clean-room npm install
+        run: |
+          mkdir -p /tmp/synapse-npm-install-check
+          cd /tmp/synapse-npm-install-check
+          npm init -y >/dev/null 2>&1
+          npm install \
+            "@synapseworkspace/sdk@${{ needs.build.outputs.release_version }}" \
+            "@synapseworkspace/schema@${{ needs.build.outputs.release_version }}" \
+            "@synapseworkspace/openclaw-plugin@${{ needs.build.outputs.release_version }}" >/dev/null
+          npm ls @synapseworkspace/sdk @synapseworkspace/schema @synapseworkspace/openclaw-plugin >/dev/null
+          test -f node_modules/@synapseworkspace/schema/schemas/v1/observation-event.schema.json
+          node --input-type=module - <<'JS'
+          import * as sdk from "@synapseworkspace/sdk";
+          import * as plugin from "@synapseworkspace/openclaw-plugin";
+          if (!sdk || !plugin) {
+            throw new Error("package import check failed");
+          }
+          console.log(JSON.stringify({
+            status: "ok",
+            sdkExports: Object.keys(sdk).length,
+            pluginExports: Object.keys(plugin).length,
+          }));
+          JS
+
+  release-evidence-pack:
+    needs:
+      - build
+      - verify-registry
+      - verify-install-matrix
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download registry verification report
+        uses: actions/download-artifact@v4
+        with:
+          name: registry-availability
+          path: artifacts/release
+
+      - name: Build release evidence bundle
+        run: |
+          python3 scripts/generate_release_evidence_bundle.py \
+            --version "${{ needs.build.outputs.release_version }}" \
+            --registry-report artifacts/release/registry-availability.json \
+            --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --output-md artifacts/release/release-evidence.md \
+            --output-json artifacts/release/release-evidence.json
+
+      - name: Upload release evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: |
+            artifacts/release/release-evidence.md
+            artifacts/release/release-evidence.json
+          if-no-files-found: error
+
+  create-release-draft:
+    needs:
+      - build
+      - release-evidence-pack
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release evidence bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-evidence
+          path: artifacts/release
+
+      - name: Compose GitHub release body
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release
+          BODY_PATH="artifacts/release/github-release-body.md"
+          VERSION_TAG="v${RELEASE_VERSION}"
+          RELEASE_NOTES_FILE="docs/releases/${VERSION_TAG}.md"
+          {
+            if [[ -f "$RELEASE_NOTES_FILE" ]]; then
+              cat "$RELEASE_NOTES_FILE"
+              echo
+              echo "---"
+              echo
+            fi
+            cat artifacts/release/release-evidence.md
+          } >"$BODY_PATH"
+          test -s "$BODY_PATH"
+
+      - name: Create or update GitHub draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.release_version }}
+          draft: true
+          prerelease: false
+          generate_release_notes: false
+          body_path: artifacts/release/github-release-body.md
 
   publish-disabled-note:
     needs: build

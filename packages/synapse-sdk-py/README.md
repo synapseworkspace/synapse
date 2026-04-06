@@ -258,6 +258,55 @@ synapse.link_task(task_id, created_by="ops_manager", link=TaskLink(link_type="dr
 
 Helpers map to core Task API endpoints (`/v1/tasks*`) with idempotent writes.
 
+## Wiki Space Policy Helpers
+
+```python
+# Read current policy for a wiki space
+policy = synapse.get_wiki_space_policy("operations")
+print(policy["policy"]["metadata"].get("publish_checklist_preset"))
+
+# Update only checklist preset while preserving write/comment/review policy fields
+synapse.set_wiki_space_publish_checklist_preset(
+    space_key="operations",
+    preset="ops_standard",  # none | ops_standard | policy_strict
+    updated_by="ops_admin",
+    reason="Enable standard publish checklist for support rollout",
+)
+
+# Read policy audit history
+audit = synapse.list_wiki_space_policy_audit("operations", limit=20)
+print(len(audit.get("entries", [])))
+```
+
+These helpers map to `/v1/wiki/spaces/{space_key}/policy*` and are safe for programmatic governance automation.
+
+## Wiki Lifecycle Telemetry Helpers
+
+```python
+# Read stale-page diagnostics (same contract as /v1/wiki/lifecycle/stats)
+lifecycle_stats = synapse.get_wiki_lifecycle_stats(
+    stale_days=21,
+    critical_days=45,
+    stale_limit=20,
+    space_key="operations",
+)
+print(lifecycle_stats["counts"]["stale_warning_pages"])
+
+# Push monotonic per-session action counters (delta is computed server-side)
+synapse.snapshot_wiki_lifecycle_telemetry(
+    session_id="web-session-42",
+    empty_scope_action_shown={"create_page": 3, "review_open_drafts": 2},
+    empty_scope_action_applied={"create_page": 1},
+    source="wiki_ui",
+)
+
+# Pull 7-day telemetry summary (optionally filter by action key)
+telemetry = synapse.get_wiki_lifecycle_telemetry(days=7, action_key="create_page")
+print(telemetry["summary"]["apply_rate"])
+```
+
+These helpers map to `/v1/wiki/lifecycle/stats` and `/v1/wiki/lifecycle/telemetry*`.
+
 ## MCP Context Injection Helper
 
 ```python
@@ -346,6 +395,51 @@ synapse.attach(
 )
 ```
 
+## Legacy Memory Sync (No Custom Importer)
+
+```python
+# Optional: fetch server-side safe migration defaults for draft bootstrap
+preset = synapse.get_bootstrap_migration_recommendation()
+print(preset["recommended"])
+
+# 1) inspect built-in SQL profiles
+profiles = synapse.list_legacy_import_profiles(source_type="postgres_sql")
+
+# 2) fetch template + sync contract (cron/CDC friendly)
+templates = synapse.list_legacy_import_mapper_templates(
+    source_type="postgres_sql",
+    profile="ops_kb_items",
+)
+contracts = synapse.list_legacy_import_sync_contracts(source_type="postgres_sql")
+
+template = templates["templates"][0]
+print(template["runner_contract_key"])
+print(contracts["contracts"][0]["runner"]["scheduler_script"])
+
+# 3) register reusable source config
+source = synapse.upsert_legacy_import_source(
+    source_type="postgres_sql",
+    source_ref="hw_memory",
+    updated_by="ops_admin",
+    sync_interval_minutes=5,
+    config={
+        "sql_dsn_env": "HW_MEMORY_DSN",
+        "sql_profile": "ops_kb_items",
+        "max_records": 5000,
+        "chunk_size": 100,
+    },
+)
+
+source_id = source["source"]["id"]
+
+# 4) queue sync run and check history
+synapse.queue_legacy_import_source_sync(source_id, requested_by="ops_admin")
+runs = synapse.list_legacy_import_sync_runs(source_id=source_id, limit=20)
+print(runs["runs"][0]["status"])
+```
+
+This maps to `/v1/legacy-import/*` and is intended to replace project-specific one-off import scripts with reusable profile/template contracts.
+
 ## Cookbook Examples
 
 See runnable scenarios in:
@@ -379,4 +473,24 @@ synapse-cli connect openclaw --dir . --env-file .env.synapse
 
 ```bash
 synapse-cli adopt --dir . --memory-system ops_kb_items --memory-source hybrid --adoption-mode observe_only --sample-file ./memory_export.jsonl
+```
+
+```bash
+synapse-cli wiki-space-policy get --api-url http://localhost:8080 --project-id omega_demo --space-key operations
+```
+
+```bash
+synapse-cli wiki-space-policy set-checklist-preset --api-url http://localhost:8080 --project-id omega_demo --space-key operations --updated-by ops_admin --preset ops_standard --reason "Support rollout baseline"
+```
+
+```bash
+synapse-cli wiki-lifecycle stale --api-url http://localhost:8080 --project-id omega_demo --space operations --preset stale_21 --limit 20
+```
+
+```bash
+synapse-cli wiki-lifecycle telemetry --api-url http://localhost:8080 --project-id omega_demo --days 7 --top 5
+```
+
+```bash
+synapse-cli wiki-lifecycle open-drafts --project-id omega_demo --page-slug operations/customer-onboarding
 ```

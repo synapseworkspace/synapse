@@ -35,20 +35,27 @@ python3 -m py_compile scripts/calibrate_gatekeeper_llm_thresholds.py
 python3 -m py_compile scripts/integration_openclaw_mcp_runtime.py
 python3 -m py_compile scripts/integration_openclaw_runtime_contract.py
 python3 -m py_compile scripts/integration_core_loop.py
+python3 -m py_compile scripts/integration_lifecycle_telemetry.py
 python3 -m py_compile scripts/check_queue_governance_policy.py
 python3 -m py_compile scripts/check_release_versions.py
+python3 -m py_compile scripts/generate_release_evidence_bundle.py
 python3 -m py_compile scripts/check_publish_hygiene.py
 python3 -m py_compile scripts/generate_sdk_api_reference.py
 python3 -m py_compile scripts/check_repo_hygiene.py
+python3 -m py_compile scripts/check_registry_package_availability.py
 python3 -m py_compile scripts/run_performance_tuning_advisor.py
 python3 -m py_compile scripts/verify_openclaw_provenance.py
 python3 -m py_compile scripts/smoke_openclaw_provenance_verification.py
 python3 -m py_compile scripts/check_mcp_api_retrieval_parity.py
 python3 -m py_compile scripts/eval_legacy_seed_regression.py
 python3 -m py_compile scripts/check_openclaw_docs_canonical.py
+python3 -m py_compile scripts/check_operations_runbook_parity.py
 python3 -m py_compile scripts/check_cookbook_snapshots.py
 python3 -m py_compile scripts/check_framework_adapter_contracts.py
 python3 -m py_compile scripts/check_framework_native_bindings.py
+python3 -m py_compile scripts/check_framework_quickstart_parity.py
+python3 -m py_compile scripts/benchmark_agentic_onboarding.py
+python3 -m py_compile scripts/check_positioning_consistency.py
 python3 -m py_compile scripts/check_core_slo_guardrails.py
 python3 -m py_compile scripts/check_operational_slo_guardrails.py
 python3 -m py_compile scripts/capture_operational_slo_snapshots.py
@@ -362,8 +369,22 @@ python3 scripts/check_repo_hygiene.py >/dev/null
 echo "[4.5/6] OpenClaw docs canonical references"
 python3 scripts/check_openclaw_docs_canonical.py >/dev/null
 
+echo "[4.51/6] Framework quickstart parity"
+python3 scripts/check_framework_quickstart_parity.py >/dev/null
+
 echo "[4.55/6] Self-hosted stack defaults and docs consistency"
 python3 scripts/check_selfhost_stack_defaults.py >/dev/null
+
+echo "[4.57/6] Agentic onboarding benchmark guardrails"
+python3 scripts/benchmark_agentic_onboarding.py \
+  --scenario all \
+  --summary-only \
+  --min-balanced-useful-rate 0.40 \
+  --max-balanced-first-approved-minutes 40 \
+  --min-balanced-published-new 4 >/dev/null
+
+echo "[4.58/6] Positioning consistency (Agentic Wiki + L2)"
+python3 scripts/check_positioning_consistency.py >/dev/null
 
 echo "[4.6/6] Release error-budget policy gate"
 python3 scripts/check_release_error_budget.py \
@@ -384,10 +405,23 @@ python3 scripts/run_reliability_drills.py \
   --degraded-ingest-events-max 0 \
   --degraded-ingest-p99-min-ms 3000 >/dev/null
 
+echo "[4.8/6] Lifecycle telemetry integration smoke (optional)"
+if [[ "${SYNAPSE_RUN_DB_INTEGRATION:-0}" == "1" ]]; then
+  python3 scripts/integration_lifecycle_telemetry.py --request-timeout 10 >/dev/null
+else
+  echo "lifecycle telemetry integration skipped (SYNAPSE_RUN_DB_INTEGRATION=0)"
+fi
+
 echo "[5/6] Python monitor/openclaw smoke (offline)"
-python3 -m venv /tmp/synapse-ci-venv
-source /tmp/synapse-ci-venv/bin/activate
-pip install -q requests mcp
+SYNAPSE_CI_VENV="${SYNAPSE_CI_VENV:-/tmp/synapse-ci-venv}"
+rm -rf "$SYNAPSE_CI_VENV"
+python3 -m venv "$SYNAPSE_CI_VENV"
+source "$SYNAPSE_CI_VENV/bin/activate"
+if ! python -m pip --version >/dev/null 2>&1; then
+  python -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+python -m pip install -q --upgrade pip
+python -m pip install -q requests mcp
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python - <<'PY'
 import os
 from synapse_sdk import (
@@ -1813,6 +1847,9 @@ python3 scripts/verify_openclaw_provenance.py --help >/dev/null
 ./scripts/run_oss_rc_dress_rehearsal.sh --help >/dev/null
 ./scripts/run_contributor_guardrails.sh --help >/dev/null
 ./scripts/run_selfhost_dr_ci_acceptance.sh --help >/dev/null
+
+echo "[5.885/6] Operations route runbook parity"
+python3 scripts/check_operations_runbook_parity.py --path docs/operations-route-runbook.md
 
 echo "[5.89/6] Queue governance policy assertions"
 python3 scripts/check_queue_governance_policy.py \

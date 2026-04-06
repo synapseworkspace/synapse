@@ -3,6 +3,7 @@ import { HttpTransport } from "./transports/http.js";
 import { buildOpenClawBootstrapOptions } from "./openclaw.js";
 import type {
   AttachBootstrapMemoryOptions,
+  AgentProfileInput,
   AttachOptions,
   BindCrewAiOptions,
   BindLangChainOptions,
@@ -38,6 +39,10 @@ import type {
   TaskInput,
   TaskLinkInput,
   TaskStatus,
+  WikiPublishChecklistPreset,
+  WikiSpacePolicyAuditResponse,
+  WikiSpacePolicyMode,
+  WikiSpacePolicyResponse,
   TelemetrySink
 } from "./types.js";
 
@@ -467,6 +472,143 @@ export class SynapseClient {
     return batchId;
   }
 
+  async getBootstrapMigrationRecommendation(): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/drafts/bootstrap-approve/recommendation", {
+      method: "GET",
+      params: {
+        project_id: this.projectId
+      }
+    });
+  }
+
+  async listLegacyImportProfiles(options: {
+    sourceType?: "postgres_sql" | string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/legacy-import/profiles", {
+      method: "GET",
+      params: {
+        source_type: String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql"
+      }
+    });
+  }
+
+  async listLegacyImportMapperTemplates(options: {
+    sourceType?: "postgres_sql" | string;
+    profile?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/legacy-import/mapper-templates", {
+      method: "GET",
+      params: {
+        source_type: String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql",
+        profile: options.profile ? String(options.profile).trim() : undefined
+      }
+    });
+  }
+
+  async listLegacyImportSyncContracts(options: {
+    sourceType?: "postgres_sql" | string;
+    profile?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/legacy-import/sync-contracts", {
+      method: "GET",
+      params: {
+        source_type: String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql",
+        profile: options.profile ? String(options.profile).trim() : undefined
+      }
+    });
+  }
+
+  async listLegacyImportSources(options: {
+    enabled?: boolean;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/legacy-import/sources", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        enabled: typeof options.enabled === "boolean" ? options.enabled : undefined,
+        limit: normalizeInt(options.limit ?? 100, 1, 500)
+      }
+    });
+  }
+
+  async upsertLegacyImportSource(options: {
+    sourceType: "local_dir" | "notion_root_page" | "postgres_sql" | string;
+    sourceRef: string;
+    updatedBy: string;
+    enabled?: boolean;
+    syncIntervalMinutes?: number;
+    nextRunAt?: string | null;
+    config?: Record<string, unknown>;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const sourceType = String(options.sourceType ?? "").trim().toLowerCase();
+    const sourceRef = String(options.sourceRef ?? "").trim();
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!sourceType) {
+      throw new Error("sourceType is required");
+    }
+    if (!sourceRef) {
+      throw new Error("sourceRef is required");
+    }
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/legacy-import/sources", {
+      method: "PUT",
+      payload: {
+        project_id: this.projectId,
+        source_type: sourceType,
+        source_ref: sourceRef,
+        enabled: options.enabled ?? true,
+        sync_interval_minutes: normalizeInt(options.syncIntervalMinutes ?? 60, 1, 10080),
+        next_run_at: options.nextRunAt ?? null,
+        updated_by: updatedBy,
+        config: options.config ?? {}
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async queueLegacyImportSourceSync(options: {
+    sourceId: string;
+    requestedBy: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const sourceId = String(options.sourceId ?? "").trim();
+    const requestedBy = String(options.requestedBy ?? "").trim();
+    if (!sourceId) {
+      throw new Error("sourceId is required");
+    }
+    if (!requestedBy) {
+      throw new Error("requestedBy is required");
+    }
+    return this.requestJson<Record<string, unknown>>(`/v1/legacy-import/sources/${encodeURIComponent(sourceId)}/sync`, {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        requested_by: requestedBy
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async listLegacyImportSyncRuns(options: {
+    sourceId?: string;
+    status?: "queued" | "running" | "completed" | "failed" | "skipped" | string;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/legacy-import/runs", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        source_id: options.sourceId ? String(options.sourceId).trim() : undefined,
+        status: options.status ? String(options.status).trim().toLowerCase() : undefined,
+        limit: normalizeInt(options.limit ?? 100, 1, 500)
+      }
+    });
+  }
+
   async listTasks(options: {
     status?: TaskStatus;
     assignee?: string;
@@ -575,6 +717,429 @@ export class SynapseClient {
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
+  }
+
+  async listAgents(options: {
+    status?: "active" | "idle" | "paused" | "offline" | "retired";
+    team?: string;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        status: options.status,
+        team: options.team,
+        limit: normalizeInt(options.limit ?? 100, 1, 500)
+      }
+    });
+  }
+
+  async getAgentPublishPolicy(agentId: string): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/publish-policy", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        agent_id: agentId
+      }
+    });
+  }
+
+  async upsertAgentPublishPolicy(options: {
+    agentId: string;
+    updatedBy: string;
+    defaultMode?: "auto_publish" | "conditional" | "human_required";
+    byPageType?: Record<string, "auto_publish" | "conditional" | "human_required">;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/publish-policy", {
+      method: "PUT",
+      payload: {
+        project_id: this.projectId,
+        agent_id: options.agentId,
+        updated_by: options.updatedBy,
+        default_mode: options.defaultMode ?? "auto_publish",
+        by_page_type: options.byPageType ?? {}
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getWikiSpacePolicy(spaceKey: string): Promise<WikiSpacePolicyResponse> {
+    const normalizedSpaceKey = normalizeWikiSpaceKey(spaceKey);
+    return this.requestJson<WikiSpacePolicyResponse>(`/v1/wiki/spaces/${encodeURIComponent(normalizedSpaceKey)}/policy`, {
+      method: "GET",
+      params: {
+        project_id: this.projectId
+      }
+    });
+  }
+
+  async listWikiSpacePolicyAudit(
+    spaceKey: string,
+    options: {
+      limit?: number;
+    } = {}
+  ): Promise<WikiSpacePolicyAuditResponse> {
+    const normalizedSpaceKey = normalizeWikiSpaceKey(spaceKey);
+    return this.requestJson<WikiSpacePolicyAuditResponse>(`/v1/wiki/spaces/${encodeURIComponent(normalizedSpaceKey)}/policy/audit`, {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        limit: normalizeInt(options.limit ?? 40, 1, 200)
+      }
+    });
+  }
+
+  async upsertWikiSpacePolicy(
+    spaceKey: string,
+    options: {
+      updatedBy: string;
+      writeMode?: WikiSpacePolicyMode;
+      commentMode?: WikiSpacePolicyMode;
+      reviewAssignmentRequired?: boolean;
+      metadata?: Record<string, unknown>;
+      idempotencyKey?: string;
+    }
+  ): Promise<WikiSpacePolicyResponse> {
+    const normalizedSpaceKey = normalizeWikiSpaceKey(spaceKey);
+    const writeMode = normalizeWikiSpacePolicyMode(options.writeMode ?? "open");
+    const commentMode = normalizeWikiSpacePolicyMode(options.commentMode ?? "open");
+    return this.requestJson<WikiSpacePolicyResponse>(`/v1/wiki/spaces/${encodeURIComponent(normalizedSpaceKey)}/policy`, {
+      method: "PUT",
+      payload: {
+        project_id: this.projectId,
+        space_key: normalizedSpaceKey,
+        updated_by: String(options.updatedBy ?? "").trim(),
+        write_mode: writeMode,
+        comment_mode: commentMode,
+        review_assignment_required: options.reviewAssignmentRequired ?? false,
+        metadata: options.metadata ?? {}
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getWikiSpacePublishChecklistPreset(
+    spaceKey: string,
+    options: {
+      fallback?: WikiPublishChecklistPreset;
+    } = {}
+  ): Promise<WikiPublishChecklistPreset> {
+    const fallback = normalizeWikiPublishChecklistPreset(options.fallback ?? "none");
+    const response = await this.getWikiSpacePolicy(spaceKey);
+    const metadata =
+      response?.policy?.metadata && isPlainObject(response.policy.metadata)
+        ? (response.policy.metadata as Record<string, unknown>)
+        : {};
+    return normalizeWikiPublishChecklistPreset(metadata.publish_checklist_preset, fallback);
+  }
+
+  async setWikiSpacePublishChecklistPreset(
+    spaceKey: string,
+    options: {
+      preset: WikiPublishChecklistPreset;
+      updatedBy: string;
+      reason?: string;
+      metadataPatch?: Record<string, unknown>;
+      idempotencyKey?: string;
+    }
+  ): Promise<WikiSpacePolicyResponse> {
+    const normalizedPreset = normalizeWikiPublishChecklistPreset(options.preset);
+    const current = await this.getWikiSpacePolicy(spaceKey);
+    const currentPolicy = current?.policy && isPlainObject(current.policy)
+      ? (current.policy as Record<string, unknown>)
+      : {};
+    const currentMetadata =
+      currentPolicy.metadata && isPlainObject(currentPolicy.metadata)
+        ? (currentPolicy.metadata as Record<string, unknown>)
+        : {};
+    const nextMetadata: Record<string, unknown> = {
+      ...currentMetadata,
+      ...(options.metadataPatch ?? {}),
+      publish_checklist_preset: normalizedPreset
+    };
+    if (asOptionalString(options.reason)) {
+      nextMetadata.policy_change_reason = String(options.reason).trim();
+    }
+
+    return this.upsertWikiSpacePolicy(spaceKey, {
+      updatedBy: options.updatedBy,
+      writeMode: normalizeWikiSpacePolicyMode(asOptionalString(currentPolicy.write_mode) ?? "open"),
+      commentMode: normalizeWikiSpacePolicyMode(asOptionalString(currentPolicy.comment_mode) ?? "open"),
+      reviewAssignmentRequired: Boolean(currentPolicy.review_assignment_required),
+      metadata: nextMetadata,
+      idempotencyKey: options.idempotencyKey
+    });
+  }
+
+  async getWikiLifecycleStats(options: {
+    staleDays?: number;
+    criticalDays?: number;
+    staleLimit?: number;
+    spaceKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    const staleDays = normalizeInt(options.staleDays ?? 21, 1, 365);
+    const criticalDays = normalizeInt(options.criticalDays ?? 45, staleDays, 365);
+    const staleLimit = normalizeInt(options.staleLimit ?? 20, 1, 200);
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/lifecycle/stats", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        stale_days: staleDays,
+        critical_days: criticalDays,
+        stale_limit: staleLimit,
+        space_key: asOptionalString(options.spaceKey) ? normalizeWikiSpaceKey(String(options.spaceKey)) : undefined
+      }
+    });
+  }
+
+  async getWikiLifecycleTelemetry(options: {
+    days?: number;
+    actionKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    const normalizedActionKey = normalizeLifecycleActionKey(options.actionKey);
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/lifecycle/telemetry", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 7, 1, 90),
+        action_key: normalizedActionKey || undefined
+      }
+    });
+  }
+
+  async snapshotWikiLifecycleTelemetry(options: {
+    sessionId: string;
+    emptyScopeActionShown?: Record<string, number>;
+    emptyScopeActionApplied?: Record<string, number>;
+    observedAt?: string;
+    source?: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const sessionId = asOptionalString(options.sessionId);
+    if (!sessionId) {
+      throw new Error("sessionId is required");
+    }
+    const payload: Record<string, unknown> = {
+      project_id: this.projectId,
+      session_id: sessionId,
+      source: asOptionalString(options.source) ?? "sdk_client",
+      empty_scope_action_shown: normalizeLifecycleActionCounts(options.emptyScopeActionShown),
+      empty_scope_action_applied: normalizeLifecycleActionCounts(options.emptyScopeActionApplied)
+    };
+    if (asOptionalString(options.observedAt)) {
+      payload.observed_at = String(options.observedAt).trim();
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/lifecycle/telemetry/snapshot", {
+      method: "POST",
+      payload,
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async registerAgentProfile(
+    profile: AgentProfileInput,
+    options: {
+      updatedBy: string;
+      idempotencyKey?: string;
+    }
+  ): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/register", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        agent_id: profile.agentId,
+        updated_by: options.updatedBy,
+        display_name: profile.displayName ?? null,
+        team: profile.team ?? null,
+        role: profile.role ?? null,
+        status: profile.status ?? "active",
+        responsibilities: profile.responsibilities ?? [],
+        tools: profile.tools ?? [],
+        data_sources: profile.dataSources ?? [],
+        limits: profile.limits ?? [],
+        metadata: profile.metadata ?? {},
+        ensure_scaffold: profile.ensureScaffold ?? true,
+        include_daily_report_stub: profile.includeDailyReportStub ?? true,
+        last_seen_at: profile.lastSeenAt ?? new Date().toISOString()
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async syncAgentWorklogs(options: {
+    generatedBy: string;
+    worklogDate?: string;
+    timezone?: string;
+    daysBack?: number;
+    maxAgents?: number;
+    includeRetired?: boolean;
+    includeIdleDays?: boolean;
+    minActivityScore?: number;
+    triggerMode?: "daily_batch" | "session_close" | "task_close" | "manual";
+    triggerReason?: string;
+    maxLogsPerAgentPage?: number;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/worklogs/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        generated_by: options.generatedBy,
+        worklog_date: options.worklogDate ?? null,
+        timezone: asOptionalString(options.timezone) ?? null,
+        days_back: normalizeInt(options.daysBack ?? 1, 1, 30),
+        max_agents: normalizeInt(options.maxAgents ?? 200, 1, 2000),
+        include_retired: options.includeRetired ?? false,
+        include_idle_days: options.includeIdleDays ?? false,
+        min_activity_score: normalizeInt(options.minActivityScore ?? 1, 0, 1000),
+        trigger_mode: options.triggerMode ?? "daily_batch",
+        trigger_reason: asOptionalString(options.triggerReason) ?? null,
+        max_logs_per_agent_page: normalizeInt(options.maxLogsPerAgentPage ?? 14, 1, 60)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getAgentCapabilityMatrix(options: {
+    minConfidence?: number;
+    maxAgents?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/capability-matrix", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        min_confidence: clamp(options.minConfidence ?? 0, 0, 1),
+        max_agents: normalizeInt(options.maxAgents ?? 500, 1, 5000)
+      }
+    });
+  }
+
+  async syncAgentCapabilityMatrix(options: {
+    generatedBy: string;
+    minConfidence?: number;
+    maxAgents?: number;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/capability-matrix/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        generated_by: options.generatedBy,
+        min_confidence: clamp(options.minConfidence ?? 0, 0, 1),
+        max_agents: normalizeInt(options.maxAgents ?? 500, 1, 5000)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getAgentHandoffs(options: {
+    maxEdges?: number;
+    includeRetired?: boolean;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/handoffs", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        max_edges: normalizeInt(options.maxEdges ?? 1000, 1, 10000),
+        include_retired: options.includeRetired ?? false
+      }
+    });
+  }
+
+  async syncAgentHandoffs(options: {
+    generatedBy: string;
+    maxEdges?: number;
+    includeRetired?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/handoffs/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        generated_by: options.generatedBy,
+        max_edges: normalizeInt(options.maxEdges ?? 1000, 1, 10000),
+        include_retired: options.includeRetired ?? false
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getAgentScorecards(options: {
+    maxAgents?: number;
+    lookbackDays?: number;
+    includeRetired?: boolean;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/scorecards", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        max_agents: normalizeInt(options.maxAgents ?? 500, 1, 5000),
+        lookback_days: normalizeInt(options.lookbackDays ?? 14, 1, 90),
+        include_retired: options.includeRetired ?? false
+      }
+    });
+  }
+
+  async syncAgentScorecards(options: {
+    generatedBy: string;
+    maxAgents?: number;
+    lookbackDays?: number;
+    includeRetired?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/scorecards/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        generated_by: options.generatedBy,
+        max_agents: normalizeInt(options.maxAgents ?? 500, 1, 5000),
+        lookback_days: normalizeInt(options.lookbackDays ?? 14, 1, 90),
+        include_retired: options.includeRetired ?? false
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async listAgentProvenance(options: {
+    agentId?: string;
+    pageSlug?: string;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/provenance", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        agent_id: options.agentId,
+        page_slug: options.pageSlug,
+        limit: normalizeInt(options.limit ?? 100, 1, 500)
+      }
+    });
+  }
+
+  async rollbackAgentActivity(options: {
+    activityId: string;
+    rolledBackBy: string;
+    requireLatestActivity?: boolean;
+    status?: "draft" | "reviewed" | "published" | "archived";
+    changeSummary?: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>(
+      `/v1/agents/provenance/${encodeURIComponent(options.activityId)}/rollback`,
+      {
+        method: "POST",
+        payload: {
+          project_id: this.projectId,
+          rolled_back_by: options.rolledBackBy,
+          require_latest_activity: options.requireLatestActivity ?? true,
+          status: options.status ?? null,
+          change_summary: options.changeSummary ?? null
+        },
+        idempotencyKey: options.idempotencyKey ?? makeUuid()
+      }
+    );
   }
 
   monitor<T extends object>(target: T, options: MonitorOptions = {}): T {
@@ -1611,7 +2176,7 @@ export class SynapseClient {
   private async requestJson<T = Record<string, unknown>>(
     path: string,
     options: {
-      method?: "GET" | "POST";
+      method?: "GET" | "POST" | "PUT";
       payload?: unknown;
       params?: Record<string, string | number | boolean | null | undefined>;
       idempotencyKey?: string;
@@ -2058,12 +2623,18 @@ export class Synapse extends SynapseClient {
     const adoptionMode = normalizeAdoptionMode(
       asOptionalString(optionsWithDefaults.adoptionMode) ?? readProcessEnv("SYNAPSE_ADOPTION_MODE")
     );
+    const autoRegisterDefault = normalizeBooleanEnv(readProcessEnv("SYNAPSE_AGENT_DIRECTORY_AUTO_REGISTER")) ?? true;
+    const shouldAutoRegisterAgentDirectory = Boolean(
+      optionsWithDefaults.agentId
+      && (optionsWithDefaults.registerAgentDirectory ?? autoRegisterDefault)
+    );
     this.emitDebug("attach_started", {
       integration,
       target_type: getAttachTargetType(target),
       auto_bootstrap_enabled: optionsWithDefaults.openclawAutoBootstrapEnabled,
       openclaw_bootstrap_preset: optionsWithDefaults.openclawBootstrapPreset ?? null,
-      adoption_mode: adoptionMode
+      adoption_mode: adoptionMode,
+      agent_directory_auto_register: shouldAutoRegisterAgentDirectory
     });
     const resolvedBootstrapMemory = this.resolveAttachBootstrapMemory(target, integration, optionsWithDefaults);
     if (adoptionMode === "retrieve_only") {
@@ -2076,6 +2647,12 @@ export class Synapse extends SynapseClient {
       this.bootstrapMemoryOnAttach(target, integration, resolvedBootstrapMemory, {
         agentId: optionsWithDefaults.agentId,
         sessionId: optionsWithDefaults.sessionId
+      });
+    }
+    if (shouldAutoRegisterAgentDirectory) {
+      this.triggerAgentDirectoryRegistration({
+        integration,
+        options: optionsWithDefaults
       });
     }
     if (integration === "openclaw" && looksLikeOpenClawRuntime(target)) {
@@ -2163,6 +2740,53 @@ export class Synapse extends SynapseClient {
       register_task_tools: registerTaskTools,
       search_mode: searchMode
     });
+  }
+
+  private triggerAgentDirectoryRegistration(input: {
+    integration: string;
+    options: AttachOptions;
+  }): void {
+    const agentId = asOptionalString(input.options.agentId);
+    if (!agentId) {
+      return;
+    }
+    const profile: AgentProfileInput = {
+      agentId,
+      displayName: asOptionalString(input.options.agentProfile?.displayName) ?? asOptionalString(input.options.agentDisplayName),
+      team: asOptionalString(input.options.agentProfile?.team) ?? asOptionalString(input.options.agentTeam),
+      role: asOptionalString(input.options.agentProfile?.role) ?? asOptionalString(input.options.agentRole),
+      status: input.options.agentProfile?.status ?? input.options.agentDirectoryStatus ?? "active",
+      responsibilities: normalizeStringList(input.options.agentProfile?.responsibilities ?? input.options.agentResponsibilities),
+      tools: normalizeStringList(input.options.agentProfile?.tools ?? input.options.agentTools),
+      dataSources: normalizeStringList(input.options.agentProfile?.dataSources ?? input.options.agentDataSources),
+      limits: normalizeStringList(input.options.agentProfile?.limits ?? input.options.agentLimits),
+      metadata: {
+        integration: input.integration,
+        attached_via: "synapse_sdk_ts",
+        ...(isPlainObject(input.options.agentProfile?.metadata) ? input.options.agentProfile?.metadata : {})
+      },
+      ensureScaffold: input.options.agentProfile?.ensureScaffold ?? true,
+      includeDailyReportStub: input.options.agentProfile?.includeDailyReportStub ?? true,
+      lastSeenAt: asOptionalString(input.options.agentProfile?.lastSeenAt) ?? new Date().toISOString()
+    };
+    void this.registerAgentProfile(profile, {
+      updatedBy: agentId
+    })
+      .then(() => {
+        this.emitDebug("attach_agent_directory_registered", {
+          integration: input.integration,
+          agent_id: agentId,
+          status: profile.status ?? "active"
+        });
+      })
+      .catch((error: unknown) => {
+        this.emitDebug("attach_agent_directory_register_failed", {
+          integration: input.integration,
+          agent_id: agentId,
+          error_type: error instanceof Error ? error.name : "Error",
+          error_message: error instanceof Error ? error.message : String(error)
+        });
+      });
   }
 
   private applyAttachDefaults<T extends object>(target: T, integration: string, options: AttachOptions): AttachOptions & {
@@ -3201,6 +3825,30 @@ function asOptionalString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function normalizeStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of values) {
+    const value = asOptionalString(item);
+    if (!value) {
+      continue;
+    }
+    const key = value.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(value);
+    if (out.length >= 200) {
+      break;
+    }
+  }
+  return out;
+}
+
 function coerceResultText(value: unknown): string | undefined {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -3256,6 +3904,73 @@ function normalizeAdoptionMode(value?: string): AdoptionMode {
     normalized !== "retrieve_only"
   ) {
     throw new Error(`invalid adoption mode: ${String(value)}`);
+  }
+  return normalized;
+}
+
+function normalizeWikiSpaceKey(spaceKey: string): string {
+  const normalized = String(spaceKey ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!normalized) {
+    throw new Error("spaceKey cannot be empty");
+  }
+  return normalized;
+}
+
+function normalizeWikiSpacePolicyMode(mode: string): WikiSpacePolicyMode {
+  const normalized = String(mode ?? "open").trim().toLowerCase();
+  if (normalized === "open" || normalized === "owners_only") {
+    return normalized;
+  }
+  throw new Error(`unsupported wiki space policy mode: ${String(mode)}`);
+}
+
+function normalizeWikiPublishChecklistPreset(
+  value: unknown,
+  fallback: WikiPublishChecklistPreset = "none"
+): WikiPublishChecklistPreset {
+  const normalizedFallback = String(fallback ?? "none").trim().toLowerCase();
+  const allowed = new Set(["none", "ops_standard", "policy_strict"]);
+  const resolvedFallback = (allowed.has(normalizedFallback) ? normalizedFallback : "none") as WikiPublishChecklistPreset;
+  const normalized = String(value ?? resolvedFallback).trim().toLowerCase();
+  if (allowed.has(normalized)) {
+    return normalized as WikiPublishChecklistPreset;
+  }
+  return resolvedFallback;
+}
+
+function normalizeLifecycleActionKey(value: unknown): string {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!normalized) {
+    return "";
+  }
+  return normalized.slice(0, 96);
+}
+
+function normalizeLifecycleActionCounts(raw: unknown): Record<string, number> {
+  if (!isPlainObject(raw)) {
+    return {};
+  }
+  const normalized: Record<string, number> = {};
+  for (const [rawKey, rawValue] of Object.entries(raw)) {
+    const actionKey = normalizeLifecycleActionKey(rawKey);
+    if (!actionKey) {
+      continue;
+    }
+    const numeric = Number(rawValue);
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    normalized[actionKey] = normalizeInt(numeric, 0, 1_000_000_000);
   }
   return normalized;
 }

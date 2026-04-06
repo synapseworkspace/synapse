@@ -1,13 +1,11 @@
 import {
   ActionIcon,
   Badge,
-  Breadcrumbs,
   Box,
   Button,
-  Card,
   Checkbox,
-  Code,
   Divider,
+  Drawer,
   Group,
   Kbd,
   Loader,
@@ -19,7 +17,6 @@ import {
   Select,
   SimpleGrid,
   Stack,
-  Tabs,
   Text,
   TextInput,
   Textarea,
@@ -33,26 +30,22 @@ import {
   IconBell,
   IconBookmark,
   IconBookmarkFilled,
-  IconCheck,
   IconChevronDown,
   IconChevronUp,
   IconCloudCog,
-  IconDeviceFloppy,
   IconDots,
   IconEditCircle,
-  IconExclamationCircle,
-  IconFilePlus,
-  IconHistory,
   IconKeyboard,
-  IconLink,
   IconRefresh,
   IconSearch,
-  IconSwords,
-  IconTrash,
-  IconX,
 } from "@tabler/icons-react";
-import { diffWords } from "diff";
+import { diffLines } from "diff";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CoreDraftTab from "./components/core/CoreDraftTab";
+import CoreWorkspaceLeftRail from "./components/core/CoreWorkspaceLeftRail";
+import CoreWikiMain from "./components/core/CoreWikiMain";
+import CoreWikiRightRail from "./components/core/CoreWikiRightRail";
+import CoreWorkspaceTopBar from "./components/core/CoreWorkspaceTopBar";
 
 type DraftStatus = "pending_review" | "blocked_conflict" | "approved" | "rejected";
 type PublishMode = "human_required" | "conditional" | "auto_publish";
@@ -160,8 +153,45 @@ type DraftDetailPayload = {
       created_at: string | null;
     };
   };
+  gatekeeper?: {
+    tier: string | null;
+    score: number | null;
+    rationale: string | null;
+    llm: {
+      status: string | null;
+      applied: boolean;
+      suggested_tier: string | null;
+      confidence: number | null;
+      reason_code: string | null;
+      provider: string | null;
+      model: string | null;
+    };
+    routing: {
+      hard_block: boolean;
+      blocked_by_category: boolean;
+      blocked_by_source_system: boolean;
+      blocked_by_source_type: boolean;
+      blocked_by_entity: boolean;
+      blocked_by_source_id: boolean;
+    };
+  } | null;
   conflicts: ConflictItem[];
-  moderation_actions: Array<Record<string, unknown>>;
+  moderation_actions: ModerationActionItem[];
+};
+
+type ModerationActionItem = {
+  id: string;
+  action_type: string;
+  reviewed_by: string | null;
+  decision_before: string | null;
+  decision_after: string | null;
+  draft_status_before: string | null;
+  draft_status_after: string | null;
+  note: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  created_at: string | null;
 };
 
 type WikiPageDetailPayload = {
@@ -219,16 +249,6 @@ type WikiPageHistoryPayload = {
     current_version: number | null;
   };
   versions: WikiPageHistoryVersion[];
-};
-
-type WikiPageSearchResult = {
-  id: string;
-  title: string;
-  slug: string;
-  entity_key: string | null;
-  page_type: string | null;
-  status: string;
-  score: number;
 };
 
 type WikiPageUpdateResponse = {
@@ -296,26 +316,6 @@ type WikiPageStatusTransitionResponse = {
   snapshot_id?: string;
 };
 
-type WikiPageAliasItem = {
-  alias_text: string;
-  created_at: string | null;
-};
-
-type WikiPageCommentItem = {
-  id: string;
-  author: string;
-  body: string;
-  metadata: Record<string, unknown>;
-  created_at: string | null;
-  updated_at: string | null;
-};
-
-type WikiPageWatcherItem = {
-  watcher: string;
-  metadata: Record<string, unknown>;
-  created_at: string | null;
-};
-
 type WikiPageReviewAssignmentItem = {
   id: string;
   assignee: string;
@@ -342,6 +342,58 @@ type WikiSpacePolicyPayload = {
   };
 };
 
+type WikiSpacePolicyAuditItem = {
+  id: string;
+  changed_by: string;
+  before_policy: {
+    write_mode?: string;
+    comment_mode?: string;
+    review_assignment_required?: boolean;
+    metadata?: Record<string, unknown>;
+  };
+  after_policy: {
+    write_mode?: string;
+    comment_mode?: string;
+    review_assignment_required?: boolean;
+    metadata?: Record<string, unknown>;
+  };
+  changed_fields: string[];
+  reason: string | null;
+  created_at: string | null;
+};
+
+type WikiSpacePolicyAuditPayload = {
+  project_id: string;
+  space_key: string;
+  entries: WikiSpacePolicyAuditItem[];
+  available: boolean;
+};
+
+type WikiSpacePolicyAdoptionSummaryPayload = {
+  project_id: string;
+  space_key: string;
+  summary: {
+    total_updates: number;
+    unique_actors: number;
+    top_actor: string | null;
+    top_actor_updates: number;
+    avg_update_interval_days: number | null;
+    checklist_usage: {
+      none: number;
+      ops_standard: number;
+      policy_strict: number;
+    };
+    checklist_transitions: number;
+    first_updated_at: string | null;
+    last_updated_at: string | null;
+  };
+  available: boolean;
+  meta: {
+    sampled_entries: number;
+    limit: number;
+  };
+};
+
 type GatekeeperConfig = {
   project_id: string;
   min_sources_for_golden: number;
@@ -357,6 +409,13 @@ type GatekeeperConfig = {
   llm_timeout_ms: number;
   publish_mode_default: PublishMode;
   publish_mode_by_category: Record<string, PublishMode>;
+  routing_policy?: {
+    backfill_llm_classifier_mode?: "off" | "assist" | "enforce";
+    backfill_llm_classifier_min_confidence?: number;
+    backfill_llm_classifier_ambiguous_only?: boolean;
+    backfill_llm_classifier_model?: string;
+    [key: string]: unknown;
+  };
   auto_publish_min_score: number;
   auto_publish_min_sources: number;
   auto_publish_require_golden: boolean;
@@ -369,20 +428,6 @@ type GatekeeperConfig = {
 
 type GatekeeperConfigPayload = {
   config: GatekeeperConfig;
-};
-
-type WikiSpaceOwnerItem = {
-  owner: string;
-  role: string;
-  metadata: Record<string, unknown>;
-  created_at: string | null;
-};
-
-type WikiPageOwnerItem = {
-  owner: string;
-  role: string;
-  metadata: Record<string, unknown>;
-  created_at: string | null;
 };
 
 type WikiNotificationItem = {
@@ -399,135 +444,51 @@ type WikiNotificationItem = {
   read_at: string | null;
 };
 
-type WikiUploadItem = {
-  id: string;
-  page_id: string | null;
-  filename: string;
-  content_type: string | null;
-  size_bytes: number;
-  checksum_sha256: string;
-  created_by: string;
-  created_at: string | null;
-  content_url: string;
-  content_url_absolute?: string | null;
-};
-
-type WikiUploadCreatePayload = {
+type WikiProcessSimulationPayload = {
   status: string;
-  upload: {
-    id: string;
-    project_id: string;
-    page_id: string | null;
-    page_slug: string | null;
-    filename: string;
-    content_type: string | null;
-    size_bytes: number;
-    checksum_sha256: string;
-    created_by: string;
-    created_at: string | null;
-    content_url: string;
-    content_url_absolute?: string | null;
-    markdown_snippet: string;
-  };
-};
-
-type RetrievalExplainResult = {
-  statement_id: string;
-  statement_text: string;
-  section_key: string | null;
-  category: string | null;
-  score: number;
-  graph_hops: number | null;
-  graph_boost: number;
-  retrieval_reason: string;
-  score_breakdown: {
-    total: number;
-    lexical: number;
-    graph: number;
-    lexical_components: {
-      query_tokens_total: number;
-      token_overlap_hits: number;
-      token_overlap_ratio: number;
-      statement_token_hits: number;
-      statement_token_ratio: number;
-      title_token_hits: number;
-      title_token_ratio: number;
-      slug_token_hits: number;
-      slug_token_ratio: number;
-      entity_exact_match: boolean;
-      slug_exact_match: boolean;
-      title_phrase_match: boolean;
-      phrase_match: boolean;
-    };
-  };
-  retrieval_confidence: number;
-  confidence_breakdown: {
-    overall: number;
-    lexical_overlap: number;
-    lexical_score_norm: number;
-    exact_match_signal: number;
-    phrase_signal: number;
-    graph_support: number;
-  };
-  context_policy: {
-    mode: string;
-    eligible: boolean;
-    blocked_by: string[];
-    thresholds: {
-      mode: string;
-      min_confidence: number;
-      min_total_score: number;
-      min_lexical_score: number;
-      min_token_overlap_ratio: number;
-    };
-  };
+  project_id: string;
   page: {
     id: string;
     title: string;
     slug: string;
     entity_key: string | null;
     page_type: string | null;
+    status: string | null;
+  } | null;
+  diff: {
+    changed_terms_total: number;
+    added_terms: string[];
+    removed_terms: string[];
   };
-};
-
-type RetrievalExplainPayload = {
-  project_id: string;
-  query: string;
-  source: string;
-  filters: {
-    entity_key: string | null;
-    category: string | null;
-    page_type: string | null;
-    related_entity_key: string | null;
+  impact: {
+    candidate_pages_total: number;
+    top_impacted_pages: Array<{
+      slug: string;
+      title: string;
+      page_type: string;
+      updated_at: string | null;
+      matched_terms: string[];
+    }>;
+    pending_process_drafts: number;
+    open_process_conflicts: number;
   };
-  results: RetrievalExplainResult[];
-  graph_config: {
-    max_graph_hops: number;
-    boost_hop1: number;
-    boost_hop2: number;
-    boost_hop3: number;
-    boost_other: number;
+  risk: {
+    level: string;
+    score: number;
+    high_risk_hits: string[];
+    medium_risk_hits: string[];
+    should_block_publish: boolean;
+    suggested_publish_mode: string;
   };
-  context_policy: {
-    mode: string;
-    min_confidence: number;
-    min_total_score: number;
-    min_lexical_score: number;
-    min_token_overlap_ratio: number;
-  };
-  policy_filtered_out: number;
-  explainability: {
-    version: string;
-    query_tokens: string[];
-    related_entity_key: string | null;
-    context_policy?: {
-      mode: string;
-      min_confidence: number;
-      min_total_score: number;
-      min_lexical_score: number;
-      min_token_overlap_ratio: number;
+  recommendation: {
+    action: string;
+    suggested_publish_mode: string;
+    rollback_hint?: {
+      wiki_page_rollback_endpoint?: string;
+      gatekeeper_rollback_endpoint?: string;
     };
   };
+  generated_at: string;
 };
 
 type ModerationThroughputPayload = {
@@ -566,6 +527,104 @@ type ModerationThroughputPayload = {
   }>;
 };
 
+type WikiLifecycleStatsPayload = {
+  project_id: string;
+  thresholds: {
+    stale_days: number;
+    critical_days: number;
+  };
+  counts: {
+    total_pages: number;
+    draft_pages: number;
+    reviewed_pages: number;
+    published_pages: number;
+    archived_pages: number;
+    pages_with_open_drafts: number;
+    stale_warning_pages: number;
+    stale_critical_pages: number;
+  };
+  stale_pages: Array<{
+    slug: string;
+    title: string | null;
+    status: string;
+    open_draft_count: number;
+    activity_at: string | null;
+    updated_at: string | null;
+    age_days: number | null;
+    severity: "warning" | "critical" | string;
+  }>;
+  stale_critical_pages: Array<{
+    slug: string;
+    title: string | null;
+    status: string;
+    open_draft_count: number;
+    activity_at: string | null;
+    updated_at: string | null;
+    age_days: number | null;
+    severity: "warning" | "critical" | string;
+  }>;
+  meta: {
+    generated_at: string | null;
+    limit: number;
+    space_key?: string | null;
+    searched_scope?: {
+      project_id?: string;
+      space_key?: string | null;
+      status_scope?: string;
+    };
+    filters_applied?: {
+      stale_days?: number;
+      critical_days?: number;
+      stale_limit?: number;
+      space_key?: string | null;
+    };
+    empty_scope?: {
+      code: "no_published" | "all_open_drafts" | "below_threshold" | string;
+      message: string;
+      details?: {
+        published_pages?: number;
+        published_pages_with_open_drafts?: number;
+        published_pages_without_open_drafts?: number;
+        published_pages_below_stale_threshold?: number;
+        stale_days?: number;
+      };
+      suggested_actions?: Array<{
+        action: "create_page" | "review_open_drafts" | "lower_threshold" | string;
+        label: string;
+        deep_link?: {
+          core_tab?: "wiki" | "drafts" | "tasks" | string;
+          wiki_focus?: string | null;
+        };
+      }>;
+    };
+  };
+};
+
+type WikiLifecycleTelemetryPayload = {
+  project_id: string;
+  action_key?: string | null;
+  days: number;
+  since: string;
+  until: string;
+  summary: {
+    shown_total: number;
+    applied_total: number;
+    apply_rate: number;
+    actions: Array<{
+      action_key: string;
+      shown_total: number;
+      applied_total: number;
+      apply_rate: number;
+    }>;
+  };
+  daily: Array<{
+    metric_date: string;
+    shown_total: number;
+    applied_total: number;
+  }>;
+  generated_at: string;
+};
+
 type AuthModePayload = {
   auth_mode: string;
   rbac_mode: string;
@@ -600,6 +659,38 @@ type AuthSessionPayload = {
   };
 };
 
+type AgentOrgchartNode = {
+  agent_id: string;
+  display_name: string;
+  team: string;
+  role: string;
+  status: string;
+  profile_slug: string;
+  last_seen_at: string | null;
+};
+
+type AgentOrgchartEdge = {
+  from_agent: string;
+  to_agent: string;
+  input_contract: string | null;
+  output_contract: string | null;
+  sla: string | null;
+};
+
+type AgentOrgchartPayload = {
+  nodes: AgentOrgchartNode[];
+  edges: AgentOrgchartEdge[];
+  teams: Array<{
+    team: string;
+    agents_total: number;
+  }>;
+  summary: {
+    nodes_total: number;
+    edges_total: number;
+    teams_total: number;
+  };
+};
+
 type BootstrapApproveRunPayload = {
   status: string;
   dry_run: boolean;
@@ -630,6 +721,53 @@ type BootstrapApproveRunPayload = {
     outcome: string;
     reason?: string;
   }>;
+  generated_at?: string;
+};
+
+type BootstrapApproveRecommendationPayload = {
+  status: string;
+  project_id: string;
+  recommended: {
+    limit: number;
+    sample_size: number;
+    min_confidence: number;
+    require_conflict_free: boolean;
+    trusted_source_systems: string[];
+    require_trusted_sources_on_apply: boolean;
+    allow_large_batch: boolean;
+    dry_run: boolean;
+  };
+  diagnostics?: {
+    queue?: {
+      open_pending_review?: number;
+      blocked_conflict?: number;
+      open_conflicts?: number;
+    };
+    backfill_quality?: {
+      batches_recent?: number;
+      processed_events?: number;
+      generated_claims?: number;
+      dropped_event_like?: number;
+      kept_durable?: number;
+      trusted_bypass?: number;
+      event_drop_ratio?: number;
+      durable_keep_ratio?: number;
+    };
+    sources?: {
+      ownership_sources?: string[];
+      legacy_source_types?: string[];
+      legacy_declared_source_systems?: string[];
+      fallback_used?: boolean;
+    };
+    notes?: string[];
+  };
+  safety?: {
+    apply_limit_soft_cap?: number;
+    rollback_hint?: {
+      moderation_actions_endpoint?: string;
+      note?: string;
+    };
+  };
   generated_at?: string;
 };
 
@@ -738,6 +876,7 @@ type PageTemplate = {
   key: string;
   title: string;
   description: string;
+  pageType: string;
   sectionKey: string;
   sectionHeading: string;
   sectionMode: "append" | "replace";
@@ -757,6 +896,19 @@ type GuidedPageFormState = {
 };
 
 type DetailTab = "page" | "history" | "semantic" | "conflicts" | "patch" | "evidence" | "timeline";
+
+type PageLifecycleActionKind = "open_drafts" | "promote_reviewed" | "publish" | "archive" | "restore";
+
+type PageLifecycleSuggestion = {
+  key: string;
+  severity: "info" | "watch" | "critical";
+  title: string;
+  detail: string;
+  action: {
+    kind: PageLifecycleActionKind;
+    label: string;
+  } | null;
+};
 
 type SavedView = {
   id: string;
@@ -781,14 +933,7 @@ type ReviewQueuePreset = {
   description: string;
 };
 
-type QuickModerationSource = "triage_lane" | "inbox_card" | "detail_header";
-
-type TriagePriorityReason = {
-  key: string;
-  label: string;
-  color: string;
-  weight: number;
-};
+type LifecycleQueryPresetKey = "stale_21" | "critical_45" | "custom";
 
 type WikiUxMetricsState = {
   sessionStartedMs: number;
@@ -799,12 +944,50 @@ type WikiUxMetricsState = {
   publishCount: number;
 };
 
+type LifecycleAdvisorMetricsState = {
+  sessionId: string;
+  sessionStartedMs: number;
+  suggestionShown: number;
+  suggestionApplied: number;
+  staleShownAtBySlug: Record<string, number>;
+  staleResolvedDurationsMs: number[];
+  emptyScopeActionShownByType: Record<string, number>;
+  emptyScopeActionAppliedByType: Record<string, number>;
+};
+
 type FriendlyRoleDescriptor = {
   key: "viewer" | "editor" | "approver" | "admin";
   label: string;
   canDo: string;
   typicalUse: string;
   mapsTo: string[];
+};
+
+type PublishChecklistPresetKey = "none" | "ops_standard" | "policy_strict";
+
+type PublishChecklistItem = {
+  id: string;
+  label: string;
+  help: string;
+};
+
+type PublishChecklistPreset = {
+  key: PublishChecklistPresetKey;
+  label: string;
+  description: string;
+  items: PublishChecklistItem[];
+};
+
+type SpacePolicyAdoptionSummary = {
+  totalUpdates: number;
+  uniqueActors: number;
+  topActor: string | null;
+  topActorUpdates: number;
+  avgCadenceDays: number | null;
+  checklistUsage: Record<PublishChecklistPresetKey, number>;
+  checklistTransitions: number;
+  firstUpdatedAt: string | null;
+  lastUpdatedAt: string | null;
 };
 
 const STORAGE_KEY = "synapse_web_console_v4";
@@ -841,6 +1024,7 @@ const PAGE_TEMPLATES: PageTemplate[] = [
     key: "access_policy_update",
     title: "Access Policy Update",
     description: "Use for new entry/permit/checkpoint rules.",
+    pageType: "access",
     sectionKey: "access_rules",
     sectionHeading: "Access Rules",
     sectionMode: "append",
@@ -850,6 +1034,7 @@ const PAGE_TEMPLATES: PageTemplate[] = [
     key: "operations_incident",
     title: "Operations Incident",
     description: "Use for temporary outages, repairs, or operational constraints.",
+    pageType: "incident",
     sectionKey: "ops_notes",
     sectionHeading: "Ops Notes",
     sectionMode: "append",
@@ -859,10 +1044,109 @@ const PAGE_TEMPLATES: PageTemplate[] = [
     key: "customer_preference",
     title: "Customer Preference",
     description: "Use for stable customer communication/delivery preferences.",
+    pageType: "customer",
     sectionKey: "customer_preferences",
     sectionHeading: "Customer Preferences",
     sectionMode: "append",
     statements: ["Preference confirmed. Apply consistently to future interactions."],
+  },
+  {
+    key: "issue_playbook",
+    title: "Issue Playbook",
+    description: "Use for trigger -> action -> outcome support/ops workflows.",
+    pageType: "process",
+    sectionKey: "steps",
+    sectionHeading: "Steps",
+    sectionMode: "append",
+    statements: ["When issue is detected, follow documented steps and verify outcome."],
+  },
+  {
+    key: "escalation_rule",
+    title: "Escalation Rule",
+    description: "Use for escalation conditions, handoff path, and SLA.",
+    pageType: "process",
+    sectionKey: "escalation",
+    sectionHeading: "Escalation",
+    sectionMode: "append",
+    statements: ["Escalate to Tier-2 when risk/severity threshold is met."],
+  },
+  {
+    key: "customer_exception",
+    title: "Customer Exception",
+    description: "Use for approved deviations from default process.",
+    pageType: "process",
+    sectionKey: "exceptions",
+    sectionHeading: "Exceptions",
+    sectionMode: "append",
+    statements: ["Exception approved for customer segment with explicit expiry and owner."],
+  },
+  {
+    key: "known_incident_playbook",
+    title: "Known Incident",
+    description: "Use for recurring incident trigger, workaround, and verification.",
+    pageType: "incident",
+    sectionKey: "workarounds",
+    sectionHeading: "Workarounds",
+    sectionMode: "append",
+    statements: ["Known incident detected. Apply workaround and confirm service restoration."],
+  },
+];
+
+const PUBLISH_CHECKLIST_PRESETS: PublishChecklistPreset[] = [
+  {
+    key: "none",
+    label: "No checklist",
+    description: "Publish modal has no extra confirmation checklist.",
+    items: [],
+  },
+  {
+    key: "ops_standard",
+    label: "Ops standard",
+    description: "Lightweight process check before publish.",
+    items: [
+      {
+        id: "evidence-linked",
+        label: "Evidence or source context is linked",
+        help: "Every critical change is traceable to drafts, tickets, or operator notes.",
+      },
+      {
+        id: "scope-reviewed",
+        label: "Change scope is clear for agents",
+        help: "The page explicitly states where the rule applies and where it does not.",
+      },
+      {
+        id: "rollback-ready",
+        label: "Rollback path is known",
+        help: "Reviewer can revert this publish safely if downstream behavior regresses.",
+      },
+    ],
+  },
+  {
+    key: "policy_strict",
+    label: "Policy strict",
+    description: "Use for legal/financial/security-sensitive spaces.",
+    items: [
+      {
+        id: "policy-owner",
+        label: "Policy owner acknowledged the change",
+        help: "Named owner or approver has validated final wording.",
+      },
+      {
+        id: "risk-reviewed",
+        label: "Risk and customer impact reviewed",
+        help: "Potential failure modes and blast radius are documented.",
+      },
+      {
+        id: "compliance-check",
+        label: "Compliance constraints are satisfied",
+        help: "No conflicts with legal/security/finance constraints for this space.",
+      },
+      {
+        id: "rollback-drill",
+        label: "Rollback plan tested or confirmed",
+        help: "Rollback owner and trigger conditions are explicit.",
+      },
+    ],
   },
 ];
 
@@ -894,10 +1178,25 @@ const REVIEW_QUEUE_PRESETS: ReviewQueuePreset[] = [
   },
 ];
 
+const LIFECYCLE_QUERY_PRESETS: Array<{
+  key: LifecycleQueryPresetKey;
+  label: string;
+  staleDays: number;
+  criticalDays: number;
+}> = [
+  { key: "stale_21", label: "Stale >=21d", staleDays: 21, criticalDays: 45 },
+  { key: "critical_45", label: "Critical >=45d", staleDays: 45, criticalDays: 45 },
+  { key: "custom", label: "Custom", staleDays: 21, criticalDays: 45 },
+];
+
 const ONBOARDING_STORAGE_PREFIX = "synapse:onboarding_done:";
 const LAST_PAGE_STORAGE_PREFIX = "synapse:last_page:";
 const PAGE_EDIT_DRAFT_STORAGE_PREFIX = "synapse:page_edit_draft:";
 const UX_METRICS_STORAGE_PREFIX = "synapse:wiki_ux_metrics:";
+const LIFECYCLE_METRICS_STORAGE_PREFIX = "synapse:lifecycle_metrics:";
+const LIFECYCLE_SPACE_FILTER_ALL = "__all__";
+const LIFECYCLE_TELEMETRY_WINDOW_DAYS = 7;
+const LIFECYCLE_TELEMETRY_SYNC_DEBOUNCE_MS = 1200;
 
 const FRIENDLY_ROLE_MODEL: FriendlyRoleDescriptor[] = [
   {
@@ -932,6 +1231,7 @@ const FRIENDLY_ROLE_MODEL: FriendlyRoleDescriptor[] = [
 
 type UiMode = "core" | "advanced";
 type CoreWorkspaceTab = "wiki" | "drafts" | "tasks";
+type CoreWorkspaceRoute = "wiki" | "operations";
 
 const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
 const REQUESTED_UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
@@ -951,6 +1251,7 @@ if (
 type ParsedWikiPath = {
   basePath: string;
   pageSlug: string | null;
+  route: CoreWorkspaceRoute;
 };
 
 function parseWikiPath(pathname: string): ParsedWikiPath {
@@ -958,10 +1259,23 @@ function parseWikiPath(pathname: string): ParsedWikiPath {
   const lower = normalized.toLowerCase();
   const marker = "/wiki";
   const markerWithSlash = "/wiki/";
+  const operationsMarker = "/operations";
+  const operationsMarkerWithSlash = "/operations/";
+
+  if (lower.endsWith(operationsMarker)) {
+    const basePath = normalized.slice(0, normalized.length - operationsMarker.length) || "/";
+    return { basePath, pageSlug: null, route: "operations" };
+  }
+
+  const operationsMarkerIndex = lower.indexOf(operationsMarkerWithSlash);
+  if (operationsMarkerIndex >= 0) {
+    const basePath = normalized.slice(0, operationsMarkerIndex) || "/";
+    return { basePath, pageSlug: null, route: "operations" };
+  }
 
   if (lower.endsWith(marker)) {
     const basePath = normalized.slice(0, normalized.length - marker.length) || "/";
-    return { basePath, pageSlug: null };
+    return { basePath, pageSlug: null, route: "wiki" };
   }
 
   const markerIndex = lower.indexOf(markerWithSlash);
@@ -979,10 +1293,10 @@ function parseWikiPath(pathname: string): ParsedWikiPath {
       })
       .filter((segment) => segment.trim().length > 0)
       .join("/");
-    return { basePath, pageSlug: decodedSlug || null };
+    return { basePath, pageSlug: decodedSlug || null, route: "wiki" };
   }
 
-  return { basePath: normalized, pageSlug: null };
+  return { basePath: normalized, pageSlug: null, route: "wiki" };
 }
 
 function encodeWikiSlugForPath(slug: string | null): string {
@@ -1005,6 +1319,36 @@ function buildWikiPath(basePath: string, pageSlug: string | null): string {
   return `${wikiRoot}/${encodedSlug}`;
 }
 
+function buildOperationsPath(basePath: string): string {
+  const normalizedBase = (basePath || "/").replace(/\/+$/, "") || "/";
+  return normalizedBase === "/" ? "/operations" : `${normalizedBase}/operations`;
+}
+
+function buildWorkspacePath(basePath: string, route: CoreWorkspaceRoute, pageSlug: string | null): string {
+  if (route === "operations") {
+    return buildOperationsPath(basePath);
+  }
+  return buildWikiPath(basePath, pageSlug);
+}
+
+function scrollElementIntoViewWithRetry(elementId: string, attempts = 6, delayMs = 140): void {
+  if (typeof window === "undefined") return;
+  const maxAttempts = Math.max(1, attempts);
+  const normalizedDelay = Math.max(40, delayMs);
+  let tries = 0;
+  const tick = () => {
+    tries += 1;
+    const element = window.document.getElementById(elementId);
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (tries >= maxAttempts) return;
+    window.setTimeout(tick, normalizedDelay);
+  };
+  tick();
+}
+
 function fmtDate(value: string | null | undefined): string {
   if (!value) {
     return "—";
@@ -1016,24 +1360,76 @@ function fmtDate(value: string | null | undefined): string {
   return date.toLocaleString();
 }
 
-function safeJson(value: unknown): string {
-  return JSON.stringify(value ?? null, null, 2);
-}
-
 function randomKey(): string {
   return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function resolveWikiAssetUrl(apiUrl: string, url: string | null | undefined): string {
-  const raw = String(url || "").trim();
-  if (!raw) return "";
-  const lowered = raw.toLowerCase();
-  if (lowered.startsWith("http://") || lowered.startsWith("https://") || lowered.startsWith("data:") || lowered.startsWith("blob:")) {
-    return raw;
+type InlineMarkdownDiffLine = {
+  kind: "added" | "removed" | "context";
+  text: string;
+};
+
+function buildInlineMarkdownDiff(
+  baseMarkdown: string,
+  targetMarkdown: string,
+  maxLines = 520,
+): { added: number; removed: number; changed: boolean; lines: InlineMarkdownDiffLine[]; truncated: boolean } {
+  const parts = diffLines(String(baseMarkdown || ""), String(targetMarkdown || ""));
+  let added = 0;
+  let removed = 0;
+  const output: InlineMarkdownDiffLine[] = [];
+  for (const part of parts) {
+    const lines = String(part.value || "").split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const isTailEmpty = index === lines.length - 1 && line === "";
+      if (isTailEmpty) continue;
+      if (part.added) {
+        added += 1;
+        output.push({ kind: "added", text: line });
+      } else if (part.removed) {
+        removed += 1;
+        output.push({ kind: "removed", text: line });
+      } else {
+        output.push({ kind: "context", text: line });
+      }
+    }
   }
-  const root = apiUrl.replace(/\/+$/, "");
-  if (raw.startsWith("/")) return `${root}${raw}`;
-  return raw;
+  const changed = added > 0 || removed > 0;
+  if (!changed) {
+    return {
+      added,
+      removed,
+      changed: false,
+      lines: [{ kind: "context", text: "No changes between selected versions." }],
+      truncated: false,
+    };
+  }
+  const clipped = output.slice(0, Math.max(40, maxLines));
+  const truncated = output.length > clipped.length;
+  if (truncated) {
+    clipped.push({
+      kind: "context",
+      text: `… diff truncated: showing ${clipped.length}/${output.length} lines`,
+    });
+  }
+  return {
+    added,
+    removed,
+    changed: true,
+    lines: clipped,
+    truncated,
+  };
+}
+
+function normalizeTelemetryActionKey(value: string): string {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized.slice(0, 96);
 }
 
 function statusColor(status: string): string {
@@ -1055,135 +1451,86 @@ function draftAgeHours(draft: DraftSummary, referenceMs: number): number | null 
   return ageMs / (1000 * 60 * 60);
 }
 
-function formatHours(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  if (value < 1) return "<1h";
-  if (value < 24) return `${value.toFixed(1)}h`;
-  return `${(value / 24).toFixed(1)}d`;
+function formatCadenceDays(value: number | null): string {
+  if (value == null || !Number.isFinite(value) || value < 0) return "—";
+  if (value < 1) return "<1 day";
+  if (value < 7) return `${value.toFixed(1)} days`;
+  return `${(value / 7).toFixed(1)} weeks`;
 }
 
-function formatMinutes(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  if (value < 1) return "<1m";
-  if (value < 60) return `${Math.round(value)}m`;
-  if (value < 24 * 60) return `${(value / 60).toFixed(1)}h`;
-  return `${(value / (24 * 60)).toFixed(1)}d`;
+function normalizedChecklistPresetFromMetadata(metadataRaw: unknown): PublishChecklistPresetKey {
+  if (!metadataRaw || typeof metadataRaw !== "object") return "none";
+  const metadata = metadataRaw as Record<string, unknown>;
+  const preset = String(metadata.publish_checklist_preset || "").trim().toLowerCase();
+  if (preset === "ops_standard" || preset === "policy_strict") return preset;
+  return "none";
 }
 
-function formatPercent(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return "—";
-  return `${(value * 100).toFixed(1)}%`;
-}
+function summarizeSpacePolicyAudit(entries: WikiSpacePolicyAuditItem[]): SpacePolicyAdoptionSummary {
+  const actorCounts = new Map<string, number>();
+  const checklistUsage: Record<PublishChecklistPresetKey, number> = {
+    none: 0,
+    ops_standard: 0,
+    policy_strict: 0,
+  };
+  let checklistTransitions = 0;
+  const timestamps: number[] = [];
 
-function formatDurationMs(valueMs: number | null): string {
-  if (valueMs == null || !Number.isFinite(valueMs) || valueMs < 0) return "—";
-  const minutes = Math.floor(valueMs / (1000 * 60));
-  if (minutes < 1) return "<1m";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remainder = minutes % 60;
-  if (hours < 24) return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  const hoursRemainder = hours % 24;
-  return hoursRemainder > 0 ? `${days}d ${hoursRemainder}h` : `${days}d`;
-}
+  for (const entry of entries) {
+    const actor = String(entry.changed_by || "").trim() || "unknown";
+    actorCounts.set(actor, (actorCounts.get(actor) || 0) + 1);
 
-function buildLineDeltaPreview(beforeRaw: string, afterRaw: string, limit = 4): { added: string[]; removed: string[] } {
-  const normalizeLines = (value: string) =>
-    value
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-  const before = normalizeLines(beforeRaw || "");
-  const after = normalizeLines(afterRaw || "");
-  const beforeSet = new Set(before);
-  const afterSet = new Set(after);
-  const added = after.filter((line) => !beforeSet.has(line)).slice(0, limit);
-  const removed = before.filter((line) => !afterSet.has(line)).slice(0, limit);
-  return { added, removed };
-}
+    const afterPreset = normalizedChecklistPresetFromMetadata(entry.after_policy?.metadata);
+    checklistUsage[afterPreset] += 1;
 
-function moderationHealthColor(health: string | null | undefined): string {
-  if (health === "critical") return "red";
-  if (health === "watch") return "orange";
-  return "teal";
-}
+    const beforePreset = normalizedChecklistPresetFromMetadata(entry.before_policy?.metadata);
+    if (beforePreset !== afterPreset) {
+      checklistTransitions += 1;
+    }
 
-function ageBadgeColor(ageHours: number | null, slaHours: number): string {
-  if (ageHours == null || !Number.isFinite(ageHours)) return "gray";
-  if (ageHours >= slaHours * 2) return "red";
-  if (ageHours >= slaHours) return "orange";
-  if (ageHours >= slaHours * 0.5) return "yellow";
-  return "teal";
-}
-
-function triagePriorityScore(draft: DraftSummary, nowMs: number, slaHours: number): number {
-  const age = draftAgeHours(draft, nowMs) ?? 0;
-  let score = age;
-  if (draft.status === "blocked_conflict") score += 200;
-  if (draft.decision === "conflict") score += 120;
-  if (age >= slaHours) score += 100;
-  if (Number(draft.confidence) >= 0.9 && isOpenReviewDraft(draft)) score += 30;
-  return score;
-}
-
-function triagePriorityReasons(draft: DraftSummary, nowMs: number, slaHours: number): TriagePriorityReason[] {
-  const age = draftAgeHours(draft, nowMs);
-  const reasons: TriagePriorityReason[] = [];
-  if (draft.status === "blocked_conflict") {
-    reasons.push({
-      key: "blocked_conflict",
-      label: "blocked conflict",
-      color: "orange",
-      weight: 200,
-    });
+    const ts = entry.created_at ? new Date(entry.created_at).getTime() : Number.NaN;
+    if (!Number.isNaN(ts) && ts > 0) {
+      timestamps.push(ts);
+    }
   }
-  if (draft.decision === "conflict") {
-    reasons.push({
-      key: "decision_conflict",
-      label: "decision conflict",
-      color: "grape",
-      weight: 120,
-    });
+
+  const sortedActors = [...actorCounts.entries()].sort((left, right) => right[1] - left[1]);
+  const topActor = sortedActors.length > 0 ? sortedActors[0][0] : null;
+  const topActorUpdates = sortedActors.length > 0 ? sortedActors[0][1] : 0;
+
+  timestamps.sort((left, right) => left - right);
+  let avgCadenceDays: number | null = null;
+  if (timestamps.length >= 2) {
+    let diffSumMs = 0;
+    for (let index = 1; index < timestamps.length; index += 1) {
+      diffSumMs += timestamps[index] - timestamps[index - 1];
+    }
+    const avgDiffMs = diffSumMs / Math.max(1, timestamps.length - 1);
+    avgCadenceDays = avgDiffMs / (1000 * 60 * 60 * 24);
   }
-  if (age != null && age >= slaHours) {
-    reasons.push({
-      key: "sla_breach",
-      label: `sla breach >= ${slaHours}h`,
-      color: "red",
-      weight: 100,
-    });
-  } else if (age != null && age >= slaHours * 0.5) {
-    reasons.push({
-      key: "aging_queue",
-      label: "aging queue",
-      color: "yellow",
-      weight: 40,
-    });
-  }
-  if (Number(draft.confidence) >= 0.9 && isOpenReviewDraft(draft)) {
-    reasons.push({
-      key: "high_confidence",
-      label: "high confidence",
-      color: "teal",
-      weight: 30,
-    });
-  }
-  if (reasons.length === 0) {
-    reasons.push({
-      key: "open_queue",
-      label: "open queue",
-      color: "gray",
-      weight: 0,
-    });
-  }
-  return reasons.sort((a, b) => b.weight - a.weight);
+
+  return {
+    totalUpdates: entries.length,
+    uniqueActors: actorCounts.size,
+    topActor,
+    topActorUpdates,
+    avgCadenceDays,
+    checklistUsage,
+    checklistTransitions,
+    firstUpdatedAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null,
+    lastUpdatedAt: timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null,
+  };
 }
 
-function quickModerationSourceLabel(source: QuickModerationSource): string {
-  if (source === "triage_lane") return "triage lane";
-  if (source === "detail_header") return "draft detail";
-  return "draft inbox";
+const PAGE_STALE_WARNING_DAYS = 21;
+const PAGE_STALE_CRITICAL_DAYS = 45;
+const PAGE_RECENT_ACTIVITY_DAYS = 7;
+
+function pageAgeDays(value: string | null | undefined, referenceMs = Date.now()): number | null {
+  const ts = activityTimestampMs(value);
+  if (!ts) return null;
+  const diff = Math.max(0, referenceMs - ts);
+  return diff / (1000 * 60 * 60 * 24);
 }
 
 function slugifySegment(value: string): string {
@@ -1217,11 +1564,32 @@ function normalizeSourceSystemCsv(value: string): string[] {
     .sort();
 }
 
-function _sectionHeadingFromKeyForUi(sectionKey: string): string {
-  return sectionKey
-    .split("_")
-    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
-    .join(" ");
+function matchesBootstrapPreview(
+  preview: BootstrapApproveRunPayload | null | undefined,
+  expected: {
+    projectId: string;
+    trustedSourceSystems: string[];
+    limit: number;
+    minConfidence: number;
+    requireConflictFree: boolean;
+  },
+): boolean {
+  const selection = preview?.selection;
+  if (!preview?.dry_run || !selection) return false;
+  if (String(preview.project_id || "") !== expected.projectId) return false;
+  const previewTrusted = [...(selection.trusted_source_systems || [])]
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+  const expectedTrusted = [...expected.trustedSourceSystems]
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+  if (previewTrusted.join(",") !== expectedTrusted.join(",")) return false;
+  if (Number(selection.limit || -1) !== Number(expected.limit)) return false;
+  if (Number(selection.min_confidence || -1) !== Number(expected.minConfidence)) return false;
+  if (Boolean(selection.require_conflict_free) !== Boolean(expected.requireConflictFree)) return false;
+  return Number(preview.summary.candidates || 0) > 0;
 }
 
 function pageGroupKey(slug: string | null | undefined): string {
@@ -1377,53 +1745,6 @@ async function apiFetch<T>(
   return payload;
 }
 
-type DiffToken = {
-  value: string;
-  kind: "same" | "added" | "removed";
-};
-
-function buildStatementDiff(beforeRaw: string, afterRaw: string): { before: DiffToken[]; after: DiffToken[] } {
-  const before = beforeRaw || "";
-  const after = afterRaw || "";
-  const tokens = diffWords(before, after);
-  const beforeLine: DiffToken[] = [];
-  const afterLine: DiffToken[] = [];
-  tokens.forEach((token: { value: string; added?: boolean; removed?: boolean }) => {
-    if (token.removed) {
-      beforeLine.push({ value: token.value, kind: "removed" });
-      return;
-    }
-    if (token.added) {
-      afterLine.push({ value: token.value, kind: "added" });
-      return;
-    }
-    beforeLine.push({ value: token.value, kind: "same" });
-    afterLine.push({ value: token.value, kind: "same" });
-  });
-  return { before: beforeLine, after: afterLine };
-}
-
-function DiffLine({ label, tokens }: { label: string; tokens: DiffToken[] }) {
-  return (
-    <Box className="diff-line">
-      <Text fw={700} size="sm" c="dimmed" mb={4}>
-        {label}
-      </Text>
-      <Text className="diff-text">
-        {tokens.length === 0 ? (
-          <span className="diff-empty">—</span>
-        ) : (
-          tokens.map((token, index) => (
-            <span key={`${label}-${index}`} className={`diff-token diff-${token.kind}`}>
-              {token.value}
-            </span>
-          ))
-        )}
-      </Text>
-    </Box>
-  );
-}
-
 const LazyIntelligencePanel = lazy(() => import("./components/IntelligencePanel"));
 const LazyTaskTrackerPanel = lazy(() => import("./components/TaskTrackerPanel"));
 const LazyWikiPageCanvas = lazy(() => import("./components/WikiPageCanvas"));
@@ -1441,6 +1762,7 @@ export default function App() {
   const [uiMode, setUiMode] = useState<UiMode>("core");
   const [coreExpertControls, setCoreExpertControls] = useState(false);
   const [coreWorkspaceTab, setCoreWorkspaceTab] = useState<CoreWorkspaceTab>("wiki");
+  const [coreWorkspaceRoute, setCoreWorkspaceRoute] = useState<CoreWorkspaceRoute>(initialPathState.route);
   const [wikiBasePath, setWikiBasePath] = useState(initialPathState.basePath);
   const [status, setStatus] = useState<string | null>(null);
   const [pageStatusFilter, setPageStatusFilter] = useState<string | null>(null);
@@ -1455,20 +1777,20 @@ export default function App() {
       : null;
   const [selectedSpaceKey, setSelectedSpaceKey] = useState<string | null>(null);
   const [pageFilter, setPageFilter] = useState("");
-  const [draftFilter, setDraftFilter] = useState("");
+  const [draftFilter] = useState("");
   const [openPagesOnly, setOpenPagesOnly] = useState(false);
   const [collapsedTreeNodes, setCollapsedTreeNodes] = useState<Record<string, boolean>>({});
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [selectedViewId, setSelectedViewId] = useState<string | null>(null);
-  const [savedViewName, setSavedViewName] = useState("");
   const [pinnedPageSlugs, setPinnedPageSlugs] = useState<string[]>([]);
   const [reviewQueuePreset, setReviewQueuePreset] = useState<ReviewQueuePresetKey>("open_queue");
   const [reviewSlaHours, setReviewSlaHours] = useState(24);
   const [bulkSelectedDraftIds, setBulkSelectedDraftIds] = useState<string[]>([]);
   const [bulkForceApprove, setBulkForceApprove] = useState(false);
-  const [bulkApproveNote, setBulkApproveNote] = useState("");
-  const [bulkRejectReason, setBulkRejectReason] = useState("");
+  const bulkApproveNote = "";
+  const bulkRejectReason = "";
   const [bootstrapTrustedSources, setBootstrapTrustedSources] = useState("legacy_import,postgres_sql");
+  const [bootstrapTrustedSourcesTouched, setBootstrapTrustedSourcesTouched] = useState(false);
   const [bootstrapMinConfidence, setBootstrapMinConfidence] = useState("0.85");
   const [bootstrapLimit, setBootstrapLimit] = useState("50");
   const [bootstrapSampleSize, setBootstrapSampleSize] = useState("15");
@@ -1476,14 +1798,20 @@ export default function App() {
   const [showBootstrapTools, setShowBootstrapTools] = useState(false);
   const [showMigrationMode, setShowMigrationMode] = useState(false);
   const [showDraftOperationsTools, setShowDraftOperationsTools] = useState(false);
+  const [showAdvancedDraftOps, setShowAdvancedDraftOps] = useState(false);
+  const [showWikiFilters, setShowWikiFilters] = useState(false);
+  const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
+  const [showCoreLifecycleDetails, setShowCoreLifecycleDetails] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapApproveRunPayload | null>(null);
+  const [bootstrapRecommendation, setBootstrapRecommendation] = useState<BootstrapApproveRecommendationPayload | null>(null);
+  const [, setLoadingBootstrapRecommendation] = useState(false);
   const [legacyProfiles, setLegacyProfiles] = useState<LegacyImportProfile[]>([]);
   const [legacySources, setLegacySources] = useState<LegacyImportSource[]>([]);
-  const [loadingLegacyProfiles, setLoadingLegacyProfiles] = useState(false);
-  const [loadingLegacySources, setLoadingLegacySources] = useState(false);
+  const [, setLoadingLegacyProfiles] = useState(false);
+  const [, setLoadingLegacySources] = useState(false);
   const [connectingLegacySource, setConnectingLegacySource] = useState(false);
-  const [runningLegacySyncSourceId, setRunningLegacySyncSourceId] = useState<string | null>(null);
+  const [, setRunningLegacySyncSourceId] = useState<string | null>(null);
   const [legacySourceRef, setLegacySourceRef] = useState("existing_memory");
   const [legacySqlProfile, setLegacySqlProfile] = useState("ops_kb_items");
   const [legacySqlDsnEnv, setLegacySqlDsnEnv] = useState("LEGACY_SQL_DSN");
@@ -1496,9 +1824,12 @@ export default function App() {
   const [draftDetail, setDraftDetail] = useState<DraftDetailPayload | null>(null);
   const [selectedPageDetail, setSelectedPageDetail] = useState<WikiPageDetailPayload | null>(null);
   const [pageHistory, setPageHistory] = useState<WikiPageHistoryPayload | null>(null);
-  const [loadingPageHistory, setLoadingPageHistory] = useState(false);
+  const [, setLoadingPageHistory] = useState(false);
   const [historyBaseVersion, setHistoryBaseVersion] = useState<string | null>(null);
   const [historyTargetVersion, setHistoryTargetVersion] = useState<string | null>(null);
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
+  const [rollbackSummaryInput, setRollbackSummaryInput] = useState("Rollback to selected version");
+  const [rollingBackPageVersion, setRollingBackPageVersion] = useState(false);
   const [pageEditMode, setPageEditMode] = useState(false);
   const [pageEditTitle, setPageEditTitle] = useState("");
   const [pageEditStatus, setPageEditStatus] = useState<"draft" | "reviewed" | "published" | "archived">("published");
@@ -1508,122 +1839,95 @@ export default function App() {
   const [pageEditDraftSavedAt, setPageEditDraftSavedAt] = useState<string | null>(null);
   const [restoredDraftKey, setRestoredDraftKey] = useState<string | null>(null);
   const [savingPageEdit, setSavingPageEdit] = useState(false);
-  const [pageAssetFile, setPageAssetFile] = useState<File | null>(null);
-  const [uploadingPageAsset, setUploadingPageAsset] = useState(false);
   const [pageMoveMode, setPageMoveMode] = useState(false);
-  const [pageMoveParentPath, setPageMoveParentPath] = useState("");
-  const [pageMoveSlugLeaf, setPageMoveSlugLeaf] = useState("");
-  const [pageMoveTitle, setPageMoveTitle] = useState("");
-  const [pageMoveSummary, setPageMoveSummary] = useState("Page move/rename");
-  const [pageMoveIncludeDescendants, setPageMoveIncludeDescendants] = useState(true);
-  const [movingPage, setMovingPage] = useState(false);
+  const [, setPageMoveParentPath] = useState("");
+  const [, setPageMoveSlugLeaf] = useState("");
+  const [, setPageMoveTitle] = useState("");
+  const [, setPageMoveSummary] = useState("Page move/rename");
+  const [, setPageMoveIncludeDescendants] = useState(true);
+  const [, setMovingPage] = useState(false);
   const [draggingPageSlug, setDraggingPageSlug] = useState<string | null>(null);
   const [treeDropTargetSlug, setTreeDropTargetSlug] = useState<string | null>(null);
-  const [pageAliases, setPageAliases] = useState<WikiPageAliasItem[]>([]);
-  const [loadingPageAliases, setLoadingPageAliases] = useState(false);
-  const [newPageAlias, setNewPageAlias] = useState("");
-  const [savingPageAlias, setSavingPageAlias] = useState(false);
-  const [pageComments, setPageComments] = useState<WikiPageCommentItem[]>([]);
-  const [loadingPageComments, setLoadingPageComments] = useState(false);
-  const [newPageComment, setNewPageComment] = useState("");
-  const [savingPageComment, setSavingPageComment] = useState(false);
-  const [pageWatchers, setPageWatchers] = useState<WikiPageWatcherItem[]>([]);
-  const [loadingPageWatchers, setLoadingPageWatchers] = useState(false);
-  const [watcherInput, setWatcherInput] = useState("");
-  const [savingPageWatcher, setSavingPageWatcher] = useState(false);
   const [pageReviewAssignments, setPageReviewAssignments] = useState<WikiPageReviewAssignmentItem[]>([]);
   const [loadingPageReviewAssignments, setLoadingPageReviewAssignments] = useState(false);
   const [assignmentAssigneeInput, setAssignmentAssigneeInput] = useState("");
   const [assignmentNoteInput, setAssignmentNoteInput] = useState("");
   const [savingPageAssignment, setSavingPageAssignment] = useState(false);
+  const [runningLifecycleQuickAction, setRunningLifecycleQuickAction] = useState(false);
   const [spacePolicy, setSpacePolicy] = useState<WikiSpacePolicyPayload["policy"] | null>(null);
   const [loadingSpacePolicy, setLoadingSpacePolicy] = useState(false);
   const [savingSpacePolicy, setSavingSpacePolicy] = useState(false);
   const [spaceWriteMode, setSpaceWriteMode] = useState<"open" | "owners_only">("open");
   const [spaceCommentMode, setSpaceCommentMode] = useState<"open" | "owners_only">("open");
   const [spaceReviewRequired, setSpaceReviewRequired] = useState(false);
+  const [spacePublishChecklistPreset, setSpacePublishChecklistPreset] = useState<PublishChecklistPresetKey>("none");
+  const [spacePolicyAudit, setSpacePolicyAudit] = useState<WikiSpacePolicyAuditItem[]>([]);
+  const [loadingSpacePolicyAudit, setLoadingSpacePolicyAudit] = useState(false);
+  const [spacePolicyAdoptionSummaryApi, setSpacePolicyAdoptionSummaryApi] = useState<SpacePolicyAdoptionSummary | null>(null);
+  const [loadingSpacePolicyAdoptionSummary, setLoadingSpacePolicyAdoptionSummary] = useState(false);
   const [gatekeeperConfig, setGatekeeperConfig] = useState<GatekeeperConfig | null>(null);
-  const [loadingGatekeeperConfig, setLoadingGatekeeperConfig] = useState(false);
-  const [savingPublishPolicy, setSavingPublishPolicy] = useState(false);
-  const [publishModeDefault, setPublishModeDefault] = useState<PublishMode>("auto_publish");
-  const [spaceOwners, setSpaceOwners] = useState<WikiSpaceOwnerItem[]>([]);
-  const [loadingSpaceOwners, setLoadingSpaceOwners] = useState(false);
-  const [savingSpaceOwner, setSavingSpaceOwner] = useState(false);
-  const [spaceOwnerInput, setSpaceOwnerInput] = useState("");
-  const [spaceOwnerRoleInput, setSpaceOwnerRoleInput] = useState("owner");
-  const [pageOwners, setPageOwners] = useState<WikiPageOwnerItem[]>([]);
-  const [loadingPageOwners, setLoadingPageOwners] = useState(false);
-  const [savingPageOwner, setSavingPageOwner] = useState(false);
-  const [pageOwnerInput, setPageOwnerInput] = useState("");
-  const [pageOwnerRoleInput, setPageOwnerRoleInput] = useState("editor");
-  const [pageUploads, setPageUploads] = useState<WikiUploadItem[]>([]);
-  const [loadingPageUploads, setLoadingPageUploads] = useState(false);
+  const [, setLoadingGatekeeperConfig] = useState(false);
+  const [, setPublishModeDefault] = useState<PublishMode>("auto_publish");
+  const [, setBackfillLlmClassifierMode] = useState<"off" | "assist" | "enforce">("off");
+  const [, setBackfillLlmClassifierMinConfidence] = useState("0.78");
+  const [, setBackfillLlmClassifierAmbiguousOnly] = useState(true);
+  const [, setBackfillLlmClassifierModel] = useState("");
+  const [agentWorklogTimezone, setAgentWorklogTimezone] = useState("UTC");
+  const [agentWorklogScheduleHour, setAgentWorklogScheduleHour] = useState("2");
+  const [agentWorklogScheduleMinute, setAgentWorklogScheduleMinute] = useState("0");
+  const [agentWorklogMinActivityScore, setAgentWorklogMinActivityScore] = useState("2");
+  const [agentWorklogIncludeIdleDays, setAgentWorklogIncludeIdleDays] = useState(false);
+  const [agentWorklogRealtimeEnabled, setAgentWorklogRealtimeEnabled] = useState(false);
+  const [agentWorklogRealtimeLookbackMinutes, setAgentWorklogRealtimeLookbackMinutes] = useState("30");
+  const [savingAgentWorklogPolicy, setSavingAgentWorklogPolicy] = useState(false);
+  const [runningAgentWorklogSync, setRunningAgentWorklogSync] = useState(false);
+  const [agentOrgchart, setAgentOrgchart] = useState<AgentOrgchartPayload | null>(null);
+  const [loadingAgentOrgchart, setLoadingAgentOrgchart] = useState(false);
+  const [agentOrgchartIncludeHandoffs, setAgentOrgchartIncludeHandoffs] = useState(true);
   const [notificationsInbox, setNotificationsInbox] = useState<WikiNotificationItem[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [loadingNotificationsInbox, setLoadingNotificationsInbox] = useState(false);
   const [savingNotificationState, setSavingNotificationState] = useState(false);
   const [guidedPageForm, setGuidedPageForm] = useState<GuidedPageFormState>(DEFAULT_GUIDED_PAGE_FORM);
-  const [guidedPageMatches, setGuidedPageMatches] = useState<WikiPageSearchResult[]>([]);
-  const [searchingGuidedMatches, setSearchingGuidedMatches] = useState(false);
-  const [retrievalExplainQuery, setRetrievalExplainQuery] = useState("");
-  const [retrievalExplainRelatedEntity, setRetrievalExplainRelatedEntity] = useState("");
-  const [retrievalExplainPolicyMode, setRetrievalExplainPolicyMode] = useState<"off" | "advisory" | "enforced">(
-    "advisory",
-  );
-  const [retrievalExplainMinConfidence, setRetrievalExplainMinConfidence] = useState("0.45");
-  const [retrievalExplainMinTotalScore, setRetrievalExplainMinTotalScore] = useState("0.20");
-  const [retrievalExplainMinLexicalScore, setRetrievalExplainMinLexicalScore] = useState("0.08");
-  const [retrievalExplainMinTokenOverlap, setRetrievalExplainMinTokenOverlap] = useState("0.15");
-  const [retrievalExplainResults, setRetrievalExplainResults] = useState<RetrievalExplainResult[]>([]);
-  const [retrievalExplainGraphConfig, setRetrievalExplainGraphConfig] = useState<RetrievalExplainPayload["graph_config"] | null>(
-    null,
-  );
-  const [retrievalExplainContextPolicy, setRetrievalExplainContextPolicy] = useState<
-    RetrievalExplainPayload["context_policy"] | null
-  >(null);
-  const [retrievalExplainPolicyFilteredOut, setRetrievalExplainPolicyFilteredOut] = useState(0);
-  const [coreIntentSignals, setCoreIntentSignals] = useState(() => ({
-    startedAtMs: Date.now(),
-    triageOpenCount: 0,
-    triageOpenedDraftIds: [] as string[],
-    quickModeration: {
-      approve: 0,
-      reject: 0,
-      bySource: {
-        triage_lane: 0,
-        inbox_card: 0,
-        detail_header: 0,
-      } as Record<QuickModerationSource, number>,
-    },
-    lastAction: null as { label: string; timestampMs: number } | null,
-  }));
-  const [loadingRetrievalExplain, setLoadingRetrievalExplain] = useState(false);
-  const [moderationThroughput, setModerationThroughput] = useState<ModerationThroughputPayload | null>(null);
-  const [loadingModerationThroughput, setLoadingModerationThroughput] = useState(false);
+  const [, setModerationThroughput] = useState<ModerationThroughputPayload | null>(null);
+  const [, setLoadingModerationThroughput] = useState(false);
+  const [wikiLifecycleStats, setWikiLifecycleStats] = useState<WikiLifecycleStatsPayload | null>(null);
+  const [loadingWikiLifecycleStats, setLoadingWikiLifecycleStats] = useState(false);
+  const [wikiLifecycleTelemetry, setWikiLifecycleTelemetry] = useState<WikiLifecycleTelemetryPayload | null>(null);
+  const [loadingWikiLifecycleTelemetry, setLoadingWikiLifecycleTelemetry] = useState(false);
+  const [lifecycleTelemetryActionKey, setLifecycleTelemetryActionKey] = useState<string | null>(null);
+  const [wikiLifecycleTelemetryAction, setWikiLifecycleTelemetryAction] = useState<WikiLifecycleTelemetryPayload | null>(null);
+  const [loadingWikiLifecycleTelemetryAction, setLoadingWikiLifecycleTelemetryAction] = useState(false);
+  const [lifecycleQueryPreset, setLifecycleQueryPreset] = useState<LifecycleQueryPresetKey>("stale_21");
+  const [lifecycleStaleDays, setLifecycleStaleDays] = useState(21);
+  const [lifecycleCriticalDays, setLifecycleCriticalDays] = useState(45);
+  const [lifecycleSpaceFilter, setLifecycleSpaceFilter] = useState<string>(LIFECYCLE_SPACE_FILTER_ALL);
   const [creatingPage, setCreatingPage] = useState(false);
   const [showCoreCreatePanel, setShowCoreCreatePanel] = useState(false);
   const [showRolesGuideModal, setShowRolesGuideModal] = useState(false);
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [publishSummary, setPublishSummary] = useState("Publish page update");
+  const [publishConfirmHighRisk, setPublishConfirmHighRisk] = useState(false);
+  const [publishChecklistAcks, setPublishChecklistAcks] = useState<Record<string, boolean>>({});
+  const [loadingProcessSimulation, setLoadingProcessSimulation] = useState(false);
+  const [processSimulation, setProcessSimulation] = useState<WikiProcessSimulationPayload | null>(null);
   const [showQuickNavModal, setShowQuickNavModal] = useState(false);
   const [quickNavSlug, setQuickNavSlug] = useState<string | null>(null);
   const [quickNavQuery, setQuickNavQuery] = useState("");
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [selectedCreateTemplateKey, setSelectedCreateTemplateKey] = useState<string | null>(null);
-  const [conflictExplain, setConflictExplain] = useState<ConflictExplainPayload | null>(null);
+  const [, setConflictExplain] = useState<ConflictExplainPayload | null>(null);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
-  const [loadingPages, setLoadingPages] = useState(false);
+  const [, setLoadingPages] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingPageDetail, setLoadingPageDetail] = useState(false);
-  const [loadingConflictExplain, setLoadingConflictExplain] = useState(false);
+  const [, setLoadingConflictExplain] = useState(false);
   const [runningAction, setRunningAction] = useState(false);
-  const [rollingBackVersion, setRollingBackVersion] = useState<number | null>(null);
   const [armedRiskActionKey, setArmedRiskActionKey] = useState<string | null>(null);
   const [approveForm, setApproveForm] = useState<ApproveFormState>(DEFAULT_APPROVE_FORM);
   const [rejectForm, setRejectForm] = useState<RejectFormState>(DEFAULT_REJECT_FORM);
   const [detailTab, setDetailTab] = useState<DetailTab>("semantic");
-  const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
   const [selectedTocSectionKey, setSelectedTocSectionKey] = useState<string | null>(null);
   const [urlStateReady, setUrlStateReady] = useState(false);
   const [wikiUxMetrics, setWikiUxMetrics] = useState<WikiUxMetricsState>(() => ({
@@ -1634,7 +1938,19 @@ export default function App() {
     pageOpenCountAtFirstPublish: null,
     publishCount: 0,
   }));
+  const [lifecycleAdvisorMetrics, setLifecycleAdvisorMetrics] = useState<LifecycleAdvisorMetricsState>(() => ({
+    sessionId: randomKey(),
+    sessionStartedMs: Date.now(),
+    suggestionShown: 0,
+    suggestionApplied: 0,
+    staleShownAtBySlug: {},
+    staleResolvedDurationsMs: [],
+    emptyScopeActionShownByType: {},
+    emptyScopeActionAppliedByType: {},
+  }));
   const previousSelectedPageSlugRef = useRef<string | null>(null);
+  const lifecycleSuggestionSeenRef = useRef<Record<string, string>>({});
+  const lifecycleEmptyScopeSeenRef = useRef<Record<string, string>>({});
   const effectiveUiMode: UiMode = CAN_ACCESS_ADVANCED_MODE ? uiMode : "core";
   const showExpertModerationControls = effectiveUiMode === "advanced" || (CAN_ACCESS_ADVANCED_MODE && coreExpertControls);
   const requiresAuthSession =
@@ -1769,43 +2085,196 @@ export default function App() {
     });
   }, [pageNodes]);
 
-  const recentPages = useMemo(() => {
-    return [...pageNodes]
-      .filter((item) => !selectedSpaceKey || pageGroupKey(item.slug) === selectedSpaceKey)
-      .sort((a, b) => {
-        const aTs = activityTimestampMs(a.latest_draft_at || a.updated_at || a.created_at);
-        const bTs = activityTimestampMs(b.latest_draft_at || b.updated_at || b.created_at);
-        return bTs - aTs;
-      })
-      .slice(0, 5);
-  }, [pageNodes, selectedSpaceKey]);
+  const lifecycleSpaceChips = useMemo(() => {
+    if (!wikiLifecycleStats) return [] as Array<{ key: string; title: string; staleCount: number; criticalCount: number }>;
+    const counts = new Map<string, { key: string; title: string; staleCount: number; criticalCount: number }>();
+    const titleByKey = new Map(spaceNodes.map((item) => [item.key, item.title]));
+    for (const item of wikiLifecycleStats.stale_pages) {
+      const key = pageGroupKey(item.slug);
+      const current = counts.get(key) || {
+        key,
+        title: titleByKey.get(key) || key,
+        staleCount: 0,
+        criticalCount: 0,
+      };
+      current.staleCount += 1;
+      if (String(item.severity || "").trim().toLowerCase() === "critical") {
+        current.criticalCount += 1;
+      }
+      counts.set(key, current);
+    }
+    return [...counts.values()].sort((a, b) => {
+      if (a.criticalCount !== b.criticalCount) return b.criticalCount - a.criticalCount;
+      if (a.staleCount !== b.staleCount) return b.staleCount - a.staleCount;
+      return a.title.localeCompare(b.title);
+    });
+  }, [spaceNodes, wikiLifecycleStats]);
 
-  const legacyPostgresSources = useMemo(
-    () =>
-      legacySources
-        .filter((item) => String(item.source_type || "").trim().toLowerCase() === "postgres_sql")
-        .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""))),
-    [legacySources],
+  const lifecycleVisibleStalePages = useMemo(() => {
+    if (!wikiLifecycleStats) return [] as WikiLifecycleStatsPayload["stale_pages"];
+    if (!lifecycleSpaceFilter || lifecycleSpaceFilter === LIFECYCLE_SPACE_FILTER_ALL) {
+      return wikiLifecycleStats.stale_pages;
+    }
+    return wikiLifecycleStats.stale_pages.filter((item) => pageGroupKey(item.slug) === lifecycleSpaceFilter);
+  }, [lifecycleSpaceFilter, wikiLifecycleStats]);
+
+  const lifecycleEmptyScope = useMemo(() => {
+    if (!wikiLifecycleStats || wikiLifecycleStats.stale_pages.length > 0) return null;
+    const candidate = wikiLifecycleStats.meta?.empty_scope;
+    if (!candidate || typeof candidate !== "object") return null;
+    return candidate;
+  }, [wikiLifecycleStats]);
+  const lifecycleEmptyScopeActions = useMemo(() => {
+    if (!lifecycleEmptyScope || !Array.isArray(lifecycleEmptyScope.suggested_actions)) {
+      return [] as Array<{ action: string; label: string; deep_link?: { core_tab?: string; wiki_focus?: string | null } }>;
+    }
+    const rawActions = lifecycleEmptyScope.suggested_actions as Array<{
+      action?: string;
+      label?: string;
+      deep_link?: { core_tab?: string; wiki_focus?: string | null };
+    }>;
+    return rawActions
+      .filter((item) => Boolean(item && typeof item === "object" && String(item.action || "").trim()))
+      .map((item) => ({
+        action: String(item.action || "").trim().toLowerCase(),
+        label: String(item.label || item.action || "").trim() || "Action",
+        deep_link: item.deep_link,
+      }));
+  }, [lifecycleEmptyScope]);
+
+  const scopeSpaceKey = useMemo(() => {
+    if (selectedSpaceKey) return selectedSpaceKey;
+    return null;
+  }, [selectedSpaceKey]);
+
+  const scopeSpaceLabel = useMemo(() => {
+    if (!scopeSpaceKey) return null;
+    return spaceNodes.find((item) => item.key === scopeSpaceKey)?.title || scopeSpaceKey;
+  }, [scopeSpaceKey, spaceNodes]);
+
+  const scopePageLabel = useMemo(() => {
+    if (!selectedPageSlug) return null;
+    const fromDetail = selectedPageDetail?.page?.title;
+    if (fromDetail) return fromDetail;
+    return pageNodes.find((item) => item.slug === selectedPageSlug)?.title || selectedPageSlug;
+  }, [pageNodes, selectedPageDetail, selectedPageSlug]);
+
+  const applyLifecycleQueryPreset = useCallback((preset: LifecycleQueryPresetKey) => {
+    const nextPreset = LIFECYCLE_QUERY_PRESETS.find((item) => item.key === preset);
+    if (!nextPreset) return;
+    setLifecycleQueryPreset(nextPreset.key);
+    if (nextPreset.key !== "custom") {
+      setLifecycleStaleDays(nextPreset.staleDays);
+      setLifecycleCriticalDays(nextPreset.criticalDays);
+    }
+  }, []);
+  const toggleLifecycleTelemetryActionDrilldown = useCallback((actionKey: string) => {
+    const normalized = normalizeTelemetryActionKey(actionKey);
+    if (!normalized) return;
+    setLifecycleTelemetryActionKey((prev) => (prev === normalized ? null : normalized));
+    window.requestAnimationFrame(() => {
+      scrollElementIntoViewWithRetry("wiki-lifecycle-action-detail", 8, 120);
+    });
+  }, []);
+
+  const runLifecycleEmptyScopeAction = useCallback(
+    (
+      action: string,
+      deepLink?: {
+        core_tab?: "wiki" | "drafts" | "tasks" | string;
+        wiki_focus?: string | null;
+      },
+    ) => {
+      const deepLinkTab = String(deepLink?.core_tab || "")
+        .trim()
+        .toLowerCase();
+      if (deepLinkTab === "wiki" || deepLinkTab === "drafts" || deepLinkTab === "tasks") {
+        setCoreWorkspaceTab(deepLinkTab as CoreWorkspaceTab);
+      }
+      const focus = String(deepLink?.wiki_focus || "")
+        .trim()
+        .toLowerCase();
+      if (focus === "draft_inbox") {
+        scrollElementIntoViewWithRetry("wiki-draft-inbox", 10, 120);
+      } else if (focus === "policy_timeline") {
+        scrollElementIntoViewWithRetry("wiki-policy-timeline", 10, 120);
+      } else if (focus === "policy_edit") {
+        scrollElementIntoViewWithRetry("wiki-governance-panel", 10, 120);
+      }
+      const normalized = String(action || "").trim().toLowerCase();
+      if (normalized) {
+        setLifecycleAdvisorMetrics((prev) => ({
+          ...prev,
+          emptyScopeActionAppliedByType: {
+            ...prev.emptyScopeActionAppliedByType,
+            [normalized]: (prev.emptyScopeActionAppliedByType[normalized] || 0) + 1,
+          },
+        }));
+      }
+      if (normalized === "create_page") {
+        setCoreWorkspaceTab("wiki");
+        setShowCoreCreatePanel(true);
+        return;
+      }
+      if (normalized === "review_open_drafts") {
+        setCoreWorkspaceTab("drafts");
+        return;
+      }
+      if (normalized === "lower_threshold") {
+        applyLifecycleQueryPreset("stale_21");
+      }
+    },
+    [applyLifecycleQueryPreset],
   );
 
-  const legacyConnectedSource = useMemo(() => {
-    const normalizedSourceRef = legacySourceRef.trim().toLowerCase();
-    if (!normalizedSourceRef) return null;
-    return (
-      legacyPostgresSources.find((item) => String(item.source_ref || "").trim().toLowerCase() === normalizedSourceRef) || null
-    );
-  }, [legacyPostgresSources, legacySourceRef]);
+  useEffect(() => {
+    if (!selectedSpaceKey) {
+      setLifecycleSpaceFilter(LIFECYCLE_SPACE_FILTER_ALL);
+      return;
+    }
+    setLifecycleSpaceFilter(selectedSpaceKey);
+  }, [selectedSpaceKey]);
+
+  useEffect(() => {
+    const project = projectId.trim();
+    if (!project || !lifecycleEmptyScope || lifecycleEmptyScopeActions.length === 0) return;
+    const scopeSignature = `${project}::${selectedSpaceKey || "all"}::${lifecycleEmptyScope.code}::${lifecycleEmptyScopeActions
+      .map((item) => item.action)
+      .join("|")}`;
+    if (lifecycleEmptyScopeSeenRef.current[scopeSignature]) return;
+    lifecycleEmptyScopeSeenRef.current[scopeSignature] = "seen";
+    setLifecycleAdvisorMetrics((prev) => {
+      const nextShown = { ...prev.emptyScopeActionShownByType };
+      for (const item of lifecycleEmptyScopeActions) {
+        const action = String(item.action || "").trim().toLowerCase();
+        if (!action) continue;
+        nextShown[action] = (nextShown[action] || 0) + 1;
+      }
+      return {
+        ...prev,
+        emptyScopeActionShownByType: nextShown,
+      };
+    });
+  }, [lifecycleEmptyScope, lifecycleEmptyScopeActions, projectId, selectedSpaceKey]);
+
+  useEffect(() => {
+    if (!wikiLifecycleStats) {
+      setLifecycleSpaceFilter(LIFECYCLE_SPACE_FILTER_ALL);
+      return;
+    }
+    if (!lifecycleSpaceFilter || lifecycleSpaceFilter === LIFECYCLE_SPACE_FILTER_ALL) {
+      return;
+    }
+    const exists = wikiLifecycleStats.stale_pages.some((item) => pageGroupKey(item.slug) === lifecycleSpaceFilter);
+    if (!exists) {
+      setLifecycleSpaceFilter(LIFECYCLE_SPACE_FILTER_ALL);
+    }
+  }, [lifecycleSpaceFilter, wikiLifecycleStats]);
 
   const legacySelectedProfile = useMemo(
     () => legacyProfiles.find((item) => item.profile === legacySqlProfile) || null,
     [legacyProfiles, legacySqlProfile],
   );
-
-  const pinnedPages = useMemo(() => {
-    return pinnedPageSlugs
-      .map((slug) => pageNodes.find((item) => item.slug === slug))
-      .filter((item): item is WikiPageNode => Boolean(item));
-  }, [pageNodes, pinnedPageSlugs]);
 
   const scopedDrafts = useMemo(
     () =>
@@ -1905,6 +2374,7 @@ export default function App() {
         bulkForceApprove?: boolean;
         reviewQueuePreset?: ReviewQueuePresetKey;
         reviewSlaHours?: number;
+        lifecycleTelemetryActionKey?: string | null;
       };
       if (parsed.apiUrl) setApiUrl(parsed.apiUrl);
       if (parsed.projectId) setProjectId(parsed.projectId);
@@ -1961,6 +2431,10 @@ export default function App() {
       if (typeof parsed.reviewSlaHours === "number" && Number.isFinite(parsed.reviewSlaHours)) {
         setReviewSlaHours(Math.max(1, Math.min(168, Math.round(parsed.reviewSlaHours))));
       }
+      if (typeof parsed.lifecycleTelemetryActionKey === "string" || parsed.lifecycleTelemetryActionKey === null) {
+        const normalizedActionKey = normalizeTelemetryActionKey(String(parsed.lifecycleTelemetryActionKey || ""));
+        setLifecycleTelemetryActionKey(normalizedActionKey || null);
+      }
     } catch {
       // ignore corrupt local storage
     }
@@ -1970,6 +2444,7 @@ export default function App() {
     try {
       const pathState = parseWikiPath(window.location.pathname);
       setWikiBasePath(pathState.basePath);
+      setCoreWorkspaceRoute(pathState.route);
       if (pathState.pageSlug) {
         setSelectedPageSlug(pathState.pageSlug);
         setSelectedSpaceKey(pageGroupKey(pathState.pageSlug));
@@ -1986,10 +2461,14 @@ export default function App() {
         setSelectedSpaceKey(spaceParam);
       }
       const pageParam = String(params.get("wiki_page") || "").trim();
-      if (!pathState.pageSlug && pageParam) {
+      if (pathState.route === "wiki" && !pathState.pageSlug && pageParam) {
         setSelectedPageSlug(pageParam);
         setSelectedSpaceKey(pageGroupKey(pageParam));
         setCoreWorkspaceTab("wiki");
+      }
+      const coreTabParam = String(params.get("core_tab") || "").trim().toLowerCase();
+      if (coreTabParam === "wiki" || coreTabParam === "drafts" || coreTabParam === "tasks") {
+        setCoreWorkspaceTab(coreTabParam as CoreWorkspaceTab);
       }
       const pageStatusParam = String(params.get("wiki_status") || "").trim().toLowerCase();
       if (pageStatusParam && ["draft", "reviewed", "published", "archived"].includes(pageStatusParam)) {
@@ -2011,12 +2490,60 @@ export default function App() {
       if (pageQueryParam) {
         setPageFilter(pageQueryParam);
       }
+      const lifecyclePresetParam = String(params.get("wiki_lifecycle_preset") || "")
+        .trim()
+        .toLowerCase() as LifecycleQueryPresetKey;
+      if (lifecyclePresetParam === "stale_21" || lifecyclePresetParam === "critical_45" || lifecyclePresetParam === "custom") {
+        setLifecycleQueryPreset(lifecyclePresetParam);
+      }
+      const lifecycleStaleParamRaw = Number(params.get("wiki_lifecycle_stale_days"));
+      if (Number.isFinite(lifecycleStaleParamRaw)) {
+        setLifecycleStaleDays(Math.max(1, Math.min(365, Math.round(lifecycleStaleParamRaw))));
+      }
+      const lifecycleCriticalParamRaw = Number(params.get("wiki_lifecycle_critical_days"));
+      if (Number.isFinite(lifecycleCriticalParamRaw)) {
+        setLifecycleCriticalDays(Math.max(1, Math.min(365, Math.round(lifecycleCriticalParamRaw))));
+      }
+      const lifecycleActionParam = normalizeTelemetryActionKey(String(params.get("wiki_lifecycle_action") || ""));
+      if (lifecycleActionParam) {
+        setLifecycleTelemetryActionKey(lifecycleActionParam);
+      }
+      const focusParam = String(params.get("wiki_focus") || "").trim().toLowerCase();
+      if (focusParam === "draft_inbox") {
+        setCoreWorkspaceRoute("wiki");
+        setCoreWorkspaceTab("drafts");
+        scrollElementIntoViewWithRetry("wiki-draft-inbox", 12, 140);
+      } else if (focusParam === "policy_timeline") {
+        setCoreWorkspaceRoute("wiki");
+        setCoreWorkspaceTab("wiki");
+        scrollElementIntoViewWithRetry("wiki-policy-timeline", 12, 140);
+      } else if (focusParam === "policy_edit") {
+        setCoreWorkspaceRoute("wiki");
+        setCoreWorkspaceTab("wiki");
+        scrollElementIntoViewWithRetry("wiki-governance-panel", 12, 140);
+      } else if (focusParam === "review_assignments") {
+        setCoreWorkspaceRoute("wiki");
+        setCoreWorkspaceTab("wiki");
+        scrollElementIntoViewWithRetry("wiki-review-assignments", 12, 140);
+      }
       if (projectParam) {
         if (!params.has("wiki_space")) setSelectedSpaceKey(null);
         if (!params.has("wiki_status")) setPageStatusFilter(null);
         if (!params.has("wiki_updated_by")) setPageUpdatedByFilter("");
         if (!params.has("wiki_with_open_drafts")) setOpenPagesOnly(false);
         if (!params.has("wiki_q")) setPageFilter("");
+        if (!params.has("wiki_lifecycle_preset")) {
+          setLifecycleQueryPreset("stale_21");
+        }
+        if (!params.has("wiki_lifecycle_stale_days")) {
+          setLifecycleStaleDays(21);
+        }
+        if (!params.has("wiki_lifecycle_critical_days")) {
+          setLifecycleCriticalDays(45);
+        }
+        if (!params.has("wiki_lifecycle_action")) {
+          setLifecycleTelemetryActionKey(null);
+        }
       }
     } catch {
       // ignore invalid URL params
@@ -2024,6 +2551,13 @@ export default function App() {
       setUrlStateReady(true);
     }
   }, []);
+
+  useEffect(() => {
+    if (coreWorkspaceRoute !== "operations") return;
+    if (coreWorkspaceTab !== "drafts") {
+      setCoreWorkspaceTab("drafts");
+    }
+  }, [coreWorkspaceRoute, coreWorkspaceTab]);
 
   useEffect(() => {
     if (!urlStateReady) {
@@ -2040,13 +2574,19 @@ export default function App() {
     setOrDelete("project", projectId.trim() || null);
     setOrDelete("wiki_space", selectedSpaceKey || null);
     setOrDelete("wiki_page", selectedPageSlug || null);
+    setOrDelete("core_tab", coreWorkspaceTab !== "wiki" ? coreWorkspaceTab : null);
     setOrDelete("wiki_status", pageStatusFilter || null);
     setOrDelete("wiki_updated_by", pageUpdatedByFilter.trim() || null);
     setOrDelete("wiki_with_open_drafts", openPagesOnly ? "true" : null);
     setOrDelete("wiki_q", pageFilter.trim() || null);
+    setOrDelete("wiki_lifecycle_preset", lifecycleQueryPreset || null);
+    setOrDelete("wiki_lifecycle_stale_days", String(Math.max(1, Math.min(365, Math.round(lifecycleStaleDays)))));
+    setOrDelete("wiki_lifecycle_critical_days", String(Math.max(1, Math.min(365, Math.round(lifecycleCriticalDays)))));
+    setOrDelete("wiki_lifecycle_action", lifecycleTelemetryActionKey || null);
+    setOrDelete("wiki_focus", null);
     const nextSearch = params.toString();
     const currentSearch = window.location.search.replace(/^\?/, "");
-    const nextPathname = buildWikiPath(wikiBasePath, selectedPageSlug);
+    const nextPathname = buildWorkspacePath(wikiBasePath, coreWorkspaceRoute, selectedPageSlug);
     if (nextSearch === currentSearch && window.location.pathname === nextPathname) {
       return;
     }
@@ -2057,7 +2597,13 @@ export default function App() {
     pageFilter,
     pageStatusFilter,
     pageUpdatedByFilter,
+    lifecycleCriticalDays,
+    lifecycleTelemetryActionKey,
+    lifecycleQueryPreset,
+    lifecycleStaleDays,
     projectId,
+    coreWorkspaceRoute,
+    coreWorkspaceTab,
     selectedPageSlug,
     selectedSpaceKey,
     urlStateReady,
@@ -2097,6 +2643,7 @@ export default function App() {
         bulkForceApprove,
         reviewQueuePreset,
         reviewSlaHours,
+        lifecycleTelemetryActionKey,
       }),
     );
   }, [
@@ -2113,6 +2660,7 @@ export default function App() {
     sessionToken,
     reviewQueuePreset,
     reviewSlaHours,
+    lifecycleTelemetryActionKey,
     savedViews,
     selectedSpaceKey,
     selectedViewId,
@@ -2258,11 +2806,133 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadWikiLifecycleStats = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setWikiLifecycleStats(null);
+      return;
+    }
+    const scopedSpaceKey = String(selectedSpaceKey || "").trim();
+    const staleDays = Math.max(1, Math.min(365, Math.trunc(Number(lifecycleStaleDays || 21))));
+    const criticalDays = Math.max(staleDays, Math.min(365, Math.trunc(Number(lifecycleCriticalDays || 45))));
+    setLoadingWikiLifecycleStats(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("project_id", project);
+      params.set("stale_days", String(staleDays));
+      params.set("critical_days", String(criticalDays));
+      params.set("stale_limit", "20");
+      if (scopedSpaceKey) {
+        params.set("space_key", scopedSpaceKey);
+      }
+      const payload = await apiFetch<WikiLifecycleStatsPayload>(
+        apiUrl,
+        `/v1/wiki/lifecycle/stats?${params.toString()}`,
+      );
+      setWikiLifecycleStats(payload);
+    } catch {
+      setWikiLifecycleStats(null);
+    } finally {
+      setLoadingWikiLifecycleStats(false);
+    }
+  }, [apiUrl, lifecycleCriticalDays, lifecycleStaleDays, projectId, selectedSpaceKey]);
+
+  useEffect(() => {
+    if (!projectId.trim()) {
+      setWikiLifecycleStats(null);
+      return;
+    }
+    void loadWikiLifecycleStats();
+  }, [loadWikiLifecycleStats, projectId]);
+
+  const loadWikiLifecycleTelemetry = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const project = projectId.trim();
+      if (!project) {
+        setWikiLifecycleTelemetry(null);
+        return;
+      }
+      if (!opts?.silent) {
+        setLoadingWikiLifecycleTelemetry(true);
+      }
+      try {
+        const payload = await apiFetch<WikiLifecycleTelemetryPayload>(
+          apiUrl,
+          `/v1/wiki/lifecycle/telemetry?project_id=${encodeURIComponent(project)}&days=${LIFECYCLE_TELEMETRY_WINDOW_DAYS}`,
+        );
+        setWikiLifecycleTelemetry(payload);
+      } catch {
+        if (!opts?.silent) {
+          setWikiLifecycleTelemetry(null);
+        }
+      } finally {
+        if (!opts?.silent) {
+          setLoadingWikiLifecycleTelemetry(false);
+        }
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadWikiLifecycleTelemetryByAction = useCallback(
+    async (actionKey: string, opts?: { silent?: boolean }) => {
+      const project = projectId.trim();
+      const normalizedActionKey = normalizeTelemetryActionKey(actionKey);
+      if (!project || !normalizedActionKey) {
+        setWikiLifecycleTelemetryAction(null);
+        return;
+      }
+      if (!opts?.silent) {
+        setLoadingWikiLifecycleTelemetryAction(true);
+      }
+      try {
+        const payload = await apiFetch<WikiLifecycleTelemetryPayload>(
+          apiUrl,
+          `/v1/wiki/lifecycle/telemetry?project_id=${encodeURIComponent(project)}&days=${LIFECYCLE_TELEMETRY_WINDOW_DAYS}&action_key=${encodeURIComponent(normalizedActionKey)}`,
+        );
+        setWikiLifecycleTelemetryAction(payload);
+      } catch {
+        if (!opts?.silent) {
+          setWikiLifecycleTelemetryAction(null);
+        }
+      } finally {
+        if (!opts?.silent) {
+          setLoadingWikiLifecycleTelemetryAction(false);
+        }
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  useEffect(() => {
+    if (!projectId.trim()) {
+      setWikiLifecycleTelemetry(null);
+      setWikiLifecycleTelemetryAction(null);
+      return;
+    }
+    void loadWikiLifecycleTelemetry();
+    if (lifecycleTelemetryActionKey) {
+      void loadWikiLifecycleTelemetryByAction(lifecycleTelemetryActionKey);
+    } else {
+      setWikiLifecycleTelemetryAction(null);
+    }
+    const timer = window.setInterval(() => {
+      void loadWikiLifecycleTelemetry({ silent: true });
+      if (lifecycleTelemetryActionKey) {
+        void loadWikiLifecycleTelemetryByAction(lifecycleTelemetryActionKey, { silent: true });
+      }
+    }, 30000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [loadWikiLifecycleTelemetry, loadWikiLifecycleTelemetryByAction, lifecycleTelemetryActionKey, projectId]);
+
   const loadWikiPages = useCallback(
     async (opts?: { silent?: boolean }) => {
       const project = projectId.trim();
       if (!project) {
         setWikiPages([]);
+        setWikiLifecycleStats(null);
         return;
       }
       setLoadingPages(true);
@@ -2301,7 +2971,7 @@ export default function App() {
         setLoadingPages(false);
       }
     },
-    [apiUrl, openPagesOnly, pageStatusFilter, pageUpdatedByFilter, projectId],
+    [apiUrl, loadWikiLifecycleStats, openPagesOnly, pageStatusFilter, pageUpdatedByFilter, projectId],
   );
 
   useEffect(() => {
@@ -2452,72 +3122,6 @@ export default function App() {
     [apiUrl, projectId],
   );
 
-  const loadPageAliases = useCallback(
-    async (slug: string) => {
-      if (!projectId.trim() || !slug.trim()) {
-        setPageAliases([]);
-        return;
-      }
-      setLoadingPageAliases(true);
-      try {
-        const payload = await apiFetch<{ aliases: WikiPageAliasItem[] }>(
-          apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(slug)}/aliases?project_id=${encodeURIComponent(projectId)}`,
-        );
-        setPageAliases(payload.aliases ?? []);
-      } catch {
-        setPageAliases([]);
-      } finally {
-        setLoadingPageAliases(false);
-      }
-    },
-    [apiUrl, projectId],
-  );
-
-  const loadPageComments = useCallback(
-    async (slug: string) => {
-      if (!projectId.trim() || !slug.trim()) {
-        setPageComments([]);
-        return;
-      }
-      setLoadingPageComments(true);
-      try {
-        const payload = await apiFetch<{ comments: WikiPageCommentItem[] }>(
-          apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(slug)}/comments?project_id=${encodeURIComponent(projectId)}&limit=100`,
-        );
-        setPageComments(payload.comments ?? []);
-      } catch {
-        setPageComments([]);
-      } finally {
-        setLoadingPageComments(false);
-      }
-    },
-    [apiUrl, projectId],
-  );
-
-  const loadPageWatchers = useCallback(
-    async (slug: string) => {
-      if (!projectId.trim() || !slug.trim()) {
-        setPageWatchers([]);
-        return;
-      }
-      setLoadingPageWatchers(true);
-      try {
-        const payload = await apiFetch<{ watchers: WikiPageWatcherItem[] }>(
-          apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(slug)}/watchers?project_id=${encodeURIComponent(projectId)}`,
-        );
-        setPageWatchers(payload.watchers ?? []);
-      } catch {
-        setPageWatchers([]);
-      } finally {
-        setLoadingPageWatchers(false);
-      }
-    },
-    [apiUrl, projectId],
-  );
-
   const loadPageReviewAssignments = useCallback(
     async (slug: string) => {
       if (!projectId.trim() || !slug.trim()) {
@@ -2557,10 +3161,89 @@ export default function App() {
         setSpaceWriteMode(payload.policy.write_mode === "owners_only" ? "owners_only" : "open");
         setSpaceCommentMode(payload.policy.comment_mode === "owners_only" ? "owners_only" : "open");
         setSpaceReviewRequired(Boolean(payload.policy.review_assignment_required));
+        const metadata = payload.policy.metadata && typeof payload.policy.metadata === "object" ? payload.policy.metadata : {};
+        const presetRaw = String((metadata as Record<string, unknown>).publish_checklist_preset || "").trim().toLowerCase();
+        if (presetRaw === "ops_standard" || presetRaw === "policy_strict") {
+          setSpacePublishChecklistPreset(presetRaw);
+        } else {
+          setSpacePublishChecklistPreset("none");
+        }
       } catch {
         setSpacePolicy(null);
+        setSpacePublishChecklistPreset("none");
       } finally {
         setLoadingSpacePolicy(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadSpacePolicyAudit = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setSpacePolicyAudit([]);
+        return;
+      }
+      setLoadingSpacePolicyAudit(true);
+      try {
+        const spaceKey = pageGroupKey(slug).toLowerCase();
+        const payload = await apiFetch<WikiSpacePolicyAuditPayload>(
+          apiUrl,
+          `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/policy/audit?project_id=${encodeURIComponent(projectId)}&limit=30`,
+        );
+        setSpacePolicyAudit(payload.entries ?? []);
+      } catch {
+        setSpacePolicyAudit([]);
+      } finally {
+        setLoadingSpacePolicyAudit(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
+  const loadSpacePolicyAdoptionSummary = useCallback(
+    async (slug: string) => {
+      if (!projectId.trim() || !slug.trim()) {
+        setLoadingSpacePolicyAdoptionSummary(false);
+        setSpacePolicyAdoptionSummaryApi(null);
+        return;
+      }
+      setLoadingSpacePolicyAdoptionSummary(true);
+      try {
+        const spaceKey = pageGroupKey(slug).toLowerCase();
+        const payload = await apiFetch<WikiSpacePolicyAdoptionSummaryPayload>(
+          apiUrl,
+          `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/policy/adoption-summary?project_id=${encodeURIComponent(projectId)}&limit=200`,
+        );
+        const summaryRaw = payload.summary && typeof payload.summary === "object" ? payload.summary : null;
+        if (!summaryRaw) {
+          setSpacePolicyAdoptionSummaryApi(null);
+          return;
+        }
+        const checklistUsageRaw =
+          summaryRaw.checklist_usage && typeof summaryRaw.checklist_usage === "object" ? summaryRaw.checklist_usage : {};
+        setSpacePolicyAdoptionSummaryApi({
+          totalUpdates: Math.max(0, Number(summaryRaw.total_updates || 0)),
+          uniqueActors: Math.max(0, Number(summaryRaw.unique_actors || 0)),
+          topActor: summaryRaw.top_actor ? String(summaryRaw.top_actor) : null,
+          topActorUpdates: Math.max(0, Number(summaryRaw.top_actor_updates || 0)),
+          avgCadenceDays:
+            summaryRaw.avg_update_interval_days == null || !Number.isFinite(Number(summaryRaw.avg_update_interval_days))
+              ? null
+              : Number(summaryRaw.avg_update_interval_days),
+          checklistUsage: {
+            none: Math.max(0, Number((checklistUsageRaw as Record<string, unknown>).none || 0)),
+            ops_standard: Math.max(0, Number((checklistUsageRaw as Record<string, unknown>).ops_standard || 0)),
+            policy_strict: Math.max(0, Number((checklistUsageRaw as Record<string, unknown>).policy_strict || 0)),
+          },
+          checklistTransitions: Math.max(0, Number(summaryRaw.checklist_transitions || 0)),
+          firstUpdatedAt: summaryRaw.first_updated_at ? String(summaryRaw.first_updated_at) : null,
+          lastUpdatedAt: summaryRaw.last_updated_at ? String(summaryRaw.last_updated_at) : null,
+        });
+      } catch {
+        setSpacePolicyAdoptionSummaryApi(null);
+      } finally {
+        setLoadingSpacePolicyAdoptionSummary(false);
       }
     },
     [apiUrl, projectId],
@@ -2570,6 +3253,17 @@ export default function App() {
     if (!projectId.trim()) {
       setGatekeeperConfig(null);
       setPublishModeDefault("auto_publish");
+      setBackfillLlmClassifierMode("off");
+      setBackfillLlmClassifierMinConfidence("0.78");
+      setBackfillLlmClassifierAmbiguousOnly(true);
+      setBackfillLlmClassifierModel("");
+      setAgentWorklogTimezone("UTC");
+      setAgentWorklogScheduleHour("2");
+      setAgentWorklogScheduleMinute("0");
+      setAgentWorklogMinActivityScore("2");
+      setAgentWorklogIncludeIdleDays(false);
+      setAgentWorklogRealtimeEnabled(false);
+      setAgentWorklogRealtimeLookbackMinutes("30");
       return;
     }
     setLoadingGatekeeperConfig(true);
@@ -2579,7 +3273,44 @@ export default function App() {
         `/v1/gatekeeper/config?project_id=${encodeURIComponent(projectId)}`,
       );
       const nextConfig = payload.config;
+      const routingPolicy =
+        nextConfig.routing_policy && typeof nextConfig.routing_policy === "object" ? nextConfig.routing_policy : {};
+      const llmModeRaw = String(routingPolicy.backfill_llm_classifier_mode || "off").trim().toLowerCase();
+      const llmMode = llmModeRaw === "assist" || llmModeRaw === "enforce" ? llmModeRaw : "off";
+      const llmMinConfidenceRaw = Number(routingPolicy.backfill_llm_classifier_min_confidence);
+      const llmMinConfidence = Number.isFinite(llmMinConfidenceRaw)
+        ? Math.max(0, Math.min(1, llmMinConfidenceRaw))
+        : 0.78;
+      const llmModel = String(routingPolicy.backfill_llm_classifier_model || "").trim();
+      const worklogTimezone = String(routingPolicy.agent_worklog_timezone || "UTC").trim() || "UTC";
+      const worklogScheduleHourRaw = Number(routingPolicy.agent_worklog_schedule_hour_local);
+      const worklogScheduleMinuteRaw = Number(routingPolicy.agent_worklog_schedule_minute_local);
+      const worklogMinActivityScoreRaw = Number(routingPolicy.agent_worklog_min_activity_score);
+      const worklogRealtimeLookbackRaw = Number(routingPolicy.agent_worklog_realtime_lookback_minutes);
+      const worklogScheduleHour = Number.isFinite(worklogScheduleHourRaw)
+        ? Math.max(0, Math.min(23, Math.round(worklogScheduleHourRaw)))
+        : 2;
+      const worklogScheduleMinute = Number.isFinite(worklogScheduleMinuteRaw)
+        ? Math.max(0, Math.min(59, Math.round(worklogScheduleMinuteRaw)))
+        : 0;
+      const worklogMinActivityScore = Number.isFinite(worklogMinActivityScoreRaw)
+        ? Math.max(0, Math.min(100, Math.round(worklogMinActivityScoreRaw)))
+        : 2;
+      const worklogRealtimeLookback = Number.isFinite(worklogRealtimeLookbackRaw)
+        ? Math.max(5, Math.min(720, Math.round(worklogRealtimeLookbackRaw)))
+        : 30;
       setGatekeeperConfig(nextConfig);
+      setBackfillLlmClassifierMode(llmMode);
+      setBackfillLlmClassifierMinConfidence(llmMinConfidence.toFixed(2));
+      setBackfillLlmClassifierAmbiguousOnly(routingPolicy.backfill_llm_classifier_ambiguous_only !== false);
+      setBackfillLlmClassifierModel(llmModel);
+      setAgentWorklogTimezone(worklogTimezone);
+      setAgentWorklogScheduleHour(String(worklogScheduleHour));
+      setAgentWorklogScheduleMinute(String(worklogScheduleMinute));
+      setAgentWorklogMinActivityScore(String(worklogMinActivityScore));
+      setAgentWorklogIncludeIdleDays(routingPolicy.agent_worklog_include_idle_days === true);
+      setAgentWorklogRealtimeEnabled(routingPolicy.agent_worklog_realtime_enabled === true);
+      setAgentWorklogRealtimeLookbackMinutes(String(worklogRealtimeLookback));
       if (
         nextConfig.publish_mode_default === "human_required" ||
         nextConfig.publish_mode_default === "conditional" ||
@@ -2592,10 +3323,213 @@ export default function App() {
     } catch {
       setGatekeeperConfig(null);
       setPublishModeDefault("auto_publish");
+      setBackfillLlmClassifierMode("off");
+      setBackfillLlmClassifierMinConfidence("0.78");
+      setBackfillLlmClassifierAmbiguousOnly(true);
+      setBackfillLlmClassifierModel("");
+      setAgentWorklogTimezone("UTC");
+      setAgentWorklogScheduleHour("2");
+      setAgentWorklogScheduleMinute("0");
+      setAgentWorklogMinActivityScore("2");
+      setAgentWorklogIncludeIdleDays(false);
+      setAgentWorklogRealtimeEnabled(false);
+      setAgentWorklogRealtimeLookbackMinutes("30");
     } finally {
       setLoadingGatekeeperConfig(false);
     }
   }, [apiUrl, projectId]);
+
+  const loadAgentOrgchart = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const project = projectId.trim();
+      if (!project) {
+        setAgentOrgchart(null);
+        return;
+      }
+      setLoadingAgentOrgchart(true);
+      try {
+        const payload = await apiFetch<AgentOrgchartPayload>(
+          apiUrl,
+          `/v1/agents/orgchart?project_id=${encodeURIComponent(project)}&include_handoffs=${
+            agentOrgchartIncludeHandoffs ? "true" : "false"
+          }&include_retired=false&max_agents=1000&max_edges=2000`,
+        );
+        setAgentOrgchart(payload);
+      } catch (error) {
+        setAgentOrgchart(null);
+        if (!opts?.silent) {
+          notifications.show({
+            color: "red",
+            title: "Failed to load orgchart",
+            message: String(error),
+          });
+        }
+      } finally {
+        setLoadingAgentOrgchart(false);
+      }
+    },
+    [agentOrgchartIncludeHandoffs, apiUrl, projectId],
+  );
+
+  const saveAgentWorklogPolicy = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      notifications.show({
+        color: "red",
+        title: "Project ID required",
+        message: "Set project id before saving worklog policy.",
+      });
+      return;
+    }
+    if (!gatekeeperConfig) {
+      notifications.show({
+        color: "orange",
+        title: "Policy not loaded",
+        message: "Loading latest gatekeeper config first.",
+      });
+      await loadGatekeeperConfig();
+      return;
+    }
+
+    const scheduleHourRaw = Number.parseInt(agentWorklogScheduleHour, 10);
+    const scheduleMinuteRaw = Number.parseInt(agentWorklogScheduleMinute, 10);
+    const minActivityRaw = Number.parseInt(agentWorklogMinActivityScore, 10);
+    const lookbackRaw = Number.parseInt(agentWorklogRealtimeLookbackMinutes, 10);
+    const scheduleHour = Number.isFinite(scheduleHourRaw) ? Math.max(0, Math.min(23, scheduleHourRaw)) : 2;
+    const scheduleMinute = Number.isFinite(scheduleMinuteRaw) ? Math.max(0, Math.min(59, scheduleMinuteRaw)) : 0;
+    const minActivityScore = Number.isFinite(minActivityRaw) ? Math.max(0, Math.min(100, minActivityRaw)) : 2;
+    const realtimeLookbackMinutes = Number.isFinite(lookbackRaw) ? Math.max(5, Math.min(720, lookbackRaw)) : 30;
+    const timezone = agentWorklogTimezone.trim() || "UTC";
+    const existingRoutingPolicy =
+      gatekeeperConfig.routing_policy && typeof gatekeeperConfig.routing_policy === "object"
+        ? gatekeeperConfig.routing_policy
+        : {};
+    const nextRoutingPolicy = {
+      ...existingRoutingPolicy,
+      agent_worklog_timezone: timezone,
+      agent_worklog_schedule_hour_local: scheduleHour,
+      agent_worklog_schedule_minute_local: scheduleMinute,
+      agent_worklog_min_activity_score: minActivityScore,
+      agent_worklog_include_idle_days: agentWorklogIncludeIdleDays,
+      agent_worklog_realtime_enabled: agentWorklogRealtimeEnabled,
+      agent_worklog_realtime_lookback_minutes: realtimeLookbackMinutes,
+    };
+
+    setSavingAgentWorklogPolicy(true);
+    try {
+      const payload = await apiFetch<GatekeeperConfigPayload>(apiUrl, "/v1/gatekeeper/config", {
+        method: "PUT",
+        body: {
+          project_id: project,
+          min_sources_for_golden: gatekeeperConfig.min_sources_for_golden,
+          conflict_free_days: gatekeeperConfig.conflict_free_days,
+          min_score_for_golden: gatekeeperConfig.min_score_for_golden,
+          operational_short_text_len: gatekeeperConfig.operational_short_text_len,
+          operational_short_token_len: gatekeeperConfig.operational_short_token_len,
+          llm_assist_enabled: gatekeeperConfig.llm_assist_enabled,
+          llm_provider: gatekeeperConfig.llm_provider,
+          llm_model: gatekeeperConfig.llm_model,
+          llm_score_weight: gatekeeperConfig.llm_score_weight,
+          llm_min_confidence: gatekeeperConfig.llm_min_confidence,
+          llm_timeout_ms: gatekeeperConfig.llm_timeout_ms,
+          publish_mode_default: gatekeeperConfig.publish_mode_default,
+          publish_mode_by_category: gatekeeperConfig.publish_mode_by_category,
+          auto_publish_min_score: gatekeeperConfig.auto_publish_min_score,
+          auto_publish_min_sources: gatekeeperConfig.auto_publish_min_sources,
+          auto_publish_require_golden: gatekeeperConfig.auto_publish_require_golden,
+          auto_publish_allow_conflicts: gatekeeperConfig.auto_publish_allow_conflicts,
+          routing_policy: nextRoutingPolicy,
+          updated_by: reviewer.trim() || "web_ui",
+        },
+      });
+      setGatekeeperConfig(payload.config);
+      notifications.show({
+        color: "teal",
+        title: "Worklog policy saved",
+        message: `Timezone ${timezone}, schedule ${String(scheduleHour).padStart(2, "0")}:${String(scheduleMinute).padStart(2, "0")}.`,
+      });
+      await loadGatekeeperConfig();
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Could not save worklog policy",
+        message: String(error),
+      });
+    } finally {
+      setSavingAgentWorklogPolicy(false);
+    }
+  }, [
+    agentWorklogIncludeIdleDays,
+    agentWorklogMinActivityScore,
+    agentWorklogRealtimeEnabled,
+    agentWorklogRealtimeLookbackMinutes,
+    agentWorklogScheduleHour,
+    agentWorklogScheduleMinute,
+    agentWorklogTimezone,
+    apiUrl,
+    gatekeeperConfig,
+    loadGatekeeperConfig,
+    projectId,
+    reviewer,
+  ]);
+
+  const runAgentWorklogSyncNow = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      notifications.show({
+        color: "red",
+        title: "Project ID required",
+        message: "Set project id before syncing worklogs.",
+      });
+      return;
+    }
+    const minActivityRaw = Number.parseInt(agentWorklogMinActivityScore, 10);
+    const minActivityScore = Number.isFinite(minActivityRaw) ? Math.max(0, Math.min(100, minActivityRaw)) : 2;
+    setRunningAgentWorklogSync(true);
+    try {
+      const payload = await apiFetch<{
+        profiles_with_updates?: number;
+        worklogs_generated?: number;
+        timezone?: string;
+        skipped_idle?: number;
+      }>(apiUrl, "/v1/agents/worklogs/sync", {
+        method: "POST",
+        body: {
+          project_id: project,
+          generated_by: reviewer.trim() || "web_ui",
+          days_back: 1,
+          max_agents: 200,
+          timezone: agentWorklogTimezone.trim() || "UTC",
+          include_idle_days: agentWorklogIncludeIdleDays,
+          min_activity_score: minActivityScore,
+          trigger_mode: "manual",
+          trigger_reason: "operations_ui_sync_now",
+        },
+      });
+      notifications.show({
+        color: "teal",
+        title: "Worklogs synced",
+        message: `Updated profiles: ${Number(payload.profiles_with_updates || 0)} • entries: ${Number(payload.worklogs_generated || 0)} • tz: ${String(payload.timezone || "UTC")}`,
+      });
+      void loadAgentOrgchart({ silent: true });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Sync failed",
+        message: String(error),
+      });
+    } finally {
+      setRunningAgentWorklogSync(false);
+    }
+  }, [
+    agentWorklogIncludeIdleDays,
+    agentWorklogMinActivityScore,
+    agentWorklogTimezone,
+    apiUrl,
+    loadAgentOrgchart,
+    projectId,
+    reviewer,
+  ]);
 
   const loadLegacyImportProfiles = useCallback(async () => {
     setLoadingLegacyProfiles(true);
@@ -2639,6 +3573,26 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadBootstrapRecommendation = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setBootstrapRecommendation(null);
+      return;
+    }
+    setLoadingBootstrapRecommendation(true);
+    try {
+      const payload = await apiFetch<BootstrapApproveRecommendationPayload>(
+        apiUrl,
+        `/v1/wiki/drafts/bootstrap-approve/recommendation?project_id=${encodeURIComponent(project)}`,
+      );
+      setBootstrapRecommendation(payload);
+    } catch {
+      setBootstrapRecommendation(null);
+    } finally {
+      setLoadingBootstrapRecommendation(false);
+    }
+  }, [apiUrl, projectId]);
+
   const runLegacySourceSync = useCallback(
     async (sourceId: string) => {
       const project = projectId.trim();
@@ -2667,6 +3621,7 @@ export default function App() {
               : "Legacy memory sync run queued.",
         });
         await loadLegacyImportSources();
+        await loadBootstrapRecommendation();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -2677,7 +3632,7 @@ export default function App() {
         setRunningLegacySyncSourceId(null);
       }
     },
-    [apiUrl, loadLegacyImportSources, projectId, reviewer],
+    [apiUrl, loadBootstrapRecommendation, loadLegacyImportSources, projectId, reviewer],
   );
 
   const connectLegacyMemoryQuickstart = useCallback(async (): Promise<boolean> => {
@@ -2766,6 +3721,7 @@ export default function App() {
     } finally {
       setConnectingLegacySource(false);
       await loadLegacyImportSources();
+      await loadBootstrapRecommendation();
     }
     return connected;
   }, [
@@ -2777,16 +3733,12 @@ export default function App() {
     legacySqlDsnEnv,
     legacySqlProfile,
     legacySyncIntervalMinutes,
+    loadBootstrapRecommendation,
     loadLegacyImportSources,
     projectId,
     reviewer,
     runLegacySourceSync,
   ]);
-
-  const openLegacySetupWizard = useCallback(() => {
-    setLegacySetupStep(1);
-    setShowLegacySetupModal(true);
-  }, []);
 
   const completeLegacySetupWizard = useCallback(async () => {
     const ok = await connectLegacyMemoryQuickstart();
@@ -2795,73 +3747,6 @@ export default function App() {
       setLegacySetupStep(1);
     }
   }, [connectLegacyMemoryQuickstart]);
-
-  const loadSpaceOwners = useCallback(
-    async (slug: string) => {
-      if (!projectId.trim() || !slug.trim()) {
-        setSpaceOwners([]);
-        return;
-      }
-      setLoadingSpaceOwners(true);
-      try {
-        const spaceKey = pageGroupKey(slug).toLowerCase();
-        const payload = await apiFetch<{ owners: WikiSpaceOwnerItem[] }>(
-          apiUrl,
-          `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/owners?project_id=${encodeURIComponent(projectId)}`,
-        );
-        setSpaceOwners(payload.owners ?? []);
-      } catch {
-        setSpaceOwners([]);
-      } finally {
-        setLoadingSpaceOwners(false);
-      }
-    },
-    [apiUrl, projectId],
-  );
-
-  const loadPageOwners = useCallback(
-    async (slug: string) => {
-      if (!projectId.trim() || !slug.trim()) {
-        setPageOwners([]);
-        return;
-      }
-      setLoadingPageOwners(true);
-      try {
-        const payload = await apiFetch<{ owners: WikiPageOwnerItem[] }>(
-          apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(slug)}/owners?project_id=${encodeURIComponent(projectId)}`,
-        );
-        setPageOwners(payload.owners ?? []);
-      } catch {
-        setPageOwners([]);
-      } finally {
-        setLoadingPageOwners(false);
-      }
-    },
-    [apiUrl, projectId],
-  );
-
-  const loadPageUploads = useCallback(
-    async (slug: string) => {
-      if (!projectId.trim() || !slug.trim()) {
-        setPageUploads([]);
-        return;
-      }
-      setLoadingPageUploads(true);
-      try {
-        const payload = await apiFetch<{ uploads: WikiUploadItem[] }>(
-          apiUrl,
-          `/v1/wiki/uploads?project_id=${encodeURIComponent(projectId)}&page_slug=${encodeURIComponent(slug)}&limit=50`,
-        );
-        setPageUploads(payload.uploads ?? []);
-      } catch {
-        setPageUploads([]);
-      } finally {
-        setLoadingPageUploads(false);
-      }
-    },
-    [apiUrl, projectId],
-  );
 
   const loadNotificationsInbox = useCallback(
     async (targetRecipient?: string) => {
@@ -2907,6 +3792,8 @@ export default function App() {
   useEffect(() => {
     const project = projectId.trim();
     previousSelectedPageSlugRef.current = null;
+    lifecycleSuggestionSeenRef.current = {};
+    lifecycleEmptyScopeSeenRef.current = {};
     if (!project) {
       setWikiUxMetrics({
         sessionStartedMs: Date.now(),
@@ -2915,6 +3802,16 @@ export default function App() {
         pageOpenCount: 0,
         pageOpenCountAtFirstPublish: null,
         publishCount: 0,
+      });
+      setLifecycleAdvisorMetrics({
+        sessionId: randomKey(),
+        sessionStartedMs: Date.now(),
+        suggestionShown: 0,
+        suggestionApplied: 0,
+        staleShownAtBySlug: {},
+        staleResolvedDurationsMs: [],
+        emptyScopeActionShownByType: {},
+        emptyScopeActionAppliedByType: {},
       });
       return;
     }
@@ -2951,6 +3848,62 @@ export default function App() {
         publishCount: 0,
       });
     }
+    try {
+      const raw = window.localStorage.getItem(`${LIFECYCLE_METRICS_STORAGE_PREFIX}${project}`);
+      if (!raw) throw new Error("missing lifecycle metrics");
+      const parsed = JSON.parse(raw) as Partial<LifecycleAdvisorMetricsState>;
+      const sessionId = String(parsed.sessionId || "").trim() || randomKey();
+      const sessionStartedMs = Number(parsed.sessionStartedMs);
+      const suggestionShown = Number(parsed.suggestionShown ?? 0);
+      const suggestionApplied = Number(parsed.suggestionApplied ?? 0);
+      const staleShownAtBySlug =
+        parsed.staleShownAtBySlug && typeof parsed.staleShownAtBySlug === "object" ? parsed.staleShownAtBySlug : {};
+      const staleResolvedDurationsMs = Array.isArray(parsed.staleResolvedDurationsMs)
+        ? parsed.staleResolvedDurationsMs.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item >= 0)
+        : [];
+      const emptyScopeActionShownByType =
+        parsed.emptyScopeActionShownByType && typeof parsed.emptyScopeActionShownByType === "object"
+          ? parsed.emptyScopeActionShownByType
+          : {};
+      const emptyScopeActionAppliedByType =
+        parsed.emptyScopeActionAppliedByType && typeof parsed.emptyScopeActionAppliedByType === "object"
+          ? parsed.emptyScopeActionAppliedByType
+          : {};
+      if (!Number.isFinite(sessionStartedMs)) throw new Error("invalid lifecycle metrics");
+      setLifecycleAdvisorMetrics({
+        sessionId,
+        sessionStartedMs,
+        suggestionShown: Number.isFinite(suggestionShown) ? Math.max(0, Math.round(suggestionShown)) : 0,
+        suggestionApplied: Number.isFinite(suggestionApplied) ? Math.max(0, Math.round(suggestionApplied)) : 0,
+        staleShownAtBySlug: Object.fromEntries(
+          Object.entries(staleShownAtBySlug)
+            .map(([key, value]) => [key, Number(value)] as const)
+            .filter(([, value]) => Number.isFinite(value) && value > 0),
+        ) as Record<string, number>,
+        staleResolvedDurationsMs: staleResolvedDurationsMs.slice(-200),
+        emptyScopeActionShownByType: Object.fromEntries(
+          Object.entries(emptyScopeActionShownByType)
+            .map(([key, value]) => [key, Number(value)] as const)
+            .filter(([key, value]) => Boolean(String(key).trim()) && Number.isFinite(value) && value > 0),
+        ) as Record<string, number>,
+        emptyScopeActionAppliedByType: Object.fromEntries(
+          Object.entries(emptyScopeActionAppliedByType)
+            .map(([key, value]) => [key, Number(value)] as const)
+            .filter(([key, value]) => Boolean(String(key).trim()) && Number.isFinite(value) && value > 0),
+        ) as Record<string, number>,
+      });
+    } catch {
+      setLifecycleAdvisorMetrics({
+        sessionId: randomKey(),
+        sessionStartedMs: Date.now(),
+        suggestionShown: 0,
+        suggestionApplied: 0,
+        staleShownAtBySlug: {},
+        staleResolvedDurationsMs: [],
+        emptyScopeActionShownByType: {},
+        emptyScopeActionAppliedByType: {},
+      });
+    }
   }, [projectId]);
 
   useEffect(() => {
@@ -2962,6 +3915,71 @@ export default function App() {
       // ignore storage errors
     }
   }, [projectId, wikiUxMetrics]);
+
+  useEffect(() => {
+    const project = projectId.trim();
+    if (!project) return;
+    try {
+      window.localStorage.setItem(`${LIFECYCLE_METRICS_STORAGE_PREFIX}${project}`, JSON.stringify(lifecycleAdvisorMetrics));
+    } catch {
+      // ignore storage errors
+    }
+  }, [lifecycleAdvisorMetrics, projectId]);
+
+  useEffect(() => {
+    const project = projectId.trim();
+    if (!project) return;
+    const normalizeCounts = (raw: Record<string, number>) => {
+      const out: Record<string, number> = {};
+      for (const [action, value] of Object.entries(raw || {})) {
+        const key = normalizeTelemetryActionKey(action);
+        if (!key) continue;
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) continue;
+        const bounded = Math.max(0, Math.min(1_000_000_000, Math.round(numeric)));
+        out[key] = bounded;
+      }
+      return out;
+    };
+    const shownCounts = normalizeCounts(lifecycleAdvisorMetrics.emptyScopeActionShownByType || {});
+    const appliedCounts = normalizeCounts(lifecycleAdvisorMetrics.emptyScopeActionAppliedByType || {});
+    if (Object.keys(shownCounts).length === 0 && Object.keys(appliedCounts).length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        await apiFetch(apiUrl, "/v1/wiki/lifecycle/telemetry/snapshot", {
+          method: "POST",
+          body: {
+            project_id: project,
+            session_id: lifecycleAdvisorMetrics.sessionId,
+            observed_at: new Date().toISOString(),
+            empty_scope_action_shown: shownCounts,
+            empty_scope_action_applied: appliedCounts,
+            source: "web_ui",
+          },
+          idempotencyKey: randomKey(),
+        });
+        if (!cancelled) {
+          void loadWikiLifecycleTelemetry({ silent: true });
+        }
+      } catch {
+        // best effort telemetry sync
+      }
+    }, LIFECYCLE_TELEMETRY_SYNC_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    apiUrl,
+    lifecycleAdvisorMetrics.emptyScopeActionAppliedByType,
+    lifecycleAdvisorMetrics.emptyScopeActionShownByType,
+    lifecycleAdvisorMetrics.sessionId,
+    loadWikiLifecycleTelemetry,
+    projectId,
+  ]);
 
   useEffect(() => {
     if (!selectedPageSlug) {
@@ -3121,41 +4139,36 @@ export default function App() {
     if (!selectedPageSlug) {
       setSelectedPageDetail(null);
       setPageHistory(null);
-      setPageAliases([]);
-      setPageComments([]);
-      setPageWatchers([]);
       setPageReviewAssignments([]);
       setSpacePolicy(null);
-      setSpaceOwners([]);
-      setPageOwners([]);
-      setPageUploads([]);
+      setSpacePolicyAudit([]);
+      setSpacePolicyAdoptionSummaryApi(null);
       setPageEditMode(false);
       setPageMoveMode(false);
       return;
     }
     void loadPageDetail(selectedPageSlug);
     void loadPageHistory(selectedPageSlug);
-    void loadPageAliases(selectedPageSlug);
-    void loadPageComments(selectedPageSlug);
-    void loadPageWatchers(selectedPageSlug);
     void loadPageReviewAssignments(selectedPageSlug);
     void loadSpacePolicy(selectedPageSlug);
-    void loadSpaceOwners(selectedPageSlug);
-    void loadPageOwners(selectedPageSlug);
-    void loadPageUploads(selectedPageSlug);
+    void loadSpacePolicyAudit(selectedPageSlug);
+    void loadSpacePolicyAdoptionSummary(selectedPageSlug);
   }, [
-    loadPageAliases,
-    loadPageComments,
     loadPageDetail,
     loadPageHistory,
-    loadPageOwners,
-    loadPageUploads,
     loadPageReviewAssignments,
-    loadSpaceOwners,
+    loadSpacePolicyAdoptionSummary,
+    loadSpacePolicyAudit,
     loadSpacePolicy,
-    loadPageWatchers,
     selectedPageSlug,
   ]);
+
+  useEffect(() => {
+    if (selectedPageSlug) return;
+    if (historyDrawerOpen) {
+      setHistoryDrawerOpen(false);
+    }
+  }, [historyDrawerOpen, selectedPageSlug]);
 
   useEffect(() => {
     void loadGatekeeperConfig();
@@ -3163,13 +4176,26 @@ export default function App() {
 
   useEffect(() => {
     if (!projectId.trim()) {
+      setAgentOrgchart(null);
+      return;
+    }
+    if (coreWorkspaceRoute !== "operations") {
+      return;
+    }
+    void loadAgentOrgchart({ silent: true });
+  }, [coreWorkspaceRoute, loadAgentOrgchart, projectId]);
+
+  useEffect(() => {
+    if (!projectId.trim()) {
       setLegacyProfiles([]);
       setLegacySources([]);
+      setBootstrapRecommendation(null);
       return;
     }
     void loadLegacyImportProfiles();
     void loadLegacyImportSources();
-  }, [loadLegacyImportProfiles, loadLegacyImportSources, projectId]);
+    void loadBootstrapRecommendation();
+  }, [loadBootstrapRecommendation, loadLegacyImportProfiles, loadLegacyImportSources, projectId]);
 
   useEffect(() => {
     if (!projectId.trim()) return;
@@ -3518,145 +4544,17 @@ export default function App() {
     ],
   );
 
-  const openDraftFromTriage = useCallback((draft: DraftSummary) => {
-    if (effectiveUiMode === "core") {
-      setCoreWorkspaceTab("drafts");
-    }
-    setSelectedDraftId(draft.id);
-    const slug = String(draft.page.slug || "").trim();
-    if (slug) {
-      setSelectedPageSlug(slug);
-      setSelectedSpaceKey(pageGroupKey(slug));
-    }
-    setDetailTab("semantic");
-    setCoreIntentSignals((prev) => {
-      const nextUniqueDraftIds = prev.triageOpenedDraftIds.includes(draft.id)
-        ? prev.triageOpenedDraftIds
-        : [...prev.triageOpenedDraftIds, draft.id].slice(-24);
-      return {
-        ...prev,
-        triageOpenCount: prev.triageOpenCount + 1,
-        triageOpenedDraftIds: nextUniqueDraftIds,
-        lastAction: {
-          label: "triage open draft",
-          timestampMs: Date.now(),
-        },
-      };
-    });
-  }, [effectiveUiMode]);
-
-  const quickModerateDraft = useCallback(
-    async (draft: DraftSummary, action: "approve" | "reject", source: QuickModerationSource = "inbox_card") => {
-      if (!projectId.trim() || !reviewer.trim()) {
-        notifications.show({
-          color: "red",
-          title: "Missing reviewer or project",
-          message: "Set Project ID and Reviewer before quick moderation.",
-        });
-        return;
-      }
-      if (!isOpenReviewDraft(draft)) {
-        notifications.show({
-          color: "gray",
-          title: "Draft already resolved",
-          message: "Quick moderation is only available for open drafts.",
-        });
-        return;
-      }
-      if (effectiveUiMode === "core") {
-        setCoreWorkspaceTab("drafts");
-      }
-      setSelectedDraftId(draft.id);
-      setRunningAction(true);
-      try {
-        if (action === "approve") {
-          const quickForce = draft.status === "blocked_conflict" || draft.decision === "conflict";
-          const response = await apiFetch<{ snapshot_id?: string }>(
-            apiUrl,
-            `/v1/wiki/drafts/${encodeURIComponent(draft.id)}/approve`,
-            {
-              method: "POST",
-              body: {
-                project_id: projectId,
-                reviewed_by: reviewer.trim(),
-                note: quickForce
-                  ? `Conflict resolved with force-approve by ${reviewer.trim()}.`
-                  : `Quick approved from ${quickModerationSourceLabel(source)} by ${reviewer.trim()}.`,
-                force: quickForce,
-              },
-              idempotencyKey: randomKey(),
-            },
-          );
-          notifications.show({
-            color: "green",
-            title: quickForce ? "Conflict force-approved" : "Draft quick-approved",
-            message: `Snapshot: ${response.snapshot_id ?? "created"}`,
-          });
-        } else {
-          const quickDismiss = draft.status === "blocked_conflict" || draft.decision === "conflict";
-          await apiFetch(apiUrl, `/v1/wiki/drafts/${encodeURIComponent(draft.id)}/reject`, {
-            method: "POST",
-            body: {
-              project_id: projectId,
-              reviewed_by: reviewer.trim(),
-              reason: quickDismiss
-                ? "Conflict rejected via quick resolver."
-                : `Quick rejected from ${quickModerationSourceLabel(source)} by ${reviewer.trim()}.`,
-              dismiss_conflicts: quickDismiss,
-            },
-            idempotencyKey: randomKey(),
-          });
-          notifications.show({
-            color: "orange",
-            title: "Draft quick-rejected",
-            message: `Draft ${draft.id} rejected.`,
-          });
-        }
-        setCoreIntentSignals((prev) => ({
-          ...prev,
-          quickModeration: {
-            approve: action === "approve" ? prev.quickModeration.approve + 1 : prev.quickModeration.approve,
-            reject: action === "reject" ? prev.quickModeration.reject + 1 : prev.quickModeration.reject,
-            bySource: {
-              ...prev.quickModeration.bySource,
-              [source]: prev.quickModeration.bySource[source] + 1,
-            },
-          },
-          lastAction: {
-            label: `${quickModerationSourceLabel(source)} ${action}`,
-            timestampMs: Date.now(),
-          },
-        }));
-
-        await loadDrafts();
-        if (selectedDraftId === draft.id) {
-          await loadDraftDetail(draft.id);
-          await loadConflictExplain(draft.id);
-        }
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: "Quick moderation failed",
-          message: String(error),
-        });
-      } finally {
-        setRunningAction(false);
-      }
-    },
-    [
-      apiUrl,
-      loadConflictExplain,
-      loadDraftDetail,
-      loadDrafts,
-      projectId,
-      reviewer,
-      selectedDraftId,
-      effectiveUiMode,
-    ],
-  );
-
   const runBootstrapApprove = useCallback(
-    async (dryRun: boolean) => {
+    async (
+      dryRun: boolean,
+      overrides?: {
+        trustedSourceSystems?: string[];
+        limit?: number;
+        sampleSize?: number;
+        minConfidence?: number;
+        requireConflictFree?: boolean;
+      },
+    ) => {
       if (!projectId.trim() || !reviewer.trim()) {
         notifications.show({
           color: "red",
@@ -3665,13 +4563,26 @@ export default function App() {
         });
         return;
       }
-      const trustedSourceSystems = normalizeSourceSystemCsv(bootstrapTrustedSources);
-      const limitRaw = Number.parseInt(bootstrapLimit, 10);
-      const sampleRaw = Number.parseInt(bootstrapSampleSize, 10);
-      const confidenceRaw = Number.parseFloat(bootstrapMinConfidence);
+      const trustedSourceSystems = Array.isArray(overrides?.trustedSourceSystems)
+        ? [...new Set(overrides.trustedSourceSystems.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean))].sort()
+        : normalizeSourceSystemCsv(bootstrapTrustedSources);
+      const limitRaw =
+        typeof overrides?.limit === "number" && Number.isFinite(overrides.limit)
+          ? overrides.limit
+          : Number.parseInt(bootstrapLimit, 10);
+      const sampleRaw =
+        typeof overrides?.sampleSize === "number" && Number.isFinite(overrides.sampleSize)
+          ? overrides.sampleSize
+          : Number.parseInt(bootstrapSampleSize, 10);
+      const confidenceRaw =
+        typeof overrides?.minConfidence === "number" && Number.isFinite(overrides.minConfidence)
+          ? overrides.minConfidence
+          : Number.parseFloat(bootstrapMinConfidence);
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(2000, limitRaw)) : 50;
       const sampleSize = Number.isFinite(sampleRaw) ? Math.max(1, Math.min(200, sampleRaw)) : 15;
       const minConfidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0.85;
+      const requireConflictFree =
+        typeof overrides?.requireConflictFree === "boolean" ? overrides.requireConflictFree : bootstrapRequireConflictFree;
       const normalizedTrusted = trustedSourceSystems;
       if (!dryRun && normalizedTrusted.length === 0) {
         notifications.show({
@@ -3689,18 +4600,13 @@ export default function App() {
         });
         return;
       }
-      const previewSelection = bootstrapResult?.selection;
-      const previewTrusted = [...(previewSelection?.trusted_source_systems || [])]
-        .map((item) => String(item || "").trim().toLowerCase())
-        .filter(Boolean)
-        .sort();
-      const hasMatchingPreview =
-        Boolean(bootstrapResult?.dry_run) &&
-        String(bootstrapResult?.project_id || "") === projectId &&
-        Number(previewSelection?.limit || -1) === limit &&
-        Number(previewSelection?.min_confidence || -1) === minConfidence &&
-        Boolean(previewSelection?.require_conflict_free) === bootstrapRequireConflictFree &&
-        previewTrusted.join(",") === normalizedTrusted.join(",");
+      const hasMatchingPreview = matchesBootstrapPreview(bootstrapResult, {
+        projectId,
+        trustedSourceSystems: normalizedTrusted,
+        limit,
+        minConfidence,
+        requireConflictFree,
+      });
       if (!dryRun && !hasMatchingPreview) {
         notifications.show({
           color: "orange",
@@ -3720,7 +4626,7 @@ export default function App() {
             limit,
             sample_size: sampleSize,
             min_confidence: minConfidence,
-            require_conflict_free: bootstrapRequireConflictFree,
+            require_conflict_free: requireConflictFree,
             trusted_source_systems: trustedSourceSystems,
             require_trusted_sources_on_apply: true,
             allow_large_batch: false,
@@ -3735,6 +4641,7 @@ export default function App() {
             title: "Bootstrap preview ready",
             message: `Candidates: ${payload.summary.candidates}; sample: ${payload.summary.sample_size ?? 0}.`,
           });
+          await loadBootstrapRecommendation();
           return;
         }
         notifications.show({
@@ -3747,6 +4654,7 @@ export default function App() {
           await loadDraftDetail(selectedDraftId);
           await loadConflictExplain(selectedDraftId);
         }
+        await loadBootstrapRecommendation();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -3768,11 +4676,99 @@ export default function App() {
       loadConflictExplain,
       loadDraftDetail,
       loadDrafts,
+      loadBootstrapRecommendation,
       projectId,
       reviewer,
       selectedDraftId,
     ],
   );
+
+  const resolveRecommendedBootstrapPreset = useCallback(() => {
+    const fromApi = bootstrapRecommendation?.recommended;
+    if (fromApi) {
+      const trustedSourceSystems = [...new Set(
+        (Array.isArray(fromApi.trusted_source_systems) ? fromApi.trusted_source_systems : [])
+          .map((item) => String(item || "").trim().toLowerCase())
+          .filter(Boolean),
+      )].sort();
+      return {
+        trustedSourceSystems: trustedSourceSystems.length > 0 ? trustedSourceSystems : ["legacy_import", "postgres_sql"],
+        minConfidence: Math.max(0, Math.min(1, Number(fromApi.min_confidence || 0.9))),
+        limit: Math.max(1, Math.min(2000, Number(fromApi.limit || 50))),
+        sampleSize: Math.max(1, Math.min(200, Number(fromApi.sample_size || 15))),
+        requireConflictFree: Boolean(fromApi.require_conflict_free),
+      };
+    }
+    const mappedTrusted = [...new Set(
+      legacySources
+        .map((item) => String(item.source_type || "").trim().toLowerCase())
+        .filter((item) => item === "postgres_sql" || item === "legacy_import"),
+    )].sort();
+    const trustedSourceSystems = mappedTrusted.length > 0 ? mappedTrusted : ["legacy_import", "postgres_sql"];
+    const currentOpenDrafts = drafts.filter((item) => item.status === "pending_review" || item.status === "blocked_conflict").length;
+    const limit = currentOpenDrafts >= 300 ? 25 : currentOpenDrafts >= 100 ? 40 : 50;
+    const sampleSize = Math.min(20, Math.max(10, Math.floor(limit / 2)));
+    return {
+      trustedSourceSystems,
+      minConfidence: 0.9,
+      limit,
+      sampleSize,
+      requireConflictFree: true,
+    };
+  }, [bootstrapRecommendation, drafts, legacySources]);
+
+  const applyRecommendedBootstrapPreset = useCallback(
+    (preset?: {
+      trustedSourceSystems: string[];
+      minConfidence: number;
+      limit: number;
+      sampleSize: number;
+      requireConflictFree: boolean;
+    }) => {
+      const nextPreset = preset ?? resolveRecommendedBootstrapPreset();
+      setBootstrapTrustedSources(nextPreset.trustedSourceSystems.join(","));
+      setBootstrapTrustedSourcesTouched(false);
+      setBootstrapMinConfidence(nextPreset.minConfidence.toFixed(2));
+      setBootstrapLimit(String(nextPreset.limit));
+      setBootstrapSampleSize(String(nextPreset.sampleSize));
+      setBootstrapRequireConflictFree(nextPreset.requireConflictFree);
+      setShowMigrationMode(true);
+      setShowBootstrapTools(true);
+      setShowDraftOperationsTools(true);
+      if (effectiveUiMode === "core") {
+        setCoreWorkspaceTab("drafts");
+      }
+      return nextPreset;
+    },
+    [effectiveUiMode, resolveRecommendedBootstrapPreset],
+  );
+
+  const runRecommendedBootstrapPreview = useCallback(async () => {
+    const preset = applyRecommendedBootstrapPreset();
+    await runBootstrapApprove(true, preset);
+  }, [applyRecommendedBootstrapPreset, runBootstrapApprove]);
+
+  const runRecommendedBootstrapApply = useCallback(async () => {
+    const preset = applyRecommendedBootstrapPreset();
+    const project = projectId.trim();
+    const hasMatchingPreview = matchesBootstrapPreview(bootstrapResult, {
+      projectId: project,
+      trustedSourceSystems: preset.trustedSourceSystems,
+      limit: preset.limit,
+      minConfidence: preset.minConfidence,
+      requireConflictFree: preset.requireConflictFree,
+    });
+    if (!hasMatchingPreview) {
+      await runBootstrapApprove(true, preset);
+      notifications.show({
+        color: "indigo",
+        title: "Preview generated",
+        message: "Recommended preview is ready. Re-run apply to approve the trusted batch.",
+      });
+      return;
+    }
+    await runBootstrapApprove(false, preset);
+  }, [applyRecommendedBootstrapPreset, bootstrapResult, projectId, runBootstrapApprove]);
 
   const saveWikiPageEdit = useCallback(async () => {
     if (!selectedPageSlug) {
@@ -3872,6 +4868,53 @@ export default function App() {
     selectedPageSlug,
   ]);
 
+  const runProcessSafetySimulation = useCallback(async () => {
+    if (!selectedPageSlug || !projectId.trim()) {
+      notifications.show({
+        color: "red",
+        title: "Project or page missing",
+        message: "Set project and select page before running simulation.",
+      });
+      return;
+    }
+    const proposedMarkdown = pageEditMarkdown.trim() || String(selectedPageDetail?.latest_version?.markdown || "").trim();
+    if (!proposedMarkdown) {
+      notifications.show({
+        color: "red",
+        title: "No content to simulate",
+        message: "Page markdown is empty.",
+      });
+      return;
+    }
+    setLoadingProcessSimulation(true);
+    try {
+      const payload = await apiFetch<WikiProcessSimulationPayload>(apiUrl, "/v1/wiki/process/simulate", {
+        method: "POST",
+        body: {
+          project_id: projectId,
+          page_slug: selectedPageSlug,
+          proposed_markdown: proposedMarkdown,
+          baseline_markdown: String(selectedPageDetail?.latest_version?.markdown || ""),
+          sample_limit: 10,
+        },
+      });
+      setProcessSimulation(payload);
+      notifications.show({
+        color: payload.risk?.should_block_publish ? "orange" : "green",
+        title: "Process simulation ready",
+        message: `Risk ${payload.risk?.level || "unknown"} (score ${Number(payload.risk?.score || 0).toFixed(0)}).`,
+      });
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Simulation failed",
+        message: String(error),
+      });
+    } finally {
+      setLoadingProcessSimulation(false);
+    }
+  }, [apiUrl, pageEditMarkdown, projectId, selectedPageDetail?.latest_version?.markdown, selectedPageSlug]);
+
   const publishCurrentPage = useCallback(async () => {
     if (!selectedPageSlug) {
       notifications.show({
@@ -3898,6 +4941,25 @@ export default function App() {
       });
       return;
     }
+    const checklistPreset =
+      PUBLISH_CHECKLIST_PRESETS.find((item) => item.key === spacePublishChecklistPreset) || PUBLISH_CHECKLIST_PRESETS[0];
+    const checklistComplete = checklistPreset.items.every((item) => Boolean(publishChecklistAcks[item.id]));
+    if (!checklistComplete) {
+      notifications.show({
+        color: "orange",
+        title: "Checklist not complete",
+        message: "Complete publish checklist items for this space before publishing.",
+      });
+      return;
+    }
+    if (processSimulation?.risk?.should_block_publish && !publishConfirmHighRisk) {
+      notifications.show({
+        color: "orange",
+        title: "High-risk publish requires confirmation",
+        message: "Run safety simulation review and acknowledge high-risk publish before continuing.",
+      });
+      return;
+    }
     setSavingPageEdit(true);
     try {
       const payload = await apiFetch<WikiPageUpdateResponse>(
@@ -3913,6 +4975,7 @@ export default function App() {
             status: "published",
             markdown: markdownSeed,
             change_summary: publishSummary.trim() || "Published from wiki UI",
+            confirm_high_risk_publish: publishConfirmHighRisk,
           },
           idempotencyKey: randomKey(),
         },
@@ -3931,6 +4994,9 @@ export default function App() {
       }));
       setShowPublishModal(false);
       setPageEditMode(false);
+      setProcessSimulation(null);
+      setPublishConfirmHighRisk(false);
+      setPublishChecklistAcks({});
       if (pageEditDraftStorageKey) {
         try {
           window.localStorage.removeItem(pageEditDraftStorageKey);
@@ -3961,73 +5027,126 @@ export default function App() {
     loadWikiPages,
     pageEditMarkdown,
     pageEditTitle,
+    processSimulation?.risk?.should_block_publish,
     pageEditDraftStorageKey,
+    publishChecklistAcks,
+    publishConfirmHighRisk,
     projectId,
     publishSummary,
     reviewer,
+    spacePublishChecklistPreset,
     selectedPageDetail?.latest_version?.markdown,
     selectedPageDetail?.page.page_type,
     selectedPageDetail?.page.title,
     selectedPageSlug,
   ]);
 
-  const rollbackWikiPageToVersion = useCallback(
-    async (targetVersion: number) => {
-      if (!selectedPageSlug) {
-        notifications.show({
-          color: "red",
-          title: "Page not selected",
-          message: "Select wiki page before rollback.",
-        });
-        return;
-      }
-      if (!projectId.trim() || !reviewer.trim()) {
-        notifications.show({
-          color: "red",
-          title: "Missing reviewer or project",
-          message: "Set Project ID and Reviewer before rollback.",
-        });
-        return;
-      }
-      if (!Number.isFinite(targetVersion) || targetVersion <= 0) {
-        return;
-      }
-      setRollingBackVersion(targetVersion);
-      try {
-        const payload = await apiFetch<WikiPageUpdateResponse & { rollback?: { target_version: number } }>(
-          apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/rollback`,
-          {
-            method: "PUT",
-            body: {
-              project_id: projectId,
-              rolled_back_by: reviewer.trim(),
-              target_version: targetVersion,
-              change_summary: `Rollback to v${targetVersion} from wiki history`,
-            },
-            idempotencyKey: randomKey(),
+  const rollbackSelectedPageVersion = useCallback(async () => {
+    if (!selectedPageSlug) {
+      notifications.show({
+        color: "red",
+        title: "Page not selected",
+        message: "Select page before rollback.",
+      });
+      return;
+    }
+    if (!projectId.trim() || !reviewer.trim()) {
+      notifications.show({
+        color: "red",
+        title: "Missing reviewer or project",
+        message: "Set Project ID and Reviewer before rollback.",
+      });
+      return;
+    }
+    const target =
+      (pageHistory?.versions ?? []).find((item) => String(item.version) === String(historyTargetVersion || "")) || null;
+    if (!target) {
+      notifications.show({
+        color: "red",
+        title: "Version not selected",
+        message: "Choose target version in history drawer.",
+      });
+      return;
+    }
+    const latestVersion = (pageHistory?.versions ?? [])[0]?.version ?? null;
+    if (latestVersion != null && Number(target.version) === Number(latestVersion)) {
+      notifications.show({
+        color: "gray",
+        title: "Already latest",
+        message: `v${target.version} is already current version.`,
+      });
+      return;
+    }
+    setRollingBackPageVersion(true);
+    try {
+      const payload = await apiFetch<WikiPageUpdateResponse>(
+        apiUrl,
+        `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/rollback`,
+        {
+          method: "PUT",
+          body: {
+            project_id: projectId,
+            rolled_back_by: reviewer.trim(),
+            target_version: Number(target.version),
+            status: selectedPageDetail?.page.status || "published",
+            change_summary: rollbackSummaryInput.trim() || null,
           },
-        );
-        notifications.show({
-          color: "green",
-          title: "Rollback applied",
-          message: `Page rolled back to v${payload.rollback?.target_version ?? targetVersion}.`,
-        });
-        await loadPageDetail(selectedPageSlug);
-        await loadPageHistory(selectedPageSlug);
-        await loadWikiPages({ silent: true });
-        await loadDrafts();
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: "Rollback failed",
-          message: String(error),
-        });
-      } finally {
-        setRollingBackVersion(null);
+          idempotencyKey: randomKey(),
+        },
+      );
+      notifications.show({
+        color: "green",
+        title: "Rollback completed",
+        message: `${payload.page.title || selectedPageSlug}: now v${payload.page.current_version ?? target.version}.`,
+      });
+      await loadPageDetail(selectedPageSlug);
+      await loadPageHistory(selectedPageSlug);
+      await loadWikiPages({ silent: true });
+      await loadDrafts();
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Rollback failed",
+        message: String(error),
+      });
+    } finally {
+      setRollingBackPageVersion(false);
+    }
+  }, [
+    apiUrl,
+    historyTargetVersion,
+    loadDrafts,
+    loadPageDetail,
+    loadPageHistory,
+    loadWikiPages,
+    pageHistory?.versions,
+    projectId,
+    reviewer,
+    rollbackSummaryInput,
+    selectedPageDetail?.page.status,
+    selectedPageSlug,
+  ]);
+
+  const openHistoryDrawerForVersion = useCallback(
+    (targetVersion?: number | null) => {
+      if (selectedPageSlug) {
+        void loadPageHistory(selectedPageSlug);
       }
+      const target = targetVersion != null ? String(targetVersion) : null;
+      if (target) {
+        setHistoryTargetVersion(target);
+        const versions = pageHistory?.versions ?? [];
+        const idx = versions.findIndex((item) => String(item.version) === target);
+        if (idx >= 0) {
+          const baseCandidate = versions[Math.min(idx + 1, versions.length - 1)] || versions[idx];
+          if (baseCandidate) {
+            setHistoryBaseVersion(String(baseCandidate.version));
+          }
+        }
+      }
+      setHistoryDrawerOpen(true);
     },
-    [apiUrl, loadDrafts, loadPageDetail, loadPageHistory, loadWikiPages, projectId, reviewer, selectedPageSlug],
+    [loadPageHistory, pageHistory?.versions, selectedPageSlug],
   );
 
   const shareCurrentPage = useCallback(async () => {
@@ -4054,100 +5173,32 @@ export default function App() {
     }
   }, [projectId, selectedPageSlug, wikiBasePath]);
 
-  const moveWikiPage = useCallback(async () => {
-    if (!selectedPageSlug) {
-      notifications.show({
-        color: "red",
-        title: "Page not selected",
-        message: "Select wiki page before move/rename.",
-      });
-      return;
-    }
-    if (!projectId.trim() || !reviewer.trim()) {
-      notifications.show({
-        color: "red",
-        title: "Missing reviewer or project",
-        message: "Set Project ID and Reviewer before moving pages.",
-      });
-      return;
-    }
-    const leaf = slugifySegment(pageMoveSlugLeaf.trim() || pageMoveTitle.trim() || selectedPageSlug);
-    const parentRaw = pageMoveParentPath.trim();
-    const normalizedParent = parentRaw ? normalizeWikiSlug(parentRaw, "root") : "";
-    const rawTarget = normalizedParent ? `${normalizedParent}/${leaf}` : leaf;
-    const normalizedNewSlug = normalizeWikiSlug(rawTarget, selectedPageSlug);
-    if (!normalizedNewSlug) {
-      notifications.show({
-        color: "red",
-        title: "Invalid target slug",
-        message: "Provide valid parent path and slug leaf.",
-      });
-      return;
-    }
-    setMovingPage(true);
+  const copyScopeDeepLink = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (projectId.trim()) params.set("project", projectId.trim());
+    if (selectedSpaceKey) params.set("wiki_space", selectedSpaceKey);
+    if (selectedPageSlug) params.set("wiki_page", selectedPageSlug);
+    if (coreWorkspaceTab !== "wiki") params.set("core_tab", coreWorkspaceTab);
+    params.set("wiki_status", "published");
+    const currentPath = buildWorkspacePath(wikiBasePath, coreWorkspaceRoute, selectedPageSlug);
+    const scopeUrl = `${window.location.origin}${currentPath}${params.toString() ? `?${params.toString()}` : ""}`;
     try {
-      const payload = await apiFetch<WikiPageMoveResponse>(
-        apiUrl,
-        `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/reparent`,
-        {
-          method: "PUT",
-          body: {
-            project_id: projectId,
-            moved_by: reviewer.trim(),
-            new_parent_slug: normalizedParent || null,
-            new_slug_leaf: leaf,
-            new_title: pageMoveTitle.trim() || null,
-            include_descendants: pageMoveIncludeDescendants,
-            change_summary: pageMoveSummary.trim() || null,
-          },
-          idempotencyKey: randomKey(),
-        },
-      );
-      if (payload.status === "no_change") {
-        notifications.show({
-          color: "gray",
-          title: "No move changes",
-          message: "Page slug/title unchanged.",
-        });
-      } else {
-        notifications.show({
-          color: "green",
-          title: "Page moved",
-          message: `${payload.moved_pages.length || 1} page(s) updated.`,
-        });
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(scopeUrl);
       }
-      const nextSlug = String(payload.page.slug || normalizedNewSlug);
-      setSelectedSpaceKey(pageGroupKey(nextSlug));
-      setSelectedPageSlug(nextSlug);
-      setPageMoveMode(false);
-      await loadWikiPages({ silent: true });
-      await loadPageDetail(nextSlug);
-      await loadPageHistory(nextSlug);
-      await loadDrafts();
-    } catch (error) {
       notifications.show({
-        color: "red",
-        title: "Move failed",
-        message: String(error),
+        color: "green",
+        title: "Scope link copied",
+        message: scopeUrl,
       });
-    } finally {
-      setMovingPage(false);
+    } catch {
+      notifications.show({
+        color: "blue",
+        title: "Scope link",
+        message: scopeUrl,
+      });
     }
-  }, [
-    apiUrl,
-    loadDrafts,
-    loadPageDetail,
-    loadPageHistory,
-    loadWikiPages,
-    pageMoveIncludeDescendants,
-    pageMoveParentPath,
-    pageMoveSlugLeaf,
-    pageMoveSummary,
-    pageMoveTitle,
-    projectId,
-    reviewer,
-    selectedPageSlug,
-  ]);
+  }, [coreWorkspaceRoute, coreWorkspaceTab, projectId, selectedPageSlug, selectedSpaceKey, wikiBasePath]);
 
   const moveWikiPageFromTree = useCallback(
     async (sourceSlug: string, targetParentSlug: string) => {
@@ -4279,225 +5330,90 @@ export default function App() {
     [apiUrl, loadDrafts, loadPageDetail, loadPageHistory, loadWikiPages, projectId, reviewer],
   );
 
-  const transitionWikiPageStatus = useCallback(
-    async (mode: "archive" | "restore") => {
-      if (!selectedPageSlug) {
-        notifications.show({
-          color: "red",
-          title: "Page not selected",
-          message: "Select wiki page before changing status.",
-        });
+  const openLifecycleDrilldown = useCallback(
+    (slug: string, target: "page" | "policy" | "policy_edit" | "review_assignments" | "drafts") => {
+      const normalizedSlug = String(slug || "").trim();
+      if (!normalizedSlug) return;
+      setSelectedSpaceKey(pageGroupKey(normalizedSlug));
+      setSelectedPageSlug(normalizedSlug);
+      if (target === "drafts") {
+        setCoreWorkspaceTab("drafts");
+        scrollElementIntoViewWithRetry("wiki-draft-inbox", 8, 120);
         return;
       }
-      await transitionWikiPageStatusForSlug(selectedPageSlug, mode);
+      setCoreWorkspaceTab("wiki");
+      if (target === "policy") {
+        void loadSpacePolicy(normalizedSlug);
+        void loadSpacePolicyAudit(normalizedSlug);
+        void loadSpacePolicyAdoptionSummary(normalizedSlug);
+        scrollElementIntoViewWithRetry("wiki-policy-timeline", 10, 140);
+        return;
+      }
+      if (target === "policy_edit") {
+        void loadSpacePolicy(normalizedSlug);
+        void loadSpacePolicyAudit(normalizedSlug);
+        void loadSpacePolicyAdoptionSummary(normalizedSlug);
+        scrollElementIntoViewWithRetry("wiki-governance-panel", 10, 140);
+        return;
+      }
+      if (target === "review_assignments") {
+        void loadPageReviewAssignments(normalizedSlug);
+        scrollElementIntoViewWithRetry("wiki-review-assignments", 10, 140);
+      }
     },
-    [selectedPageSlug, transitionWikiPageStatusForSlug],
+    [loadPageReviewAssignments, loadSpacePolicy, loadSpacePolicyAdoptionSummary, loadSpacePolicyAudit],
   );
 
-  const uploadPageAsset = useCallback(async () => {
-    if (!pageAssetFile || !projectId.trim() || !reviewer.trim()) {
+  const createSelectedPageReviewTask = useCallback(async () => {
+    if (!projectId.trim() || !reviewer.trim() || !selectedPageSlug) {
       notifications.show({
         color: "red",
-        title: "Asset upload unavailable",
-        message: "Select a file and ensure Project ID + Reviewer are set.",
+        title: "Task context required",
+        message: "Set Project ID + Reviewer and select a page before creating a review task.",
       });
       return;
     }
-    setUploadingPageAsset(true);
+    setRunningLifecycleQuickAction(true);
     try {
-      const formData = new FormData();
-      formData.set("project_id", projectId.trim());
-      formData.set("uploaded_by", reviewer.trim());
-      if (selectedPageSlug) {
-        formData.set("page_slug", selectedPageSlug);
-      }
-      formData.set("file", pageAssetFile);
-      const payload = await apiFetch<WikiUploadCreatePayload>(apiUrl, "/v1/wiki/uploads", {
+      const titleBase = String(selectedPageDetail?.page.title || selectedPageSlug || "wiki_page").trim();
+      const payload = await apiFetch<{ task: { id: string; title: string } }>(apiUrl, "/v1/tasks", {
         method: "POST",
-        formData,
         idempotencyKey: randomKey(),
-      });
-      const snippet = String(payload.upload.markdown_snippet || "").trim();
-      if (snippet) {
-        setPageEditMarkdown((prev) => {
-          const normalizedPrev = prev.trimEnd();
-          if (normalizedPrev.includes(snippet)) {
-            return `${normalizedPrev}\n`;
-          }
-          return `${normalizedPrev}\n\n${snippet}\n`;
-        });
-      }
-      setPageAssetFile(null);
-      if (selectedPageSlug) {
-        await loadPageUploads(selectedPageSlug);
-      }
-      notifications.show({
-        color: "green",
-        title: "Asset uploaded",
-        message: `${payload.upload.filename} uploaded and snippet inserted into markdown.`,
-      });
-    } catch (error) {
-      notifications.show({
-        color: "red",
-        title: "Asset upload failed",
-        message: String(error),
-      });
-    } finally {
-      setUploadingPageAsset(false);
-    }
-  }, [apiUrl, loadPageUploads, pageAssetFile, projectId, reviewer, selectedPageSlug]);
-
-  const createPageAlias = useCallback(async () => {
-    if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-    const raw = newPageAlias.trim();
-    if (!raw) return;
-    setSavingPageAlias(true);
-    try {
-      await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/aliases`, {
-        method: "POST",
         body: {
           project_id: projectId,
+          title: `Lifecycle review: ${titleBase}`,
+          description: `Governance review requested from wiki page context for \`${selectedPageSlug}\`.`,
+          status: "todo",
+          priority: "high",
+          source: "human",
+          assignee: reviewer.trim(),
+          entity_key: selectedPageSlug,
+          category: "wiki_governance",
+          due_at: null,
+          metadata: {
+            source: "wiki_review_assignments_panel",
+            page_slug: selectedPageSlug,
+            page_title: titleBase,
+          },
           created_by: reviewer.trim(),
-          alias_text: raw,
         },
-        idempotencyKey: randomKey(),
       });
-      setNewPageAlias("");
-      await loadPageAliases(selectedPageSlug);
+      setCoreWorkspaceTab("tasks");
       notifications.show({
-        color: "green",
-        title: "Alias added",
-        message: "Wiki alias saved.",
+        color: "teal",
+        title: "Task created",
+        message: payload.task.title || `Created lifecycle task for ${selectedPageSlug}.`,
       });
     } catch (error) {
       notifications.show({
         color: "red",
-        title: "Alias create failed",
+        title: "Create task failed",
         message: String(error),
       });
     } finally {
-      setSavingPageAlias(false);
+      setRunningLifecycleQuickAction(false);
     }
-  }, [apiUrl, loadPageAliases, newPageAlias, projectId, reviewer, selectedPageSlug]);
-
-  const deletePageAlias = useCallback(
-    async (aliasText: string) => {
-      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-      setSavingPageAlias(true);
-      try {
-        await apiFetch(
-          apiUrl,
-          `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/aliases/${encodeURIComponent(aliasText)}?project_id=${encodeURIComponent(projectId)}&deleted_by=${encodeURIComponent(reviewer.trim())}`,
-          {
-            method: "DELETE",
-            idempotencyKey: randomKey(),
-          },
-        );
-        await loadPageAliases(selectedPageSlug);
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: "Alias delete failed",
-          message: String(error),
-        });
-      } finally {
-        setSavingPageAlias(false);
-      }
-    },
-    [apiUrl, loadPageAliases, projectId, reviewer, selectedPageSlug],
-  );
-
-  const createPageComment = useCallback(async () => {
-    if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-    const body = newPageComment.trim();
-    if (!body) return;
-    setSavingPageComment(true);
-    try {
-      await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/comments`, {
-        method: "POST",
-        body: {
-          project_id: projectId,
-          created_by: reviewer.trim(),
-          body,
-        },
-        idempotencyKey: randomKey(),
-      });
-      setNewPageComment("");
-      await loadPageComments(selectedPageSlug);
-      notifications.show({
-        color: "green",
-        title: "Comment added",
-        message: "Page comment saved.",
-      });
-    } catch (error) {
-      notifications.show({
-        color: "red",
-        title: "Comment create failed",
-        message: String(error),
-      });
-    } finally {
-      setSavingPageComment(false);
-    }
-  }, [apiUrl, loadPageComments, newPageComment, projectId, reviewer, selectedPageSlug]);
-
-  const deletePageComment = useCallback(
-    async (commentId: string) => {
-      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-      setSavingPageComment(true);
-      try {
-        await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/comments/${encodeURIComponent(commentId)}`, {
-          method: "DELETE",
-          body: {
-            project_id: projectId,
-            deleted_by: reviewer.trim(),
-          },
-          idempotencyKey: randomKey(),
-        });
-        await loadPageComments(selectedPageSlug);
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: "Comment delete failed",
-          message: String(error),
-        });
-      } finally {
-        setSavingPageComment(false);
-      }
-    },
-    [apiUrl, loadPageComments, projectId, reviewer, selectedPageSlug],
-  );
-
-  const upsertPageWatcher = useCallback(
-    async (watcher: string, active: boolean) => {
-      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-      const normalizedWatcher = watcher.trim();
-      if (!normalizedWatcher) return;
-      setSavingPageWatcher(true);
-      try {
-        await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/watchers`, {
-          method: "PUT",
-          body: {
-            project_id: projectId,
-            actor: reviewer.trim(),
-            watcher: normalizedWatcher,
-            active,
-          },
-          idempotencyKey: randomKey(),
-        });
-        if (active) setWatcherInput("");
-        await loadPageWatchers(selectedPageSlug);
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: active ? "Watcher add failed" : "Watcher remove failed",
-          message: String(error),
-        });
-      } finally {
-        setSavingPageWatcher(false);
-      }
-    },
-    [apiUrl, loadPageWatchers, projectId, reviewer, selectedPageSlug],
-  );
+  }, [apiUrl, projectId, reviewer, selectedPageDetail?.page.title, selectedPageSlug]);
 
   const createPageReviewAssignment = useCallback(async () => {
     if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
@@ -4578,6 +5494,13 @@ export default function App() {
   const saveSpacePolicy = useCallback(async () => {
     if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
     const spaceKey = pageGroupKey(selectedPageSlug).toLowerCase();
+    const baseMetadata =
+      spacePolicy?.metadata && typeof spacePolicy.metadata === "object" ? { ...spacePolicy.metadata } : {};
+    if (spacePublishChecklistPreset === "none") {
+      delete (baseMetadata as Record<string, unknown>).publish_checklist_preset;
+    } else {
+      (baseMetadata as Record<string, unknown>).publish_checklist_preset = spacePublishChecklistPreset;
+    }
     setSavingSpacePolicy(true);
     try {
       await apiFetch(apiUrl, `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/policy`, {
@@ -4589,10 +5512,13 @@ export default function App() {
           write_mode: spaceWriteMode,
           comment_mode: spaceCommentMode,
           review_assignment_required: spaceReviewRequired,
+          metadata: baseMetadata,
         },
         idempotencyKey: randomKey(),
       });
       await loadSpacePolicy(selectedPageSlug);
+      await loadSpacePolicyAudit(selectedPageSlug);
+      await loadSpacePolicyAdoptionSummary(selectedPageSlug);
       notifications.show({
         color: "green",
         title: "Space policy updated",
@@ -4610,157 +5536,17 @@ export default function App() {
   }, [
     apiUrl,
     loadSpacePolicy,
+    loadSpacePolicyAdoptionSummary,
+    loadSpacePolicyAudit,
     projectId,
     reviewer,
     selectedPageSlug,
     spaceCommentMode,
+    spacePolicy?.metadata,
+    spacePublishChecklistPreset,
     spaceReviewRequired,
     spaceWriteMode,
   ]);
-
-  const savePublishPolicy = useCallback(async () => {
-    if (!projectId.trim() || !reviewer.trim()) return;
-    const baseline: GatekeeperConfig = gatekeeperConfig ?? {
-      project_id: projectId,
-      min_sources_for_golden: 3,
-      conflict_free_days: 7,
-      min_score_for_golden: 0.72,
-      operational_short_text_len: 32,
-      operational_short_token_len: 5,
-      llm_assist_enabled: false,
-      llm_provider: "openai",
-      llm_model: "gpt-4.1-mini",
-      llm_score_weight: 0.35,
-      llm_min_confidence: 0.65,
-      llm_timeout_ms: 3500,
-      publish_mode_default: "auto_publish",
-      publish_mode_by_category: {},
-      auto_publish_min_score: 0.9,
-      auto_publish_min_sources: 3,
-      auto_publish_require_golden: true,
-      auto_publish_allow_conflicts: false,
-      updated_by: null,
-      created_at: null,
-      updated_at: null,
-      source: "default",
-    };
-    setSavingPublishPolicy(true);
-    try {
-      await apiFetch<GatekeeperConfigPayload>(apiUrl, "/v1/gatekeeper/config", {
-        method: "PUT",
-        body: {
-          project_id: projectId,
-          updated_by: reviewer.trim(),
-          min_sources_for_golden: baseline.min_sources_for_golden,
-          conflict_free_days: baseline.conflict_free_days,
-          min_score_for_golden: baseline.min_score_for_golden,
-          operational_short_text_len: baseline.operational_short_text_len,
-          operational_short_token_len: baseline.operational_short_token_len,
-          llm_assist_enabled: baseline.llm_assist_enabled,
-          llm_provider: baseline.llm_provider,
-          llm_model: baseline.llm_model,
-          llm_score_weight: baseline.llm_score_weight,
-          llm_min_confidence: baseline.llm_min_confidence,
-          llm_timeout_ms: baseline.llm_timeout_ms,
-          publish_mode_default: publishModeDefault,
-          publish_mode_by_category: baseline.publish_mode_by_category,
-          auto_publish_min_score: baseline.auto_publish_min_score,
-          auto_publish_min_sources: baseline.auto_publish_min_sources,
-          auto_publish_require_golden: baseline.auto_publish_require_golden,
-          auto_publish_allow_conflicts: baseline.auto_publish_allow_conflicts,
-        },
-        idempotencyKey: randomKey(),
-      });
-      await loadGatekeeperConfig();
-      notifications.show({
-        color: "green",
-        title: "Publish mode updated",
-        message: `Default mode is now ${publishModeDefault}.`,
-      });
-    } catch (error) {
-      notifications.show({
-        color: "red",
-        title: "Publish mode update failed",
-        message: String(error),
-      });
-    } finally {
-      setSavingPublishPolicy(false);
-    }
-  }, [apiUrl, gatekeeperConfig, loadGatekeeperConfig, projectId, publishModeDefault, reviewer]);
-
-  const upsertSpaceOwner = useCallback(
-    async (owner: string, active: boolean) => {
-      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-      const ownerValue = owner.trim();
-      if (!ownerValue) return;
-      const spaceKey = pageGroupKey(selectedPageSlug).toLowerCase();
-      setSavingSpaceOwner(true);
-      try {
-        await apiFetch(apiUrl, `/v1/wiki/spaces/${encodeURIComponent(spaceKey)}/owners`, {
-          method: "PUT",
-          body: {
-            project_id: projectId,
-            actor: reviewer.trim(),
-            owner: ownerValue,
-            role: spaceOwnerRoleInput.trim() || "owner",
-            active,
-          },
-          idempotencyKey: randomKey(),
-        });
-        if (active) setSpaceOwnerInput("");
-        await loadSpaceOwners(selectedPageSlug);
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: active ? "Owner add failed" : "Owner remove failed",
-          message: String(error),
-        });
-      } finally {
-        setSavingSpaceOwner(false);
-      }
-    },
-    [
-      apiUrl,
-      loadSpaceOwners,
-      projectId,
-      reviewer,
-      selectedPageSlug,
-      spaceOwnerRoleInput,
-    ],
-  );
-
-  const upsertPageOwner = useCallback(
-    async (owner: string, active: boolean) => {
-      if (!selectedPageSlug || !projectId.trim() || !reviewer.trim()) return;
-      const ownerValue = owner.trim();
-      if (!ownerValue) return;
-      setSavingPageOwner(true);
-      try {
-        await apiFetch(apiUrl, `/v1/wiki/pages/${encodeURIComponent(selectedPageSlug)}/owners`, {
-          method: "PUT",
-          body: {
-            project_id: projectId,
-            actor: reviewer.trim(),
-            owner: ownerValue,
-            role: pageOwnerRoleInput.trim() || "editor",
-            active,
-          },
-          idempotencyKey: randomKey(),
-        });
-        if (active) setPageOwnerInput("");
-        await loadPageOwners(selectedPageSlug);
-      } catch (error) {
-        notifications.show({
-          color: "red",
-          title: active ? "Page owner add failed" : "Page owner remove failed",
-          message: String(error),
-        });
-      } finally {
-        setSavingPageOwner(false);
-      }
-    },
-    [apiUrl, loadPageOwners, pageOwnerRoleInput, projectId, reviewer, selectedPageSlug],
-  );
 
   const markNotificationRead = useCallback(
     async (notificationId: string) => {
@@ -4833,27 +5619,6 @@ export default function App() {
     setSelectedDraftId(visibleDrafts[next].id);
   }, [effectiveUiMode, selectedIndex, visibleDrafts]);
 
-  const applyPageTemplate = useCallback(
-    (templateKey: string) => {
-      const template = PAGE_TEMPLATES.find((item) => item.key === templateKey);
-      if (!template) return;
-      setApproveForm((prev) => ({
-        ...prev,
-        sectionKey: template.sectionKey,
-        sectionHeading: template.sectionHeading,
-        sectionMode: template.sectionMode,
-        sectionStatements: template.statements.join("\n"),
-      }));
-      setSelectedTemplateKey(template.key);
-      notifications.show({
-        color: "teal",
-        title: "Template applied",
-        message: `${template.title} loaded into Approve form.`,
-      });
-    },
-    [setApproveForm],
-  );
-
   const applyCreateTemplate = useCallback(
     (templateKey: string) => {
       const template = PAGE_TEMPLATES.find((item) => item.key === templateKey);
@@ -4865,7 +5630,7 @@ export default function App() {
         ...prev,
         title,
         slug,
-        pageType: space,
+        pageType: template.pageType,
         sectionHeading: template.sectionHeading,
         sectionStatement: template.statements[0] || "",
         changeSummary: `Created from template: ${template.title}`,
@@ -4935,158 +5700,6 @@ export default function App() {
       return [slug, ...prev].slice(0, 20);
     });
   }, []);
-
-  const saveCurrentView = useCallback(() => {
-    const name = savedViewName.trim();
-    if (!name) {
-      notifications.show({
-        color: "red",
-        title: "View name required",
-        message: "Provide a name before saving the view.",
-      });
-      return;
-    }
-    const now = new Date().toISOString();
-    const existing = savedViews.find((item) => item.name.trim().toLowerCase() === name.toLowerCase());
-    if (existing) {
-      setSavedViews((prev) =>
-        prev.map((item) =>
-          item.id === existing.id
-            ? {
-                ...item,
-                name,
-                selectedSpaceKey,
-                selectedPageSlug,
-                status,
-                pageStatusFilter,
-                pageUpdatedByFilter,
-                openPagesOnly,
-                pageFilter,
-                draftFilter,
-                updated_at: now,
-              }
-            : item,
-        ),
-      );
-      setSelectedViewId(existing.id);
-      setSavedViewName(name);
-      notifications.show({
-        color: "teal",
-        title: "View updated",
-        message: `Saved view "${name}" updated.`,
-      });
-      return;
-    }
-    const next: SavedView = {
-      id: `view_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 7)}`,
-      name,
-      selectedSpaceKey,
-      selectedPageSlug,
-      status,
-      pageStatusFilter,
-      pageUpdatedByFilter,
-      openPagesOnly,
-      pageFilter,
-      draftFilter,
-      created_at: now,
-      updated_at: now,
-    };
-    setSavedViews((prev) => [next, ...prev].slice(0, 25));
-    setSelectedViewId(next.id);
-    setSavedViewName(name);
-    notifications.show({
-      color: "teal",
-      title: "View saved",
-      message: `Saved view "${name}" created.`,
-    });
-  }, [
-    draftFilter,
-    openPagesOnly,
-    pageFilter,
-    pageStatusFilter,
-    pageUpdatedByFilter,
-    savedViewName,
-    savedViews,
-    selectedPageSlug,
-    selectedSpaceKey,
-    status,
-  ]);
-
-  const applySavedView = useCallback(
-    (viewId: string | null) => {
-      if (!viewId) {
-        setSelectedViewId(null);
-        return;
-      }
-      const view = savedViews.find((item) => item.id === viewId);
-      if (!view) return;
-      setSelectedViewId(view.id);
-      setSelectedSpaceKey(view.selectedSpaceKey);
-      setSelectedPageSlug(view.selectedPageSlug);
-      setStatus(view.status);
-      setPageStatusFilter(view.pageStatusFilter ?? null);
-      setPageUpdatedByFilter(view.pageUpdatedByFilter ?? "");
-      setOpenPagesOnly(view.openPagesOnly);
-      setPageFilter(view.pageFilter);
-      setDraftFilter(view.draftFilter);
-      setSavedViewName(view.name);
-      notifications.show({
-        color: "teal",
-        title: "View applied",
-        message: `Applied saved view "${view.name}".`,
-      });
-    },
-    [savedViews],
-  );
-
-  const deleteSavedView = useCallback(() => {
-    if (!selectedViewId) return;
-    const view = savedViews.find((item) => item.id === selectedViewId);
-    setSavedViews((prev) => prev.filter((item) => item.id !== selectedViewId));
-    setSelectedViewId(null);
-    setSavedViewName("");
-    notifications.show({
-      color: "orange",
-      title: "View deleted",
-      message: view ? `Removed "${view.name}".` : "Removed saved view.",
-    });
-  }, [savedViews, selectedViewId]);
-
-  const toggleBulkDraftSelection = useCallback((draftId: string) => {
-    setBulkSelectedDraftIds((prev) => {
-      if (prev.includes(draftId)) {
-        return prev.filter((item) => item !== draftId);
-      }
-      return [...prev, draftId];
-    });
-  }, []);
-
-  const bulkSelectedVisibleCount = useMemo(
-    () => visibleDrafts.filter((item) => bulkSelectedDraftIds.includes(item.id)).length,
-    [bulkSelectedDraftIds, visibleDrafts],
-  );
-
-  const allVisibleSelected = useMemo(
-    () => visibleDrafts.length > 0 && bulkSelectedVisibleCount === visibleDrafts.length,
-    [bulkSelectedVisibleCount, visibleDrafts.length],
-  );
-
-  const selectAllVisibleDrafts = useCallback(
-    (checked: boolean) => {
-      if (!checked) {
-        setBulkSelectedDraftIds((prev) => prev.filter((id) => !visibleDrafts.some((item) => item.id === id)));
-        return;
-      }
-      setBulkSelectedDraftIds((prev) => {
-        const merged = new Set(prev);
-        for (const draft of visibleDrafts) {
-          merged.add(draft.id);
-        }
-        return [...merged];
-      });
-    },
-    [visibleDrafts],
-  );
 
   const runBulkModeration = useCallback(
     async (action: "approve" | "reject") => {
@@ -5192,46 +5805,6 @@ export default function App() {
     });
   }, []);
 
-  const autofillGuidedFromDraft = useCallback(() => {
-    const draft = draftDetail?.draft;
-    const claimText = draft?.claim?.claim_text?.trim() || "";
-    const fallbackSlug = draft?.page.slug?.trim() || "";
-    const fallbackTitle =
-      draft?.page.title?.trim() ||
-      (fallbackSlug ? fallbackSlug.split("/").slice(-1)[0].replace(/[-_]/g, " ") : "") ||
-      "New knowledge page";
-    const spaceKey = selectedSpaceKey || pageGroupKey(fallbackSlug) || "operations";
-    const statement = claimText || "Document the validated operational fact.";
-    const sectionHeading = draft?.section_key ? _sectionHeadingFromKeyForUi(draft.section_key) : "Overview";
-    const seedSlug = fallbackSlug || `${spaceKey}/${fallbackTitle}`;
-    const normalizedSeedSlug = normalizeWikiSlug(seedSlug, fallbackTitle);
-    setGuidedPageForm((prev) => ({
-      ...prev,
-      spaceKey,
-      title: fallbackTitle,
-      slug: normalizedSeedSlug,
-      pageType: draft?.claim?.category?.trim() || prev.pageType || "operations",
-      entityKey: draft?.claim?.entity_key?.trim() || draft?.page.entity_key?.trim() || prev.entityKey,
-      sectionHeading,
-      sectionStatement: statement,
-      changeSummary: prev.changeSummary || `Bootstrapped from draft ${draft?.id || selectedDraftId || ""}`.trim(),
-    }));
-    if (!retrievalExplainQuery.trim()) {
-      setRetrievalExplainQuery(claimText || fallbackTitle);
-    }
-    if (!retrievalExplainRelatedEntity.trim()) {
-      const hintedEntity = draft?.claim?.entity_key?.trim() || draft?.page.entity_key?.trim() || "";
-      if (hintedEntity) {
-        setRetrievalExplainRelatedEntity(hintedEntity);
-      }
-    }
-    notifications.show({
-      color: "teal",
-      title: "Guided form autofilled",
-      message: "Seeded page builder fields from selected draft context.",
-    });
-  }, [draftDetail, retrievalExplainQuery, retrievalExplainRelatedEntity, selectedDraftId, selectedSpaceKey]);
-
   const createGuidedWikiPage = useCallback(async () => {
     if (!projectId.trim()) {
       notifications.show({
@@ -5329,109 +5902,6 @@ export default function App() {
     }
   }, [apiUrl, guidedPageForm, loadPageDetail, loadPageHistory, loadWikiPages, projectId, reviewer]);
 
-  const runRetrievalExplain = useCallback(async () => {
-    if (!projectId.trim()) {
-      notifications.show({
-        color: "red",
-        title: "Project ID required",
-        message: "Set project id before running retrieval diagnostics.",
-      });
-      return;
-    }
-    const query = retrievalExplainQuery.trim();
-    if (!query) {
-      notifications.show({
-        color: "red",
-        title: "Query required",
-        message: "Enter a retrieval query to inspect MCP ranking reasons.",
-      });
-      return;
-    }
-    setLoadingRetrievalExplain(true);
-    setRetrievalExplainGraphConfig(null);
-    setRetrievalExplainContextPolicy(null);
-    setRetrievalExplainPolicyFilteredOut(0);
-    setRetrievalExplainResults([]);
-    try {
-      const related = retrievalExplainRelatedEntity.trim();
-      const mode = retrievalExplainPolicyMode;
-      const minConfidence = Number.parseFloat(retrievalExplainMinConfidence);
-      const minTotalScore = Number.parseFloat(retrievalExplainMinTotalScore);
-      const minLexicalScore = Number.parseFloat(retrievalExplainMinLexicalScore);
-      const minOverlap = Number.parseFloat(retrievalExplainMinTokenOverlap);
-      const params = new URLSearchParams();
-      params.set("project_id", projectId);
-      params.set("q", query);
-      params.set("limit", "6");
-      if (related) params.set("related_entity_key", related);
-      if (mode) params.set("context_policy_mode", mode);
-      if (Number.isFinite(minConfidence)) params.set("min_retrieval_confidence", String(minConfidence));
-      if (Number.isFinite(minTotalScore)) params.set("min_total_score", String(minTotalScore));
-      if (Number.isFinite(minLexicalScore)) params.set("min_lexical_score", String(minLexicalScore));
-      if (Number.isFinite(minOverlap)) params.set("min_token_overlap_ratio", String(minOverlap));
-      const payload = await apiFetch<RetrievalExplainPayload>(
-        apiUrl,
-        `/v1/mcp/retrieval/explain?${params.toString()}`,
-      );
-      setRetrievalExplainResults(payload.results ?? []);
-      setRetrievalExplainGraphConfig(payload.graph_config ?? null);
-      setRetrievalExplainContextPolicy(payload.context_policy ?? null);
-      setRetrievalExplainPolicyFilteredOut(Number(payload.policy_filtered_out ?? 0));
-    } catch (error) {
-      notifications.show({
-        color: "red",
-        title: "Retrieval diagnostics failed",
-        message: String(error),
-      });
-    } finally {
-      setLoadingRetrievalExplain(false);
-    }
-  }, [
-    apiUrl,
-    projectId,
-    retrievalExplainMinConfidence,
-    retrievalExplainMinLexicalScore,
-    retrievalExplainMinTokenOverlap,
-    retrievalExplainMinTotalScore,
-    retrievalExplainPolicyMode,
-    retrievalExplainQuery,
-    retrievalExplainRelatedEntity,
-  ]);
-
-  useEffect(() => {
-    const project = projectId.trim();
-    const query = guidedPageForm.title.trim();
-    if (!project || query.length < 2) {
-      setGuidedPageMatches([]);
-      setSearchingGuidedMatches(false);
-      return;
-    }
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      setSearchingGuidedMatches(true);
-      try {
-        const payload = await apiFetch<{ results: WikiPageSearchResult[] }>(
-          apiUrl,
-          `/v1/wiki/pages/search?project_id=${encodeURIComponent(project)}&q=${encodeURIComponent(query)}&limit=6`,
-        );
-        if (cancelled) return;
-        setGuidedPageMatches(payload.results ?? []);
-      } catch {
-        if (!cancelled) {
-          setGuidedPageMatches([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setSearchingGuidedMatches(false);
-        }
-      }
-    }, 280);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [apiUrl, guidedPageForm.title, projectId]);
-
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return;
@@ -5515,42 +5985,10 @@ export default function App() {
     setQuickNavQuery("");
   }, [selectedPageSlug, showQuickNavModal]);
 
-  const semanticDiff = draftDetail?.draft.semantic_diff ?? {};
-  const enrichedConflicts = conflictExplain?.conflicts ?? [];
-  const beforeText = String((semanticDiff as Record<string, unknown>).before ?? "");
-  const afterText = String((semanticDiff as Record<string, unknown>).after ?? "");
-  const statementDiff = useMemo(() => buildStatementDiff(beforeText, afterText), [beforeText, afterText]);
-  const hasOpenConflicts =
-    enrichedConflicts.some((item) => item.resolution_status === "open") ||
-    (draftDetail?.conflicts ?? []).some((item) => item.resolution_status === "open");
   const selectedPageNode = useMemo(
     () => pageNodes.find((item) => item.slug === selectedPageSlug) || null,
     [pageNodes, selectedPageSlug],
   );
-  const selectedSpaceNode = useMemo(
-    () => spaceNodes.find((item) => item.key === selectedSpaceKey) || null,
-    [selectedSpaceKey, spaceNodes],
-  );
-  const openPageCount = useMemo(() => pageNodes.filter((item) => item.open_count > 0).length, [pageNodes]);
-  const openDraftCount = useMemo(
-    () => drafts.filter((item) => item.status === "pending_review" || item.status === "blocked_conflict").length,
-    [drafts],
-  );
-  const selectedTemplate = useMemo(
-    () => PAGE_TEMPLATES.find((item) => item.key === selectedTemplateKey) || null,
-    [selectedTemplateKey],
-  );
-  const pageTocSections = useMemo(() => {
-    const sections = selectedPageDetail?.sections ?? [];
-    const statements = selectedPageDetail?.statements ?? [];
-    return sections.map((section) => {
-      const sectionStatements = statements.filter((item) => item.section_key === section.section_key);
-      return {
-        ...section,
-        statements: sectionStatements,
-      };
-    });
-  }, [selectedPageDetail]);
   const wikiPreviewMarkdown = useMemo(() => {
     const latestMarkdown = String(selectedPageDetail?.latest_version?.markdown || "").trim();
     if (latestMarkdown) return latestMarkdown;
@@ -5569,36 +6007,6 @@ export default function App() {
       })
       .join("\n\n");
   }, [selectedPageDetail]);
-  const selectedTocSection = useMemo(
-    () => pageTocSections.find((item) => item.section_key === selectedTocSectionKey) || null,
-    [pageTocSections, selectedTocSectionKey],
-  );
-  const pageHistoryOptions = useMemo(
-    () =>
-      (pageHistory?.versions ?? []).map((item) => ({
-        value: String(item.version),
-        label: `v${item.version} • ${fmtDate(item.created_at)}${item.created_by ? ` • ${item.created_by}` : ""}`,
-      })),
-    [pageHistory],
-  );
-  const selectedHistoryBase = useMemo(
-    () => (pageHistory?.versions ?? []).find((item) => String(item.version) === String(historyBaseVersion || "")) || null,
-    [historyBaseVersion, pageHistory],
-  );
-  const selectedHistoryTarget = useMemo(
-    () => (pageHistory?.versions ?? []).find((item) => String(item.version) === String(historyTargetVersion || "")) || null,
-    [historyTargetVersion, pageHistory],
-  );
-  const pageHistoryDiff = useMemo(
-    () =>
-      buildStatementDiff(
-        String(selectedHistoryBase?.markdown || ""),
-        String(selectedHistoryTarget?.markdown || ""),
-      ),
-    [selectedHistoryBase?.markdown, selectedHistoryTarget?.markdown],
-  );
-  const selectedSpaceTitle = selectedSpaceNode?.title || "All spaces";
-  const selectedPageTitle = selectedPageNode?.title || selectedPageSlug || "All pages";
   const wikiPageBreadcrumb = useMemo(() => {
     const slug = String(selectedPageDetail?.page.slug || selectedPageSlug || "").trim();
     const segments = slug.split("/").filter(Boolean);
@@ -5619,13 +6027,7 @@ export default function App() {
     }
     return crumbs;
   }, [pageNodes, selectedPageDetail?.page.slug, selectedPageDetail?.page.title, selectedPageSlug]);
-  const effectiveQueuePreset: ReviewQueuePresetKey = showExpertModerationControls ? reviewQueuePreset : "open_queue";
-  const isCoreSimplified = effectiveUiMode === "core" && (!CAN_ACCESS_ADVANCED_MODE || !coreExpertControls);
-  const showCoreWikiPanel = effectiveUiMode === "advanced" || coreWorkspaceTab === "wiki";
-  const showCoreDraftPanels = effectiveUiMode === "advanced" || coreWorkspaceTab === "drafts";
-  const showCoreTaskPanel = effectiveUiMode === "advanced" || coreWorkspaceTab === "tasks";
-  const showCoreWikiPreviewPanel = effectiveUiMode === "core" && coreWorkspaceTab === "wiki";
-  const showCoreWikiContextPanel = effectiveUiMode === "core" && coreWorkspaceTab === "wiki";
+  const isOperationsRoute = coreWorkspaceRoute === "operations";
   const bootstrapTrustedSourceSystems = useMemo(
     () => normalizeSourceSystemCsv(bootstrapTrustedSources),
     [bootstrapTrustedSources],
@@ -5639,18 +6041,13 @@ export default function App() {
     return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 0.85;
   }, [bootstrapMinConfidence]);
   const bootstrapCanApply = useMemo(() => {
-    const selection = bootstrapResult?.selection;
-    if (!bootstrapResult?.dry_run || !selection) return false;
-    if (String(bootstrapResult.project_id || "") !== projectId) return false;
-    const previewTrusted = [...(selection.trusted_source_systems || [])]
-      .map((item) => String(item || "").trim().toLowerCase())
-      .filter(Boolean)
-      .sort();
-    if (previewTrusted.join(",") !== bootstrapTrustedSourceSystems.join(",")) return false;
-    if (Number(selection.limit || -1) !== bootstrapLimitValue) return false;
-    if (Number(selection.min_confidence || -1) !== bootstrapMinConfidenceValue) return false;
-    if (Boolean(selection.require_conflict_free) !== bootstrapRequireConflictFree) return false;
-    return Number(bootstrapResult.summary.candidates || 0) > 0;
+    return matchesBootstrapPreview(bootstrapResult, {
+      projectId,
+      trustedSourceSystems: bootstrapTrustedSourceSystems,
+      limit: bootstrapLimitValue,
+      minConfidence: bootstrapMinConfidenceValue,
+      requireConflictFree: bootstrapRequireConflictFree,
+    });
   }, [
     bootstrapLimitValue,
     bootstrapMinConfidenceValue,
@@ -5659,72 +6056,350 @@ export default function App() {
     bootstrapTrustedSourceSystems,
     projectId,
   ]);
-  const coreGridCols =
-    effectiveUiMode === "advanced"
-      ? { base: 1, xl: 3 }
-      : coreWorkspaceTab === "wiki"
-        ? { base: 1, xl: 3 }
-        : { base: 1, xl: 2 };
-  const selectedQueuePreset = useMemo(
-    () => REVIEW_QUEUE_PRESETS.find((item) => item.key === effectiveQueuePreset) || REVIEW_QUEUE_PRESETS[0],
-    [effectiveQueuePreset],
-  );
-  const selectedDraftSummary = useMemo(
-    () => (selectedDraftId ? drafts.find((item) => item.id === selectedDraftId) || null : null),
-    [drafts, selectedDraftId],
-  );
+  const recommendedBootstrapPreset = useMemo(() => resolveRecommendedBootstrapPreset(), [resolveRecommendedBootstrapPreset]);
+  const agentOrgchartTeams = useMemo(() => {
+    const nodes = agentOrgchart?.nodes ?? [];
+    const byTeam = new Map<string, AgentOrgchartNode[]>();
+    for (const node of nodes) {
+      const team = String(node.team || "").trim() || "Unassigned";
+      if (!byTeam.has(team)) {
+        byTeam.set(team, []);
+      }
+      byTeam.get(team)!.push(node);
+    }
+    return Array.from(byTeam.entries())
+      .map(([team, teamNodes]) => ({
+        team,
+        nodes: [...teamNodes].sort((a, b) =>
+          String(a.display_name || a.agent_id).localeCompare(String(b.display_name || b.agent_id)),
+        ),
+      }))
+      .sort((a, b) => b.nodes.length - a.nodes.length || a.team.localeCompare(b.team));
+  }, [agentOrgchart]);
+  const agentOrgchartNodeById = useMemo(() => {
+    const map = new Map<string, AgentOrgchartNode>();
+    for (const node of agentOrgchart?.nodes ?? []) {
+      map.set(node.agent_id, node);
+    }
+    return map;
+  }, [agentOrgchart]);
+  const agentOrgchartEdgePreview = useMemo(() => {
+    return (agentOrgchart?.edges ?? []).slice(0, 12);
+  }, [agentOrgchart]);
+  useEffect(() => {
+    if (effectiveUiMode === "advanced" && !showWikiFilters) {
+      setShowWikiFilters(true);
+    }
+  }, [effectiveUiMode, showWikiFilters]);
+
+  useEffect(() => {
+    if (isOperationsRoute) {
+      setShowDraftOperationsTools(true);
+      return;
+    }
+    if (showDraftOperationsTools) {
+      setShowDraftOperationsTools(false);
+    }
+    if (showAdvancedDraftOps) {
+      setShowAdvancedDraftOps(false);
+    }
+    if (showMigrationMode) {
+      setShowMigrationMode(false);
+    }
+  }, [isOperationsRoute, showAdvancedDraftOps, showDraftOperationsTools, showMigrationMode]);
+
+  useEffect(() => {
+    if (bootstrapTrustedSourcesTouched) return;
+    if (!projectId.trim()) return;
+    const recommendedCsv = recommendedBootstrapPreset.trustedSourceSystems.join(",");
+    if (!recommendedCsv) return;
+    const currentCsv = normalizeSourceSystemCsv(bootstrapTrustedSources).join(",");
+    if (currentCsv === recommendedCsv) return;
+    setBootstrapTrustedSources(recommendedCsv);
+  }, [
+    bootstrapTrustedSources,
+    bootstrapTrustedSourcesTouched,
+    projectId,
+    recommendedBootstrapPreset,
+  ]);
   const latestPageVersion = useMemo(() => (pageHistory?.versions ?? [])[0] || null, [pageHistory]);
-  const pageRevisionDelta = useMemo(() => {
-    const addedTokens = pageHistoryDiff.after.filter((token) => token.kind === "added").length;
-    const removedTokens = pageHistoryDiff.before.filter((token) => token.kind === "removed").length;
-    return {
-      addedTokens,
-      removedTokens,
-      changed: addedTokens + removedTokens,
-    };
-  }, [pageHistoryDiff]);
-  const pageRevisionLinePreview = useMemo(
-    () =>
-      buildLineDeltaPreview(
-        String(selectedHistoryBase?.markdown || ""),
-        String(selectedHistoryTarget?.markdown || ""),
-        4,
-      ),
-    [selectedHistoryBase?.markdown, selectedHistoryTarget?.markdown],
-  );
-  const wikiUxSummary = useMemo(() => {
-    const firstViewDelta =
-      wikiUxMetrics.firstPageViewMs != null ? Math.max(0, wikiUxMetrics.firstPageViewMs - wikiUxMetrics.sessionStartedMs) : null;
-    const firstPublishDelta =
-      wikiUxMetrics.firstPublishMs != null ? Math.max(0, wikiUxMetrics.firstPublishMs - wikiUxMetrics.sessionStartedMs) : null;
-    return {
-      ttfvMs: firstViewDelta,
-      timeToFirstPublishMs: firstPublishDelta,
-      clickDepthToFirstPublish: wikiUxMetrics.pageOpenCountAtFirstPublish,
-      pageOpenCount: wikiUxMetrics.pageOpenCount,
-      publishCount: wikiUxMetrics.publishCount,
-    };
-  }, [wikiUxMetrics]);
+  const selectedPageRelatedPages = useMemo(() => {
+    if (!selectedPageSlug) return [];
+    const scopeKey = pageGroupKey(selectedPageSlug);
+    return pageNodes
+      .filter((item) => String(item.slug || "").trim() !== selectedPageSlug)
+      .filter((item) => pageGroupKey(item.slug) === scopeKey)
+      .sort((a, b) => {
+        const tsA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const tsB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        if (tsA !== tsB) return tsB - tsA;
+        return String(a.title || a.slug || "").localeCompare(String(b.title || b.slug || ""));
+      })
+      .slice(0, 10)
+      .map((item) => ({
+        slug: item.slug,
+        title: item.title || item.slug,
+        updated_at: item.updated_at,
+      }));
+  }, [pageNodes, selectedPageSlug]);
+  const selectedPageRecentVersions = useMemo(() => {
+    return (pageHistory?.versions ?? []).slice(0, 8).map((item) => ({
+      version: Number(item.version || 0),
+      created_by: String(item.created_by || ""),
+      change_summary: item.change_summary || null,
+      created_at: item.created_at || null,
+    }));
+  }, [pageHistory]);
+  const historyVersionOptions = useMemo(() => {
+    return (pageHistory?.versions ?? []).map((item) => ({
+      value: String(item.version),
+      label: `v${item.version} · ${fmtDate(item.created_at)}${item.created_by ? ` · ${item.created_by}` : ""}`,
+    }));
+  }, [pageHistory]);
+  const historyTargetVersionItem = useMemo(() => {
+    const versions = pageHistory?.versions ?? [];
+    if (versions.length === 0) return null;
+    const selected = versions.find((item) => String(item.version) === String(historyTargetVersion || ""));
+    return selected || versions[0];
+  }, [historyTargetVersion, pageHistory]);
+  const historyBaseVersionItem = useMemo(() => {
+    const versions = pageHistory?.versions ?? [];
+    if (versions.length === 0) return null;
+    const selected = versions.find((item) => String(item.version) === String(historyBaseVersion || ""));
+    return selected || versions[Math.min(1, versions.length - 1)] || versions[0];
+  }, [historyBaseVersion, pageHistory]);
+  const historyDiffPreview = useMemo(() => {
+    return buildInlineMarkdownDiff(
+      String(historyBaseVersionItem?.markdown || ""),
+      String(historyTargetVersionItem?.markdown || ""),
+    );
+  }, [historyBaseVersionItem?.markdown, historyTargetVersionItem?.markdown]);
+  const latestHistoryVersionNumber = useMemo(() => {
+    const latest = (pageHistory?.versions ?? [])[0];
+    return latest ? Number(latest.version || 0) : null;
+  }, [pageHistory]);
+  const canRollbackTargetInOperations = useMemo(() => {
+    if (!isOperationsRoute) return false;
+    if (!selectedPageSlug) return false;
+    if (!historyTargetVersionItem) return false;
+    if (!projectId.trim() || !reviewer.trim()) return false;
+    if (rollingBackPageVersion) return false;
+    if (latestHistoryVersionNumber == null) return false;
+    return Number(historyTargetVersionItem.version || 0) !== Number(latestHistoryVersionNumber);
+  }, [
+    historyTargetVersionItem,
+    isOperationsRoute,
+    latestHistoryVersionNumber,
+    projectId,
+    reviewer,
+    rollingBackPageVersion,
+    selectedPageSlug,
+  ]);
   const selectedPageOpenDrafts = useMemo(() => {
     if (!selectedPageSlug) return [];
     return drafts
       .filter((item) => String(item.page.slug || "").trim() === selectedPageSlug && isOpenReviewDraft(item))
       .slice(0, 6);
   }, [drafts, selectedPageSlug]);
-  const currentReviewerWatchingPage = useMemo(() => {
-    const actor = reviewer.trim().toLowerCase();
-    if (!actor) return false;
-    return pageWatchers.some((item) => String(item.watcher || "").trim().toLowerCase() === actor);
-  }, [pageWatchers, reviewer]);
-  const pageMovePreviewSlug = useMemo(() => {
-    const leaf = slugifySegment(pageMoveSlugLeaf.trim() || pageMoveTitle.trim() || selectedPageSlug || "page");
-    const parentRaw = pageMoveParentPath.trim();
-    if (!parentRaw) {
-      return normalizeWikiSlug(leaf, leaf);
+  const selectedPageConflictDraftCount = useMemo(
+    () =>
+      selectedPageOpenDrafts.filter((item) => item.status === "blocked_conflict" || item.decision === "conflict").length,
+    [selectedPageOpenDrafts],
+  );
+  const selectedPageOpenReviewAssignmentsCount = useMemo(
+    () => pageReviewAssignments.filter((item) => String(item.status || "").trim().toLowerCase() === "open").length,
+    [pageReviewAssignments],
+  );
+  const selectedPageActivityAt = useMemo(() => {
+    return (
+      selectedPageNode?.latest_draft_at ||
+      selectedPageDetail?.latest_version?.created_at ||
+      selectedPageNode?.updated_at ||
+      selectedPageNode?.created_at ||
+      null
+    );
+  }, [
+    selectedPageDetail?.latest_version?.created_at,
+    selectedPageNode?.created_at,
+    selectedPageNode?.latest_draft_at,
+    selectedPageNode?.updated_at,
+  ]);
+  const selectedPageAgeDays = useMemo(() => pageAgeDays(selectedPageActivityAt), [selectedPageActivityAt]);
+  const selectedPageLifecycleSuggestions = useMemo<PageLifecycleSuggestion[]>(() => {
+    if (!selectedPageDetail || !selectedPageNode) return [];
+    const status = String(selectedPageDetail.page.status || "").trim().toLowerCase();
+    const ageDays = selectedPageAgeDays;
+    const openDrafts = selectedPageOpenDrafts.length;
+    const conflictDrafts = selectedPageConflictDraftCount;
+    const openAssignments = selectedPageOpenReviewAssignmentsCount;
+    const suggestions: PageLifecycleSuggestion[] = [];
+    const latestDraftAgeDays = pageAgeDays(selectedPageNode.latest_draft_at);
+    const hasRecentDraftActivity = latestDraftAgeDays != null && latestDraftAgeDays <= PAGE_RECENT_ACTIVITY_DAYS;
+
+    if (conflictDrafts > 0) {
+      suggestions.push({
+        key: "resolve-conflicts",
+        severity: "critical",
+        title: "Conflicts are blocking trusted updates",
+        detail: `${conflictDrafts} draft${conflictDrafts === 1 ? "" : "s"} require conflict resolution before this page can stabilize.`,
+        action: {
+          kind: "open_drafts",
+          label: "Open drafts",
+        },
+      });
     }
-    const normalizedParent = normalizeWikiSlug(parentRaw, "root");
-    return normalizeWikiSlug(`${normalizedParent}/${leaf}`, leaf);
-  }, [pageMoveParentPath, pageMoveSlugLeaf, pageMoveTitle, selectedPageSlug]);
+
+    if (status === "published" && ageDays != null && ageDays >= PAGE_STALE_CRITICAL_DAYS && openDrafts === 0) {
+      suggestions.push({
+        key: "published-stale-critical",
+        severity: "critical",
+        title: "Page looks stale for active wiki",
+        detail: `No updates for ${Math.floor(ageDays)} days. Archive if obsolete, or edit to refresh current process reality.`,
+        action: {
+          kind: "archive",
+          label: "Archive page",
+        },
+      });
+    } else if (status === "published" && ageDays != null && ageDays >= PAGE_STALE_WARNING_DAYS && openDrafts === 0) {
+      suggestions.push({
+        key: "published-stale-watch",
+        severity: "watch",
+        title: "Published page may need freshness check",
+        detail: `No edits for ${Math.floor(ageDays)} days. Mark obsolete sections, or archive when no longer operational.`,
+        action: {
+          kind: "archive",
+          label: "Archive if obsolete",
+        },
+      });
+    }
+
+    if (
+      status === "draft" &&
+      conflictDrafts === 0 &&
+      openDrafts === 0 &&
+      (ageDays == null || ageDays <= PAGE_STALE_WARNING_DAYS)
+    ) {
+      suggestions.push({
+        key: "promote-reviewed",
+        severity: "info",
+        title: "Draft is stable enough for review stage",
+        detail: "No open draft conflicts on this page. Promote to reviewed to put it in the publish lane.",
+        action: {
+          kind: "promote_reviewed",
+          label: "Promote to reviewed",
+        },
+      });
+    }
+
+    if (status === "reviewed" && conflictDrafts === 0 && openAssignments === 0) {
+      suggestions.push({
+        key: "publish-reviewed",
+        severity: "info",
+        title: "Reviewed page is ready to publish",
+        detail: "No open reviewer assignments or conflicts are detected. Publish to make it active for all agents.",
+        action: {
+          kind: "publish",
+          label: "Open publish",
+        },
+      });
+    }
+
+    if (status === "archived" && (openDrafts > 0 || hasRecentDraftActivity)) {
+      suggestions.push({
+        key: "restore-archived",
+        severity: "watch",
+        title: "Archived page has new activity",
+        detail: "Recent incoming drafts suggest this topic is active again. Restore page to include new knowledge safely.",
+        action: {
+          kind: "restore",
+          label: "Restore page",
+        },
+      });
+    }
+
+    return suggestions.slice(0, 3);
+  }, [
+    selectedPageAgeDays,
+    selectedPageConflictDraftCount,
+    selectedPageDetail,
+    selectedPageNode,
+    selectedPageOpenDrafts,
+    selectedPageOpenReviewAssignmentsCount,
+  ]);
+  const selectedPageHasStaleSuggestion = useMemo(
+    () => selectedPageLifecycleSuggestions.some((item) => item.key.startsWith("published-stale")),
+    [selectedPageLifecycleSuggestions],
+  );
+  useEffect(() => {
+    if (!selectedPageSlug || selectedPageLifecycleSuggestions.length === 0) return;
+    const signature = selectedPageLifecycleSuggestions.map((item) => item.key).join("|");
+    if (!signature) return;
+    if (lifecycleSuggestionSeenRef.current[selectedPageSlug] === signature) return;
+    lifecycleSuggestionSeenRef.current[selectedPageSlug] = signature;
+    setLifecycleAdvisorMetrics((prev) => ({
+      ...prev,
+      suggestionShown: prev.suggestionShown + 1,
+    }));
+  }, [selectedPageLifecycleSuggestions, selectedPageSlug]);
+  useEffect(() => {
+    if (!selectedPageSlug) return;
+    const nowMs = Date.now();
+    setLifecycleAdvisorMetrics((prev) => {
+      const currentStartedAt = prev.staleShownAtBySlug[selectedPageSlug];
+      if (selectedPageHasStaleSuggestion) {
+        if (currentStartedAt) return prev;
+        return {
+          ...prev,
+          staleShownAtBySlug: {
+            ...prev.staleShownAtBySlug,
+            [selectedPageSlug]: nowMs,
+          },
+        };
+      }
+      if (!currentStartedAt) return prev;
+      const nextStaleMap = { ...prev.staleShownAtBySlug };
+      delete nextStaleMap[selectedPageSlug];
+      return {
+        ...prev,
+        staleShownAtBySlug: nextStaleMap,
+        staleResolvedDurationsMs: [...prev.staleResolvedDurationsMs.slice(-199), Math.max(0, nowMs - currentStartedAt)],
+      };
+    });
+  }, [selectedPageHasStaleSuggestion, selectedPageSlug]);
+  const activePublishChecklistPreset = useMemo(
+    () => PUBLISH_CHECKLIST_PRESETS.find((item) => item.key === spacePublishChecklistPreset) || PUBLISH_CHECKLIST_PRESETS[0],
+    [spacePublishChecklistPreset],
+  );
+  const localSpacePolicyAdoptionSummary = useMemo(
+    () => summarizeSpacePolicyAudit(spacePolicyAudit),
+    [spacePolicyAudit],
+  );
+  const spacePolicyAdoptionSummary = useMemo(
+    () => spacePolicyAdoptionSummaryApi || localSpacePolicyAdoptionSummary,
+    [localSpacePolicyAdoptionSummary, spacePolicyAdoptionSummaryApi],
+  );
+  const activePublishChecklistItems = activePublishChecklistPreset.items;
+  const isPublishChecklistComplete = useMemo(() => {
+    if (activePublishChecklistItems.length === 0) return true;
+    return activePublishChecklistItems.every((item) => Boolean(publishChecklistAcks[item.id]));
+  }, [activePublishChecklistItems, publishChecklistAcks]);
+  useEffect(() => {
+    if (!showPublishModal) {
+      setPublishChecklistAcks({});
+      return;
+    }
+    if (activePublishChecklistItems.length === 0) {
+      setPublishChecklistAcks({});
+      return;
+    }
+    setPublishChecklistAcks((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const item of activePublishChecklistItems) {
+        next[item.id] = Boolean(prev[item.id]);
+      }
+      return next;
+    });
+  }, [activePublishChecklistItems, showPublishModal]);
   const wikiHomeRecentPages = useMemo(() => {
     return [...pageNodes]
       .sort((a, b) => {
@@ -5745,69 +6420,53 @@ export default function App() {
       })
       .slice(0, 10);
   }, [pageNodes, quickNavQuery, wikiHomeRecentPages]);
-  const queueMetrics = useMemo(() => {
-    const nowMs = Date.now();
-    const openScoped = scopedDrafts.filter((item) => isOpenReviewDraft(item));
-    const openAges = openScoped
-      .map((item) => draftAgeHours(item, nowMs))
-      .filter((value): value is number => value != null)
-      .sort((a, b) => a - b);
-    const medianAge =
-      openAges.length === 0
-        ? null
-        : openAges.length % 2 === 1
-          ? openAges[(openAges.length - 1) / 2]
-          : (openAges[openAges.length / 2 - 1] + openAges[openAges.length / 2]) / 2;
+  const lifecycleTelemetrySummary = useMemo(() => {
+    if (!wikiLifecycleTelemetry) return null;
+    const actions = Array.isArray(wikiLifecycleTelemetry.summary?.actions) ? wikiLifecycleTelemetry.summary.actions : [];
+    const topActions = actions
+      .slice()
+      .sort((a, b) => Number(b.applied_total || 0) - Number(a.applied_total || 0))
+      .slice(0, 3);
+    const recentDaily = Array.isArray(wikiLifecycleTelemetry.daily) ? wikiLifecycleTelemetry.daily.slice(-7) : [];
     return {
-      openCount: openScoped.length,
-      breachCount: openScoped.filter((item) => (draftAgeHours(item, nowMs) ?? -1) >= reviewSlaHours).length,
-      conflictCount: openScoped.filter((item) => item.status === "blocked_conflict" || item.decision === "conflict").length,
-      highConfidenceCount: openScoped.filter((item) => Number(item.confidence) >= 0.85).length,
-      oldestAge: openAges.length > 0 ? openAges[openAges.length - 1] : null,
-      medianAge,
+      days: Number(wikiLifecycleTelemetry.days || LIFECYCLE_TELEMETRY_WINDOW_DAYS),
+      shownTotal: Number(wikiLifecycleTelemetry.summary?.shown_total || 0),
+      appliedTotal: Number(wikiLifecycleTelemetry.summary?.applied_total || 0),
+      applyRate: Number(wikiLifecycleTelemetry.summary?.apply_rate || 0),
+      topActions,
+      recentDaily,
+      generatedAt: wikiLifecycleTelemetry.generated_at,
     };
-  }, [reviewSlaHours, scopedDrafts]);
-  const triageLaneEntries = useMemo(() => {
-    const nowMs = Date.now();
-    return [...visibleDrafts]
-      .filter((item) => isOpenReviewDraft(item))
-      .map((draft) => {
-        const score = triagePriorityScore(draft, nowMs, reviewSlaHours);
-        return {
-          draft,
-          score,
-          reasons: triagePriorityReasons(draft, nowMs, reviewSlaHours),
-        };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 4);
-  }, [reviewSlaHours, visibleDrafts]);
-  const canQuickModerateFromInbox = useMemo(
-    () => Boolean(projectId.trim() && reviewer.trim()) && !runningAction,
-    [projectId, reviewer, runningAction],
-  );
-  const quickForceArmed = armedRiskActionKey === `force-approve:${selectedDraftId ?? "none"}`;
-  const quickDismissArmed = armedRiskActionKey === `reject-dismiss:${selectedDraftId ?? "none"}`;
-  const formForceArmed = armedRiskActionKey === `force-approve-form:${selectedDraftId ?? "none"}`;
-  const formDismissArmed = armedRiskActionKey === `reject-dismiss-form:${selectedDraftId ?? "none"}`;
-  const bulkApproveArmed = armedRiskActionKey === "bulk-approve";
-  const bulkRejectArmed = armedRiskActionKey === "bulk-reject";
-  const coreIntentSummary = useMemo(() => {
-    const quick = coreIntentSignals.quickModeration;
-    const sessionMinutes = Math.max(0, (Date.now() - coreIntentSignals.startedAtMs) / (1000 * 60));
+  }, [wikiLifecycleTelemetry]);
+  const lifecycleTelemetryActionSummary = useMemo(() => {
+    const requestedActionKey = normalizeTelemetryActionKey(lifecycleTelemetryActionKey || "");
+    if (!requestedActionKey) return null;
+    if (!wikiLifecycleTelemetryAction) return null;
+    const actions = Array.isArray(wikiLifecycleTelemetryAction.summary?.actions) ? wikiLifecycleTelemetryAction.summary.actions : [];
+    const selectedAction =
+      actions.find((item) => normalizeTelemetryActionKey(String(item.action_key || "")) === requestedActionKey) || null;
+    const shownTotal = Number(
+      selectedAction?.shown_total ?? wikiLifecycleTelemetryAction.summary?.shown_total ?? 0,
+    );
+    const appliedTotal = Number(
+      selectedAction?.applied_total ?? wikiLifecycleTelemetryAction.summary?.applied_total ?? 0,
+    );
+    const applyRate = selectedAction
+      ? Number(selectedAction.apply_rate || 0)
+      : shownTotal > 0
+        ? appliedTotal / shownTotal
+        : 0;
+    const recentDaily = Array.isArray(wikiLifecycleTelemetryAction.daily) ? wikiLifecycleTelemetryAction.daily.slice(-7) : [];
     return {
-      triageOpenCount: coreIntentSignals.triageOpenCount,
-      triageUniqueDrafts: coreIntentSignals.triageOpenedDraftIds.length,
-      quickApproveCount: quick.approve,
-      quickRejectCount: quick.reject,
-      quickFromTriage: quick.bySource.triage_lane,
-      quickFromInbox: quick.bySource.inbox_card,
-      quickFromDetail: quick.bySource.detail_header,
-      quickActionsPerHour:
-        sessionMinutes > 0 ? Number((((quick.approve + quick.reject) / sessionMinutes) * 60).toFixed(1)) : 0,
-      lastAction: coreIntentSignals.lastAction,
+      actionKey: requestedActionKey,
+      days: Number(wikiLifecycleTelemetryAction.days || LIFECYCLE_TELEMETRY_WINDOW_DAYS),
+      shownTotal,
+      appliedTotal,
+      applyRate,
+      recentDaily,
+      generatedAt: wikiLifecycleTelemetryAction.generated_at,
     };
-  }, [coreIntentSignals]);
+  }, [lifecycleTelemetryActionKey, wikiLifecycleTelemetryAction]);
 
   const renderWikiTreeNode = (node: WikiTreeNode) => {
     const isSelected = Boolean(node.slug && selectedPageSlug === node.slug);
@@ -5915,6 +6574,15 @@ export default function App() {
     const hasChildren = node.children.length > 0;
     const rowPad = 10 + Math.max(0, node.depth) * 14;
     const pageStatus = String(node.page?.status || "").trim().toLowerCase();
+    const nodeActivityAt = node.page?.latest_draft_at || node.page?.updated_at || node.page?.created_at || null;
+    const nodeAgeDays = pageAgeDays(nodeActivityAt);
+    const isNodeStaleWarning =
+      pageStatus === "published" &&
+      nodeAgeDays != null &&
+      nodeAgeDays >= PAGE_STALE_WARNING_DAYS &&
+      node.page != null &&
+      Number(node.page.open_count || 0) === 0;
+    const isNodeStaleCritical = isNodeStaleWarning && nodeAgeDays != null && nodeAgeDays >= PAGE_STALE_CRITICAL_DAYS;
     return (
       <Stack key={node.key} gap={2}>
         <Group
@@ -5977,6 +6645,19 @@ export default function App() {
             {node.label}
           </Text>
           <Group gap={4} wrap="nowrap">
+            {isNodeStaleWarning ? (
+              <Tooltip
+                label={
+                  isNodeStaleCritical
+                    ? `No updates for ${Math.floor(nodeAgeDays || 0)} days. Consider archive or refresh.`
+                    : `No updates for ${Math.floor(nodeAgeDays || 0)} days. Check freshness.`
+                }
+              >
+                <Badge size="xs" variant="light" color={isNodeStaleCritical ? "red" : "orange"}>
+                  stale
+                </Badge>
+              </Tooltip>
+            ) : null}
             {node.open_count > 0 ? (
               <Badge size="xs" variant="light" color="orange">
                 {node.open_count}
@@ -6108,187 +6789,446 @@ export default function App() {
   if (uiMode === "core" || !CAN_ACCESS_ADVANCED_MODE) {
     return (
       <Box className="confluence-shell">
-        <Box className="confluence-topbar">
-          <Group justify="space-between" align="center" wrap="nowrap">
-            <Group gap="sm" wrap="nowrap">
-              <Text className="eyebrow">Synapse Wiki</Text>
-              <Button
-                size="compact-sm"
-                variant={coreWorkspaceTab === "wiki" ? "filled" : "light"}
-                color={coreWorkspaceTab === "wiki" ? "blue" : "gray"}
-                onClick={() => setCoreWorkspaceTab("wiki")}
-              >
-                Wiki
-              </Button>
-              <Button
-                size="compact-sm"
-                variant={coreWorkspaceTab === "drafts" ? "filled" : "light"}
-                color={coreWorkspaceTab === "drafts" ? "blue" : "gray"}
-                onClick={() => setCoreWorkspaceTab("drafts")}
-              >
-                Drafts
-              </Button>
-              <Button
-                size="compact-sm"
-                variant={coreWorkspaceTab === "tasks" ? "filled" : "light"}
-                color={coreWorkspaceTab === "tasks" ? "blue" : "gray"}
-                onClick={() => setCoreWorkspaceTab("tasks")}
-              >
-                Tasks
-              </Button>
-            </Group>
-            <Group gap="xs" wrap="nowrap">
-              <TextInput
-                size="sm"
-                placeholder="Search page title or slug"
-                value={pageFilter}
-                onChange={(event) => setPageFilter(event.currentTarget.value)}
-                leftSection={<IconSearch size={14} />}
-                w={340}
-                rightSection={<Kbd size="xs">⌘/Ctrl+K</Kbd>}
-              />
-              <Button
-                size="sm"
-                variant="light"
-                leftSection={<IconFilePlus size={14} />}
-                onClick={() => {
-                  setShowCoreCreatePanel((prev) => !prev);
-                  setCoreWorkspaceTab("wiki");
-                }}
-              >
-                Create
-              </Button>
-              <Button
-                size="sm"
-                variant="light"
-                leftSection={<IconLink size={14} />}
-                onClick={() => void shareCurrentPage()}
-              >
-                Share
-              </Button>
-              {selectedPageSlug && !pageEditMode ? (
-                <Button
-                  size="sm"
-                  variant="light"
-                  color="blue"
-                  onClick={() => {
-                    setPageMoveMode(false);
-                    setPageEditMode(true);
-                  }}
-                >
-                  Edit
-                </Button>
-              ) : null}
-              {selectedPageSlug ? (
-                <Button
-                  size="sm"
-                  variant="filled"
-                  color="blue"
-                  onClick={() => setShowPublishModal(true)}
-                >
-                  Publish
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="light"
-                leftSection={<IconArrowsShuffle size={14} />}
-                onClick={() => {
-                  void loadWikiPages();
-                  void loadDrafts();
-                }}
-              >
-                Sync
-              </Button>
-            </Group>
-          </Group>
-          <Group justify="space-between" align="center" mt={8} wrap="wrap">
-            <Group gap={6} wrap="wrap">
-              <Badge size="sm" variant="light" color={wikiUxSummary.ttfvMs == null ? "gray" : "teal"}>
-                TTFV {formatDurationMs(wikiUxSummary.ttfvMs)}
-              </Badge>
-              <Badge size="sm" variant="light" color={wikiUxSummary.timeToFirstPublishMs == null ? "gray" : "blue"}>
-                First publish {formatDurationMs(wikiUxSummary.timeToFirstPublishMs)}
-              </Badge>
-              <Badge
-                size="sm"
-                variant="light"
-                color={wikiUxSummary.clickDepthToFirstPublish == null ? "gray" : "indigo"}
-              >
-                Click depth {wikiUxSummary.clickDepthToFirstPublish ?? "—"}
-              </Badge>
-            </Group>
-            <Button size="compact-sm" variant="subtle" onClick={() => setShowRolesGuideModal(true)}>
-              Roles & access
-            </Button>
-          </Group>
-        </Box>
+        <CoreWorkspaceTopBar
+          isOperationsRoute={isOperationsRoute}
+          coreWorkspaceTab={coreWorkspaceTab}
+          pageFilter={pageFilter}
+          selectedPageSlug={selectedPageSlug}
+          pageEditMode={pageEditMode}
+          projectId={projectId}
+          scopeSpaceLabel={scopeSpaceLabel}
+          scopePageLabel={scopePageLabel}
+          selectedSpaceKey={selectedSpaceKey}
+          onOpenWiki={() => {
+            setCoreWorkspaceRoute("wiki");
+            setCoreWorkspaceTab("wiki");
+          }}
+          onOpenDrafts={() => {
+            setCoreWorkspaceRoute("wiki");
+            setCoreWorkspaceTab("drafts");
+          }}
+          onOpenTasks={() => {
+            setCoreWorkspaceRoute("wiki");
+            setCoreWorkspaceTab("tasks");
+          }}
+          onOpenOperations={() => {
+            setCoreWorkspaceRoute("operations");
+            setCoreWorkspaceTab("drafts");
+          }}
+          onPageFilterChange={setPageFilter}
+          onToggleCreate={() => {
+            setShowCoreCreatePanel((prev) => !prev);
+            setCoreWorkspaceRoute("wiki");
+            setCoreWorkspaceTab("wiki");
+          }}
+          onShareCurrentPage={() => {
+            void shareCurrentPage();
+          }}
+          onEditPage={() => {
+            setPageMoveMode(false);
+            setPageEditMode(true);
+          }}
+          onOpenPublish={() => {
+            setProcessSimulation(null);
+            setPublishConfirmHighRisk(false);
+            setShowPublishModal(true);
+          }}
+          onSync={() => {
+            void loadWikiPages();
+            void loadDrafts();
+          }}
+          onCopyScopeLink={() => {
+            void copyScopeDeepLink();
+          }}
+          onClearSpaceScope={() => {
+            setSelectedSpaceKey(null);
+            setLifecycleSpaceFilter(LIFECYCLE_SPACE_FILTER_ALL);
+          }}
+          onOpenRolesGuide={() => setShowRolesGuideModal(true)}
+        />
 
         <Box className="confluence-layout">
-          <Paper className="confluence-left-rail" withBorder>
-            <Stack gap="sm">
-              <TextInput
-                size="xs"
-                label="Workspace"
-                value={projectId}
-                onChange={(event) => setProjectId(event.currentTarget.value)}
-                placeholder="omega_demo"
-              />
-              <TextInput
-                size="xs"
-                label="Your name"
-                value={reviewer}
-                onChange={(event) => setReviewer(event.currentTarget.value)}
-                placeholder="ops_manager"
-              />
-              <Select
-                size="xs"
-                label="Space"
-                value={selectedSpaceKey}
-                onChange={setSelectedSpaceKey}
-                clearable
-                data={spaceNodes.map((space) => ({
-                  value: space.key,
-                  label: `${space.title} (${space.page_count})`,
-                }))}
-                placeholder="All spaces"
-              />
-              <Select
-                size="xs"
-                label="Status"
-                value={pageStatusFilter}
-                onChange={(value) => setPageStatusFilter(value)}
-                clearable
-                data={[
-                  { value: "published", label: "Published" },
-                  { value: "reviewed", label: "Reviewed" },
-                  { value: "draft", label: "Draft" },
-                  { value: "archived", label: "Archived" },
-                ]}
-                placeholder="All statuses"
-              />
-            </Stack>
-            <Divider my="sm" />
-            <Group justify="space-between" mb={6}>
-              <Text size="sm" fw={700}>
-                Pages
-              </Text>
-              <Badge size="xs" variant="light" color="blue">
-                {pageNodes.length}
-              </Badge>
-            </Group>
-            <ScrollArea h={760} type="auto">
-              <Stack gap={2} className="confluence-tree">
-                {wikiTreeNodes.length === 0 ? (
-                  <Text size="sm" c="dimmed">
-                    No pages yet.
-                  </Text>
-                ) : (
-                  wikiTreeNodes.map((node) => renderConfluenceTreeNode(node))
-                )}
-              </Stack>
-            </ScrollArea>
-          </Paper>
+          <CoreWorkspaceLeftRail
+            projectId={projectId}
+            reviewer={reviewer}
+            selectedSpaceKey={selectedSpaceKey}
+            pageStatusFilter={pageStatusFilter}
+            spaceOptions={spaceNodes.map((space) => ({
+              value: space.key,
+              label: `${space.title} (${space.page_count})`,
+            }))}
+            pageCount={pageNodes.length}
+            onProjectIdChange={setProjectId}
+            onReviewerChange={setReviewer}
+            onSpaceChange={setSelectedSpaceKey}
+            onPageStatusChange={setPageStatusFilter}
+            lifecyclePanel={
+              <Paper withBorder p="xs" radius="md" id="core-left-lifecycle">
+                <Stack gap={6}>
+                  <Group justify="space-between" align="center" wrap="wrap">
+                    <Text size="xs" fw={700}>
+                      Lifecycle
+                    </Text>
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      loading={loadingWikiLifecycleStats}
+                      disabled={!projectId.trim()}
+                      onClick={() => void loadWikiLifecycleStats()}
+                    >
+                      Refresh
+                    </Button>
+                  </Group>
+                  {!projectId.trim() ? (
+                    <Text size="xs" c="dimmed">
+                      Set workspace to load lifecycle diagnostics.
+                    </Text>
+                  ) : loadingWikiLifecycleStats && !wikiLifecycleStats ? (
+                    <Group gap={6}>
+                      <Loader size="xs" />
+                      <Text size="xs" c="dimmed">
+                        loading…
+                      </Text>
+                    </Group>
+                  ) : !wikiLifecycleStats ? (
+                    <Text size="xs" c="dimmed">
+                      Lifecycle stats unavailable.
+                    </Text>
+                  ) : (
+                    <>
+                      <Group gap={6} wrap="wrap">
+                        <Badge size="xs" variant="light" color="teal">
+                          pub {wikiLifecycleStats.counts.published_pages}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="orange">
+                          stale {wikiLifecycleStats.counts.stale_warning_pages}
+                        </Badge>
+                        <Badge size="xs" variant="light" color="red">
+                          critical {wikiLifecycleStats.counts.stale_critical_pages}
+                        </Badge>
+                      </Group>
+                      {isOperationsRoute ? (
+                        <>
+                          <Group justify="space-between" align="center" wrap="wrap">
+                            <Text size="xs" c="dimmed">
+                              Lifecycle diagnostics are available on demand.
+                            </Text>
+                            <Button
+                              size="compact-xs"
+                              variant={showCoreLifecycleDetails ? "filled" : "light"}
+                              color={showCoreLifecycleDetails ? "blue" : "gray"}
+                              onClick={() => setShowCoreLifecycleDetails((value) => !value)}
+                            >
+                              {showCoreLifecycleDetails ? "Hide details" : "Show details"}
+                            </Button>
+                          </Group>
+                          {showCoreLifecycleDetails ? (
+                            <>
+                              {loadingWikiLifecycleTelemetry ? (
+                                <Group gap={6}>
+                                  <Loader size="xs" />
+                                  <Text size="xs" c="dimmed">
+                                    loading action mix…
+                                  </Text>
+                                </Group>
+                              ) : lifecycleTelemetrySummary ? (
+                                <Paper withBorder p={6} radius="sm" data-testid="core-lifecycle-action-mix">
+                                  <Stack gap={4}>
+                                    <Text size="xs" fw={700}>
+                                      Action mix ({lifecycleTelemetrySummary.days}d)
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                      shown {lifecycleTelemetrySummary.shownTotal} • applied {lifecycleTelemetrySummary.appliedTotal} • apply rate{" "}
+                                      {(lifecycleTelemetrySummary.applyRate * 100).toFixed(1)}%
+                                    </Text>
+                                    {lifecycleTelemetrySummary.topActions.length > 0 ? (
+                                      <Group gap={4} wrap="wrap">
+                                        {lifecycleTelemetrySummary.topActions.map((item) => (
+                                          <Button
+                                            key={`core-lifecycle-action-top-${item.action_key}`}
+                                            data-testid={`core-lifecycle-action-open-${normalizeTelemetryActionKey(item.action_key)}`}
+                                            size="xs"
+                                            variant={
+                                              lifecycleTelemetryActionKey === normalizeTelemetryActionKey(item.action_key)
+                                                ? "filled"
+                                                : "light"
+                                            }
+                                            color={
+                                              lifecycleTelemetryActionKey === normalizeTelemetryActionKey(item.action_key)
+                                                ? "blue"
+                                                : item.applied_total > 0
+                                                  ? "blue"
+                                                  : "gray"
+                                            }
+                                            onClick={() => toggleLifecycleTelemetryActionDrilldown(item.action_key)}
+                                          >
+                                            {item.action_key} {item.applied_total}/{item.shown_total}
+                                          </Button>
+                                        ))}
+                                      </Group>
+                                    ) : null}
+                                    {lifecycleTelemetrySummary.recentDaily.length > 0 ? (
+                                      <Group gap={4} wrap="wrap">
+                                        {lifecycleTelemetrySummary.recentDaily.map((item) => (
+                                          <Badge
+                                            key={`core-lifecycle-action-day-${item.metric_date}`}
+                                            size="xs"
+                                            variant="outline"
+                                            color={item.applied_total > 0 ? "indigo" : "gray"}
+                                          >
+                                            {item.metric_date.slice(5)} {item.applied_total}/{item.shown_total}
+                                          </Badge>
+                                        ))}
+                                      </Group>
+                                    ) : null}
+                                    {loadingWikiLifecycleTelemetryAction && lifecycleTelemetryActionKey ? (
+                                      <Group gap={6}>
+                                        <Loader size="xs" />
+                                        <Text size="xs" c="dimmed">
+                                          loading action drill-down…
+                                        </Text>
+                                      </Group>
+                                    ) : lifecycleTelemetryActionSummary ? (
+                                      <Paper withBorder p={6} radius="sm" data-testid="wiki-lifecycle-action-detail" id="core-lifecycle-action-detail">
+                                        <Stack gap={4}>
+                                          <Group justify="space-between" align="center" wrap="wrap">
+                                            <Text size="xs" fw={700}>
+                                              Drill-down: {lifecycleTelemetryActionSummary.actionKey} ({lifecycleTelemetryActionSummary.days}d)
+                                            </Text>
+                                            <Button
+                                              size="compact-xs"
+                                              variant="subtle"
+                                              color="gray"
+                                              onClick={() => setLifecycleTelemetryActionKey(null)}
+                                            >
+                                              Clear
+                                            </Button>
+                                          </Group>
+                                          <Text size="xs" c="dimmed">
+                                            shown {lifecycleTelemetryActionSummary.shownTotal} • applied {lifecycleTelemetryActionSummary.appliedTotal} •
+                                            apply rate {(lifecycleTelemetryActionSummary.applyRate * 100).toFixed(1)}%
+                                          </Text>
+                                          {lifecycleTelemetryActionSummary.recentDaily.length > 0 ? (
+                                            <Group gap={4} wrap="wrap">
+                                              {lifecycleTelemetryActionSummary.recentDaily.map((item) => (
+                                                <Badge
+                                                  key={`core-lifecycle-action-drill-day-${item.metric_date}`}
+                                                  size="xs"
+                                                  variant="outline"
+                                                  color={item.applied_total > 0 ? "blue" : "gray"}
+                                                >
+                                                  {item.metric_date.slice(5)} {item.applied_total}/{item.shown_total}
+                                                </Badge>
+                                              ))}
+                                            </Group>
+                                          ) : null}
+                                        </Stack>
+                                      </Paper>
+                                    ) : null}
+                                  </Stack>
+                                </Paper>
+                              ) : null}
+                              <Group gap={4} wrap="wrap">
+                                {LIFECYCLE_QUERY_PRESETS.map((preset) => (
+                                  <Button
+                                    key={`core-lifecycle-preset-${preset.key}`}
+                                    data-testid={`core-lifecycle-preset-${preset.key}`}
+                                    size="compact-xs"
+                                    variant={lifecycleQueryPreset === preset.key ? "filled" : "light"}
+                                    color={lifecycleQueryPreset === preset.key ? "blue" : "gray"}
+                                    onClick={() => applyLifecycleQueryPreset(preset.key)}
+                                  >
+                                    {preset.label}
+                                  </Button>
+                                ))}
+                              </Group>
+                              {lifecycleQueryPreset === "custom" ? (
+                                <Group gap={6} wrap="nowrap">
+                                  <TextInput
+                                    size="xs"
+                                    type="number"
+                                    label="Stale days"
+                                    value={String(lifecycleStaleDays)}
+                                    onChange={(event) => {
+                                      const value = Number(event.currentTarget.value);
+                                      if (!Number.isFinite(value)) return;
+                                      setLifecycleStaleDays(Math.max(1, Math.min(365, Math.round(value))));
+                                    }}
+                                    styles={{ root: { width: 120 } }}
+                                  />
+                                  <TextInput
+                                    size="xs"
+                                    type="number"
+                                    label="Critical days"
+                                    value={String(lifecycleCriticalDays)}
+                                    onChange={(event) => {
+                                      const value = Number(event.currentTarget.value);
+                                      if (!Number.isFinite(value)) return;
+                                      setLifecycleCriticalDays(Math.max(1, Math.min(365, Math.round(value))));
+                                    }}
+                                    styles={{ root: { width: 120 } }}
+                                  />
+                                </Group>
+                              ) : null}
+                              {lifecycleSpaceChips.length > 0 ? (
+                                <Group gap={4} wrap="wrap">
+                                  <Button
+                                    data-testid="core-lifecycle-space-chip-all"
+                                    size="compact-xs"
+                                    variant={lifecycleSpaceFilter === LIFECYCLE_SPACE_FILTER_ALL ? "filled" : "light"}
+                                    color={lifecycleSpaceFilter === LIFECYCLE_SPACE_FILTER_ALL ? "blue" : "gray"}
+                                    onClick={() => {
+                                      setLifecycleSpaceFilter(LIFECYCLE_SPACE_FILTER_ALL);
+                                      setSelectedSpaceKey(null);
+                                    }}
+                                  >
+                                    All {wikiLifecycleStats.stale_pages.length}
+                                  </Button>
+                                  {lifecycleSpaceChips.map((space) => (
+                                    <Button
+                                      key={`core-lifecycle-space-chip-${space.key}`}
+                                      data-testid={`core-lifecycle-space-chip-${space.key}`}
+                                      size="compact-xs"
+                                      variant={lifecycleSpaceFilter === space.key ? "filled" : "light"}
+                                      color={lifecycleSpaceFilter === space.key ? "blue" : "gray"}
+                                      onClick={() => {
+                                        setLifecycleSpaceFilter(space.key);
+                                        setSelectedSpaceKey(space.key);
+                                      }}
+                                    >
+                                      {space.title} {space.staleCount}
+                                    </Button>
+                                  ))}
+                                </Group>
+                              ) : null}
+                              {wikiLifecycleStats.stale_pages.length === 0 ? (
+                                <Stack gap={4}>
+                                  <Text size="xs" c="dimmed">
+                                    No stale pages.
+                                  </Text>
+                                  {lifecycleEmptyScope ? (
+                                    <Paper withBorder p={6} radius="sm" data-testid="core-lifecycle-empty-scope">
+                                      <Stack gap={2}>
+                                        <Text size="xs" fw={700}>
+                                          Reason: {lifecycleEmptyScope.code}
+                                        </Text>
+                                        <Text size="xs" c="dimmed">
+                                          {lifecycleEmptyScope.message}
+                                        </Text>
+                                        {lifecycleEmptyScope.details ? (
+                                          <Text size="xs" c="dimmed">
+                                            published {lifecycleEmptyScope.details.published_pages ?? 0} • with open drafts{" "}
+                                            {lifecycleEmptyScope.details.published_pages_with_open_drafts ?? 0} • below threshold{" "}
+                                            {lifecycleEmptyScope.details.published_pages_below_stale_threshold ?? 0}
+                                          </Text>
+                                        ) : null}
+                                        {Array.isArray(lifecycleEmptyScope.suggested_actions) &&
+                                        lifecycleEmptyScope.suggested_actions.length > 0 ? (
+                                          <Group gap={4} wrap="wrap">
+                                            {lifecycleEmptyScope.suggested_actions.map((item) => (
+                                              <Button
+                                                key={`core-lifecycle-empty-action-${item.action}-${item.label}`}
+                                                size="compact-xs"
+                                                variant="light"
+                                                color="gray"
+                                                data-testid={`core-lifecycle-empty-action-${item.action}`}
+                                                onClick={() => runLifecycleEmptyScopeAction(item.action, item.deep_link)}
+                                              >
+                                                {item.label}
+                                              </Button>
+                                            ))}
+                                          </Group>
+                                        ) : null}
+                                      </Stack>
+                                    </Paper>
+                                  ) : null}
+                                </Stack>
+                              ) : lifecycleVisibleStalePages.length === 0 ? (
+                                <Text size="xs" c="dimmed">
+                                  No stale pages in selected space.
+                                </Text>
+                              ) : (
+                                <Stack gap={4}>
+                                  {lifecycleVisibleStalePages.slice(0, 3).map((item) => (
+                                    <Group key={`core-left-stale-${item.slug}`} justify="space-between" align="center" wrap="nowrap">
+                                      <Button
+                                        size="compact-xs"
+                                        variant="subtle"
+                                        color="gray"
+                                        onClick={() => openLifecycleDrilldown(item.slug, "page")}
+                                      >
+                                        {item.title || item.slug}
+                                      </Button>
+                                      <Group gap={4} wrap="nowrap">
+                                        <Button
+                                          size="compact-xs"
+                                          variant="subtle"
+                                          color="violet"
+                                          onClick={() => openLifecycleDrilldown(item.slug, "policy")}
+                                        >
+                                          Policy
+                                        </Button>
+                                        <Badge size="xs" variant="light" color={item.severity === "critical" ? "red" : "orange"}>
+                                          {Math.round(Number(item.age_days || 0))}d
+                                        </Badge>
+                                      </Group>
+                                    </Group>
+                                  ))}
+                                </Stack>
+                              )}
+                            </>
+                          ) : (
+                            <Text size="xs" c="dimmed">
+                              Open details only when you need drill-down actions.
+                            </Text>
+                          )}
+                        </>
+                      ) : (
+                        <Paper withBorder p={6} radius="sm">
+                          <Stack gap={4}>
+                            <Text size="xs" c="dimmed">
+                              Detailed lifecycle diagnostics are available only in Operations.
+                            </Text>
+                            <Group gap={6} wrap="wrap">
+                              <Button
+                                size="compact-xs"
+                                variant="light"
+                                color="indigo"
+                                onClick={() => {
+                                  setCoreWorkspaceRoute("operations");
+                                  setCoreWorkspaceTab("drafts");
+                                }}
+                              >
+                                Open ops diagnostics
+                              </Button>
+                              <Button
+                                size="compact-xs"
+                                variant="subtle"
+                                color="gray"
+                                loading={loadingWikiLifecycleStats}
+                                onClick={() => void loadWikiLifecycleStats()}
+                              >
+                                Refresh stats
+                              </Button>
+                            </Group>
+                          </Stack>
+                        </Paper>
+                      )}
+                    </>
+                  )}
+                </Stack>
+              </Paper>
+            }
+            treeContent={
+              wikiTreeNodes.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  No pages yet.
+                </Text>
+              ) : (
+                wikiTreeNodes.map((node) => renderConfluenceTreeNode(node))
+              )
+            }
+          />
 
           <Paper className="confluence-main" withBorder>
             {coreWorkspaceTab === "tasks" ? (
@@ -6305,125 +7245,545 @@ export default function App() {
                 <LazyTaskTrackerPanel apiUrl={apiUrl} projectId={projectId} reviewer={reviewer} />
               </Suspense>
             ) : coreWorkspaceTab === "drafts" ? (
-              <Stack gap="sm">
-                <Group justify="space-between" align="center">
-                  <Title order={3}>Draft Inbox</Title>
-                  <Badge variant="light" color="cyan">
-                    {visibleDrafts.length}
-                  </Badge>
-                </Group>
-                {visibleDrafts.length === 0 ? (
-                  <Paper withBorder p="md" radius="md">
-                    <Text size="sm" c="dimmed">
-                      No drafts in current scope.
-                    </Text>
-                  </Paper>
-                ) : (
-                  <ScrollArea h={760} type="auto">
-                    <Stack gap="xs">
-                      {visibleDrafts.map((draft) => (
-                        <Paper key={draft.id} withBorder p="sm" radius="md">
-                          <Group justify="space-between" align="flex-start" wrap="nowrap">
-                            <Stack gap={4} style={{ flex: 1 }}>
-                              <Text fw={700} size="sm">
-                                {draft.page.title || draft.page.slug || draft.section_key || "Untitled draft"}
-                              </Text>
-                              <Group gap={6} wrap="wrap">
-                                <Badge size="xs" color={statusColor(draft.status)} variant="light">
-                                  {draft.status}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="blue">
-                                  conf {draft.confidence.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="gray">
-                                  {fmtDate(draft.created_at)}
-                                </Badge>
-                              </Group>
-                              <Text size="xs" c="dimmed" lineClamp={2}>
-                                {draft.rationale}
-                              </Text>
-                            </Stack>
+              <CoreDraftTab
+                isOperationsRoute={isOperationsRoute}
+                visibleDraftCount={visibleDrafts.length}
+                onToggleOperationsRoute={() => {
+                  if (isOperationsRoute) {
+                    setCoreWorkspaceRoute("wiki");
+                    setCoreWorkspaceTab("drafts");
+                    return;
+                  }
+                  setCoreWorkspaceRoute("operations");
+                  setCoreWorkspaceTab("drafts");
+                }}
+                migrationPanel={
+                  isOperationsRoute ? (
+                    <Stack gap="sm">
+                      <Paper withBorder p="sm" radius="md" data-testid="operations-worklog-policy">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center" wrap="wrap">
+                            <Text size="sm" fw={700}>
+                              Agent Worklog Policy
+                            </Text>
+                            <Badge size="xs" variant="light" color="blue">
+                              project policy
+                            </Badge>
+                          </Group>
+                          <Text size="xs" c="dimmed">
+                            Configure daily agent report generation and realtime trigger behavior.
+                          </Text>
+                          <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="xs">
+                            <TextInput
+                              size="xs"
+                              label="Timezone"
+                              value={agentWorklogTimezone}
+                              onChange={(event) => setAgentWorklogTimezone(event.currentTarget.value)}
+                              placeholder="Europe/Moscow"
+                            />
+                            <TextInput
+                              size="xs"
+                              type="number"
+                              label="Daily hour (local)"
+                              value={agentWorklogScheduleHour}
+                              onChange={(event) => setAgentWorklogScheduleHour(event.currentTarget.value)}
+                              placeholder="2"
+                            />
+                            <TextInput
+                              size="xs"
+                              type="number"
+                              label="Daily minute (local)"
+                              value={agentWorklogScheduleMinute}
+                              onChange={(event) => setAgentWorklogScheduleMinute(event.currentTarget.value)}
+                              placeholder="0"
+                            />
+                            <TextInput
+                              size="xs"
+                              type="number"
+                              label="Min activity score"
+                              value={agentWorklogMinActivityScore}
+                              onChange={(event) => setAgentWorklogMinActivityScore(event.currentTarget.value)}
+                              placeholder="2"
+                            />
+                          </SimpleGrid>
+                          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                            <Checkbox
+                              label="Include idle days"
+                              checked={agentWorklogIncludeIdleDays}
+                              onChange={(event) => setAgentWorklogIncludeIdleDays(event.currentTarget.checked)}
+                            />
+                            <Checkbox
+                              label="Enable realtime worklog sync"
+                              checked={agentWorklogRealtimeEnabled}
+                              onChange={(event) => setAgentWorklogRealtimeEnabled(event.currentTarget.checked)}
+                            />
+                          </SimpleGrid>
+                          <TextInput
+                            size="xs"
+                            type="number"
+                            label="Realtime lookback (minutes)"
+                            value={agentWorklogRealtimeLookbackMinutes}
+                            onChange={(event) => setAgentWorklogRealtimeLookbackMinutes(event.currentTarget.value)}
+                            placeholder="30"
+                            disabled={!agentWorklogRealtimeEnabled}
+                          />
+                          <Group gap="xs" wrap="wrap">
                             <Button
-                              size="compact-sm"
+                              size="xs"
                               variant="light"
-                              onClick={() => {
-                                if (!draft.page.slug) return;
-                                setSelectedSpaceKey(pageGroupKey(draft.page.slug));
-                                setSelectedPageSlug(draft.page.slug);
-                                setCoreWorkspaceTab("wiki");
-                              }}
+                              color="blue"
+                              loading={savingAgentWorklogPolicy}
+                              disabled={!projectId.trim()}
+                              onClick={() => void saveAgentWorklogPolicy()}
                             >
-                              Open page
+                              Save policy
+                            </Button>
+                            <Button
+                              size="xs"
+                              color="teal"
+                              loading={runningAgentWorklogSync}
+                              disabled={!projectId.trim()}
+                              onClick={() => void runAgentWorklogSyncNow()}
+                            >
+                              Sync worklogs now
                             </Button>
                           </Group>
-                        </Paper>
-                      ))}
-                    </Stack>
-                  </ScrollArea>
-                )}
-              </Stack>
-            ) : (
-              <Stack gap="sm" className="confluence-page-view">
-                <Group justify="space-between" align="center" wrap="wrap">
-                  <Breadcrumbs separator="›">
-                    {wikiPageBreadcrumb.map((crumb, index) => (
-                      <Text
-                        key={`confluence-crumb-${index}-${crumb.slug || "root"}`}
-                        size="sm"
-                        c={crumb.slug ? "dimmed" : "gray"}
-                        style={crumb.slug ? { cursor: "pointer" } : undefined}
-                        onClick={() => {
-                          if (!crumb.slug) {
-                            setSelectedPageSlug(null);
-                            return;
-                          }
-                          setSelectedSpaceKey(pageGroupKey(crumb.slug));
-                          setSelectedPageSlug(crumb.slug);
-                        }}
-                      >
-                        {crumb.label}
-                      </Text>
-                    ))}
-                  </Breadcrumbs>
-                  <Group gap="xs">
-                    <Button
-                      size="compact-sm"
-                      variant="light"
-                      leftSection={<IconFilePlus size={14} />}
-                      onClick={() => setShowCoreCreatePanel((prev) => !prev)}
-                    >
-                      Create
-                    </Button>
-                    {selectedPageSlug ? (
-                      <Button
-                        size="compact-sm"
-                        variant="light"
-                        leftSection={<IconRefresh size={14} />}
-                        onClick={() => {
-                          void loadPageDetail(selectedPageSlug);
-                          void loadPageHistory(selectedPageSlug);
-                        }}
-                      >
-                        Refresh page
-                      </Button>
-                    ) : null}
-                    {selectedPageSlug && !pageEditMode ? (
-                      <Button
-                        size="compact-sm"
-                        variant="filled"
-                        color="blue"
-                        onClick={() => {
-                          setPageMoveMode(false);
-                          setPageEditMode(true);
-                        }}
-                      >
-                        Edit
-                      </Button>
-                    ) : null}
-                  </Group>
-                </Group>
+                        </Stack>
+                      </Paper>
 
-                {showCoreCreatePanel && (
+                      <Paper withBorder p="sm" radius="md" data-testid="operations-orgchart-panel">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center" wrap="wrap">
+                            <Group gap={6} wrap="wrap">
+                              <Text size="sm" fw={700}>
+                                AI Agent Orgchart
+                              </Text>
+                              <Badge size="xs" variant="light" color="gray">
+                                nodes {agentOrgchart?.summary?.nodes_total ?? 0}
+                              </Badge>
+                              <Badge size="xs" variant="light" color="gray">
+                                teams {agentOrgchart?.summary?.teams_total ?? 0}
+                              </Badge>
+                              <Badge size="xs" variant="light" color="gray">
+                                handoffs {agentOrgchart?.summary?.edges_total ?? 0}
+                              </Badge>
+                            </Group>
+                            <Group gap={6} wrap="wrap">
+                              <Checkbox
+                                size="xs"
+                                label="Include handoffs"
+                                checked={agentOrgchartIncludeHandoffs}
+                                onChange={(event) => setAgentOrgchartIncludeHandoffs(event.currentTarget.checked)}
+                              />
+                              <Button
+                                size="compact-xs"
+                                variant="light"
+                                loading={loadingAgentOrgchart}
+                                disabled={!projectId.trim()}
+                                onClick={() => void loadAgentOrgchart()}
+                              >
+                                Refresh
+                              </Button>
+                            </Group>
+                          </Group>
+                          {!projectId.trim() ? (
+                            <Text size="xs" c="dimmed">
+                              Set workspace to load agent orgchart.
+                            </Text>
+                          ) : loadingAgentOrgchart && !agentOrgchart ? (
+                            <Group gap={6}>
+                              <Loader size="xs" />
+                              <Text size="xs" c="dimmed">
+                                loading orgchart…
+                              </Text>
+                            </Group>
+                          ) : !agentOrgchart || (agentOrgchart.nodes ?? []).length === 0 ? (
+                            <Text size="xs" c="dimmed">
+                              No registered agents yet. SDK registration creates orgchart profiles automatically.
+                            </Text>
+                          ) : (
+                            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="sm">
+                              <Paper withBorder p="xs" radius="md">
+                                <Stack gap={6}>
+                                  <Text size="xs" fw={700}>
+                                    Teams
+                                  </Text>
+                                  <ScrollArea h={220} type="auto">
+                                    <Stack gap={6}>
+                                      {agentOrgchartTeams.map((team) => (
+                                        <Paper key={`orgchart-team-${team.team}`} withBorder p="xs" radius="md">
+                                          <Stack gap={4}>
+                                            <Group justify="space-between" align="center" wrap="wrap">
+                                              <Text size="xs" fw={700}>
+                                                {team.team}
+                                              </Text>
+                                              <Badge size="xs" variant="light" color="indigo">
+                                                {team.nodes.length}
+                                              </Badge>
+                                            </Group>
+                                            <Group gap={4} wrap="wrap">
+                                              {team.nodes.slice(0, 8).map((node) => (
+                                                <Button
+                                                  key={`orgchart-node-open-${node.agent_id}`}
+                                                  size="compact-xs"
+                                                  variant="light"
+                                                  color="gray"
+                                                  onClick={() => {
+                                                    const slug = String(node.profile_slug || "").trim();
+                                                    if (!slug) return;
+                                                    setSelectedSpaceKey(pageGroupKey(slug));
+                                                    setSelectedPageSlug(slug);
+                                                    setCoreWorkspaceRoute("wiki");
+                                                    setCoreWorkspaceTab("wiki");
+                                                  }}
+                                                >
+                                                  {node.display_name} · {node.role}
+                                                </Button>
+                                              ))}
+                                              {team.nodes.length > 8 ? (
+                                                <Badge size="xs" variant="light" color="gray">
+                                                  +{team.nodes.length - 8} more
+                                                </Badge>
+                                              ) : null}
+                                            </Group>
+                                          </Stack>
+                                        </Paper>
+                                      ))}
+                                    </Stack>
+                                  </ScrollArea>
+                                </Stack>
+                              </Paper>
+                              <Paper withBorder p="xs" radius="md">
+                                <Stack gap={6}>
+                                  <Text size="xs" fw={700}>
+                                    Recent handoffs
+                                  </Text>
+                                  {agentOrgchartEdgePreview.length === 0 ? (
+                                    <Text size="xs" c="dimmed">
+                                      No handoff edges captured yet.
+                                    </Text>
+                                  ) : (
+                                    <ScrollArea h={220} type="auto">
+                                      <Stack gap={4}>
+                                        {agentOrgchartEdgePreview.map((edge, index) => {
+                                          const from = agentOrgchartNodeById.get(edge.from_agent);
+                                          const to = agentOrgchartNodeById.get(edge.to_agent);
+                                          return (
+                                            <Paper key={`orgchart-edge-${edge.from_agent}-${edge.to_agent}-${index}`} withBorder p={6} radius="sm">
+                                              <Stack gap={2}>
+                                                <Text size="xs" fw={700}>
+                                                  {from?.display_name || edge.from_agent} → {to?.display_name || edge.to_agent}
+                                                </Text>
+                                                <Text size="xs" c="dimmed">
+                                                  input: {edge.input_contract || "n/a"} • output: {edge.output_contract || "n/a"}
+                                                </Text>
+                                                {edge.sla ? (
+                                                  <Badge size="xs" variant="light" color="orange">
+                                                    SLA {edge.sla}
+                                                  </Badge>
+                                                ) : null}
+                                              </Stack>
+                                            </Paper>
+                                          );
+                                        })}
+                                      </Stack>
+                                    </ScrollArea>
+                                  )}
+                                </Stack>
+                              </Paper>
+                            </SimpleGrid>
+                          )}
+                        </Stack>
+                      </Paper>
+
+                      <Paper withBorder p="sm" radius="md">
+                        <Stack gap="xs">
+                          <Text size="sm" fw={700}>
+                            Migration Mode
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            Use this route for trusted-source onboarding and batch approvals.
+                          </Text>
+                          <Group gap="xs" wrap="wrap">
+                            <Button
+                              size="xs"
+                              variant="light"
+                              color="indigo"
+                              loading={bootstrapLoading}
+                              onClick={() => void runRecommendedBootstrapPreview()}
+                            >
+                              Preview recommended
+                            </Button>
+                            <Button size="xs" color="teal" loading={bootstrapLoading} onClick={() => void runRecommendedBootstrapApply()}>
+                              Apply recommended
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              onClick={() => {
+                                applyRecommendedBootstrapPreset(recommendedBootstrapPreset);
+                                setShowBootstrapTools((value) => !value);
+                              }}
+                            >
+                              {showBootstrapTools ? "Hide bootstrap settings" : "Open bootstrap settings"}
+                            </Button>
+                          </Group>
+                          <Paper withBorder p="xs" radius="md">
+                            <Stack gap={6}>
+                              <Text size="sm" fw={700}>
+                                Bootstrap Migration
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                Preview candidates first, then approve trusted batches.
+                              </Text>
+                              {showBootstrapTools ? (
+                                <>
+                                  <TextInput
+                                    label="Trusted sources (csv)"
+                                    value={bootstrapTrustedSources}
+                                    onChange={(event) => {
+                                      setBootstrapTrustedSources(event.currentTarget.value);
+                                      setBootstrapTrustedSourcesTouched(true);
+                                    }}
+                                    placeholder="legacy_import,postgres_sql"
+                                  />
+                                  <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="xs">
+                                    <TextInput
+                                      label="Min confidence"
+                                      value={bootstrapMinConfidence}
+                                      onChange={(event) => setBootstrapMinConfidence(event.currentTarget.value)}
+                                      placeholder="0.85"
+                                    />
+                                    <TextInput
+                                      label="Batch limit"
+                                      value={bootstrapLimit}
+                                      onChange={(event) => setBootstrapLimit(event.currentTarget.value)}
+                                      placeholder="50"
+                                    />
+                                    <TextInput
+                                      label="Preview sample"
+                                      value={bootstrapSampleSize}
+                                      onChange={(event) => setBootstrapSampleSize(event.currentTarget.value)}
+                                      placeholder="15"
+                                    />
+                                  </SimpleGrid>
+                                  <Checkbox
+                                    label="Require conflict-free drafts"
+                                    checked={bootstrapRequireConflictFree}
+                                    onChange={(event) => setBootstrapRequireConflictFree(event.currentTarget.checked)}
+                                  />
+                                  <Group gap="xs" wrap="wrap">
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      color="indigo"
+                                      loading={bootstrapLoading}
+                                      onClick={() => void runBootstrapApprove(true)}
+                                    >
+                                      Preview Candidates
+                                    </Button>
+                                    <Button
+                                      size="xs"
+                                      color="teal"
+                                      disabled={!bootstrapCanApply && !bootstrapLoading}
+                                      loading={bootstrapLoading}
+                                      onClick={() => void runBootstrapApprove(false)}
+                                    >
+                                      Approve Trusted Batch
+                                    </Button>
+                                  </Group>
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Open bootstrap settings to tune confidence and batch size.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
+                        </Stack>
+                      </Paper>
+                    </Stack>
+                  ) : null
+                }
+                draftListContent={
+                  visibleDrafts.length === 0 ? (
+                    <Paper withBorder p="md" radius="md">
+                      <Text size="sm" c="dimmed">
+                        No drafts in current scope.
+                      </Text>
+                    </Paper>
+                  ) : (
+                    <ScrollArea h={760} type="auto">
+                      <Stack gap="xs">
+                        {visibleDrafts.map((draft) => (
+                          <Paper
+                            key={draft.id}
+                            withBorder
+                            p="sm"
+                            radius="md"
+                            data-testid={`core-draft-list-item-${draft.id}`}
+                            style={{ cursor: "pointer" }}
+                            onClick={() => setSelectedDraftId(draft.id)}
+                          >
+                            <Group justify="space-between" align="flex-start" wrap="nowrap">
+                              <Stack gap={4} style={{ flex: 1 }}>
+                                <Text fw={700} size="sm">
+                                  {draft.page.title || draft.page.slug || draft.section_key || "Untitled draft"}
+                                </Text>
+                                <Group gap={6} wrap="wrap">
+                                  <Badge size="xs" color={statusColor(draft.status)} variant="light">
+                                    {draft.status}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="blue">
+                                    conf {draft.confidence.toFixed(2)}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    {fmtDate(draft.created_at)}
+                                  </Badge>
+                                </Group>
+                                <Text size="xs" c="dimmed" lineClamp={2}>
+                                  {draft.rationale}
+                                </Text>
+                              </Stack>
+                              <Button
+                                size="compact-sm"
+                                variant="light"
+                                onClick={() => {
+                                  if (!draft.page.slug) return;
+                                  setSelectedSpaceKey(pageGroupKey(draft.page.slug));
+                                  setSelectedPageSlug(draft.page.slug);
+                                  setCoreWorkspaceTab("wiki");
+                                }}
+                              >
+                                Open page
+                              </Button>
+                            </Group>
+                          </Paper>
+                        ))}
+                      </Stack>
+                    </ScrollArea>
+                  )
+                }
+                detailContent={
+                  <Paper withBorder p="md" radius="md" data-testid="core-draft-detail-panel">
+                    <Stack gap="sm">
+                      <Group justify="space-between" align="center" wrap="wrap">
+                        <Title order={4}>Draft Detail</Title>
+                        {selectedDraftId ? (
+                          <Badge color={statusColor(draftDetail?.draft.status ?? "pending_review")} variant="light">
+                            {draftDetail?.draft.status ?? "loading"}
+                          </Badge>
+                        ) : (
+                          <Badge color="gray" variant="light">
+                            not selected
+                          </Badge>
+                        )}
+                      </Group>
+                      {!selectedDraftId ? (
+                        <Text size="sm" c="dimmed">
+                          Select draft in inbox to inspect semantic diff and moderate it.
+                        </Text>
+                      ) : loadingDetail ? (
+                        <Group gap={8}>
+                          <Loader size="sm" />
+                          <Text size="sm" c="dimmed">
+                            Loading draft detail…
+                          </Text>
+                        </Group>
+                      ) : draftDetail ? (
+                        <Stack gap="xs">
+                          <Group gap={6} wrap="wrap">
+                            <Badge size="xs" variant="light" color="blue">
+                              conf {draftDetail.draft.confidence.toFixed(2)}
+                            </Badge>
+                            <Badge size="xs" variant="light" color="gray">
+                              {fmtDate(draftDetail.draft.created_at)}
+                            </Badge>
+                          </Group>
+                          <Text size="sm" fw={700}>
+                            {draftDetail.draft.page.title || draftDetail.draft.page.slug || "Untitled draft"}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {draftDetail.draft.rationale}
+                          </Text>
+                          {draftDetail.gatekeeper ? (
+                            <Paper withBorder p="sm" radius="md">
+                              <Stack gap={6}>
+                                <Group justify="space-between" align="center" wrap="wrap">
+                                  <Text size="sm" fw={700}>
+                                    Gatekeeper Signal
+                                  </Text>
+                                  <Badge size="xs" variant="light" color="indigo">
+                                    {draftDetail.gatekeeper.tier || "unknown_tier"}
+                                  </Badge>
+                                </Group>
+                                <Group gap={6} wrap="wrap">
+                                  <Badge size="xs" variant="light" color="blue">
+                                    score{" "}
+                                    {draftDetail.gatekeeper.score == null ? "—" : Number(draftDetail.gatekeeper.score).toFixed(2)}
+                                  </Badge>
+                                  <Badge
+                                    size="xs"
+                                    variant="light"
+                                    color={draftDetail.gatekeeper.llm.applied ? "teal" : "gray"}
+                                  >
+                                    llm {draftDetail.gatekeeper.llm.applied ? "applied" : "not_applied"}
+                                  </Badge>
+                                  {draftDetail.gatekeeper.llm.reason_code ? (
+                                    <Badge size="xs" variant="light" color="violet">
+                                      reason {draftDetail.gatekeeper.llm.reason_code}
+                                    </Badge>
+                                  ) : null}
+                                </Group>
+                                <Text size="xs" c="dimmed">
+                                  {draftDetail.gatekeeper.rationale || "No gatekeeper rationale recorded."}
+                                </Text>
+                              </Stack>
+                            </Paper>
+                          ) : null}
+                        </Stack>
+                      ) : (
+                        <Text size="sm" c="dimmed">
+                          Draft detail is unavailable.
+                        </Text>
+                      )}
+                    </Stack>
+                  </Paper>
+                }
+              />
+            ) : (
+              <CoreWikiMain
+                isOperationsRoute={isOperationsRoute}
+                wikiPageBreadcrumb={wikiPageBreadcrumb}
+                selectedPageSlug={selectedPageSlug}
+                pageEditMode={pageEditMode}
+                showCreatePanel={showCoreCreatePanel}
+                onSelectBreadcrumb={(slug) => {
+                  if (!slug) {
+                    setSelectedPageSlug(null);
+                    return;
+                  }
+                  setSelectedSpaceKey(pageGroupKey(slug));
+                  setSelectedPageSlug(slug);
+                }}
+                onToggleCreatePanel={() => setShowCoreCreatePanel((prev) => !prev)}
+                onRefreshPage={() => {
+                  if (!selectedPageSlug) return;
+                  void loadPageDetail(selectedPageSlug);
+                  void loadPageHistory(selectedPageSlug);
+                  void loadPageReviewAssignments(selectedPageSlug);
+                  void loadSpacePolicy(selectedPageSlug);
+                  void loadSpacePolicyAudit(selectedPageSlug);
+                  void loadSpacePolicyAdoptionSummary(selectedPageSlug);
+                }}
+                onEnterEdit={() => {
+                  setPageMoveMode(false);
+                  setPageEditMode(true);
+                }}
+                onOpenHistory={() => {
+                  openHistoryDrawerForVersion(null);
+                }}
+                createPanel={
                   <Paper withBorder p="sm" radius="md" className="confluence-create-panel">
                     <Group gap={6} mb="sm" wrap="wrap">
                       {PAGE_TEMPLATES.map((template) => (
@@ -6486,8 +7846,8 @@ export default function App() {
                       </Button>
                     </Group>
                   </Paper>
-                )}
-
+                }
+              >
                 {!selectedPageSlug ? (
                   <Paper withBorder p="lg" radius="md">
                     <Stack gap="sm">
@@ -6610,68 +7970,71 @@ export default function App() {
                     Page content is unavailable.
                   </Text>
                 )}
-              </Stack>
+              </CoreWikiMain>
             )}
           </Paper>
 
-          {coreWorkspaceTab === "wiki" && (
-            <Paper className="confluence-right-rail" withBorder>
-              {!selectedPageSlug ? (
-                <Text size="sm" c="dimmed">
-                  Select a page to see details.
-                </Text>
-              ) : (
-                <Stack gap="sm">
-                  <Group justify="space-between" align="center">
-                    <Text fw={700} size="sm">
-                      Page Details
-                    </Text>
-                    <Badge variant="light" color="blue">
-                      {selectedPageDetail?.page.status || "n/a"}
-                    </Badge>
-                  </Group>
-                  <Text size="xs" c="dimmed">
-                    slug: {selectedPageSlug}
-                  </Text>
-                  <Text size="xs" c="dimmed">
-                    version: v{latestPageVersion?.version ?? selectedPageDetail?.page.current_version ?? "—"}
-                  </Text>
-                  <Divider />
-                  <Text size="xs" fw={700}>
-                    Sections
-                  </Text>
-                  {(selectedPageDetail?.sections ?? []).length === 0 ? (
-                    <Text size="xs" c="dimmed">
-                      No sections.
-                    </Text>
-                  ) : (
-                    <Stack gap={4}>
-                      {(selectedPageDetail?.sections ?? []).slice(0, 8).map((section) => (
-                        <Text key={`core-side-section-${section.section_key}`} size="xs" c="dimmed">
-                          {section.heading} ({section.statement_count})
-                        </Text>
-                      ))}
-                    </Stack>
-                  )}
-                  <Divider />
-                  <Text size="xs" fw={700}>
-                    Open drafts
-                  </Text>
-                  <Badge size="sm" variant="light" color="orange">
-                    {selectedPageOpenDrafts.length}
-                  </Badge>
-                  <Button
-                    size="compact-sm"
-                    variant="light"
-                    color="cyan"
-                    onClick={() => setCoreWorkspaceTab("drafts")}
-                  >
-                    Open Drafts
-                  </Button>
-                </Stack>
-              )}
-            </Paper>
-          )}
+          {coreWorkspaceTab === "wiki" ? (
+            <CoreWikiRightRail
+              isOperationsRoute={isOperationsRoute}
+              selectedPageSlug={selectedPageSlug}
+              selectedPageStatus={selectedPageDetail?.page.status || null}
+              selectedPageVersion={latestPageVersion?.version ?? selectedPageDetail?.page.current_version ?? null}
+              sections={selectedPageDetail?.sections ?? []}
+              openDraftCount={selectedPageOpenDrafts.length}
+              onOpenDrafts={() => setCoreWorkspaceTab("drafts")}
+              reviewAssignments={pageReviewAssignments}
+              assignmentAssigneeInput={assignmentAssigneeInput}
+              assignmentNoteInput={assignmentNoteInput}
+              onAssignmentAssigneeChange={setAssignmentAssigneeInput}
+              onAssignmentNoteChange={setAssignmentNoteInput}
+              onCreateReviewTask={() => void createSelectedPageReviewTask()}
+              onAssignReviewer={() => void createPageReviewAssignment()}
+              onResolveAssignment={(assignmentId) => void resolvePageReviewAssignment(assignmentId)}
+              runningLifecycleQuickAction={runningLifecycleQuickAction}
+              loadingPageReviewAssignments={loadingPageReviewAssignments}
+              savingPageAssignment={savingPageAssignment}
+              canCreateReviewTask={Boolean(projectId.trim() && reviewer.trim() && selectedPageSlug)}
+              spaceKey={selectedPageSlug ? pageGroupKey(selectedPageSlug) : ""}
+              spaceWriteMode={spaceWriteMode}
+              onSpaceWriteModeChange={setSpaceWriteMode}
+              spacePublishChecklistPreset={spacePublishChecklistPreset}
+              onSpacePublishChecklistPresetChange={setSpacePublishChecklistPreset}
+              publishChecklistOptions={PUBLISH_CHECKLIST_PRESETS.map((item) => ({
+                value: item.key,
+                label: item.label,
+              }))}
+              spaceReviewRequired={spaceReviewRequired}
+              onSpaceReviewRequiredChange={setSpaceReviewRequired}
+              loadingSpacePolicy={loadingSpacePolicy}
+              savingSpacePolicy={savingSpacePolicy}
+              onSaveSpacePolicy={() => void saveSpacePolicy()}
+              policyTimelineCount={spacePolicyAudit.length}
+              policyTopActorText={
+                spacePolicyAdoptionSummary.topActor
+                  ? `${spacePolicyAdoptionSummary.topActor} (${spacePolicyAdoptionSummary.topActorUpdates})`
+                  : "n/a"
+              }
+              policyCadenceText={`cadence: ${formatCadenceDays(spacePolicyAdoptionSummary.avgCadenceDays)} • updates: ${spacePolicyAdoptionSummary.totalUpdates}`}
+              policySourceText={spacePolicyAdoptionSummaryApi ? "api summary" : "local audit fallback"}
+              loadingSpacePolicyAudit={loadingSpacePolicyAudit}
+              loadingSpacePolicyAdoptionSummary={loadingSpacePolicyAdoptionSummary}
+              policyAuditItems={spacePolicyAudit}
+              relatedPages={selectedPageRelatedPages}
+              onOpenRelatedPage={(slug) => {
+                setSelectedSpaceKey(pageGroupKey(slug));
+                setSelectedPageSlug(slug);
+              }}
+              recentVersions={selectedPageRecentVersions}
+              onOpenHistory={() => openHistoryDrawerForVersion(null)}
+              onOpenVersionHistory={(version) => openHistoryDrawerForVersion(version)}
+              formatDate={fmtDate}
+              onOpenOperations={() => {
+                setCoreWorkspaceRoute("operations");
+                setCoreWorkspaceTab("wiki");
+              }}
+            />
+          ) : null}
         </Box>
 
         <Modal
@@ -6791,7 +8154,12 @@ export default function App() {
 
         <Modal
           opened={showPublishModal}
-          onClose={() => setShowPublishModal(false)}
+          onClose={() => {
+            setShowPublishModal(false);
+            setProcessSimulation(null);
+            setPublishConfirmHighRisk(false);
+            setPublishChecklistAcks({});
+          }}
           title="Publish page"
           centered
         >
@@ -6810,6 +8178,117 @@ export default function App() {
               onChange={(event) => setPublishSummary(event.currentTarget.value)}
               placeholder="What changed in this version?"
             />
+            {activePublishChecklistItems.length > 0 ? (
+              <Paper withBorder p="xs" radius="md">
+                <Stack gap={6}>
+                  <Group justify="space-between" align="center" wrap="wrap">
+                    <Text size="xs" fw={700}>
+                      Publish checklist · {activePublishChecklistPreset.label}
+                    </Text>
+                    <Badge size="xs" variant="light" color={isPublishChecklistComplete ? "teal" : "orange"}>
+                      {isPublishChecklistComplete
+                        ? "ready"
+                        : `${activePublishChecklistItems.filter((item) => Boolean(publishChecklistAcks[item.id])).length}/${activePublishChecklistItems.length}`}
+                    </Badge>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {activePublishChecklistPreset.description}
+                  </Text>
+                  <Stack gap={4}>
+                    {activePublishChecklistItems.map((item) => (
+                      <Checkbox
+                        key={`publish-check-${item.id}`}
+                        size="xs"
+                        checked={Boolean(publishChecklistAcks[item.id])}
+                        onChange={(event) =>
+                          setPublishChecklistAcks((prev) => ({
+                            ...prev,
+                            [item.id]: event.currentTarget.checked,
+                          }))
+                        }
+                        label={item.label}
+                        description={item.help}
+                      />
+                    ))}
+                  </Stack>
+                </Stack>
+              </Paper>
+            ) : null}
+            <Group justify="space-between" align="center" wrap="wrap">
+              <Button
+                size="compact-sm"
+                variant="light"
+                loading={loadingProcessSimulation}
+                disabled={!selectedPageSlug || !projectId.trim()}
+                onClick={() => void runProcessSafetySimulation()}
+              >
+                Run safety simulation
+              </Button>
+              {processSimulation?.risk ? (
+                <Group gap={6}>
+                  <Badge
+                    size="sm"
+                    variant="light"
+                    color={processSimulation.risk.should_block_publish ? "red" : processSimulation.risk.level === "medium" ? "orange" : "teal"}
+                  >
+                    risk {processSimulation.risk.level}
+                  </Badge>
+                  <Badge size="sm" variant="light" color="blue">
+                    score {processSimulation.risk.score}
+                  </Badge>
+                  <Badge size="sm" variant="light" color="indigo">
+                    suggested {processSimulation.risk.suggested_publish_mode}
+                  </Badge>
+                </Group>
+              ) : null}
+            </Group>
+            {processSimulation ? (
+              <Paper withBorder p="xs" radius="md">
+                <Stack gap={4}>
+                  <Text size="xs" fw={700}>
+                    Pre-publish impact preview
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    {processSimulation.recommendation?.action}
+                  </Text>
+                  <Group gap={6} wrap="wrap">
+                    <Badge size="xs" variant="light" color="gray">
+                      changed terms {processSimulation.diff.changed_terms_total}
+                    </Badge>
+                    <Badge size="xs" variant="light" color="gray">
+                      impacted pages {processSimulation.impact.candidate_pages_total}
+                    </Badge>
+                    <Badge size="xs" variant="light" color="gray">
+                      pending drafts {processSimulation.impact.pending_process_drafts}
+                    </Badge>
+                    <Badge size="xs" variant="light" color="gray">
+                      open conflicts {processSimulation.impact.open_process_conflicts}
+                    </Badge>
+                  </Group>
+                  {processSimulation.risk.high_risk_hits?.length ? (
+                    <Text size="xs" c="red">
+                      high-risk matches: {processSimulation.risk.high_risk_hits.join(", ")}
+                    </Text>
+                  ) : null}
+                  {processSimulation.impact.top_impacted_pages?.length ? (
+                    <Stack gap={2}>
+                      {processSimulation.impact.top_impacted_pages.slice(0, 4).map((item) => (
+                        <Text key={`sim-impact-${item.slug}`} size="xs" c="dimmed">
+                          {item.slug} ({item.page_type}) {item.matched_terms?.length ? `- ${item.matched_terms.join(", ")}` : ""}
+                        </Text>
+                      ))}
+                    </Stack>
+                  ) : null}
+                </Stack>
+              </Paper>
+            ) : null}
+            {processSimulation?.risk?.should_block_publish ? (
+              <Checkbox
+                checked={publishConfirmHighRisk}
+                onChange={(event) => setPublishConfirmHighRisk(event.currentTarget.checked)}
+                label="I understand this is a high-risk process/policy change and want to publish anyway."
+              />
+            ) : null}
             <Group justify="flex-end">
               <Button
                 size="compact-sm"
@@ -6821,7 +8300,11 @@ export default function App() {
               <Button
                 size="compact-sm"
                 loading={savingPageEdit}
-                disabled={!selectedPageSlug}
+                disabled={
+                  !selectedPageSlug ||
+                  !isPublishChecklistComplete ||
+                  Boolean(processSimulation?.risk?.should_block_publish && !publishConfirmHighRisk)
+                }
                 onClick={() => void publishCurrentPage()}
               >
                 Publish
@@ -6829,6 +8312,151 @@ export default function App() {
             </Group>
           </Stack>
         </Modal>
+
+        {effectiveUiMode === "core" ? (
+          <Drawer
+            opened={historyDrawerOpen}
+            onClose={() => setHistoryDrawerOpen(false)}
+            position="right"
+            size={680}
+            title={selectedPageDetail?.page.title ? `Page history · ${selectedPageDetail.page.title}` : "Page history"}
+          >
+            <Stack gap="sm" data-testid="core-history-drawer">
+              {!selectedPageSlug ? (
+                <Text size="sm" c="dimmed">
+                  Select page first.
+                </Text>
+              ) : !pageHistory || historyVersionOptions.length === 0 ? (
+                <Group gap={8}>
+                  <Loader size="sm" />
+                  <Text size="sm" c="dimmed">
+                    Loading history…
+                  </Text>
+                </Group>
+              ) : (
+                <>
+                  <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
+                    <Select
+                      label="Target version"
+                      value={historyTargetVersion}
+                      onChange={(value) => setHistoryTargetVersion(value)}
+                      data={historyVersionOptions}
+                      allowDeselect={false}
+                    />
+                    <Select
+                      label="Base version"
+                      value={historyBaseVersion}
+                      onChange={(value) => setHistoryBaseVersion(value)}
+                      data={historyVersionOptions}
+                      allowDeselect={false}
+                    />
+                  </SimpleGrid>
+                  <Group gap={6} wrap="wrap">
+                    <Badge size="sm" variant="light" color="teal">
+                      +{historyDiffPreview.added}
+                    </Badge>
+                    <Badge size="sm" variant="light" color="red">
+                      -{historyDiffPreview.removed}
+                    </Badge>
+                    <Badge size="sm" variant="light" color={historyDiffPreview.changed ? "orange" : "gray"}>
+                      {historyDiffPreview.changed ? "changed" : "no changes"}
+                    </Badge>
+                  </Group>
+                  <Paper withBorder p="xs" radius="md">
+                    <ScrollArea h={380} type="auto">
+                      <Stack gap={2} data-testid="core-history-inline-diff">
+                        {historyDiffPreview.lines.map((line, index) => {
+                          const bg =
+                            line.kind === "added"
+                              ? "rgba(12, 166, 120, 0.14)"
+                              : line.kind === "removed"
+                                ? "rgba(250, 82, 82, 0.14)"
+                                : "rgba(148, 163, 184, 0.08)";
+                          const symbol = line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " ";
+                          return (
+                            <Box
+                              key={`core-history-diff-line-${index}-${line.kind}`}
+                              style={{
+                                borderRadius: "6px",
+                                background: bg,
+                                padding: "4px 6px",
+                                fontFamily:
+                                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                                fontSize: "12px",
+                                lineHeight: 1.4,
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                              }}
+                            >
+                              {symbol} {line.text}
+                            </Box>
+                          );
+                        })}
+                      </Stack>
+                    </ScrollArea>
+                  </Paper>
+                  <Text size="xs" c="dimmed">
+                    Comparing v{historyBaseVersionItem?.version ?? "—"} → v{historyTargetVersionItem?.version ?? "—"}.
+                  </Text>
+                  {isOperationsRoute ? (
+                    <Paper withBorder p="xs" radius="md">
+                      <Stack gap={6}>
+                        <Text size="xs" fw={700}>
+                          Rollback
+                        </Text>
+                        <TextInput
+                          size="xs"
+                          label="Rollback summary"
+                          value={rollbackSummaryInput}
+                          onChange={(event) => setRollbackSummaryInput(event.currentTarget.value)}
+                          placeholder="Why this rollback is needed"
+                        />
+                        <Group justify="flex-end" align="center" wrap="wrap">
+                          <Button
+                            size="compact-sm"
+                            variant="light"
+                            color="orange"
+                            loading={rollingBackPageVersion}
+                            disabled={!canRollbackTargetInOperations}
+                            onClick={() => void rollbackSelectedPageVersion()}
+                          >
+                            Rollback to v{historyTargetVersionItem?.version ?? "?"}
+                          </Button>
+                        </Group>
+                        {!canRollbackTargetInOperations ? (
+                          <Text size="xs" c="dimmed">
+                            Rollback is available for non-current versions in operations mode.
+                          </Text>
+                        ) : null}
+                      </Stack>
+                    </Paper>
+                  ) : (
+                    <Paper withBorder p="xs" radius="md">
+                      <Stack gap={6}>
+                        <Text size="xs" c="dimmed">
+                          Rollback actions are restricted to Operations route.
+                        </Text>
+                        <Group justify="flex-end">
+                          <Button
+                            size="compact-sm"
+                            variant="light"
+                            color="orange"
+                            onClick={() => {
+                              setCoreWorkspaceRoute("operations");
+                              setCoreWorkspaceTab("wiki");
+                            }}
+                          >
+                            Open operations
+                          </Button>
+                        </Group>
+                      </Stack>
+                    </Paper>
+                  )}
+                </>
+              )}
+            </Stack>
+          </Drawer>
+        ) : null}
 
         <Modal
           opened={showOnboardingModal}
@@ -6956,12 +8584,12 @@ export default function App() {
                 color="teal"
                 onClick={() => {
                   void loadDrafts();
+                  void loadWikiLifecycleStats();
                   void loadNotificationsInbox();
                   if (selectedPageSlug) {
                     void loadSpacePolicy(selectedPageSlug);
-                    void loadSpaceOwners(selectedPageSlug);
-                    void loadPageOwners(selectedPageSlug);
-                    void loadPageUploads(selectedPageSlug);
+                    void loadSpacePolicyAudit(selectedPageSlug);
+                    void loadSpacePolicyAdoptionSummary(selectedPageSlug);
                   }
                 }}
                 aria-label="Refresh drafts"
@@ -6973,7 +8601,43 @@ export default function App() {
         </Paper>
 
         <Paper radius="xl" p="lg">
-          <SimpleGrid cols={{ base: 1, md: 2, lg: effectiveUiMode === "advanced" ? 5 : 3 }} spacing="md">
+          {effectiveUiMode === "core" && (
+            <Paper withBorder radius="lg" p="sm" mb="md">
+              <Group justify="space-between" align="center" wrap="wrap">
+                <Group gap={6} wrap="wrap">
+                  <Badge variant="light" color={projectId.trim() ? "teal" : "orange"}>
+                    project: {projectId.trim() || "not set"}
+                  </Badge>
+                  <Badge variant="light" color="gray">
+                    reviewer: {reviewer.trim() || "ops_manager"}
+                  </Badge>
+                </Group>
+                <Group gap={6} wrap="wrap">
+                  <Button
+                    size="compact-xs"
+                    variant="light"
+                    onClick={() => setSettingsDrawerOpen(true)}
+                  >
+                    Settings
+                  </Button>
+                  <Button
+                    size="compact-xs"
+                    variant="filled"
+                    color="teal"
+                    onClick={() => void loadDrafts()}
+                    loading={loadingDrafts}
+                    leftSection={<IconArrowsShuffle size={14} />}
+                  >
+                    Refresh inbox
+                  </Button>
+                </Group>
+              </Group>
+            </Paper>
+          )}
+
+          {effectiveUiMode === "advanced" && (
+            <>
+          <SimpleGrid cols={{ base: 1, md: 2, lg: 5 }} spacing="md">
             {effectiveUiMode === "advanced" && (
               <TextInput
                 label="API URL"
@@ -7022,12 +8686,6 @@ export default function App() {
               Refresh Inbox
             </Button>
           </SimpleGrid>
-          {effectiveUiMode === "core" && (
-            <Text size="xs" c="dimmed" mt={8}>
-              API endpoint uses workspace default. Set VITE_SYNAPSE_API_URL to override.
-            </Text>
-          )}
-
           <Paper mt="md" withBorder radius="lg" p="md">
             <Stack gap="xs">
               <Group justify="space-between" align="center" wrap="wrap">
@@ -7261,7 +8919,131 @@ export default function App() {
               </Group>
             </Paper>
           )}
+            </>
+          )}
         </Paper>
+
+        {effectiveUiMode === "core" && (
+          <Drawer
+            opened={settingsDrawerOpen}
+            onClose={() => setSettingsDrawerOpen(false)}
+            position="right"
+            size={460}
+            title="Workspace settings"
+          >
+            <Stack gap="md">
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                <TextInput
+                  label="Project ID"
+                  value={projectId}
+                  onChange={(event) => setProjectId(event.currentTarget.value)}
+                  leftSection={<IconSearch size={16} />}
+                  placeholder="omega_demo"
+                />
+                <TextInput
+                  label="Reviewer"
+                  value={reviewer}
+                  onChange={(event) => setReviewer(event.currentTarget.value)}
+                  leftSection={<IconEditCircle size={16} />}
+                  placeholder="ops_manager"
+                />
+              </SimpleGrid>
+              <Text size="xs" c="dimmed">
+                API endpoint uses workspace default. Set VITE_SYNAPSE_API_URL to override.
+              </Text>
+              <Group gap="xs" wrap="wrap">
+                <Button
+                  size="xs"
+                  variant="light"
+                  onClick={() => void loadDrafts()}
+                  loading={loadingDrafts}
+                  leftSection={<IconArrowsShuffle size={14} />}
+                >
+                  Refresh inbox
+                </Button>
+                <Button size="xs" variant="light" onClick={() => void loadNotificationsInbox()}>
+                  Refresh notifications
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  color="teal"
+                  loading={savingNotificationState}
+                  onClick={() => void markAllNotificationsRead()}
+                >
+                  Mark all read
+                </Button>
+              </Group>
+              <Paper withBorder radius="lg" p="md">
+                <Stack gap="xs">
+                  <Group justify="space-between" align="center" wrap="wrap">
+                    <Group gap={8}>
+                      <ThemeIcon size="sm" radius="xl" variant="light" color={unreadNotificationCount > 0 ? "orange" : "gray"}>
+                        <IconBell size={14} />
+                      </ThemeIcon>
+                      <Text size="sm" fw={700}>
+                        Notifications
+                      </Text>
+                      <Badge size="xs" variant="light" color={unreadNotificationCount > 0 ? "orange" : "gray"}>
+                        unread {unreadNotificationCount}
+                      </Badge>
+                    </Group>
+                  </Group>
+                  {loadingNotificationsInbox ? (
+                    <Group gap={6}>
+                      <Loader size="xs" />
+                      <Text size="xs" c="dimmed">
+                        loading notifications…
+                      </Text>
+                    </Group>
+                  ) : notificationsInbox.length === 0 ? (
+                    <Text size="xs" c="dimmed">
+                      No notifications for current reviewer.
+                    </Text>
+                  ) : (
+                    <Stack gap={6}>
+                      {notificationsInbox.slice(0, 10).map((item) => (
+                        <Paper key={`notif-drawer-${item.id}`} withBorder p="xs" radius="md">
+                          <Group justify="space-between" align="flex-start" wrap="nowrap">
+                            <Stack gap={2} style={{ flex: 1 }}>
+                              <Text size="xs" fw={700}>
+                                {item.title}
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {item.actor ? `${item.actor} • ` : ""}
+                                {fmtDate(item.created_at)}
+                              </Text>
+                              {item.body ? (
+                                <Text size="xs" c="dimmed">
+                                  {item.body}
+                                </Text>
+                              ) : null}
+                            </Stack>
+                            {item.status === "unread" ? (
+                              <Button
+                                size="compact-xs"
+                                variant="subtle"
+                                color="teal"
+                                loading={savingNotificationState}
+                                onClick={() => void markNotificationRead(item.id)}
+                              >
+                                Read
+                              </Button>
+                            ) : (
+                              <Badge size="xs" variant="light" color="gray">
+                                read
+                              </Badge>
+                            )}
+                          </Group>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  )}
+                </Stack>
+              </Paper>
+            </Stack>
+          </Drawer>
+        )}
 
         {effectiveUiMode === "advanced" ? (
           <Suspense
@@ -7298,3455 +9080,7 @@ export default function App() {
             </Stack>
           </Paper>
         )}
-
-        {effectiveUiMode === "core" && (
-          <Paper radius="xl" p="md" withBorder className="wiki-command-bar">
-            <Group justify="space-between" align="flex-end" wrap="wrap">
-              <Stack gap={2}>
-                <Text className="eyebrow">Knowledge Base</Text>
-                <Text size="sm" c="dimmed">
-                  Confluence-style workspace: pages first, operations second.
-                </Text>
-              </Stack>
-              <Group gap="xs" wrap="wrap">
-                <Select
-                  searchable
-                  value={selectedPageSlug}
-                  onChange={(value) => {
-                    setCoreWorkspaceTab("wiki");
-                    setSelectedPageSlug(value || null);
-                    if (value) {
-                      setSelectedSpaceKey(pageGroupKey(value));
-                    }
-                  }}
-                  placeholder="Jump to wiki page"
-                  w={320}
-                  data={pageNodes.map((item) => ({
-                    value: item.slug,
-                    label: `${item.title || item.slug} (${item.open_count} open drafts)`,
-                  }))}
-                  clearable
-                />
-                <Button
-                  variant={coreWorkspaceTab === "wiki" ? "filled" : "light"}
-                  color={coreWorkspaceTab === "wiki" ? "teal" : "gray"}
-                  onClick={() => setCoreWorkspaceTab("wiki")}
-                >
-                  Wiki
-                </Button>
-                <Button
-                  size="compact-sm"
-                  variant={coreWorkspaceTab === "drafts" ? "filled" : "light"}
-                  color={coreWorkspaceTab === "drafts" ? "cyan" : "gray"}
-                  onClick={() => setCoreWorkspaceTab("drafts")}
-                >
-                  Drafts
-                </Button>
-                <Button
-                  size="compact-sm"
-                  variant={coreWorkspaceTab === "tasks" ? "filled" : "light"}
-                  color={coreWorkspaceTab === "tasks" ? "orange" : "gray"}
-                  onClick={() => setCoreWorkspaceTab("tasks")}
-                >
-                  Tasks
-                </Button>
-              </Group>
-            </Group>
-          </Paper>
-        )}
-
-        {showCoreTaskPanel && (
-          <Suspense
-            fallback={
-              <Paper radius="xl" p="lg" className="intelligence-panel">
-                <Group justify="space-between" align="center">
-                  <Stack gap={2}>
-                    <Text className="eyebrow">Agentic Todo Core</Text>
-                    <Title order={3}>Loading tasks…</Title>
-                  </Stack>
-                  <Loader size="sm" />
-                </Group>
-              </Paper>
-            }
-          >
-            <LazyTaskTrackerPanel apiUrl={apiUrl} projectId={projectId} reviewer={reviewer} />
-          </Suspense>
-        )}
-
-        {(effectiveUiMode === "advanced" || coreWorkspaceTab !== "tasks") && (
-          <SimpleGrid cols={coreGridCols} spacing="lg" className="wiki-core-grid">
-            {showCoreWikiPanel && (
-              <Paper radius="xl" p="lg" className="wiki-tree-panel">
-            <Group justify="space-between" mb="sm">
-              <Title order={3}>Wiki Tree</Title>
-              <Badge size="lg" color="indigo" variant="light">
-                {pageNodes.length}
-              </Badge>
-            </Group>
-            <SimpleGrid cols={{ base: 1, md: 3 }} spacing="xs" mb="sm">
-              <Paper withBorder p="xs" radius="md">
-                <Text size="xs" c="dimmed">
-                  Spaces
-                </Text>
-                <Text fw={700}>{spaceNodes.length}</Text>
-              </Paper>
-              <Paper withBorder p="xs" radius="md">
-                <Text size="xs" c="dimmed">
-                  Pages with open drafts
-                </Text>
-                <Text fw={700}>{openPageCount}</Text>
-              </Paper>
-              <Paper withBorder p="xs" radius="md">
-                <Text size="xs" c="dimmed">
-                  Open drafts
-                </Text>
-                <Text fw={700}>{openDraftCount}</Text>
-              </Paper>
-            </SimpleGrid>
-            <Stack gap="sm" mb="sm">
-              <Paper withBorder p="xs" radius="md" className="legacy-connect-card">
-                <Stack gap={8}>
-                  <Group justify="space-between" align="center" wrap="wrap">
-                    <Stack gap={2}>
-                      <Text size="sm" fw={700}>
-                        Connect Existing Agent Memory
-                      </Text>
-                      <Text size="xs" c="dimmed">
-                        Bring existing memory into Synapse Wiki in a guided 3-step setup.
-                      </Text>
-                    </Stack>
-                    {loadingLegacyProfiles || loadingLegacySources ? (
-                      <Loader size="xs" />
-                    ) : legacyConnectedSource ? (
-                      <Badge size="xs" variant="light" color="teal">
-                        connected
-                      </Badge>
-                    ) : (
-                      <Badge size="xs" variant="light" color="gray">
-                        not connected
-                      </Badge>
-                    )}
-                  </Group>
-                  <SimpleGrid cols={{ base: 1, sm: 3 }} spacing={6}>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        Profile
-                      </Text>
-                      <Text size="sm" fw={700}>
-                        {legacySelectedProfile?.label || legacySqlProfile}
-                      </Text>
-                    </Paper>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        Source
-                      </Text>
-                      <Text size="sm" fw={700}>
-                        {legacyConnectedSource?.source_ref || legacySourceRef || "—"}
-                      </Text>
-                    </Paper>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        Last success
-                      </Text>
-                      <Text size="sm" fw={700}>
-                        {legacyConnectedSource ? fmtDate(legacyConnectedSource.last_success_at) : "—"}
-                      </Text>
-                    </Paper>
-                  </SimpleGrid>
-                  <Group gap="xs" wrap="wrap">
-                    <Button
-                      size="xs"
-                      color="teal"
-                      disabled={!projectId.trim()}
-                      onClick={() => openLegacySetupWizard()}
-                    >
-                      Open setup wizard
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="light"
-                      disabled={!projectId.trim()}
-                      loading={loadingLegacySources}
-                      onClick={() => void loadLegacyImportSources()}
-                    >
-                      Refresh sources
-                    </Button>
-                    {legacyConnectedSource && (
-                      <Button
-                        size="xs"
-                        variant="subtle"
-                        color="indigo"
-                        loading={runningLegacySyncSourceId === legacyConnectedSource.id}
-                        onClick={() => void runLegacySourceSync(legacyConnectedSource.id)}
-                      >
-                        Run sync now
-                      </Button>
-                    )}
-                  </Group>
-                  {legacyConnectedSource ? (
-                    <Group gap={6} wrap="wrap">
-                      <Badge size="xs" variant="light" color={legacyConnectedSource.enabled ? "teal" : "gray"}>
-                        {legacyConnectedSource.source_ref}
-                      </Badge>
-                      <Badge size="xs" variant="light" color="blue">
-                        every {legacyConnectedSource.sync_interval_minutes}m
-                      </Badge>
-                      <Badge size="xs" variant="light" color="gray">
-                        last run {fmtDate(legacyConnectedSource.last_run_at)}
-                      </Badge>
-                      <Badge size="xs" variant="light" color="gray">
-                        last success {fmtDate(legacyConnectedSource.last_success_at)}
-                      </Badge>
-                    </Group>
-                  ) : legacyPostgresSources.length > 0 ? (
-                    <Stack gap={4}>
-                      <Text size="xs" c="dimmed">
-                        Existing connectors in this project:
-                      </Text>
-                      <Group gap={6} wrap="wrap">
-                        {legacyPostgresSources.slice(0, 4).map((item) => (
-                          <Badge key={`legacy-source-${item.id}`} size="xs" variant="light" color="gray">
-                            {item.source_ref}
-                          </Badge>
-                        ))}
-                      </Group>
-                    </Stack>
-                  ) : null}
-                </Stack>
-              </Paper>
-              <Select
-                label="Space"
-                placeholder="All spaces"
-                value={selectedSpaceKey}
-                onChange={(value) => {
-                  setSelectedSpaceKey(value || null);
-                  if (!value) {
-                    return;
-                  }
-                  if (selectedPageSlug && pageGroupKey(selectedPageSlug) !== value) {
-                    setSelectedPageSlug(null);
-                  }
-                }}
-                clearable
-                data={spaceNodes.map((space) => ({
-                  label: `${space.title} (${space.page_count})`,
-                  value: space.key,
-                }))}
-              />
-              <Select
-                label="Page status"
-                placeholder="All statuses"
-                value={pageStatusFilter}
-                onChange={(value) => setPageStatusFilter(value || null)}
-                clearable
-                data={[
-                  { label: "Draft", value: "draft" },
-                  { label: "Reviewed", value: "reviewed" },
-                  { label: "Published", value: "published" },
-                  { label: "Archived", value: "archived" },
-                ]}
-              />
-              <TextInput
-                label="Updated by"
-                value={pageUpdatedByFilter}
-                onChange={(event) => setPageUpdatedByFilter(event.currentTarget.value)}
-                placeholder="ops_manager"
-              />
-              <TextInput
-                label="Page filter"
-                value={pageFilter}
-                onChange={(event) => setPageFilter(event.currentTarget.value)}
-                placeholder="Find page by title or slug"
-              />
-              <Checkbox
-                label="Show only pages with open drafts"
-                checked={openPagesOnly}
-                onChange={(event) => setOpenPagesOnly(event.currentTarget.checked)}
-              />
-              <Group gap="xs" wrap="wrap">
-                <Button
-                  size="xs"
-                  variant={selectedSpaceKey ? "light" : "filled"}
-                  onClick={() => {
-                    setSelectedSpaceKey(null);
-                    setSelectedPageSlug(null);
-                  }}
-                >
-                  All spaces
-                </Button>
-                <Button size="xs" variant={selectedPageSlug ? "light" : "filled"} onClick={() => setSelectedPageSlug(null)}>
-                  All pages
-                </Button>
-                <Button
-                  size="xs"
-                  variant={pageStatusFilter || pageUpdatedByFilter.trim() || openPagesOnly ? "light" : "filled"}
-                  onClick={() => {
-                    setPageStatusFilter(null);
-                    setPageUpdatedByFilter("");
-                    setOpenPagesOnly(false);
-                  }}
-                >
-                  Reset index filters
-                </Button>
-                {selectedSpaceKey && (
-                  <Badge variant="light" color="violet">
-                    {selectedSpaceTitle}
-                  </Badge>
-                )}
-                {selectedPageSlug && (
-                  <Badge variant="light" color="teal">
-                    {selectedPageTitle}
-                  </Badge>
-                )}
-                {pageStatusFilter && (
-                  <Badge variant="light" color="grape">
-                    status: {pageStatusFilter}
-                  </Badge>
-                )}
-                {pageUpdatedByFilter.trim() && (
-                  <Badge variant="light" color="cyan">
-                    updated by: {pageUpdatedByFilter.trim()}
-                  </Badge>
-                )}
-              </Group>
-              {showExpertModerationControls && (
-                <Paper withBorder p="xs" radius="md" className="saved-view-card">
-                  <Text size="xs" c="dimmed" fw={700} mb={6}>
-                    Saved Views
-                  </Text>
-                  <Stack gap={6}>
-                    <Select
-                      label="View"
-                      placeholder="Select saved view"
-                      value={selectedViewId}
-                      onChange={applySavedView}
-                      clearable
-                      data={savedViews.map((view) => ({
-                        label: `${view.name}${view.selectedSpaceKey ? ` (${view.selectedSpaceKey})` : ""}`,
-                        value: view.id,
-                      }))}
-                    />
-                    <TextInput
-                      label="View name"
-                      value={savedViewName}
-                      onChange={(event) => setSavedViewName(event.currentTarget.value)}
-                      placeholder="ops triage"
-                    />
-                    <Group gap="xs" justify="space-between" align="center">
-                      <Button
-                        size="xs"
-                        variant="light"
-                        leftSection={<IconDeviceFloppy size={14} />}
-                        onClick={saveCurrentView}
-                      >
-                        Save current
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="subtle"
-                        color="red"
-                        leftSection={<IconTrash size={14} />}
-                        disabled={!selectedViewId}
-                        onClick={deleteSavedView}
-                      >
-                        Delete
-                      </Button>
-                    </Group>
-                  </Stack>
-                </Paper>
-              )}
-              {showExpertModerationControls && pinnedPages.length > 0 && (
-                <Paper withBorder p="xs" radius="md" className="pinned-pages-card">
-                  <Text size="xs" c="dimmed" fw={700} mb={6}>
-                    Pinned Pages
-                  </Text>
-                  <Group gap={6} wrap="wrap">
-                    {pinnedPages.map((page) => (
-                      <Button
-                        key={`pinned-${page.slug}`}
-                        size="compact-xs"
-                        variant={selectedPageSlug === page.slug ? "filled" : "light"}
-                        onClick={() => {
-                          setSelectedSpaceKey(pageGroupKey(page.slug));
-                          setSelectedPageSlug(page.slug);
-                        }}
-                        leftSection={
-                          selectedPageSlug === page.slug ? <IconBookmarkFilled size={12} /> : <IconBookmark size={12} />
-                        }
-                      >
-                        {page.title || page.slug}
-                      </Button>
-                    ))}
-                  </Group>
-                </Paper>
-              )}
-              {recentPages.length > 0 && (
-                <Paper withBorder p="xs" radius="md">
-                  <Text size="xs" c="dimmed" fw={700} mb={6}>
-                    Recent Pages
-                  </Text>
-                  <Group gap={6} wrap="wrap">
-                    {recentPages.map((page) => (
-                      <Button
-                        key={`recent-${page.slug}`}
-                        size="compact-xs"
-                        variant={selectedPageSlug === page.slug ? "filled" : "light"}
-                        onClick={() => {
-                          setSelectedSpaceKey(pageGroupKey(page.slug));
-                          setSelectedPageSlug(page.slug);
-                        }}
-                      >
-                        {page.title || page.slug}
-                      </Button>
-                    ))}
-                  </Group>
-                </Paper>
-              )}
-              {showExpertModerationControls && (
-                <Paper withBorder p="xs" radius="md" className="guided-page-card">
-                  <Group justify="space-between" align="center" mb={4}>
-                    <Text size="xs" c="dimmed" fw={700}>
-                      Guided Page Builder
-                    </Text>
-                    <ThemeIcon size="sm" variant="light" color="teal">
-                      <IconFilePlus size={12} />
-                    </ThemeIcon>
-                  </Group>
-                  <Stack gap={6}>
-                  <TextInput
-                    label="Space key"
-                    value={guidedPageForm.spaceKey}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, spaceKey: event.currentTarget.value }))
-                    }
-                    placeholder="operations"
-                  />
-                  <TextInput
-                    label="Page title"
-                    value={guidedPageForm.title}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, title: event.currentTarget.value }))
-                    }
-                    placeholder="BC Omega access policy"
-                  />
-                  <TextInput
-                    label="Slug"
-                    value={guidedPageForm.slug}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, slug: event.currentTarget.value }))
-                    }
-                    placeholder="operations/bc-omega-access-policy"
-                  />
-                  <Group gap="xs" justify="space-between" align="center">
-                    <Select
-                      label="Status"
-                      value={guidedPageForm.status}
-                      onChange={(value) =>
-                        setGuidedPageForm((prev) => ({
-                          ...prev,
-                          status: (value as "draft" | "reviewed" | "published" | null) ?? "published",
-                        }))
-                      }
-                      data={[
-                        { label: "published", value: "published" },
-                        { label: "reviewed", value: "reviewed" },
-                        { label: "draft", value: "draft" },
-                      ]}
-                    />
-                    <TextInput
-                      label="Type"
-                      value={guidedPageForm.pageType}
-                      onChange={(event) =>
-                        setGuidedPageForm((prev) => ({ ...prev, pageType: event.currentTarget.value }))
-                      }
-                      placeholder="operations"
-                    />
-                  </Group>
-                  <TextInput
-                    label="Entity key (optional)"
-                    value={guidedPageForm.entityKey}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, entityKey: event.currentTarget.value }))
-                    }
-                    placeholder="bc_omega"
-                  />
-                  <TextInput
-                    label="Section heading"
-                    value={guidedPageForm.sectionHeading}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, sectionHeading: event.currentTarget.value }))
-                    }
-                    placeholder="Access Rules"
-                  />
-                  <Textarea
-                    label="First statement"
-                    value={guidedPageForm.sectionStatement}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, sectionStatement: event.currentTarget.value }))
-                    }
-                    minRows={2}
-                    placeholder="Gate entry requires access card after 10:00."
-                  />
-                  <TextInput
-                    label="Change summary (optional)"
-                    value={guidedPageForm.changeSummary}
-                    onChange={(event) =>
-                      setGuidedPageForm((prev) => ({ ...prev, changeSummary: event.currentTarget.value }))
-                    }
-                    placeholder="Created from moderation flow"
-                  />
-                  <Group gap="xs" justify="space-between" align="center">
-                    <Button size="xs" variant="light" onClick={autofillGuidedFromDraft}>
-                      Autofill from draft
-                    </Button>
-                    <Button size="xs" variant="subtle" onClick={suggestGuidedSlug}>
-                      Normalize slug
-                    </Button>
-                  </Group>
-                  <Button
-                    size="xs"
-                    color="teal"
-                    leftSection={<IconFilePlus size={14} />}
-                    loading={creatingPage}
-                    onClick={() => void createGuidedWikiPage()}
-                  >
-                    Create Page
-                  </Button>
-                  {searchingGuidedMatches && (
-                    <Text size="xs" c="dimmed">
-                      checking similar pages…
-                    </Text>
-                  )}
-                  {guidedPageMatches.length > 0 && (
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed" fw={700} mb={4}>
-                        Similar pages
-                      </Text>
-                      <Group gap={6} wrap="wrap">
-                        {guidedPageMatches.map((item) => (
-                          <Button
-                            key={`guided-match-${item.id}`}
-                            size="compact-xs"
-                            variant="light"
-                            onClick={() => {
-                              setSelectedSpaceKey(pageGroupKey(item.slug));
-                              setSelectedPageSlug(item.slug);
-                            }}
-                          >
-                            {item.title || item.slug}
-                          </Button>
-                        ))}
-                      </Group>
-                    </Paper>
-                  )}
-                  {effectiveUiMode === "advanced" && (
-                    <Paper withBorder p="xs" radius="md" className="retrieval-diagnostics-card">
-                      <Stack gap={6}>
-                        <Group justify="space-between" align="center">
-                          <Text size="xs" fw={700}>
-                            MCP Retrieval Diagnostics
-                          </Text>
-                          <Badge size="xs" color="teal" variant="light">
-                            explain v1
-                          </Badge>
-                        </Group>
-                        <TextInput
-                          label="Query"
-                          value={retrievalExplainQuery}
-                          onChange={(event) => setRetrievalExplainQuery(event.currentTarget.value)}
-                          placeholder="omega gate access card"
-                        />
-                        <TextInput
-                          label="Related entity (optional graph hint)"
-                          value={retrievalExplainRelatedEntity}
-                          onChange={(event) => setRetrievalExplainRelatedEntity(event.currentTarget.value)}
-                          placeholder="bc_omega"
-                        />
-                        <Select
-                          label="Context policy mode"
-                          value={retrievalExplainPolicyMode}
-                          onChange={(value) =>
-                            setRetrievalExplainPolicyMode(
-                              value === "off" || value === "enforced" ? value : "advisory",
-                            )
-                          }
-                          data={[
-                            { value: "advisory", label: "advisory" },
-                            { value: "enforced", label: "enforced" },
-                            { value: "off", label: "off" },
-                          ]}
-                        />
-                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing={6}>
-                          <TextInput
-                            label="Min confidence"
-                            value={retrievalExplainMinConfidence}
-                            onChange={(event) => setRetrievalExplainMinConfidence(event.currentTarget.value)}
-                            placeholder="0.45"
-                          />
-                          <TextInput
-                            label="Min total score"
-                            value={retrievalExplainMinTotalScore}
-                            onChange={(event) => setRetrievalExplainMinTotalScore(event.currentTarget.value)}
-                            placeholder="0.20"
-                          />
-                          <TextInput
-                            label="Min lexical score"
-                            value={retrievalExplainMinLexicalScore}
-                            onChange={(event) => setRetrievalExplainMinLexicalScore(event.currentTarget.value)}
-                            placeholder="0.08"
-                          />
-                          <TextInput
-                            label="Min token overlap ratio"
-                            value={retrievalExplainMinTokenOverlap}
-                            onChange={(event) => setRetrievalExplainMinTokenOverlap(event.currentTarget.value)}
-                            placeholder="0.15"
-                          />
-                        </SimpleGrid>
-                        <Button
-                          size="xs"
-                          variant="light"
-                          color="teal"
-                          leftSection={<IconSearch size={14} />}
-                          loading={loadingRetrievalExplain}
-                          onClick={() => void runRetrievalExplain()}
-                        >
-                          Explain retrieval
-                        </Button>
-                        {retrievalExplainGraphConfig && (
-                          <Paper withBorder p="xs" radius="md" className="retrieval-graph-config-card">
-                            <Stack gap={4}>
-                              <Group justify="space-between" align="center" wrap="nowrap">
-                                <Text size="xs" fw={700}>
-                                  Runtime graph config
-                                </Text>
-                                <Badge size="xs" variant="light" color="indigo">
-                                  shared contract
-                                </Badge>
-                              </Group>
-                              <Group gap={6} wrap="wrap">
-                                <Badge size="xs" variant="light" color="teal">
-                                  max hops {retrievalExplainGraphConfig.max_graph_hops}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="grape">
-                                  hop1 +{retrievalExplainGraphConfig.boost_hop1.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="grape">
-                                  hop2 +{retrievalExplainGraphConfig.boost_hop2.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="grape">
-                                  hop3 +{retrievalExplainGraphConfig.boost_hop3.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="gray">
-                                  other +{retrievalExplainGraphConfig.boost_other.toFixed(2)}
-                                </Badge>
-                              </Group>
-                              <Text size="xs" c="dimmed">
-                                Source env: SYNAPSE_MCP_GRAPH_MAX_HOPS / SYNAPSE_MCP_GRAPH_BOOST_HOP1 / HOP2 / HOP3 /
-                                OTHER
-                              </Text>
-                            </Stack>
-                          </Paper>
-                        )}
-                        {retrievalExplainContextPolicy && (
-                          <Paper withBorder p="xs" radius="md">
-                            <Stack gap={4}>
-                              <Group justify="space-between" align="center">
-                                <Text size="xs" fw={700}>
-                                  Context injection policy
-                                </Text>
-                                <Badge
-                                  size="xs"
-                                  variant="light"
-                                  color={retrievalExplainContextPolicy.mode === "enforced" ? "orange" : "indigo"}
-                                >
-                                  {retrievalExplainContextPolicy.mode}
-                                </Badge>
-                              </Group>
-                              <Group gap={6} wrap="wrap">
-                                <Badge size="xs" variant="light" color="teal">
-                                  min conf {retrievalExplainContextPolicy.min_confidence.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="blue">
-                                  min total {retrievalExplainContextPolicy.min_total_score.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="blue">
-                                  min lexical {retrievalExplainContextPolicy.min_lexical_score.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color="gray">
-                                  min overlap {retrievalExplainContextPolicy.min_token_overlap_ratio.toFixed(2)}
-                                </Badge>
-                                <Badge size="xs" variant="light" color={retrievalExplainPolicyFilteredOut > 0 ? "orange" : "gray"}>
-                                  filtered {retrievalExplainPolicyFilteredOut}
-                                </Badge>
-                              </Group>
-                            </Stack>
-                          </Paper>
-                        )}
-                        {retrievalExplainResults.length === 0 ? (
-                          <Text size="xs" c="dimmed">
-                            Run diagnostics to inspect MCP retrieval ranking reasons.
-                          </Text>
-                        ) : (
-                          <Stack gap={6}>
-                            {retrievalExplainResults.map((item) => (
-                              <Paper key={`retrieval-explain-${item.statement_id}`} withBorder p="xs" radius="md">
-                                <Stack gap={4}>
-                                  <Group justify="space-between" align="center" wrap="nowrap">
-                                    <Text size="xs" fw={700}>
-                                      {item.page.title || item.page.slug}
-                                    </Text>
-                                    <Badge size="xs" variant="light" color="blue">
-                                      score {item.score.toFixed(3)}
-                                    </Badge>
-                                  </Group>
-                                  <Text size="xs" c="dimmed">
-                                    {item.page.slug}
-                                  </Text>
-                                  <Text size="xs" className="retrieval-statement-snippet">
-                                    {item.statement_text}
-                                  </Text>
-                                  <Text size="xs" c="dimmed">
-                                    {item.retrieval_reason}
-                                  </Text>
-                                  <Group gap={6} wrap="wrap">
-                                    <Badge size="xs" variant="light" color="gray">
-                                      lexical {item.score_breakdown.lexical.toFixed(3)}
-                                    </Badge>
-                                    <Badge size="xs" variant="light" color="grape">
-                                      graph {item.score_breakdown.graph.toFixed(3)}
-                                    </Badge>
-                                    <Badge
-                                      size="xs"
-                                      variant="light"
-                                      color={item.context_policy?.eligible ? "teal" : "orange"}
-                                    >
-                                      conf {Number(item.retrieval_confidence || 0).toFixed(2)}
-                                    </Badge>
-                                    <Badge
-                                      size="xs"
-                                      variant="light"
-                                      color={item.context_policy?.eligible ? "teal" : "orange"}
-                                    >
-                                      {item.context_policy?.eligible ? "eligible" : "blocked"}
-                                    </Badge>
-                                    <Badge size="xs" variant="light" color="orange">
-                                      tokens {item.score_breakdown.lexical_components.token_overlap_hits}/
-                                      {item.score_breakdown.lexical_components.query_tokens_total}
-                                    </Badge>
-                                    {!item.context_policy?.eligible && item.context_policy?.blocked_by?.length ? (
-                                      <Badge size="xs" variant="light" color="red">
-                                        {item.context_policy.blocked_by.join(", ")}
-                                      </Badge>
-                                    ) : null}
-                                  </Group>
-                                </Stack>
-                              </Paper>
-                            ))}
-                          </Stack>
-                        )}
-                      </Stack>
-                    </Paper>
-                  )}
-                  </Stack>
-                </Paper>
-              )}
-            </Stack>
-            <ScrollArea h={640} type="auto">
-              <Stack gap="sm">
-                {(loadingPages || loadingDrafts) && (
-                  <Paper withBorder p="md" radius="lg">
-                    <Group gap="xs">
-                      <Loader size="xs" />
-                      <Text c="dimmed" size="sm">
-                        syncing wiki tree…
-                      </Text>
-                    </Group>
-                  </Paper>
-                )}
-                {wikiTreeNodes.length === 0 && !loadingPages && !loadingDrafts && (
-                  <Paper withBorder p="md" radius="lg">
-                    <Text c="dimmed">No pages in current scope.</Text>
-                  </Paper>
-                )}
-                {wikiTreeNodes.map((node) => renderWikiTreeNode(node))}
-              </Stack>
-            </ScrollArea>
-          </Paper>
-            )}
-
-          {showCoreWikiPreviewPanel && (
-            <Paper radius="xl" p="lg" className="wiki-page-preview-panel">
-              <Group justify="space-between" mb="sm">
-                <Title order={3}>Wiki Page</Title>
-                {selectedPageSlug ? (
-                  <Badge size="lg" variant="light" color="teal">
-                    {selectedPageTitle}
-                  </Badge>
-                ) : (
-                  <Badge size="lg" variant="light" color="gray">
-                    not selected
-                  </Badge>
-                )}
-              </Group>
-              {!selectedPageSlug && (
-                <Stack gap="sm">
-                  <Paper withBorder p="md" radius="md">
-                    <Stack gap={6}>
-                      <Text size="sm" fw={700}>
-                        Wiki Home
-                      </Text>
-                      <Text size="sm" c="dimmed">
-                        Select a page in Wiki Tree or jump from recent pages.
-                      </Text>
-                    </Stack>
-                  </Paper>
-                  <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" fw={700} mb={6}>
-                        Spaces
-                      </Text>
-                      <Stack gap={4}>
-                        {spaceNodes.slice(0, 6).map((space) => (
-                          <Button
-                            key={`wiki-home-space-${space.key}`}
-                            size="compact-sm"
-                            variant="subtle"
-                            onClick={() => setSelectedSpaceKey(space.key)}
-                          >
-                            {space.title} ({space.page_count})
-                          </Button>
-                        ))}
-                        {spaceNodes.length === 0 && (
-                          <Text size="xs" c="dimmed">
-                            No spaces available yet.
-                          </Text>
-                        )}
-                      </Stack>
-                    </Paper>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" fw={700} mb={6}>
-                        Recent pages
-                      </Text>
-                      <Stack gap={4}>
-                        {wikiHomeRecentPages.map((page) => (
-                          <Button
-                            key={`wiki-home-page-${page.slug}`}
-                            size="compact-sm"
-                            variant="light"
-                            onClick={() => {
-                              setSelectedPageSlug(page.slug);
-                              setSelectedSpaceKey(pageGroupKey(page.slug));
-                            }}
-                          >
-                            {page.title || page.slug}
-                          </Button>
-                        ))}
-                        {wikiHomeRecentPages.length === 0 && (
-                          <Text size="xs" c="dimmed">
-                            No recent pages yet.
-                          </Text>
-                        )}
-                      </Stack>
-                    </Paper>
-                  </SimpleGrid>
-                </Stack>
-              )}
-              {selectedPageSlug && loadingPageDetail && (
-                <Group py="md">
-                  <Loader size="sm" />
-                  <Text size="sm" c="dimmed">
-                    Loading wiki page…
-                  </Text>
-                </Group>
-              )}
-              {selectedPageSlug && !loadingPageDetail && !selectedPageDetail && (
-                <Paper withBorder p="md" radius="md">
-                  <Text size="sm" c="dimmed">
-                    Page content is not available yet for this selection.
-                  </Text>
-                </Paper>
-              )}
-              {selectedPageSlug && selectedPageDetail && (
-                <Stack gap="sm">
-                  <Paper withBorder p="xs" radius="md" className="wiki-page-sticky-toolbar">
-                    <Group justify="space-between" align="center" wrap="wrap">
-                      <Group gap={6} wrap="wrap">
-                        <Button
-                          size="compact-xs"
-                          variant="subtle"
-                          color="indigo"
-                          leftSection={<IconHistory size={14} />}
-                          onClick={() => {
-                            if (!selectedPageSlug) return;
-                            void loadPageHistory(selectedPageSlug);
-                            window.requestAnimationFrame(() => {
-                              document.getElementById("wiki-context-revisions")?.scrollIntoView({
-                                behavior: "smooth",
-                                block: "start",
-                              });
-                            });
-                          }}
-                        >
-                          History
-                        </Button>
-                        <Button
-                          size="compact-xs"
-                          variant={currentReviewerWatchingPage ? "light" : "subtle"}
-                          color={currentReviewerWatchingPage ? "gray" : "teal"}
-                          leftSection={<IconBell size={14} />}
-                          loading={savingPageWatcher}
-                          disabled={!reviewer.trim()}
-                          onClick={() => void upsertPageWatcher(reviewer.trim(), !currentReviewerWatchingPage)}
-                        >
-                          {currentReviewerWatchingPage ? "Watching" : "Watch"}
-                        </Button>
-                        <Button
-                          size="compact-xs"
-                          variant="subtle"
-                          color="blue"
-                          leftSection={<IconLink size={14} />}
-                          onClick={() => void shareCurrentPage()}
-                        >
-                          Share
-                        </Button>
-                        <Button
-                          size="compact-xs"
-                          variant="subtle"
-                          color="cyan"
-                          onClick={() => setCoreWorkspaceTab("drafts")}
-                        >
-                          Drafts ({selectedPageOpenDrafts.length})
-                        </Button>
-                      </Group>
-                      <Group gap={6} wrap="wrap">
-                        {!pageEditMode && !pageMoveMode && (
-                          <Button
-                            size="compact-xs"
-                            variant="light"
-                            color="indigo"
-                            onClick={() => {
-                              setPageMoveMode(false);
-                              setPageEditMode(true);
-                            }}
-                          >
-                            Edit
-                          </Button>
-                        )}
-                        {pageEditMode && (
-                          <>
-                            <Button
-                              size="compact-xs"
-                              variant="subtle"
-                              color="gray"
-                              onClick={() => setPageEditMode(false)}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              size="compact-xs"
-                              color="teal"
-                              loading={savingPageEdit}
-                              onClick={() => void saveWikiPageEdit()}
-                            >
-                              Save
-                            </Button>
-                          </>
-                        )}
-                        {pageMoveMode && (
-                          <>
-                            <Button
-                              size="compact-xs"
-                              variant="subtle"
-                              color="gray"
-                              onClick={() => setPageMoveMode(false)}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              size="compact-xs"
-                              color="violet"
-                              loading={movingPage}
-                              onClick={() => void moveWikiPage()}
-                            >
-                              Apply Move
-                            </Button>
-                          </>
-                        )}
-                        <Menu withinPortal position="bottom-end">
-                          <Menu.Target>
-                            <Button size="compact-xs" variant="subtle" color="gray" rightSection={<IconDots size={14} />}>
-                              More
-                            </Button>
-                          </Menu.Target>
-                          <Menu.Dropdown>
-                            <Menu.Item
-                              onClick={() => {
-                                if (!selectedPageSlug) return;
-                                void loadPageDetail(selectedPageSlug);
-                                void loadPageHistory(selectedPageSlug);
-                                void loadPageAliases(selectedPageSlug);
-                                void loadPageComments(selectedPageSlug);
-                                void loadPageWatchers(selectedPageSlug);
-                                void loadPageReviewAssignments(selectedPageSlug);
-                              }}
-                            >
-                              Refresh page
-                            </Menu.Item>
-                            <Menu.Item
-                              onClick={() => {
-                                setPageEditMode(false);
-                                setPageMoveMode(true);
-                              }}
-                            >
-                              Move / Rename
-                            </Menu.Item>
-                            {selectedPageDetail.page.status !== "archived" ? (
-                              <Menu.Item color="red" onClick={() => void transitionWikiPageStatus("archive")}>
-                                Archive
-                              </Menu.Item>
-                            ) : (
-                              <Menu.Item color="teal" onClick={() => void transitionWikiPageStatus("restore")}>
-                                Restore
-                              </Menu.Item>
-                            )}
-                          </Menu.Dropdown>
-                        </Menu>
-                      </Group>
-                    </Group>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md" className="wiki-page-header-card">
-                    <Stack gap={6}>
-                      <Group justify="space-between" align="flex-start" wrap="wrap">
-                        <Stack gap={2}>
-                          <Breadcrumbs separator="›">
-                            {wikiPageBreadcrumb.map((crumb, index) => (
-                              <Text
-                                key={`wiki-page-breadcrumb-${index}-${crumb.slug || "root"}`}
-                                size="xs"
-                                c={crumb.slug ? "dimmed" : "gray"}
-                                style={crumb.slug ? { cursor: "pointer" } : undefined}
-                                onClick={() => {
-                                  if (!crumb.slug) {
-                                    setSelectedPageSlug(null);
-                                    return;
-                                  }
-                                  setSelectedSpaceKey(pageGroupKey(crumb.slug));
-                                  setSelectedPageSlug(crumb.slug);
-                                }}
-                              >
-                                {crumb.label}
-                              </Text>
-                            ))}
-                          </Breadcrumbs>
-                          <Text size="xs" fw={700}>
-                            {selectedPageDetail.page.title || selectedPageDetail.page.slug}
-                          </Text>
-                          <Text size="xs" c="dimmed">
-                            {selectedSpaceTitle} / {selectedPageDetail.page.slug}
-                          </Text>
-                        </Stack>
-                        <Group gap={6} wrap="wrap">
-                          <Badge size="xs" variant="light" color="indigo">
-                            status {selectedPageDetail.page.status}
-                          </Badge>
-                          {selectedPageDetail.page.page_type ? (
-                            <Badge size="xs" variant="light" color="grape">
-                              type {selectedPageDetail.page.page_type}
-                            </Badge>
-                          ) : null}
-                          <Badge size="xs" variant="light" color="blue">
-                            v{latestPageVersion?.version ?? selectedPageDetail.page.current_version ?? "—"}
-                          </Badge>
-                        </Group>
-                      </Group>
-                      <Group gap={6} wrap="wrap">
-                        <Badge size="xs" variant="light" color="teal">
-                          updated {fmtDate(latestPageVersion?.created_at)}
-                        </Badge>
-                        {latestPageVersion?.created_by ? (
-                          <Badge size="xs" variant="light" color="gray">
-                            by {latestPageVersion.created_by}
-                          </Badge>
-                        ) : null}
-                        <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
-                          delta +{pageRevisionDelta.addedTokens} / -{pageRevisionDelta.removedTokens}
-                        </Badge>
-                      </Group>
-                    </Stack>
-                  </Paper>
-                  {pageMoveMode ? (
-                    <Paper withBorder p="sm" radius="md" className="wiki-page-edit-card">
-                      <Stack gap="sm">
-                        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                          <TextInput
-                            label="Parent path"
-                            value={pageMoveParentPath}
-                            onChange={(event) => setPageMoveParentPath(event.currentTarget.value)}
-                            placeholder="operations/locations"
-                            description="Leave empty to move page to space root."
-                          />
-                          <TextInput
-                            label="Slug leaf"
-                            value={pageMoveSlugLeaf}
-                            onChange={(event) => setPageMoveSlugLeaf(event.currentTarget.value)}
-                            placeholder="bc-omega-access-policy"
-                            description="Final segment for target page slug."
-                          />
-                        </SimpleGrid>
-                        <TextInput
-                          label="Page title"
-                          value={pageMoveTitle}
-                          onChange={(event) => setPageMoveTitle(event.currentTarget.value)}
-                          placeholder="BC Omega Access Policy"
-                        />
-                        <TextInput
-                          label="Change summary"
-                          value={pageMoveSummary}
-                          onChange={(event) => setPageMoveSummary(event.currentTarget.value)}
-                          placeholder="Moved under operations/locations and renamed page."
-                        />
-                        <Checkbox
-                          label="Move descendants (pages under current slug prefix)"
-                          checked={pageMoveIncludeDescendants}
-                          onChange={(event) => setPageMoveIncludeDescendants(event.currentTarget.checked)}
-                        />
-                        <Group gap="xs">
-                          <Badge size="xs" variant="light" color="gray">
-                            current {selectedPageDetail.page.slug}
-                          </Badge>
-                          <Badge size="xs" variant="light" color="violet">
-                            target {pageMovePreviewSlug}
-                          </Badge>
-                        </Group>
-                      </Stack>
-                    </Paper>
-                  ) : pageEditMode ? (
-                    <Paper withBorder p="sm" radius="md" className="wiki-page-edit-card">
-                      <Stack gap="sm">
-                        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                          <TextInput
-                            label="Page title"
-                            value={pageEditTitle}
-                            onChange={(event) => setPageEditTitle(event.currentTarget.value)}
-                            placeholder="Operations / BC Omega Access"
-                          />
-                          <Select
-                            label="Page status"
-                            value={pageEditStatus}
-                            onChange={(value) => {
-                              if (value === "draft" || value === "reviewed" || value === "published" || value === "archived") {
-                                setPageEditStatus(value);
-                              }
-                            }}
-                            data={[
-                              { value: "published", label: "published" },
-                              { value: "reviewed", label: "reviewed" },
-                              { value: "draft", label: "draft" },
-                              { value: "archived", label: "archived" },
-                            ]}
-                            allowDeselect={false}
-                          />
-                        </SimpleGrid>
-                        <TextInput
-                          label="Change summary"
-                          value={pageEditSummary}
-                          onChange={(event) => setPageEditSummary(event.currentTarget.value)}
-                          placeholder="Updated access policy and pickup constraints."
-                        />
-                        <Paper withBorder p="xs" radius="md">
-                          <Stack gap={6}>
-                            <Text size="xs" fw={700}>
-                              Attach file / media
-                            </Text>
-                            <Group gap={8} align="center" wrap="wrap">
-                              <input
-                                type="file"
-                                onChange={(event) => {
-                                  const file = event.currentTarget.files?.[0] ?? null;
-                                  setPageAssetFile(file);
-                                }}
-                              />
-                              <Button
-                                size="compact-xs"
-                                variant="light"
-                                color="indigo"
-                                loading={uploadingPageAsset}
-                                disabled={!pageAssetFile}
-                                onClick={() => void uploadPageAsset()}
-                              >
-                                Upload + insert snippet
-                              </Button>
-                            </Group>
-                            <Text size="xs" c="dimmed">
-                              Allowed common extensions. Uploaded file link will be inserted into markdown automatically.
-                            </Text>
-                          </Stack>
-                        </Paper>
-                        <Textarea
-                          label="Page markdown"
-                          value={pageEditMarkdown}
-                          onChange={(event) => setPageEditMarkdown(event.currentTarget.value)}
-                          minRows={18}
-                          autosize
-                        />
-                      </Stack>
-                    </Paper>
-                  ) : (
-                    <>
-                      <Group gap="xs" wrap="wrap">
-                        <Badge size="xs" variant="light" color="indigo">
-                          slug {selectedPageDetail.page.slug}
-                        </Badge>
-                        <Badge size="xs" variant="light" color="grape">
-                          sections {selectedPageDetail.sections.length}
-                        </Badge>
-                        <Badge size="xs" variant="light" color="blue">
-                          statements {selectedPageDetail.statements.length}
-                        </Badge>
-                      </Group>
-                      <Suspense
-                        fallback={
-                          <Paper withBorder p="md" radius="md">
-                            <Group py="sm">
-                              <Loader size="sm" />
-                              <Text size="sm" c="dimmed">
-                                Rendering page preview…
-                              </Text>
-                            </Group>
-                          </Paper>
-                        }
-                      >
-                        <LazyWikiPageCanvas
-                          title={selectedPageDetail.page.title || selectedPageDetail.page.slug || "Untitled page"}
-                          slug={selectedPageDetail.page.slug}
-                          markdown={wikiPreviewMarkdown}
-                          apiBaseUrl={apiUrl}
-                          readonly
-                          onApplyEditedStatement={() => {}}
-                        />
-                      </Suspense>
-                    </>
-                  )}
-                </Stack>
-              )}
-            </Paper>
-          )}
-
-          {showCoreWikiContextPanel && (
-            <Paper radius="xl" p="lg" className="wiki-context-panel">
-              <Group justify="space-between" mb="sm">
-                <Title order={3}>Page Context</Title>
-                {selectedPageSlug ? (
-                  <Badge variant="light" color="indigo">
-                    {selectedPageSlug}
-                  </Badge>
-                ) : null}
-              </Group>
-              {!selectedPageSlug && (
-                <Text size="sm" c="dimmed">
-                  Select a page to view sections, revision timeline, and open draft context.
-                </Text>
-              )}
-              {selectedPageSlug && (
-                <Stack gap="sm">
-                  <Paper withBorder p="xs" radius="md">
-                    <Text size="xs" fw={700} mb={6}>
-                      Sections
-                    </Text>
-                    {(selectedPageDetail?.sections ?? []).length === 0 ? (
-                      <Text size="xs" c="dimmed">
-                        No sections available.
-                      </Text>
-                    ) : (
-                      <Stack gap={4}>
-                        {(selectedPageDetail?.sections ?? []).slice(0, 8).map((section) => (
-                          <Text key={`ctx-section-${section.section_key}`} size="xs" c="dimmed">
-                            {section.heading} ({section.statement_count})
-                          </Text>
-                        ))}
-                      </Stack>
-                    )}
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md" id="wiki-context-revisions">
-                    <Text size="xs" fw={700} mb={6}>
-                      Latest revisions
-                    </Text>
-                    {(pageHistory?.versions ?? []).length === 0 ? (
-                      <Text size="xs" c="dimmed">
-                        Revision history is not available.
-                      </Text>
-                    ) : (
-                      <Stack gap={4}>
-                        {(pageHistory?.versions ?? []).slice(0, 5).map((version) => (
-                          <Group key={`ctx-version-${version.version}`} justify="space-between" align="center" wrap="nowrap">
-                            <Text size="xs" c="dimmed">
-                              v{version.version} • {fmtDate(version.created_at)}
-                            </Text>
-                            {Number(selectedPageDetail?.page.current_version || 0) !== Number(version.version) ? (
-                              <Button
-                                size="compact-xs"
-                                variant="light"
-                                color="orange"
-                                loading={rollingBackVersion === Number(version.version)}
-                                onClick={() => void rollbackWikiPageToVersion(Number(version.version))}
-                              >
-                                Rollback
-                              </Button>
-                            ) : (
-                              <Badge size="xs" variant="light" color="green">
-                                current
-                              </Badge>
-                            )}
-                          </Group>
-                        ))}
-                      </Stack>
-                    )}
-                    {(pageHistory?.versions ?? []).length > 1 && (
-                      <>
-                        <Group gap={6} mt={8} wrap="wrap">
-                          <Badge size="xs" variant="light" color={pageRevisionDelta.changed > 0 ? "orange" : "gray"}>
-                            changes {pageRevisionDelta.changed}
-                          </Badge>
-                          <Badge size="xs" variant="light" color="teal">
-                            +{pageRevisionDelta.addedTokens}
-                          </Badge>
-                          <Badge size="xs" variant="light" color="red">
-                            -{pageRevisionDelta.removedTokens}
-                          </Badge>
-                        </Group>
-                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing={6} mt={8}>
-                          <Select
-                            size="xs"
-                            label="Compare from"
-                            value={historyBaseVersion}
-                            onChange={setHistoryBaseVersion}
-                            data={pageHistoryOptions}
-                          />
-                          <Select
-                            size="xs"
-                            label="Compare to"
-                            value={historyTargetVersion}
-                            onChange={setHistoryTargetVersion}
-                            data={pageHistoryOptions}
-                          />
-                        </SimpleGrid>
-                        <Paper withBorder p="xs" radius="md" mt={8} className="diff-block">
-                          <Text size="xs" fw={700} mb={6}>
-                            Quick diff preview
-                          </Text>
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing={8}>
-                            <Stack gap={4}>
-                              <Text size="xs" c="dimmed">
-                                Added lines
-                              </Text>
-                              {pageRevisionLinePreview.added.length === 0 ? (
-                                <Text size="xs" c="dimmed">
-                                  No unique added lines.
-                                </Text>
-                              ) : (
-                                pageRevisionLinePreview.added.map((line, index) => (
-                                  <Text key={`rev-added-${index}`} size="xs">
-                                    + {line}
-                                  </Text>
-                                ))
-                              )}
-                            </Stack>
-                            <Stack gap={4}>
-                              <Text size="xs" c="dimmed">
-                                Removed lines
-                              </Text>
-                              {pageRevisionLinePreview.removed.length === 0 ? (
-                                <Text size="xs" c="dimmed">
-                                  No unique removed lines.
-                                </Text>
-                              ) : (
-                                pageRevisionLinePreview.removed.map((line, index) => (
-                                  <Text key={`rev-removed-${index}`} size="xs">
-                                    - {line}
-                                  </Text>
-                                ))
-                              )}
-                            </Stack>
-                          </SimpleGrid>
-                        </Paper>
-                      </>
-                    )}
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Open drafts on this page
-                      </Text>
-                      <Badge size="xs" variant="light" color="cyan">
-                        {selectedPageOpenDrafts.length}
-                      </Badge>
-                    </Group>
-                    {selectedPageOpenDrafts.length === 0 ? (
-                      <Text size="xs" c="dimmed">
-                        No open drafts for this page.
-                      </Text>
-                    ) : (
-                      <Stack gap={6}>
-                        {selectedPageOpenDrafts.map((draft) => (
-                          <Button
-                            key={`ctx-draft-${draft.id}`}
-                            size="compact-sm"
-                            variant="light"
-                            color="cyan"
-                            onClick={() => {
-                              setCoreWorkspaceTab("drafts");
-                              setSelectedDraftId(draft.id);
-                            }}
-                          >
-                            {draft.page.title || draft.section_key || draft.id.slice(0, 8)} • conf {draft.confidence.toFixed(2)}
-                          </Button>
-                        ))}
-                      </Stack>
-                    )}
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Aliases
-                      </Text>
-                      <Badge size="xs" variant="light" color="indigo">
-                        {pageAliases.length}
-                      </Badge>
-                    </Group>
-                    <Stack gap={6}>
-                      <Group gap={6} wrap="wrap">
-                        <TextInput
-                          size="xs"
-                          placeholder="operations/old-slug"
-                          value={newPageAlias}
-                          onChange={(event) => setNewPageAlias(event.currentTarget.value)}
-                          style={{ flex: 1, minWidth: 180 }}
-                        />
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="indigo"
-                          loading={savingPageAlias}
-                          onClick={() => void createPageAlias()}
-                        >
-                          Add alias
-                        </Button>
-                      </Group>
-                      {loadingPageAliases ? (
-                        <Group gap={6}>
-                          <Loader size="xs" />
-                          <Text size="xs" c="dimmed">
-                            loading aliases…
-                          </Text>
-                        </Group>
-                      ) : pageAliases.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          No aliases configured.
-                        </Text>
-                      ) : (
-                        <Stack gap={4}>
-                          {pageAliases.map((alias) => (
-                            <Group key={`page-alias-${alias.alias_text}`} justify="space-between" align="center" wrap="nowrap">
-                              <Text size="xs" c="dimmed">
-                                {alias.alias_text}
-                              </Text>
-                              <ActionIcon
-                                size="sm"
-                                variant="subtle"
-                                color="red"
-                                loading={savingPageAlias}
-                                onClick={() => void deletePageAlias(alias.alias_text)}
-                                aria-label="Delete alias"
-                              >
-                                <IconTrash size={12} />
-                              </ActionIcon>
-                            </Group>
-                          ))}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Governance
-                      </Text>
-                      <Badge size="xs" variant="light" color="violet">
-                        {pageGroupKey(selectedPageSlug)}
-                      </Badge>
-                    </Group>
-                    <Stack gap={8}>
-                      <SimpleGrid cols={{ base: 1, md: 2 }} spacing={6}>
-                        <Select
-                          size="xs"
-                          label="Write mode"
-                          value={spaceWriteMode}
-                          onChange={(value) => {
-                            if (value === "open" || value === "owners_only") {
-                              setSpaceWriteMode(value);
-                            }
-                          }}
-                          data={[
-                            { value: "open", label: "open" },
-                            { value: "owners_only", label: "owners_only" },
-                          ]}
-                          allowDeselect={false}
-                          disabled={loadingSpacePolicy}
-                        />
-                        <Select
-                          size="xs"
-                          label="Comment mode"
-                          value={spaceCommentMode}
-                          onChange={(value) => {
-                            if (value === "open" || value === "owners_only") {
-                              setSpaceCommentMode(value);
-                            }
-                          }}
-                          data={[
-                            { value: "open", label: "open" },
-                            { value: "owners_only", label: "owners_only" },
-                          ]}
-                          allowDeselect={false}
-                          disabled={loadingSpacePolicy}
-                        />
-                      </SimpleGrid>
-                      <Checkbox
-                        size="xs"
-                        checked={spaceReviewRequired}
-                        onChange={(event) => setSpaceReviewRequired(event.currentTarget.checked)}
-                        label="Require review assignment before publish"
-                        disabled={loadingSpacePolicy}
-                      />
-                      <Group justify="flex-end">
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="violet"
-                          loading={savingSpacePolicy}
-                          onClick={() => void saveSpacePolicy()}
-                        >
-                          Save policy
-                        </Button>
-                      </Group>
-                      {spacePolicy && (
-                        <Text size="xs" c="dimmed">
-                          policy source: {spacePolicy.exists ? "configured" : "default open"}
-                        </Text>
-                      )}
-
-                      <Divider />
-
-                      <Text size="xs" fw={700}>
-                        Knowledge publish mode
-                      </Text>
-                      <Select
-                        size="xs"
-                        label="Default publish mode"
-                        value={publishModeDefault}
-                        onChange={(value) => {
-                          if (value === "human_required" || value === "conditional" || value === "auto_publish") {
-                            setPublishModeDefault(value);
-                          }
-                        }}
-                        data={[
-                          { value: "auto_publish", label: "auto_publish (agent writes directly)" },
-                          { value: "conditional", label: "conditional (quality-gated autopublish)" },
-                          { value: "human_required", label: "human_required (manual moderation)" },
-                        ]}
-                        allowDeselect={false}
-                        disabled={loadingGatekeeperConfig}
-                      />
-                      <Text size="xs" c="dimmed">
-                        Agents publish by default in `auto_publish`. Switch to `human_required` if you need strict review.
-                      </Text>
-                      <Group justify="flex-end">
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="violet"
-                          loading={savingPublishPolicy}
-                          onClick={() => void savePublishPolicy()}
-                        >
-                          Save publish mode
-                        </Button>
-                      </Group>
-
-                      <Divider />
-
-                      <Text size="xs" fw={700}>
-                        Space owners
-                      </Text>
-                      <Group gap={6} wrap="wrap">
-                        <TextInput
-                          size="xs"
-                          placeholder="owner_id"
-                          value={spaceOwnerInput}
-                          onChange={(event) => setSpaceOwnerInput(event.currentTarget.value)}
-                          style={{ flex: 1, minWidth: 120 }}
-                        />
-                        <TextInput
-                          size="xs"
-                          placeholder="role"
-                          value={spaceOwnerRoleInput}
-                          onChange={(event) => setSpaceOwnerRoleInput(event.currentTarget.value)}
-                          style={{ width: 100 }}
-                        />
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="violet"
-                          loading={savingSpaceOwner}
-                          onClick={() => void upsertSpaceOwner(spaceOwnerInput, true)}
-                        >
-                          Add
-                        </Button>
-                      </Group>
-                      {loadingSpaceOwners ? (
-                        <Group gap={6}>
-                          <Loader size="xs" />
-                          <Text size="xs" c="dimmed">
-                            loading space owners…
-                          </Text>
-                        </Group>
-                      ) : spaceOwners.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          No space owners configured.
-                        </Text>
-                      ) : (
-                        <Stack gap={4}>
-                          {spaceOwners.map((owner) => (
-                            <Group key={`space-owner-${owner.owner}`} justify="space-between" align="center" wrap="nowrap">
-                              <Text size="xs" c="dimmed">
-                                {owner.owner} ({owner.role})
-                              </Text>
-                              <ActionIcon
-                                size="sm"
-                                variant="subtle"
-                                color="red"
-                                loading={savingSpaceOwner}
-                                onClick={() => void upsertSpaceOwner(owner.owner, false)}
-                                aria-label="Remove space owner"
-                              >
-                                <IconTrash size={12} />
-                              </ActionIcon>
-                            </Group>
-                          ))}
-                        </Stack>
-                      )}
-
-                      <Divider />
-
-                      <Text size="xs" fw={700}>
-                        Page owners
-                      </Text>
-                      <Group gap={6} wrap="wrap">
-                        <TextInput
-                          size="xs"
-                          placeholder="owner_id"
-                          value={pageOwnerInput}
-                          onChange={(event) => setPageOwnerInput(event.currentTarget.value)}
-                          style={{ flex: 1, minWidth: 120 }}
-                        />
-                        <TextInput
-                          size="xs"
-                          placeholder="role"
-                          value={pageOwnerRoleInput}
-                          onChange={(event) => setPageOwnerRoleInput(event.currentTarget.value)}
-                          style={{ width: 100 }}
-                        />
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="violet"
-                          loading={savingPageOwner}
-                          onClick={() => void upsertPageOwner(pageOwnerInput, true)}
-                        >
-                          Add
-                        </Button>
-                      </Group>
-                      {loadingPageOwners ? (
-                        <Group gap={6}>
-                          <Loader size="xs" />
-                          <Text size="xs" c="dimmed">
-                            loading page owners…
-                          </Text>
-                        </Group>
-                      ) : pageOwners.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          No page owners configured.
-                        </Text>
-                      ) : (
-                        <Stack gap={4}>
-                          {pageOwners.map((owner) => (
-                            <Group key={`page-owner-${owner.owner}`} justify="space-between" align="center" wrap="nowrap">
-                              <Text size="xs" c="dimmed">
-                                {owner.owner} ({owner.role})
-                              </Text>
-                              <ActionIcon
-                                size="sm"
-                                variant="subtle"
-                                color="red"
-                                loading={savingPageOwner}
-                                onClick={() => void upsertPageOwner(owner.owner, false)}
-                                aria-label="Remove page owner"
-                              >
-                                <IconTrash size={12} />
-                              </ActionIcon>
-                            </Group>
-                          ))}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Watchers
-                      </Text>
-                      <Badge size="xs" variant="light" color="teal">
-                        {pageWatchers.length}
-                      </Badge>
-                    </Group>
-                    <Stack gap={6}>
-                      <Group gap={6} wrap="wrap">
-                        <Button
-                          size="compact-xs"
-                          variant={currentReviewerWatchingPage ? "light" : "filled"}
-                          color={currentReviewerWatchingPage ? "gray" : "teal"}
-                          loading={savingPageWatcher}
-                          onClick={() => void upsertPageWatcher(reviewer.trim(), !currentReviewerWatchingPage)}
-                        >
-                          {currentReviewerWatchingPage ? "Unwatch me" : "Watch me"}
-                        </Button>
-                        <TextInput
-                          size="xs"
-                          placeholder="teammate_id"
-                          value={watcherInput}
-                          onChange={(event) => setWatcherInput(event.currentTarget.value)}
-                          style={{ flex: 1, minWidth: 140 }}
-                        />
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="teal"
-                          loading={savingPageWatcher}
-                          onClick={() => void upsertPageWatcher(watcherInput, true)}
-                        >
-                          Add
-                        </Button>
-                      </Group>
-                      {loadingPageWatchers ? (
-                        <Group gap={6}>
-                          <Loader size="xs" />
-                          <Text size="xs" c="dimmed">
-                            loading watchers…
-                          </Text>
-                        </Group>
-                      ) : pageWatchers.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          No watchers.
-                        </Text>
-                      ) : (
-                        <Stack gap={4}>
-                          {pageWatchers.map((item) => (
-                            <Group key={`page-watcher-${item.watcher}`} justify="space-between" align="center" wrap="nowrap">
-                              <Text size="xs" c="dimmed">
-                                {item.watcher}
-                              </Text>
-                              <ActionIcon
-                                size="sm"
-                                variant="subtle"
-                                color="red"
-                                loading={savingPageWatcher}
-                                onClick={() => void upsertPageWatcher(item.watcher, false)}
-                                aria-label="Remove watcher"
-                              >
-                                <IconTrash size={12} />
-                              </ActionIcon>
-                            </Group>
-                          ))}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Comments
-                      </Text>
-                      <Badge size="xs" variant="light" color="grape">
-                        {pageComments.length}
-                      </Badge>
-                    </Group>
-                    <Stack gap={6}>
-                      <Textarea
-                        size="xs"
-                        minRows={2}
-                        autosize
-                        placeholder="Add comment for reviewers and operators... Use @username for mention."
-                        value={newPageComment}
-                        onChange={(event) => setNewPageComment(event.currentTarget.value)}
-                      />
-                      <Text size="xs" c="dimmed">
-                        Mentions (`@username`) notify teammates and page watchers.
-                      </Text>
-                      <Group justify="flex-end">
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="grape"
-                          loading={savingPageComment}
-                          onClick={() => void createPageComment()}
-                        >
-                          Add comment
-                        </Button>
-                      </Group>
-                      {loadingPageComments ? (
-                        <Group gap={6}>
-                          <Loader size="xs" />
-                          <Text size="xs" c="dimmed">
-                            loading comments…
-                          </Text>
-                        </Group>
-                      ) : pageComments.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          No comments yet.
-                        </Text>
-                      ) : (
-                        <Stack gap={6}>
-                          {pageComments.map((comment) => (
-                            <Paper key={`page-comment-${comment.id}`} withBorder p="xs" radius="md">
-                              <Stack gap={4}>
-                                <Group justify="space-between" align="center" wrap="nowrap">
-                                  <Text size="xs" fw={700}>
-                                    {comment.author}
-                                  </Text>
-                                  <Group gap={6} wrap="nowrap">
-                                    <Text size="xs" c="dimmed">
-                                      {fmtDate(comment.created_at)}
-                                    </Text>
-                                    <ActionIcon
-                                      size="sm"
-                                      variant="subtle"
-                                      color="red"
-                                      loading={savingPageComment}
-                                      onClick={() => void deletePageComment(comment.id)}
-                                      aria-label="Delete comment"
-                                    >
-                                      <IconTrash size={12} />
-                                    </ActionIcon>
-                                  </Group>
-                                </Group>
-                                <Text size="xs" c="dimmed">
-                                  {comment.body}
-                                </Text>
-                              </Stack>
-                            </Paper>
-                          ))}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Attachments
-                      </Text>
-                      <Badge size="xs" variant="light" color="indigo">
-                        {pageUploads.length}
-                      </Badge>
-                    </Group>
-                    {loadingPageUploads ? (
-                      <Group gap={6}>
-                        <Loader size="xs" />
-                        <Text size="xs" c="dimmed">
-                          loading uploads…
-                        </Text>
-                      </Group>
-                    ) : pageUploads.length === 0 ? (
-                      <Text size="xs" c="dimmed">
-                        No uploads for this page yet.
-                      </Text>
-                    ) : (
-                      <Stack gap={6}>
-                        {pageUploads.slice(0, 12).map((upload) => {
-                          const resolvedUrl = resolveWikiAssetUrl(
-                            apiUrl,
-                            upload.content_url_absolute || upload.content_url,
-                          );
-                          return (
-                            <Paper key={`page-upload-${upload.id}`} withBorder p="xs" radius="md">
-                              <Group justify="space-between" align="center" wrap="nowrap">
-                                <Stack gap={2} style={{ flex: 1 }}>
-                                  <Text size="xs" fw={700} lineClamp={1}>
-                                    {upload.filename}
-                                  </Text>
-                                  <Text size="xs" c="dimmed">
-                                    {upload.content_type || "application/octet-stream"} •{" "}
-                                    {(upload.size_bytes / 1024).toFixed(1)} KB • {fmtDate(upload.created_at)}
-                                  </Text>
-                                </Stack>
-                                <Button
-                                  component="a"
-                                  href={resolvedUrl || undefined}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  size="compact-xs"
-                                  variant="light"
-                                  color="indigo"
-                                >
-                                  Open
-                                </Button>
-                              </Group>
-                            </Paper>
-                          );
-                        })}
-                      </Stack>
-                    )}
-                  </Paper>
-                  <Paper withBorder p="xs" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text size="xs" fw={700}>
-                        Review assignments
-                      </Text>
-                      <Badge size="xs" variant="light" color="orange">
-                        {pageReviewAssignments.filter((item) => item.status === "open").length}
-                      </Badge>
-                    </Group>
-                    <Stack gap={6}>
-                      <SimpleGrid cols={{ base: 1, md: 2 }} spacing={6}>
-                        <TextInput
-                          size="xs"
-                          placeholder="assignee_id"
-                          value={assignmentAssigneeInput}
-                          onChange={(event) => setAssignmentAssigneeInput(event.currentTarget.value)}
-                        />
-                        <TextInput
-                          size="xs"
-                          placeholder="Note (optional)"
-                          value={assignmentNoteInput}
-                          onChange={(event) => setAssignmentNoteInput(event.currentTarget.value)}
-                        />
-                      </SimpleGrid>
-                      <Group justify="flex-end">
-                        <Button
-                          size="compact-xs"
-                          variant="light"
-                          color="orange"
-                          loading={savingPageAssignment}
-                          onClick={() => void createPageReviewAssignment()}
-                        >
-                          Assign reviewer
-                        </Button>
-                      </Group>
-                      {loadingPageReviewAssignments ? (
-                        <Group gap={6}>
-                          <Loader size="xs" />
-                          <Text size="xs" c="dimmed">
-                            loading assignments…
-                          </Text>
-                        </Group>
-                      ) : pageReviewAssignments.length === 0 ? (
-                        <Text size="xs" c="dimmed">
-                          No review assignments yet.
-                        </Text>
-                      ) : (
-                        <Stack gap={6}>
-                          {pageReviewAssignments.slice(0, 12).map((assignment) => (
-                            <Paper key={`assignment-${assignment.id}`} withBorder p="xs" radius="md">
-                              <Group justify="space-between" align="center" wrap="nowrap">
-                                <Stack gap={2}>
-                                  <Text size="xs" fw={700}>
-                                    {assignment.assignee}
-                                  </Text>
-                                  <Text size="xs" c="dimmed">
-                                    {assignment.status} • {assignment.role} • {fmtDate(assignment.created_at)}
-                                  </Text>
-                                  {assignment.note ? (
-                                    <Text size="xs" c="dimmed">
-                                      {assignment.note}
-                                    </Text>
-                                  ) : null}
-                                </Stack>
-                                {assignment.status === "open" ? (
-                                  <Button
-                                    size="compact-xs"
-                                    variant="subtle"
-                                    color="teal"
-                                    loading={savingPageAssignment}
-                                    onClick={() => void resolvePageReviewAssignment(assignment.id)}
-                                  >
-                                    Resolve
-                                  </Button>
-                                ) : (
-                                  <Badge size="xs" variant="light" color="gray">
-                                    resolved
-                                  </Badge>
-                                )}
-                              </Group>
-                            </Paper>
-                          ))}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                </Stack>
-              )}
-            </Paper>
-          )}
-
-          {showCoreDraftPanels && (
-            <Paper radius="xl" p="lg" className="draft-inbox-panel">
-            <Group justify="space-between" mb="sm">
-              <Title order={3}>Draft Inbox</Title>
-              <Group gap="xs" wrap="wrap">
-                <Badge size="lg" color="teal" variant="light">
-                  {visibleDrafts.length}/{scopedDrafts.length}
-                </Badge>
-                {!showExpertModerationControls && (
-                  <Button
-                    size="compact-xs"
-                    variant="light"
-                    onClick={() => setShowDraftOperationsTools((value) => !value)}
-                  >
-                    {showDraftOperationsTools ? "Hide operations" : "Open operations"}
-                  </Button>
-                )}
-              </Group>
-            </Group>
-            {(showExpertModerationControls || showDraftOperationsTools) && (
-              <>
-                <Stack gap={6} mb="sm">
-                  <TextInput
-                    label="Draft filter"
-                    value={draftFilter}
-                    onChange={(event) => setDraftFilter(event.currentTarget.value)}
-                    placeholder="Filter by page, section, or decision"
-                  />
-                  {selectedSpaceKey && (
-                    <Text size="xs" c="dimmed">
-                      Space scope: <Code>{selectedSpaceTitle}</Code>
-                    </Text>
-                  )}
-                </Stack>
-            {!showExpertModerationControls && (
-              <Paper withBorder p="xs" radius="md" mb="sm" className="bootstrap-migration-card">
-                <Group justify="space-between" align="center" wrap="wrap">
-                  <Stack gap={2}>
-                    <Text size="sm" fw={700}>
-                      Migration Mode
-                    </Text>
-                    <Text size="xs" c="dimmed">
-                      Enable only for initial trusted-source adoption batches.
-                    </Text>
-                  </Stack>
-                  <Button
-                    size="compact-xs"
-                    variant={showMigrationMode ? "filled" : "light"}
-                    color={showMigrationMode ? "orange" : "gray"}
-                    onClick={() => setShowMigrationMode((value) => !value)}
-                  >
-                    {showMigrationMode ? "Hide migration tools" : "Open migration tools"}
-                  </Button>
-                </Group>
-              </Paper>
-            )}
-            {(showExpertModerationControls || showMigrationMode) && (
-            <Paper withBorder p="xs" radius="md" mb="sm" className="bootstrap-migration-card">
-              <Stack gap={8}>
-                <Group justify="space-between" align="center" wrap="wrap">
-                  <Group gap="xs" wrap="wrap">
-                    <Text size="sm" fw={700}>
-                      Bootstrap Migration
-                    </Text>
-                    <Badge variant="light" color="indigo">
-                      trusted source flow
-                    </Badge>
-                  </Group>
-                  <Button
-                    size="compact-xs"
-                    variant="light"
-                    onClick={() => setShowBootstrapTools((value) => !value)}
-                  >
-                    {showBootstrapTools ? "Hide tools" : "Open tools"}
-                  </Button>
-                </Group>
-                <Text size="xs" c="dimmed">
-                  Use this after legacy import to approve high-confidence drafts in phased batches.
-                </Text>
-                {showBootstrapTools && (
-                  <>
-                    <TextInput
-                      label="Trusted sources (csv)"
-                      value={bootstrapTrustedSources}
-                      onChange={(event) => setBootstrapTrustedSources(event.currentTarget.value)}
-                      placeholder="legacy_import,postgres_sql"
-                    />
-                    <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="xs">
-                      <TextInput
-                        label="Min confidence"
-                        value={bootstrapMinConfidence}
-                        onChange={(event) => setBootstrapMinConfidence(event.currentTarget.value)}
-                        placeholder="0.85"
-                      />
-                      <TextInput
-                        label="Batch limit"
-                        value={bootstrapLimit}
-                        onChange={(event) => setBootstrapLimit(event.currentTarget.value)}
-                        placeholder="50"
-                      />
-                      <TextInput
-                        label="Preview sample"
-                        value={bootstrapSampleSize}
-                        onChange={(event) => setBootstrapSampleSize(event.currentTarget.value)}
-                        placeholder="15"
-                      />
-                    </SimpleGrid>
-                    <Group gap={6} wrap="wrap">
-                      <Text size="xs" c="dimmed">
-                        Phased rollout:
-                      </Text>
-                      {["25", "50", "200"].map((preset) => (
-                        <Button
-                          key={`bootstrap-limit-${preset}`}
-                          size="compact-xs"
-                          variant={bootstrapLimit === preset ? "filled" : "light"}
-                          onClick={() => setBootstrapLimit(preset)}
-                        >
-                          {preset}
-                        </Button>
-                      ))}
-                    </Group>
-                    <Checkbox
-                      label="Require conflict-free drafts"
-                      checked={bootstrapRequireConflictFree}
-                      onChange={(event) => setBootstrapRequireConflictFree(event.currentTarget.checked)}
-                    />
-                    <Group gap="xs" wrap="wrap">
-                      <Button
-                        size="xs"
-                        variant="light"
-                        color="indigo"
-                        loading={bootstrapLoading}
-                        onClick={() => void runBootstrapApprove(true)}
-                      >
-                        Preview Candidates
-                      </Button>
-                      <Button
-                        size="xs"
-                        color="teal"
-                        disabled={!bootstrapCanApply && !bootstrapLoading}
-                        loading={bootstrapLoading}
-                        onClick={() => void runBootstrapApprove(false)}
-                      >
-                        Approve Trusted Batch
-                      </Button>
-                    </Group>
-                    {!bootstrapCanApply && (
-                      <Text size="xs" c="dimmed">
-                        Preview with current settings first. Apply is capped to 200 drafts/run and requires trusted sources.
-                      </Text>
-                    )}
-                  </>
-                )}
-                {bootstrapResult && (
-                  <Paper withBorder p="xs" radius="md">
-                    <Stack gap={6}>
-                      <Group gap={6} wrap="wrap">
-                        <Badge size="xs" variant="light" color={bootstrapResult.dry_run ? "indigo" : "teal"}>
-                          {bootstrapResult.dry_run ? "dry-run" : "applied"}
-                        </Badge>
-                        <Badge size="xs" variant="light" color="blue">
-                          candidates {bootstrapResult.summary.candidates}
-                        </Badge>
-                        {typeof bootstrapResult.summary.approved === "number" && (
-                          <Badge size="xs" variant="light" color="teal">
-                            approved {bootstrapResult.summary.approved}
-                          </Badge>
-                        )}
-                        {typeof bootstrapResult.summary.failed === "number" && (
-                          <Badge size="xs" variant="light" color={bootstrapResult.summary.failed > 0 ? "orange" : "gray"}>
-                            failed {bootstrapResult.summary.failed}
-                          </Badge>
-                        )}
-                      </Group>
-                      {bootstrapResult.dry_run && (bootstrapResult.sample ?? []).length > 0 && (
-                        <Stack gap={4}>
-                          {(bootstrapResult.sample ?? []).slice(0, 5).map((item) => (
-                            <Text key={`bootstrap-sample-${item.draft_id}`} size="xs" c="dimmed">
-                              {item.draft_id.slice(0, 8)} • {item.decision} • conf {Number(item.confidence).toFixed(2)}
-                            </Text>
-                          ))}
-                        </Stack>
-                      )}
-                    </Stack>
-                  </Paper>
-                )}
-              </Stack>
-            </Paper>
-            )}
-            <Paper withBorder p="xs" radius="md" mb="sm" className="queue-presets-card">
-              <Stack gap={8}>
-                <Group justify="space-between" align="center" wrap="wrap">
-                  <Text size="sm" fw={700}>
-                    {showExpertModerationControls ? "Review Queue Presets" : "Core Review Queue"}
-                  </Text>
-                  {showExpertModerationControls ? (
-                    <Group gap="xs" wrap="wrap">
-                      <Select
-                        label="Queue preset"
-                        value={reviewQueuePreset}
-                        onChange={(value) => setReviewQueuePreset((value as ReviewQueuePresetKey | null) ?? "open_queue")}
-                        data={REVIEW_QUEUE_PRESETS.map((item) => ({ value: item.key, label: item.label }))}
-                        allowDeselect={false}
-                        w={190}
-                      />
-                      <Select
-                        label="SLA threshold (hours)"
-                        value={String(reviewSlaHours)}
-                        onChange={(value) => {
-                          if (!value) return;
-                          const parsed = Number(value);
-                          if (!Number.isFinite(parsed)) return;
-                          setReviewSlaHours(Math.max(1, Math.min(168, Math.round(parsed))));
-                        }}
-                        data={[
-                          { value: "6", label: "6h" },
-                          { value: "12", label: "12h" },
-                          { value: "24", label: "24h" },
-                          { value: "48", label: "48h" },
-                          { value: "72", label: "72h" },
-                          { value: "168", label: "168h" },
-                        ]}
-                        allowDeselect={false}
-                        w={170}
-                      />
-                    </Group>
-                  ) : (
-                    <Badge variant="light" color="teal">
-                      open queue only
-                    </Badge>
-                  )}
-                </Group>
-                {showExpertModerationControls && (
-                  <Group gap={6} wrap="wrap">
-                    {REVIEW_QUEUE_PRESETS.map((preset) => (
-                      <Button
-                        key={preset.key}
-                        size="compact-xs"
-                        variant={reviewQueuePreset === preset.key ? "filled" : "light"}
-                        color={reviewQueuePreset === preset.key ? "teal" : "gray"}
-                        onClick={() => setReviewQueuePreset(preset.key)}
-                      >
-                        {preset.label}
-                      </Button>
-                    ))}
-                  </Group>
-                )}
-                <Text size="xs" c="dimmed">
-                  {showExpertModerationControls
-                    ? selectedQueuePreset.description
-                    : "Core queue prioritizes pending and blocked drafts by oldest first. Enable expert controls for custom presets."}
-                </Text>
-                <Paper withBorder p="xs" radius="md" className="queue-sla-card">
-                  <Text size="xs" fw={700} mb={6}>
-                    {showExpertModerationControls ? "Queue health metrics" : "Core queue snapshot"}
-                  </Text>
-                  <SimpleGrid cols={{ base: 2, md: showExpertModerationControls ? 3 : 2 }} spacing="xs">
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        Open
-                      </Text>
-                      <Text fw={700}>{queueMetrics.openCount}</Text>
-                    </Paper>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        SLA breaches
-                      </Text>
-                      <Text fw={700}>{queueMetrics.breachCount}</Text>
-                    </Paper>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        Conflicts
-                      </Text>
-                      <Text fw={700}>{queueMetrics.conflictCount}</Text>
-                    </Paper>
-                    <Paper withBorder p="xs" radius="md">
-                      <Text size="xs" c="dimmed">
-                        Oldest wait
-                      </Text>
-                      <Text fw={700}>{formatHours(queueMetrics.oldestAge)}</Text>
-                    </Paper>
-                    {showExpertModerationControls && (
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          High confidence
-                        </Text>
-                        <Text fw={700}>{queueMetrics.highConfidenceCount}</Text>
-                      </Paper>
-                    )}
-                    {showExpertModerationControls && (
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Median wait
-                        </Text>
-                        <Text fw={700}>{formatHours(queueMetrics.medianAge)}</Text>
-                      </Paper>
-                    )}
-                  </SimpleGrid>
-                </Paper>
-                {showExpertModerationControls && (
-                  <Paper withBorder p="xs" radius="md" className="moderation-throughput-card">
-                  <Group justify="space-between" align="center" mb={6}>
-                    <Text size="xs" fw={700}>
-                      Moderation throughput (24h)
-                    </Text>
-                    <Badge
-                      size="xs"
-                      variant="light"
-                      color={moderationHealthColor(moderationThroughput?.health)}
-                    >
-                      {moderationThroughput?.health || "n/a"}
-                    </Badge>
-                  </Group>
-                  {loadingModerationThroughput ? (
-                    <Group gap={6}>
-                      <Loader size="xs" />
-                      <Text size="xs" c="dimmed">
-                        refreshing throughput
-                      </Text>
-                    </Group>
-                  ) : moderationThroughput ? (
-                    <Stack gap={6}>
-                      <SimpleGrid cols={{ base: 2, md: 3 }} spacing="xs">
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            Actions
-                          </Text>
-                          <Text fw={700}>{moderationThroughput.metrics.actions_total}</Text>
-                        </Paper>
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            Approve rate
-                          </Text>
-                          <Text fw={700}>{formatPercent(moderationThroughput.metrics.approval_rate)}</Text>
-                        </Paper>
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            p50 decision
-                          </Text>
-                          <Text fw={700}>{formatMinutes(moderationThroughput.metrics.latency_minutes.p50)}</Text>
-                        </Paper>
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            Active reviewers
-                          </Text>
-                          <Text fw={700}>{moderationThroughput.metrics.reviewers_active}</Text>
-                        </Paper>
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            Backlog delta
-                          </Text>
-                          <Text fw={700}>{moderationThroughput.metrics.net_backlog_delta}</Text>
-                        </Paper>
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            Conflict unblocks
-                          </Text>
-                          <Text fw={700}>{moderationThroughput.metrics.conflict_unblocks}</Text>
-                        </Paper>
-                      </SimpleGrid>
-                      {moderationThroughput.alerts.length > 0 && (
-                        <Stack gap={2}>
-                          {moderationThroughput.alerts.slice(0, 2).map((item, index) => (
-                            <Text key={`throughput-alert-${index}`} size="xs" c="dimmed">
-                              - {item}
-                            </Text>
-                          ))}
-                        </Stack>
-                      )}
-                      {moderationThroughput.top_reviewers.length > 0 && (
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" fw={700} mb={4}>
-                            Top reviewers
-                          </Text>
-                          <Stack gap={3}>
-                            {moderationThroughput.top_reviewers.map((item) => (
-                              <Group key={`reviewer-${item.reviewed_by}`} justify="space-between" align="center">
-                                <Text size="xs">{item.reviewed_by}</Text>
-                                <Badge size="xs" variant="light" color="indigo">
-                                  {item.actions_total}
-                                </Badge>
-                              </Group>
-                            ))}
-                          </Stack>
-                        </Paper>
-                      )}
-                    </Stack>
-                  ) : (
-                    <Text size="xs" c="dimmed">
-                      Throughput metrics appear after refresh with a valid project id.
-                    </Text>
-                  )}
-                  </Paper>
-                )}
-                {showExpertModerationControls && (
-                  <Paper withBorder p="xs" radius="md" className="triage-lane-card">
-                  <Group justify="space-between" align="center" mb={6}>
-                    <Text size="xs" fw={700}>
-                      Triage lane
-                    </Text>
-                    <Badge variant="light" color="grape">
-                      top {triageLaneEntries.length}
-                    </Badge>
-                  </Group>
-                  {triageLaneEntries.length === 0 ? (
-                    <Text size="xs" c="dimmed">
-                      No open drafts in current scope.
-                    </Text>
-                  ) : (
-                    <Stack gap={6}>
-                      {triageLaneEntries.map((entry) => {
-                        const draft = entry.draft;
-                        const ageHours = draftAgeHours(draft, Date.now());
-                        const reasonLimit = showExpertModerationControls ? 4 : 2;
-                        return (
-                          <Paper key={`triage-${draft.id}`} withBorder radius="md" p="xs">
-                            <Group justify="space-between" align="center" wrap="nowrap">
-                              <Stack gap={2}>
-                                <Button
-                                  variant="subtle"
-                                  size="compact-sm"
-                                  onClick={() => openDraftFromTriage(draft)}
-                                  styles={{ root: { paddingInline: 0, height: "auto" } }}
-                                  aria-label={`Open draft ${draft.id} from triage`}
-                                >
-                                  {draft.page.title || draft.page.slug || draft.section_key || "Untitled page"}
-                                </Button>
-                                <Group gap={6}>
-                                  <Badge size="xs" color={statusColor(draft.status)} variant="light">
-                                    {draft.status}
-                                  </Badge>
-                                  <Badge size="xs" color={ageBadgeColor(ageHours, reviewSlaHours)} variant="light">
-                                    {formatHours(ageHours)}
-                                  </Badge>
-                                  <Badge size="xs" variant="light" color={Number(draft.confidence) >= 0.85 ? "teal" : "gray"}>
-                                    conf {draft.confidence.toFixed(2)}
-                                  </Badge>
-                                </Group>
-                                <Group gap={4} wrap="wrap">
-                                  {entry.reasons.slice(0, reasonLimit).map((reason) => (
-                                    <Badge
-                                      key={`triage-reason-${draft.id}-${reason.key}`}
-                                      size="xs"
-                                      variant="outline"
-                                      color={reason.color}
-                                    >
-                                      {reason.label}
-                                    </Badge>
-                                  ))}
-                                  <Badge size="xs" variant="light" color="indigo">
-                                    score {entry.score.toFixed(0)}
-                                  </Badge>
-                                </Group>
-                              </Stack>
-                              <Group gap={6}>
-                                <Tooltip label="Quick approve">
-                                  <ActionIcon
-                                    size="sm"
-                                    variant="light"
-                                    color="teal"
-                                    disabled={!canQuickModerateFromInbox}
-                                    loading={runningAction}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void quickModerateDraft(draft, "approve", "triage_lane");
-                                    }}
-                                    aria-label="Quick approve draft"
-                                  >
-                                    <IconCheck size={14} />
-                                  </ActionIcon>
-                                </Tooltip>
-                                <Tooltip label="Quick reject">
-                                  <ActionIcon
-                                    size="sm"
-                                    variant="light"
-                                    color="red"
-                                    disabled={!canQuickModerateFromInbox}
-                                    loading={runningAction}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void quickModerateDraft(draft, "reject", "triage_lane");
-                                    }}
-                                    aria-label="Quick reject draft"
-                                  >
-                                    <IconX size={14} />
-                                  </ActionIcon>
-                                </Tooltip>
-                              </Group>
-                            </Group>
-                          </Paper>
-                        );
-                      })}
-                      <Text size="xs" c="dimmed">
-                        Queue priority signals combine conflict state, SLA age, and confidence.
-                      </Text>
-                    </Stack>
-                  )}
-                </Paper>
-                )}
-                {showExpertModerationControls && (
-                  <Paper withBorder p="xs" radius="md" className="core-intent-signals-card">
-                  <Stack gap={6}>
-                    <Group justify="space-between" align="center" wrap="wrap">
-                      <Text size="xs" fw={700}>
-                        Intent Signals (Session)
-                      </Text>
-                      <Badge size="xs" variant="light" color="indigo">
-                        quick actions/hour {coreIntentSummary.quickActionsPerHour.toFixed(1)}
-                      </Badge>
-                    </Group>
-                    <SimpleGrid cols={{ base: 2, md: showExpertModerationControls ? 4 : 3 }} spacing="xs">
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Triage opens
-                        </Text>
-                        <Text fw={700}>{coreIntentSummary.triageOpenCount}</Text>
-                      </Paper>
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Unique triage drafts
-                        </Text>
-                        <Text fw={700}>{coreIntentSummary.triageUniqueDrafts}</Text>
-                      </Paper>
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Quick approve
-                        </Text>
-                        <Text fw={700}>{coreIntentSummary.quickApproveCount}</Text>
-                      </Paper>
-                      <Paper withBorder p="xs" radius="md">
-                        <Text size="xs" c="dimmed">
-                          Quick reject
-                        </Text>
-                        <Text fw={700}>{coreIntentSummary.quickRejectCount}</Text>
-                      </Paper>
-                    </SimpleGrid>
-                    <Group gap={6} wrap="wrap">
-                      <Badge size="xs" variant="light" color="grape">
-                        triage quick {coreIntentSummary.quickFromTriage}
-                      </Badge>
-                      <Badge size="xs" variant="light" color="blue">
-                        inbox quick {coreIntentSummary.quickFromInbox}
-                      </Badge>
-                      <Badge size="xs" variant="light" color="teal">
-                        detail quick {coreIntentSummary.quickFromDetail}
-                      </Badge>
-                    </Group>
-                    <Text size="xs" c="dimmed">
-                      {coreIntentSummary.lastAction
-                        ? `Last action: ${coreIntentSummary.lastAction.label} at ${new Date(coreIntentSummary.lastAction.timestampMs).toLocaleTimeString()}.`
-                        : "No triage or quick moderation actions recorded in this session yet."}
-                    </Text>
-                  </Stack>
-                </Paper>
-                )}
-              </Stack>
-            </Paper>
-              </>
-            )}
-            {showExpertModerationControls && (
-              <Paper withBorder p="xs" radius="md" mb="sm" className="bulk-actions-card">
-                <Stack gap={6}>
-                  <Group justify="space-between" align="center" wrap="wrap">
-                    <Checkbox
-                      label={`Select all visible (${visibleDrafts.length})`}
-                      checked={allVisibleSelected}
-                      indeterminate={bulkSelectedVisibleCount > 0 && !allVisibleSelected}
-                      onChange={(event) => selectAllVisibleDrafts(event.currentTarget.checked)}
-                    />
-                    <Badge variant="light" color={bulkSelectedVisibleCount > 0 ? "teal" : "gray"}>
-                      selected {bulkSelectedVisibleCount}
-                    </Badge>
-                  </Group>
-                  <TextInput
-                    label="Bulk approve note (optional)"
-                    value={bulkApproveNote}
-                    onChange={(event) => setBulkApproveNote(event.currentTarget.value)}
-                    placeholder="Approved after cross-check."
-                  />
-                  <TextInput
-                    label="Bulk reject reason (optional)"
-                    value={bulkRejectReason}
-                    onChange={(event) => setBulkRejectReason(event.currentTarget.value)}
-                    placeholder="Conflicting with current policy."
-                  />
-                  <Group justify="space-between" align="center" wrap="wrap">
-                    <Checkbox
-                      label="Force approve conflicts in bulk"
-                      checked={bulkForceApprove}
-                      onChange={(event) => setBulkForceApprove(event.currentTarget.checked)}
-                    />
-                    <Group gap="xs">
-                    <Button
-                      size="xs"
-                      variant="light"
-                      color="teal"
-                      disabled={bulkSelectedVisibleCount === 0 || runningAction}
-                      loading={runningAction}
-                      onClick={() => void runBulkModeration("approve")}
-                    >
-                      {bulkApproveArmed ? "Confirm Approve Selected" : "Approve Selected"}
-                    </Button>
-                    <Button
-                      size="xs"
-                      variant="light"
-                      color="red"
-                      disabled={bulkSelectedVisibleCount === 0 || runningAction}
-                      loading={runningAction}
-                      onClick={() => void runBulkModeration("reject")}
-                    >
-                      {bulkRejectArmed ? "Confirm Reject Selected" : "Reject Selected"}
-                    </Button>
-                      <Button
-                        size="xs"
-                        variant="subtle"
-                        disabled={bulkSelectedVisibleCount === 0}
-                        onClick={() =>
-                          setBulkSelectedDraftIds((prev) =>
-                            prev.filter((id) => !visibleDrafts.some((item) => item.id === id)),
-                          )
-                        }
-                      >
-                        Clear
-                      </Button>
-                    </Group>
-                  </Group>
-                </Stack>
-              </Paper>
-            )}
-            {selectedPageSlug && (
-              <Paper withBorder p="xs" radius="md" mb="sm">
-                <Text size="xs" c="dimmed">
-                  Filtered by page: <Code>{selectedPageTitle}</Code>
-                </Text>
-              </Paper>
-            )}
-            <ScrollArea h={680} type="auto">
-              <Stack gap="sm">
-                {visibleDrafts.length === 0 && (
-                  <Paper withBorder p="md" radius="lg">
-                    <Text c="dimmed">No drafts found for current page scope.</Text>
-                  </Paper>
-                )}
-                {visibleDrafts.map((draft) => {
-                  const ageHours = draftAgeHours(draft, Date.now());
-                  return (
-                    <Card
-                      key={draft.id}
-                      radius="lg"
-                      withBorder
-                      className={`${draft.id === selectedDraftId ? "draft-card active" : "draft-card"} draft-card-status-${draft.status}`}
-                      onClick={() => setSelectedDraftId(draft.id)}
-                    >
-                      <Group justify="space-between" align="center">
-                        <Group gap="xs" align="flex-start" wrap="nowrap">
-                          {showExpertModerationControls && (
-                            <Checkbox
-                              checked={bulkSelectedDraftIds.includes(draft.id)}
-                              onClick={(event) => event.stopPropagation()}
-                              onChange={() => toggleBulkDraftSelection(draft.id)}
-                              aria-label={`Select draft ${draft.id}`}
-                            />
-                          )}
-                          <Stack gap={2}>
-                            <Text fw={700}>{draft.page.title || draft.page.slug || draft.section_key || "Untitled page"}</Text>
-                            <Group gap={6}>
-                              <Badge size="xs" variant="light" color="gray">
-                                {draft.decision}
-                              </Badge>
-                              <Badge size="xs" variant="light" color={Number(draft.confidence) >= 0.85 ? "teal" : "gray"}>
-                                conf {draft.confidence.toFixed(2)}
-                              </Badge>
-                              <Badge size="xs" variant="light" color={ageBadgeColor(ageHours, reviewSlaHours)}>
-                                wait {formatHours(ageHours)}
-                              </Badge>
-                            </Group>
-                          </Stack>
-                        </Group>
-                        <Stack gap={4} align="flex-end">
-                          <Badge color={statusColor(draft.status)} variant="light">
-                            {draft.status}
-                          </Badge>
-                          {isOpenReviewDraft(draft) && (
-                            <Group gap={6}>
-                              <Tooltip label="Quick approve">
-                                <ActionIcon
-                                  size="sm"
-                                  variant="light"
-                                  color="teal"
-                                  disabled={!canQuickModerateFromInbox}
-                                  loading={runningAction}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void quickModerateDraft(draft, "approve", "inbox_card");
-                                  }}
-                                  aria-label="Quick approve draft"
-                                >
-                                  <IconCheck size={14} />
-                                </ActionIcon>
-                              </Tooltip>
-                              <Tooltip label="Quick reject">
-                                <ActionIcon
-                                  size="sm"
-                                  variant="light"
-                                  color="red"
-                                  disabled={!canQuickModerateFromInbox}
-                                  loading={runningAction}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    void quickModerateDraft(draft, "reject", "inbox_card");
-                                  }}
-                                  aria-label="Quick reject draft"
-                                >
-                                  <IconX size={14} />
-                                </ActionIcon>
-                              </Tooltip>
-                            </Group>
-                          )}
-                        </Stack>
-                      </Group>
-                      <Text size="xs" c="dimmed" mt={8}>
-                        {fmtDate(draft.created_at)}
-                      </Text>
-                    </Card>
-                  );
-                })}
-              </Stack>
-            </ScrollArea>
-          </Paper>
-          )}
-
-          {showCoreDraftPanels && (
-            <Paper radius="xl" p="lg" className="draft-detail-panel">
-            <Group justify="space-between" mb="sm">
-              <Group gap="xs">
-                <Title order={3}>Draft Detail</Title>
-                {selectedDraftId ? (
-                  <Badge color={statusColor(draftDetail?.draft.status ?? "pending_review")} variant="light">
-                    {draftDetail?.draft.status ?? "loading"}
-                  </Badge>
-                ) : (
-                  <Badge color="gray" variant="light">
-                    not selected
-                  </Badge>
-                )}
-              </Group>
-              {selectedDraftSummary && (
-                <Group gap="xs">
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="teal"
-                    disabled={!canQuickModerateFromInbox}
-                    loading={runningAction}
-                    onClick={() => void quickModerateDraft(selectedDraftSummary, "approve", "detail_header")}
-                  >
-                    Quick Approve
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="red"
-                    disabled={!canQuickModerateFromInbox}
-                    loading={runningAction}
-                    onClick={() => void quickModerateDraft(selectedDraftSummary, "reject", "detail_header")}
-                  >
-                    Quick Reject
-                  </Button>
-                </Group>
-              )}
-            </Group>
-            <Breadcrumbs mb="sm" separator="›">
-              <Text size="xs" c="dimmed">
-                Wiki
-              </Text>
-              <Text size="xs" c="dimmed">
-                {selectedSpaceTitle}
-              </Text>
-              <Text size="xs" c="dimmed">
-                {selectedPageTitle}
-              </Text>
-              <Text size="xs" c="dimmed">
-                {selectedDraftId ? `Draft ${selectedDraftId.slice(0, 8)}` : "No draft"}
-              </Text>
-            </Breadcrumbs>
-            {!selectedDraftId && (
-              <Paper withBorder p="xl" radius="lg">
-                <Group>
-                  <IconExclamationCircle size={20} />
-                  <Text c="dimmed">Select draft in inbox to inspect semantic diff and moderate it.</Text>
-                </Group>
-              </Paper>
-            )}
-            {selectedDraftId && loadingDetail && (
-              <Group justify="center" py="xl">
-                <Loader />
-              </Group>
-            )}
-            {selectedDraftId && draftDetail && !loadingDetail && (
-              <Stack gap="md">
-                <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                  <Paper withBorder p="sm" radius="md">
-                    <Text size="xs" c="dimmed">
-                      Draft ID
-                    </Text>
-                    <Code>{draftDetail.draft.id}</Code>
-                  </Paper>
-                  <Paper withBorder p="sm" radius="md">
-                    <Text size="xs" c="dimmed">
-                      Page
-                    </Text>
-                    <Code>{draftDetail.draft.page.slug || "—"}</Code>
-                  </Paper>
-                  <Paper withBorder p="sm" radius="md">
-                    <Text size="xs" c="dimmed">
-                      Decision
-                    </Text>
-                    <Code>{draftDetail.draft.decision}</Code>
-                  </Paper>
-                  <Paper withBorder p="sm" radius="md">
-                    <Text size="xs" c="dimmed">
-                      Confidence
-                    </Text>
-                    <Code>{draftDetail.draft.confidence.toFixed(3)}</Code>
-                  </Paper>
-                </SimpleGrid>
-
-                {showExpertModerationControls && pageTocSections.length > 0 && (
-                  <Paper withBorder p="sm" radius="md">
-                    <Group justify="space-between" align="center" mb={6}>
-                      <Text fw={700}>Section TOC</Text>
-                      <Text size="xs" c="dimmed">
-                        {pageTocSections.length} sections
-                      </Text>
-                    </Group>
-                    <Group gap={6} wrap="wrap">
-                      {pageTocSections.map((section) => (
-                        <Button
-                          key={`toc-${section.section_key}`}
-                          size="compact-xs"
-                          variant={selectedTocSectionKey === section.section_key ? "filled" : "light"}
-                          color={selectedTocSectionKey === section.section_key ? "teal" : "gray"}
-                          onClick={() => {
-                            setSelectedTocSectionKey(section.section_key);
-                            setDetailTab("page");
-                          }}
-                        >
-                          {section.heading} ({section.statement_count})
-                        </Button>
-                      ))}
-                    </Group>
-                    {selectedTocSection && (
-                      <Paper withBorder p="xs" radius="md" mt="sm" className="toc-preview-card">
-                        <Group justify="space-between" align="center" mb={4}>
-                          <Text size="xs" fw={700}>
-                            {selectedTocSection.heading}
-                          </Text>
-                          <Group gap={6}>
-                            <Button
-                              size="compact-xs"
-                              variant="light"
-                              onClick={() =>
-                                setApproveForm((prev) => ({
-                                  ...prev,
-                                  sectionKey: selectedTocSection.section_key,
-                                  sectionHeading: selectedTocSection.heading,
-                                }))
-                              }
-                            >
-                              Use section in form
-                            </Button>
-                            <Button size="compact-xs" variant="subtle" onClick={() => setDetailTab("page")}>
-                              Open page tab
-                            </Button>
-                          </Group>
-                        </Group>
-                        <Stack gap={4}>
-                          {selectedTocSection.statements.slice(0, 3).map((statement) => (
-                            <Text key={statement.id} size="xs" c="dimmed">
-                              • {statement.statement_text}
-                            </Text>
-                          ))}
-                          {selectedTocSection.statements.length === 0 && (
-                            <Text size="xs" c="dimmed">
-                              No active statements in this section yet.
-                            </Text>
-                          )}
-                        </Stack>
-                      </Paper>
-                    )}
-                  </Paper>
-                )}
-
-                <Tabs value={detailTab} onChange={(value) => setDetailTab((value as DetailTab | null) ?? "semantic")}>
-                  <Tabs.List>
-                    {showExpertModerationControls && <Tabs.Tab value="page">Wiki Page</Tabs.Tab>}
-                    {showExpertModerationControls && <Tabs.Tab value="history">Page History</Tabs.Tab>}
-                    <Tabs.Tab value="semantic">Semantic Diff</Tabs.Tab>
-                    <Tabs.Tab value="conflicts">Conflict Resolver</Tabs.Tab>
-                    {showExpertModerationControls && <Tabs.Tab value="patch">Markdown Patch</Tabs.Tab>}
-                    <Tabs.Tab value="evidence">Evidence</Tabs.Tab>
-                    {showExpertModerationControls && <Tabs.Tab value="timeline">Timeline</Tabs.Tab>}
-                  </Tabs.List>
-
-                  {showExpertModerationControls && (
-                    <Tabs.Panel value="page" pt="sm">
-                      <Suspense
-                      fallback={
-                        <Paper withBorder p="md" radius="md">
-                          <Group justify="center" py="sm">
-                            <Loader size="sm" />
-                            <Text size="sm" c="dimmed">
-                              Loading wiki editor…
-                            </Text>
-                          </Group>
-                        </Paper>
-                      }
-                    >
-                      <LazyWikiPageCanvas
-                        title={draftDetail.draft.page.title || draftDetail.draft.page.slug || "Untitled page"}
-                        slug={draftDetail.draft.page.slug}
-                        markdown={selectedPageDetail?.latest_version?.markdown || ""}
-                        apiBaseUrl={apiUrl}
-                        onApplyEditedStatement={(value) => {
-                          setApproveForm((prev) => ({ ...prev, editedStatement: value }));
-                          notifications.show({
-                            color: "teal",
-                            title: "Editor applied",
-                            message: "Copied page text into Approve form edited statement.",
-                          });
-                        }}
-                      />
-                      </Suspense>
-                    </Tabs.Panel>
-                  )}
-
-                  {showExpertModerationControls && (
-                    <Tabs.Panel value="history" pt="sm">
-                      <Paper withBorder p="sm" radius="md" className="page-history-card">
-                      <Group justify="space-between" align="center" mb="sm">
-                        <Group gap={6}>
-                          <ThemeIcon variant="light" color="indigo">
-                            <IconHistory size={14} />
-                          </ThemeIcon>
-                          <Text fw={700}>Version history</Text>
-                        </Group>
-                        <Badge variant="light" color="indigo">
-                          {(pageHistory?.versions ?? []).length} versions
-                        </Badge>
-                      </Group>
-                      {loadingPageHistory && (
-                        <Group py="sm">
-                          <Loader size="sm" />
-                          <Text size="sm" c="dimmed">
-                            loading history…
-                          </Text>
-                        </Group>
-                      )}
-                      {!loadingPageHistory && (!pageHistory || (pageHistory.versions ?? []).length === 0) && (
-                        <Text size="sm" c="dimmed">
-                          Page history is not available for this page yet.
-                        </Text>
-                      )}
-                      {!loadingPageHistory && pageHistory && pageHistory.versions.length > 0 && (
-                        <Stack gap="sm">
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                            <Select
-                              label="Base version"
-                              value={historyBaseVersion}
-                              onChange={setHistoryBaseVersion}
-                              data={pageHistoryOptions}
-                            />
-                            <Select
-                              label="Target version"
-                              value={historyTargetVersion}
-                              onChange={setHistoryTargetVersion}
-                              data={pageHistoryOptions}
-                            />
-                          </SimpleGrid>
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                            <Paper withBorder p="xs" radius="md">
-                              <Text size="xs" c="dimmed">
-                                Base metadata
-                              </Text>
-                              <Text size="sm">
-                                v{selectedHistoryBase?.version ?? "—"} • {fmtDate(selectedHistoryBase?.created_at)}
-                              </Text>
-                              <Text size="xs" c="dimmed">
-                                {selectedHistoryBase?.change_summary || "No summary"}
-                              </Text>
-                            </Paper>
-                            <Paper withBorder p="xs" radius="md">
-                              <Text size="xs" c="dimmed">
-                                Target metadata
-                              </Text>
-                              <Text size="sm">
-                                v{selectedHistoryTarget?.version ?? "—"} • {fmtDate(selectedHistoryTarget?.created_at)}
-                              </Text>
-                              <Text size="xs" c="dimmed">
-                                {selectedHistoryTarget?.change_summary || "No summary"}
-                              </Text>
-                            </Paper>
-                          </SimpleGrid>
-                          <Divider />
-                          <Text fw={600} size="sm">
-                            Markdown compare
-                          </Text>
-                          <Box className="diff-block">
-                            <DiffLine label={`v${selectedHistoryBase?.version ?? "?"}`} tokens={pageHistoryDiff.before} />
-                            <Divider my="sm" />
-                            <DiffLine label={`v${selectedHistoryTarget?.version ?? "?"}`} tokens={pageHistoryDiff.after} />
-                          </Box>
-                          <Group justify="flex-end">
-                            <Button
-                              size="xs"
-                              variant="light"
-                              color="orange"
-                              loading={
-                                rollingBackVersion != null &&
-                                Number(rollingBackVersion) === Number(selectedHistoryTarget?.version ?? -1)
-                              }
-                              onClick={() => {
-                                const targetVersion = Number(selectedHistoryTarget?.version || 0);
-                                if (!targetVersion) return;
-                                void rollbackWikiPageToVersion(targetVersion);
-                              }}
-                            >
-                              Rollback to target version
-                            </Button>
-                            <Button
-                              size="xs"
-                              variant="light"
-                              onClick={() => {
-                                const targetMarkdown = String(selectedHistoryTarget?.markdown || "").trim();
-                                if (!targetMarkdown) return;
-                                setApproveForm((prev) => ({ ...prev, editedStatement: targetMarkdown }));
-                                notifications.show({
-                                  color: "teal",
-                                  title: "History snapshot applied",
-                                  message: `Copied v${selectedHistoryTarget?.version ?? "?"} markdown into Approve form.`,
-                                });
-                              }}
-                            >
-                              Use target markdown in Approve form
-                            </Button>
-                          </Group>
-                        </Stack>
-                      )}
-                      </Paper>
-                    </Tabs.Panel>
-                  )}
-
-                  <Tabs.Panel value="semantic" pt="sm">
-                    <Paper withBorder p="sm" radius="md">
-                      <Text fw={600} mb={6}>
-                        Summary
-                      </Text>
-                      <Text size="sm" mb="sm">
-                        {String((semanticDiff as Record<string, unknown>).summary ?? "No semantic summary")}
-                      </Text>
-                      <Divider mb="sm" />
-                      <Text fw={600} mb={6}>
-                        Statement-level Diff
-                      </Text>
-                      <Box className="diff-block">
-                        <DiffLine label="Before" tokens={statementDiff.before} />
-                        <Divider my="sm" />
-                        <DiffLine label="After" tokens={statementDiff.after} />
-                      </Box>
-                      <Divider my="sm" />
-                      <Text fw={600} mb={6}>
-                        Raw semantic payload
-                      </Text>
-                      <Code block>{safeJson(draftDetail.draft.semantic_diff)}</Code>
-                    </Paper>
-                  </Tabs.Panel>
-
-                  <Tabs.Panel value="conflicts" pt="sm">
-                    <Stack>
-                      {loadingConflictExplain && (
-                        <Group justify="center" py="sm">
-                          <Loader size="sm" />
-                        </Group>
-                      )}
-                      {enrichedConflicts.length > 0 && (
-                        <Paper withBorder p="xs" radius="md" className="hotkey-panel">
-                          <Text size="xs" c="dimmed">
-                            Enriched by {conflictExplain?.source} for entity{" "}
-                            <Code>{conflictExplain?.scope.entity_key || "unknown"}</Code>
-                          </Text>
-                        </Paper>
-                      )}
-                      {enrichedConflicts.map((conflict) => (
-                        <Paper key={`explain-${conflict.conflict_id}`} withBorder p="sm" radius="md" className="conflict-explain-card">
-                          <Group justify="space-between" align="flex-start">
-                            <Stack gap={3}>
-                              <Group gap={6}>
-                                <ThemeIcon color={conflict.resolution_status === "open" ? "orange" : "gray"} variant="light">
-                                  <IconSwords size={14} />
-                                </ThemeIcon>
-                                <Text fw={700}>{conflict.conflict_type}</Text>
-                                <Badge color={statusColor(conflict.resolution_status)} variant="light">
-                                  {conflict.resolution_status}
-                                </Badge>
-                              </Group>
-                              <Text size="xs" c="dimmed">
-                                created: {fmtDate(conflict.created_at)} | page: {conflict.page.slug || "n/a"}
-                              </Text>
-                            </Stack>
-                            {conflict.resolution_status === "open" && (
-                              <Group>
-                                <Button
-                                  size="xs"
-                                  variant="light"
-                                  color="teal"
-                                  leftSection={<IconCheck size={14} />}
-                                  disabled={!canModerate}
-                                  loading={runningAction}
-                                  onClick={() => void approveDraft("quick_force")}
-                                >
-                                  {quickForceArmed ? "Confirm Force Approve" : "Force Approve"}
-                                </Button>
-                                <Button
-                                  size="xs"
-                                  variant="light"
-                                  color="red"
-                                  leftSection={<IconX size={14} />}
-                                  disabled={!canModerate}
-                                  loading={runningAction}
-                                  onClick={() => void rejectDraft("quick_dismiss")}
-                                >
-                                  {quickDismissArmed ? "Confirm Reject + Dismiss" : "Reject + Dismiss"}
-                                </Button>
-                              </Group>
-                            )}
-                          </Group>
-                          <Divider my="sm" />
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                            <Paper withBorder p="xs" radius="md">
-                              <Text size="xs" c="dimmed" fw={700}>
-                                Root Cause
-                              </Text>
-                              <Text size="sm">{conflict.root_cause}</Text>
-                            </Paper>
-                            <Paper withBorder p="xs" radius="md">
-                              <Text size="xs" c="dimmed" fw={700}>
-                                Recommendation
-                              </Text>
-                              <Text size="sm">{conflict.recommendation}</Text>
-                            </Paper>
-                          </SimpleGrid>
-                          <Divider my="sm" />
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="sm">
-                            <Paper withBorder p="xs" radius="md">
-                              <Text size="xs" c="dimmed" fw={700}>
-                                Incoming Claim
-                              </Text>
-                              <Text size="sm">{conflict.incoming_claim.claim_text || "—"}</Text>
-                            </Paper>
-                            <Paper withBorder p="xs" radius="md">
-                              <Text size="xs" c="dimmed" fw={700}>
-                                Conflicting Statement
-                              </Text>
-                              <Text size="sm">{conflict.conflicting_statement.statement_text || "—"}</Text>
-                            </Paper>
-                          </SimpleGrid>
-                        </Paper>
-                      ))}
-                      {enrichedConflicts.length === 0 &&
-                        (draftDetail.conflicts ?? []).map((conflict) => (
-                          <Paper key={conflict.id} withBorder p="sm" radius="md">
-                            <Group justify="space-between" align="flex-start">
-                              <Stack gap={3}>
-                                <Group gap={6}>
-                                  <ThemeIcon color={conflict.resolution_status === "open" ? "orange" : "gray"} variant="light">
-                                    <IconSwords size={14} />
-                                  </ThemeIcon>
-                                  <Text fw={700}>{conflict.conflict_type}</Text>
-                                  <Badge color={statusColor(conflict.resolution_status)} variant="light">
-                                    {conflict.resolution_status}
-                                  </Badge>
-                                </Group>
-                                <Text size="xs" c="dimmed">
-                                  created: {fmtDate(conflict.created_at)}
-                                </Text>
-                              </Stack>
-                              {conflict.resolution_status === "open" && (
-                                <Group>
-                                  <Button
-                                    size="xs"
-                                    variant="light"
-                                    color="teal"
-                                    leftSection={<IconCheck size={14} />}
-                                    disabled={!canModerate}
-                                    loading={runningAction}
-                                    onClick={() => void approveDraft("quick_force")}
-                                  >
-                                    {quickForceArmed ? "Confirm Force Approve" : "Force Approve"}
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    variant="light"
-                                    color="red"
-                                    leftSection={<IconX size={14} />}
-                                    disabled={!canModerate}
-                                    loading={runningAction}
-                                    onClick={() => void rejectDraft("quick_dismiss")}
-                                  >
-                                    {quickDismissArmed ? "Confirm Reject + Dismiss" : "Reject + Dismiss"}
-                                  </Button>
-                                </Group>
-                              )}
-                            </Group>
-                            <Divider my="sm" />
-                            <Code block>{safeJson(conflict.details)}</Code>
-                          </Paper>
-                        ))}
-                      {!hasOpenConflicts && (
-                        <Paper withBorder p="md" radius="md">
-                          <Group>
-                            <ThemeIcon color="green" variant="light">
-                              <IconCheck size={16} />
-                            </ThemeIcon>
-                            <Text>No open conflicts for this draft.</Text>
-                          </Group>
-                        </Paper>
-                      )}
-                    </Stack>
-                  </Tabs.Panel>
-
-                  {showExpertModerationControls && (
-                    <Tabs.Panel value="patch" pt="sm">
-                      <Paper withBorder p="sm" radius="md">
-                        <Code block>{draftDetail.draft.markdown_patch || "—"}</Code>
-                      </Paper>
-                    </Tabs.Panel>
-                  )}
-
-                  <Tabs.Panel value="evidence" pt="sm">
-                    <Paper withBorder p="sm" radius="md">
-                      <Text fw={600} mb={6}>
-                        Evidence
-                      </Text>
-                      <Code block>{safeJson(draftDetail.draft.evidence)}</Code>
-                    </Paper>
-                  </Tabs.Panel>
-
-                  {showExpertModerationControls && (
-                    <Tabs.Panel value="timeline" pt="sm">
-                      <Paper withBorder p="sm" radius="md">
-                        <Code block>{safeJson(draftDetail.moderation_actions)}</Code>
-                      </Paper>
-                    </Tabs.Panel>
-                  )}
-                </Tabs>
-
-                <Divider />
-
-                <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
-                  <Paper withBorder p="md" radius="lg">
-                    <Group justify="space-between" mb="sm">
-                      <Title order={4}>Approve / Edit</Title>
-                      <IconCheck size={18} />
-                    </Group>
-                    <Stack>
-                      {isCoreSimplified && (
-                        <Paper withBorder p="xs" radius="md">
-                          <Text size="xs" c="dimmed">
-                            Simplified moderation mode: only essential fields are shown. Enable expert controls to edit sections/templates.
-                          </Text>
-                        </Paper>
-                      )}
-                      {showExpertModerationControls && (
-                        <Paper withBorder p="xs" radius="md" className="template-card">
-                          <Stack gap={6}>
-                            <Group justify="space-between" align="center">
-                              <Text size="xs" fw={700}>
-                                Page Template
-                              </Text>
-                              {selectedTemplate && (
-                                <Badge size="xs" variant="light" color="teal">
-                                  {selectedTemplate.title}
-                                </Badge>
-                              )}
-                            </Group>
-                            <Select
-                              label="Template"
-                              placeholder="Choose template"
-                              value={selectedTemplateKey}
-                              onChange={setSelectedTemplateKey}
-                              data={PAGE_TEMPLATES.map((template) => ({
-                                label: template.title,
-                                value: template.key,
-                              }))}
-                              clearable
-                            />
-                            {selectedTemplate && (
-                              <Text size="xs" c="dimmed">
-                                {selectedTemplate.description}
-                              </Text>
-                            )}
-                            <Group gap="xs" justify="space-between" align="center">
-                              <Button
-                                size="xs"
-                                variant="light"
-                                disabled={!selectedTemplateKey}
-                                onClick={() => {
-                                  if (!selectedTemplateKey) return;
-                                  applyPageTemplate(selectedTemplateKey);
-                                }}
-                              >
-                                Apply Template
-                              </Button>
-                              <Button
-                                size="xs"
-                                variant="subtle"
-                                disabled={!selectedTemplate}
-                                onClick={() => {
-                                  if (!selectedTemplate) return;
-                                  setDetailTab("page");
-                                  setSelectedTocSectionKey(selectedTemplate.sectionKey);
-                                }}
-                              >
-                                Open Related Section
-                              </Button>
-                            </Group>
-                          </Stack>
-                        </Paper>
-                      )}
-
-                      <Textarea
-                        label="Note"
-                        value={approveForm.note}
-                        onChange={(event) =>
-                          setApproveForm((prev) => ({ ...prev, note: event.currentTarget.value }))
-                        }
-                        minRows={2}
-                      />
-                      {showExpertModerationControls && (
-                        <Textarea
-                          label="Edited statement (optional)"
-                          value={approveForm.editedStatement}
-                          onChange={(event) =>
-                            setApproveForm((prev) => ({ ...prev, editedStatement: event.currentTarget.value }))
-                          }
-                          minRows={3}
-                        />
-                      )}
-                      {showExpertModerationControls && (
-                        <TextInput
-                          label="Section key"
-                          value={approveForm.sectionKey}
-                          onChange={(event) =>
-                            setApproveForm((prev) => ({ ...prev, sectionKey: event.currentTarget.value }))
-                          }
-                          placeholder="ops_notes"
-                        />
-                      )}
-                      {showExpertModerationControls && (
-                        <TextInput
-                          label="Section heading"
-                          value={approveForm.sectionHeading}
-                          onChange={(event) =>
-                            setApproveForm((prev) => ({ ...prev, sectionHeading: event.currentTarget.value }))
-                          }
-                          placeholder="Ops Notes"
-                        />
-                      )}
-                      {showExpertModerationControls && (
-                        <Select
-                          label="Section mode"
-                          data={[
-                            { label: "append", value: "append" },
-                            { label: "replace", value: "replace" },
-                          ]}
-                          value={approveForm.sectionMode}
-                          onChange={(value) =>
-                            setApproveForm((prev) => ({
-                              ...prev,
-                              sectionMode: (value as "append" | "replace" | null) ?? "append",
-                            }))
-                          }
-                        />
-                      )}
-                      {showExpertModerationControls && (
-                        <Textarea
-                          label="Section statements (new line = new statement)"
-                          value={approveForm.sectionStatements}
-                          onChange={(event) =>
-                            setApproveForm((prev) => ({ ...prev, sectionStatements: event.currentTarget.value }))
-                          }
-                          minRows={4}
-                        />
-                      )}
-                      <Checkbox
-                        checked={approveForm.force}
-                        onChange={(event) => setApproveForm((prev) => ({ ...prev, force: event.currentTarget.checked }))}
-                        label="Force approval when draft decision is conflict"
-                      />
-                      <Button
-                        leftSection={<IconCheck size={16} />}
-                        disabled={!canModerate}
-                        loading={runningAction}
-                        onClick={() => void approveDraft("form")}
-                        variant="gradient"
-                        gradient={{ from: "teal.7", to: "cyan.6", deg: 140 }}
-                      >
-                        {approveForm.force && formForceArmed ? "Confirm Approve Draft" : "Approve Draft"}
-                      </Button>
-                    </Stack>
-                  </Paper>
-
-                  <Paper withBorder p="md" radius="lg">
-                    <Group justify="space-between" mb="sm">
-                      <Title order={4}>Reject</Title>
-                      <IconX size={18} />
-                    </Group>
-                    <Stack>
-                      <Textarea
-                        label="Reason"
-                        value={rejectForm.reason}
-                        onChange={(event) => setRejectForm((prev) => ({ ...prev, reason: event.currentTarget.value }))}
-                        minRows={isCoreSimplified ? 4 : 8}
-                      />
-                      <Checkbox
-                        checked={rejectForm.dismissConflicts}
-                        onChange={(event) =>
-                          setRejectForm((prev) => ({ ...prev, dismissConflicts: event.currentTarget.checked }))
-                        }
-                        label="Dismiss linked conflicts"
-                      />
-                      <Button
-                        color="red"
-                        leftSection={<IconX size={16} />}
-                        disabled={!canModerate}
-                        loading={runningAction}
-                        onClick={() => void rejectDraft("form")}
-                      >
-                        {rejectForm.dismissConflicts && formDismissArmed ? "Confirm Reject Draft" : "Reject Draft"}
-                      </Button>
-                    </Stack>
-                  </Paper>
-                </SimpleGrid>
-              </Stack>
-            )}
-          </Paper>
-          )}
-          </SimpleGrid>
-        )}
-
-        {(effectiveUiMode === "advanced" || coreWorkspaceTab === "drafts") && (
+        {effectiveUiMode === "advanced" && (
           <Paper radius="xl" p="sm" withBorder>
           <Group justify="space-between">
             <Group>

@@ -34,6 +34,13 @@ SECTION_TAXONOMY: dict[str, list[tuple[str, str]]] = {
         ("incidents", "Incidents"),
         ("workarounds", "Workarounds"),
     ],
+    "process": [
+        ("triggers", "Triggers"),
+        ("steps", "Steps"),
+        ("exceptions", "Exceptions"),
+        ("escalation", "Escalation"),
+        ("verification", "Outcome Verification"),
+    ],
     "general": [
         ("facts", "Facts"),
         ("notes", "Notes"),
@@ -48,6 +55,22 @@ SECTION_KEYWORDS: list[tuple[str, str]] = [
     ("time", "time_windows"),
     ("window", "time_windows"),
     ("policy", "operations_policy"),
+    ("process", "steps"),
+    ("procedure", "steps"),
+    ("runbook", "steps"),
+    ("playbook", "steps"),
+    ("sop", "steps"),
+    ("workflow", "steps"),
+    ("step", "steps"),
+    ("if", "triggers"),
+    ("when", "triggers"),
+    ("then", "steps"),
+    ("except", "exceptions"),
+    ("unless", "exceptions"),
+    ("escalat", "escalation"),
+    ("handoff", "escalation"),
+    ("verify", "verification"),
+    ("checklist", "verification"),
     ("restriction", "restrictions"),
     ("prefer", "preferences"),
     ("contact", "contacts"),
@@ -202,11 +225,52 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "min_durable_signal_hits_for_backfill": 1,
     "publish_mode_by_assertion_class": {
         "policy": "conditional",
+        "process": "conditional",
         "preference": "auto_publish",
         "incident": "human_required",
         "event": "human_required",
         "fact": "conditional",
     },
+    "auto_publish_risk_keywords_high": [
+        "legal",
+        "compliance",
+        "privacy",
+        "gdpr",
+        "security",
+        "credential",
+        "payment",
+        "payout",
+        "invoice",
+        "refund",
+        "chargeback",
+        "billing",
+        "pii",
+        "персональн",
+        "платеж",
+        "возврат",
+        "комплаенс",
+        "безопас",
+        "юрид",
+    ],
+    "auto_publish_risk_keywords_medium": [
+        "sla",
+        "finance",
+        "contract",
+        "discount",
+        "pricing",
+        "price",
+        "settlement",
+        "tax",
+        "штраф",
+        "договор",
+        "финанс",
+        "цена",
+        "скидк",
+    ],
+    "auto_publish_force_human_required_levels": ["high"],
+    "process_simulation_require_for_page_types": ["process", "policy", "incident"],
+    "process_simulation_block_levels": ["high"],
+    "process_simulation_sample_limit": 10,
     "retrieval_feedback_window_days": 30,
     "retrieval_feedback_min_events": 3,
     "retrieval_feedback_block_negative_ratio": 0.7,
@@ -216,6 +280,10 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "min_evidence_for_wiki_candidate": 2,
     "allow_policy_or_incident_override": True,
     "backfill_requires_policy_signal": True,
+    "backfill_llm_classifier_mode": "off",
+    "backfill_llm_classifier_min_confidence": 0.78,
+    "backfill_llm_classifier_ambiguous_only": True,
+    "backfill_llm_classifier_model": "",
 }
 
 BACKFILL_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
@@ -271,6 +339,27 @@ BACKFILL_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
         "график",
         "режим",
     ),
+    "process": (
+        "process",
+        "procedure",
+        "workflow",
+        "runbook",
+        "playbook",
+        "sop",
+        "step",
+        "when",
+        "if",
+        "then",
+        "escalation",
+        "handoff",
+        "verification",
+        "процесс",
+        "процедур",
+        "регламент",
+        "инструкц",
+        "шаг",
+        "эскалац",
+    ),
 }
 
 BACKFILL_ENTITY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -313,6 +402,7 @@ class ClaimInput:
     category: str
     claim_text: str
     evidence: list[dict[str, Any]]
+    metadata: dict[str, Any]
     observed_at: datetime | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
@@ -330,6 +420,7 @@ class ClaimInput:
             category=str(payload["category"]).strip(),
             claim_text=str(payload["claim_text"]).strip(),
             evidence=list(payload.get("evidence") or []),
+            metadata=dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {},
             observed_at=observed_at,
             valid_from=valid_from,
             valid_to=valid_to,
@@ -620,6 +711,7 @@ class WikiSynthesisEngine:
         self.gatekeeper_llm_timeout_ms = max(200, gatekeeper_llm_timeout_ms)
         self._llm_classifier = llm_classifier or OpenAIGatekeeperClassifier()
         self._claims_has_fingerprint_column_cache: bool | None = None
+        self._backfill_batches_have_decision_counters_cache: bool | None = None
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
         self._gatekeeper_config_has_publish_columns_cache: bool | None = None
         self._gatekeeper_config_has_routing_policy_column_cache: bool | None = None
@@ -656,12 +748,49 @@ class WikiSynthesisEngine:
 
     def extract_backfill_claims(self, conn, *, limit: int = 200) -> dict[str, int]:
         picked = self._pick_backfill_events(conn, limit=limit)
-        metrics = {"picked": len(picked), "claims_generated": 0, "events_completed": 0, "failed": 0}
+        project_routing_policy_cache: dict[str, dict[str, Any]] = {}
+        metrics = {
+            "picked": len(picked),
+            "claims_generated": 0,
+            "events_completed": 0,
+            "failed": 0,
+            "dropped_event_like": 0,
+            "kept_durable": 0,
+            "trusted_bypass": 0,
+        }
         for event_id, project_id, agent_id, session_id, payload, observed_at in picked:
             payload_dict = payload if isinstance(payload, dict) else {}
             try:
                 with conn.transaction():
                     self._set_event_pipeline_state(conn, event_id, status="processing")
+                    content = str(payload_dict.get("content") or "").strip()[:4000]
+                    metadata_raw = payload_dict.get("metadata")
+                    metadata_dict = metadata_raw if isinstance(metadata_raw, dict) else {}
+                    source_id = str(payload_dict.get("source_id") or event_id)
+                    if project_id not in project_routing_policy_cache:
+                        project_config = self._resolve_gatekeeper_config(conn, project_id)
+                        routing_policy = (
+                            project_config.routing_policy if isinstance(project_config.routing_policy, dict) else None
+                        )
+                        project_routing_policy_cache[project_id] = self._normalize_gatekeeper_routing_policy(
+                            routing_policy
+                        )
+                    project_routing_policy = project_routing_policy_cache.get(project_id)
+                    suppression_eval: dict[str, Any] | None = None
+                    if len(content) >= 8:
+                        category_for_eval, _ = self._resolve_backfill_category(
+                            payload=payload_dict,
+                            metadata=metadata_dict,
+                            content=content,
+                        )
+                        suppression_eval = self._evaluate_backfill_suppression(
+                            source_id=source_id,
+                            content=content,
+                            category=category_for_eval,
+                            payload=payload_dict,
+                            metadata=metadata_dict,
+                            routing_policy=project_routing_policy,
+                        )
                     claim_payload = self._claim_payload_from_backfill_event(
                         event_id=event_id,
                         project_id=project_id,
@@ -669,21 +798,45 @@ class WikiSynthesisEngine:
                         session_id=session_id,
                         payload=payload_dict,
                         observed_at=observed_at,
+                        suppression_eval=suppression_eval,
+                        routing_policy=project_routing_policy,
                     )
                     generated = 0
+                    dropped_event_like_increment = 0
+                    kept_durable_increment = 0
+                    trusted_bypass_increment = 0
                     if claim_payload is not None:
                         self._enqueue_claim_proposal(conn, claim_payload)
                         generated = 1
+                        if suppression_eval and bool(suppression_eval.get("trusted_hint")):
+                            trusted_bypass_increment = 1
+                        elif suppression_eval and bool(suppression_eval.get("has_durable_signal")):
+                            kept_durable_increment = 1
+                    elif suppression_eval:
+                        reason = str(suppression_eval.get("reason") or "")
+                        if reason in {
+                            "event_like_low_signal",
+                            "event_transport_low_signal",
+                            "blocked_source_id",
+                            "llm_override_skip_event",
+                        }:
+                            dropped_event_like_increment = 1
                     self._set_event_pipeline_state(conn, event_id, status="completed")
                     self._update_backfill_batch_metrics(
                         conn,
                         payload_dict,
                         processed_increment=1,
                         generated_increment=generated,
+                        dropped_event_like_increment=dropped_event_like_increment,
+                        kept_durable_increment=kept_durable_increment,
+                        trusted_bypass_increment=trusted_bypass_increment,
                         failed=False,
                     )
                 metrics["claims_generated"] += generated
                 metrics["events_completed"] += 1
+                metrics["dropped_event_like"] += dropped_event_like_increment
+                metrics["kept_durable"] += kept_durable_increment
+                metrics["trusted_bypass"] += trusted_bypass_increment
             except Exception as exc:
                 with conn.transaction():
                     self._set_event_pipeline_state(conn, event_id, status="failed", last_error=str(exc))
@@ -763,6 +916,8 @@ class WikiSynthesisEngine:
         session_id: str | None,
         payload: dict[str, Any],
         observed_at: datetime | None,
+        suppression_eval: dict[str, Any] | None = None,
+        routing_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         content = str(payload.get("content") or "").strip()
         if len(content) < 8:
@@ -774,14 +929,17 @@ class WikiSynthesisEngine:
         metadata_dict = metadata if isinstance(metadata, dict) else {}
         entity_key, entity_source = self._resolve_backfill_entity_key(payload=payload, metadata=metadata_dict, source_id=source_id, content=content)
         category, category_source = self._resolve_backfill_category(payload=payload, metadata=metadata_dict, content=content)
-        if self._should_skip_backfill_claim(
+        evaluation = suppression_eval or self._evaluate_backfill_suppression(
             source_id=source_id,
             content=content,
             category=category,
             payload=payload,
             metadata=metadata_dict,
-        ):
+            routing_policy=routing_policy,
+        )
+        if bool(evaluation.get("skip")):
             return None
+        process_triplet = self._extract_process_triplet(content) if self._category_to_page_type(category) == "process" else None
 
         fingerprint_material = "|".join(
             [
@@ -806,6 +964,7 @@ class WikiSynthesisEngine:
                 "agent_id": agent_id,
                 "entity_inference_source": entity_source,
                 "category_inference_source": category_source,
+                "process_triplet": process_triplet,
             }
         ]
         return {
@@ -830,43 +989,241 @@ class WikiSynthesisEngine:
         category: str,
         payload: dict[str, Any],
         metadata: dict[str, Any],
+        routing_policy: dict[str, Any] | None = None,
     ) -> bool:
-        if self._has_backfill_trusted_knowledge_hint(payload=payload, metadata=metadata):
-            return False
-        policy = self._normalize_gatekeeper_routing_policy(None)
+        evaluation = self._evaluate_backfill_suppression(
+            source_id=source_id,
+            content=content,
+            category=category,
+            payload=payload,
+            metadata=metadata,
+            routing_policy=routing_policy,
+        )
+        return bool(evaluation.get("skip"))
+
+    def _evaluate_backfill_suppression(
+        self,
+        *,
+        source_id: str,
+        content: str,
+        category: str,
+        payload: dict[str, Any],
+        metadata: dict[str, Any],
+        routing_policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        trusted_hint = self._has_backfill_trusted_knowledge_hint(payload=payload, metadata=metadata)
+        if trusted_hint:
+            return {
+                "skip": False,
+                "reason": None,
+                "trusted_hint": True,
+                "has_durable_signal": True,
+            }
+
+        policy = self._normalize_gatekeeper_routing_policy(routing_policy)
         normalized_source_id = self._normalize_text(source_id)
         if any(keyword in normalized_source_id for keyword in policy.get("blocked_source_id_keywords", []) if keyword):
-            return True
+            return {
+                "skip": True,
+                "reason": "blocked_source_id",
+                "trusted_hint": False,
+                "has_durable_signal": False,
+            }
 
         normalized_content = self._normalize_text(content)
         token_set = set(self._tokens(content))
+        expanded_token_set = set(token_set)
+        for token in token_set:
+            for chunk in re.split(r"[_/]+", token):
+                value = chunk.strip()
+                if value:
+                    expanded_token_set.add(value)
         event_stream_token_keywords = set(
             str(item).strip().lower() for item in policy.get("event_stream_token_keywords", []) if str(item).strip()
         )
         durable_signal_keywords = list(policy.get("durable_signal_keywords", []))
+        min_durable_signal_hits_for_backfill = int(policy.get("min_durable_signal_hits_for_backfill", 1))
+        event_stream_min_token_hits = int(policy.get("event_stream_min_token_hits", 2))
+        event_stream_min_kv_hits = int(policy.get("event_stream_min_kv_hits", 2))
+        event_stream_min_numeric_token_ratio = float(policy.get("event_stream_min_numeric_token_ratio", 0.45))
         durable_hits = self._count_keyword_hits(
             normalized_text=normalized_content,
-            token_set=token_set,
+            token_set=expanded_token_set,
             keywords=durable_signal_keywords,
         )
-        event_hits = sum(1 for token in token_set if token in event_stream_token_keywords)
+        has_durable_signal = durable_hits >= min_durable_signal_hits_for_backfill
+        event_hits = sum(1 for token in expanded_token_set if token in event_stream_token_keywords)
         kv_hits = len(
             re.findall(
                 r"\b(order_id|invoice_id|status|state|created_at|updated_at|customer_id|task_id|event_id)\s*[:=]",
                 normalized_content,
             )
         )
+        numeric_token_count = sum(1 for token in expanded_token_set if any(ch.isdigit() for ch in token))
+        numeric_token_ratio = float(numeric_token_count) / float(max(len(expanded_token_set), 1))
+        has_order_like_id_pattern = bool(
+            re.search(
+                r"\b(order|заказ|task|event|ticket|shipment|delivery)[\s_:#-]{0,12}[a-z0-9_-]{3,}\b",
+                normalized_content,
+            )
+        )
         has_structured_blob = bool(
             (normalized_content.count("{") >= 1 and normalized_content.count("}") >= 1 and normalized_content.count(":") >= 3)
-            or kv_hits >= int(policy.get("event_stream_min_kv_hits", 2))
+            or kv_hits >= event_stream_min_kv_hits
+        )
+        has_event_stream_shape = event_hits >= event_stream_min_token_hits and (
+            has_structured_blob or kv_hits >= event_stream_min_kv_hits or numeric_token_ratio >= event_stream_min_numeric_token_ratio or has_order_like_id_pattern
+        )
+
+        source_system_values: set[str] = set()
+        source_type_values: set[str] = set()
+        for container in (payload, metadata):
+            if not isinstance(container, dict):
+                continue
+            for key in ("source_system", "source", "stream", "topic", "queue", "feed", "channel"):
+                value = self._normalize_text(str(container.get(key) or ""))
+                if value:
+                    source_system_values.add(value)
+            for key in ("source_type", "event_type", "type", "record_type", "message_type", "kind"):
+                value = self._normalize_text(str(container.get(key) or ""))
+                if value:
+                    source_type_values.add(value)
+        blocked_source_system_keywords = list(policy.get("blocked_source_system_keywords", []))
+        blocked_source_type_keywords = list(policy.get("blocked_source_type_keywords", []))
+        blocked_by_source_system = any(
+            self._keyword_matches_identifier(system, keyword)
+            for system in source_system_values
+            for keyword in blocked_source_system_keywords
+            if keyword
+        )
+        blocked_by_source_type = any(
+            self._keyword_matches_identifier(source_type, keyword)
+            for source_type in source_type_values
+            for keyword in blocked_source_type_keywords
+            if keyword
         )
         category_hint = self._category_to_page_type(category)
-        return (
-            has_structured_blob
-            and event_hits >= int(policy.get("event_stream_min_token_hits", 2))
-            and durable_hits < int(policy.get("min_durable_signal_hits_for_backfill", 1))
-            and category_hint == "general"
+        source_noise_only = (
+            (blocked_by_source_system or blocked_by_source_type)
+            and not has_durable_signal
+            and category_hint in {"general", "operations"}
         )
+        heuristic_skip = False
+        heuristic_reason: str | None = None
+        if has_event_stream_shape and not has_durable_signal:
+            heuristic_skip = True
+            heuristic_reason = "event_like_low_signal"
+        elif source_noise_only:
+            heuristic_skip = True
+            heuristic_reason = "event_transport_low_signal"
+
+        llm_mode = str(policy.get("backfill_llm_classifier_mode") or "off").strip().lower()
+        if llm_mode not in {"off", "assist", "enforce"}:
+            llm_mode = "off"
+        try:
+            llm_min_confidence = float(policy.get("backfill_llm_classifier_min_confidence", 0.78))
+        except Exception:
+            llm_min_confidence = 0.78
+        llm_min_confidence = max(0.0, min(1.0, llm_min_confidence))
+        llm_ambiguous_only = bool(policy.get("backfill_llm_classifier_ambiguous_only", True))
+
+        llm_assessment: GatekeeperLLMAssessment | None = None
+        llm_applied = False
+        llm_reason_code = "off"
+        llm_ambiguous = bool(
+            heuristic_skip
+            or (has_event_stream_shape and has_durable_signal)
+            or (not has_event_stream_shape and not has_durable_signal and len(normalized_content) >= 80)
+        )
+
+        if llm_mode != "off" and (llm_ambiguous or not llm_ambiguous_only):
+            llm_config = GatekeeperConfig(
+                min_sources_for_golden=max(2, self.gatekeeper_min_sources_for_golden),
+                conflict_free_days=max(1, self.gatekeeper_conflict_free_days),
+                min_score_for_golden=max(0.0, min(1.0, self.gatekeeper_min_score_for_golden)),
+                operational_short_text_len=max(8, self.gatekeeper_operational_short_text_len),
+                operational_short_token_len=max(1, self.gatekeeper_operational_short_token_len),
+                llm_assist_enabled=True,
+                llm_provider=str(self.gatekeeper_llm_provider or "openai").strip().lower(),
+                llm_model=str(
+                    policy.get("backfill_llm_classifier_model")
+                    or self.gatekeeper_llm_model
+                    or "gpt-4.1-mini"
+                ),
+                llm_score_weight=1.0,
+                llm_min_confidence=llm_min_confidence,
+                llm_timeout_ms=max(200, self.gatekeeper_llm_timeout_ms),
+            )
+            synthetic_claim = ClaimInput(
+                id=uuid.uuid4(),
+                project_id="backfill",
+                entity_key=str(source_id or "backfill_record"),
+                category=str(category or "general"),
+                claim_text=content[:4000],
+                evidence=[{"source_type": "external_event", "source_id": str(source_id)}],
+                metadata={"backfill_suppression_probe": True},
+            )
+            llm_assessment = self._run_gatekeeper_llm_assessment(
+                claim=synthetic_claim,
+                config=llm_config,
+                features={
+                    "evidence_count": 1,
+                    "repeated_count": 0,
+                    "source_diversity": 1,
+                    "has_recent_open_conflict": False,
+                    "is_short": len(normalized_content) <= max(8, self.gatekeeper_operational_short_text_len),
+                    "has_policy_signal": has_durable_signal,
+                    "has_operational_pattern": has_event_stream_shape,
+                    "heuristic_tier": "operational_memory" if heuristic_skip else "insight_candidate",
+                    "heuristic_score": 0.2 if heuristic_skip else 0.7,
+                },
+            )
+            if llm_assessment.status == "ok" and llm_assessment.confidence is not None:
+                if llm_assessment.confidence >= llm_min_confidence:
+                    llm_reason_code = "confidence_ok"
+                    llm_event_like = llm_assessment.suggested_tier == "operational_memory"
+                    if llm_mode == "enforce":
+                        if llm_event_like and not heuristic_skip:
+                            heuristic_skip = True
+                            heuristic_reason = "llm_override_skip_event"
+                            llm_applied = True
+                            llm_reason_code = "override_skip_event"
+                        elif (not llm_event_like) and heuristic_skip:
+                            heuristic_skip = False
+                            heuristic_reason = "llm_override_keep_knowledge"
+                            llm_applied = True
+                            llm_reason_code = "override_keep_knowledge"
+                        else:
+                            llm_reason_code = "no_override_needed"
+                    else:
+                        llm_reason_code = "assist_only"
+                else:
+                    llm_reason_code = "below_confidence_threshold"
+            elif llm_assessment is not None:
+                llm_reason_code = str(llm_assessment.error or llm_assessment.status or "llm_unavailable")
+        elif llm_mode != "off":
+            llm_reason_code = "ambiguous_only_skipped"
+
+        response: dict[str, Any] = {
+            "skip": heuristic_skip,
+            "reason": heuristic_reason,
+            "trusted_hint": False,
+            "has_durable_signal": has_durable_signal,
+            "heuristic_reason": heuristic_reason,
+            "llm_mode": llm_mode,
+            "llm_ambiguous": llm_ambiguous,
+            "llm_applied": llm_applied,
+            "llm_reason_code": llm_reason_code,
+        }
+        if llm_assessment is not None:
+            response["llm_status"] = llm_assessment.status
+            response["llm_provider"] = llm_assessment.provider
+            response["llm_model"] = llm_assessment.model
+            response["llm_suggested_tier"] = llm_assessment.suggested_tier
+            response["llm_confidence"] = llm_assessment.confidence
+            response["llm_rationale"] = llm_assessment.rationale
+            response["llm_error"] = llm_assessment.error
+        return response
 
     def _has_backfill_trusted_knowledge_hint(
         self,
@@ -1009,6 +1366,9 @@ class WikiSynthesisEngine:
         *,
         processed_increment: int,
         generated_increment: int,
+        dropped_event_like_increment: int = 0,
+        kept_durable_increment: int = 0,
+        trusted_bypass_increment: int = 0,
         failed: bool,
     ) -> None:
         backfill = payload.get("backfill")
@@ -1034,20 +1394,46 @@ class WikiSynthesisEngine:
                 )
                 return
 
-            cur.execute(
-                """
-                UPDATE memory_backfill_batches
-                SET processed_events = processed_events + %s,
-                    generated_claims = generated_claims + %s,
-                    status = CASE
-                      WHEN status = 'ready' THEN 'processing'
-                      ELSE status
-                    END,
-                    updated_at = NOW()
-                WHERE id = %s
-                """,
-                (processed_increment, generated_increment, batch_id),
-            )
+            if self._backfill_batches_have_decision_counters(conn):
+                cur.execute(
+                    """
+                    UPDATE memory_backfill_batches
+                    SET processed_events = processed_events + %s,
+                        generated_claims = generated_claims + %s,
+                        dropped_event_like = dropped_event_like + %s,
+                        kept_durable = kept_durable + %s,
+                        trusted_bypass = trusted_bypass + %s,
+                        status = CASE
+                          WHEN status = 'ready' THEN 'processing'
+                          ELSE status
+                        END,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (
+                        processed_increment,
+                        generated_increment,
+                        dropped_event_like_increment,
+                        kept_durable_increment,
+                        trusted_bypass_increment,
+                        batch_id,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE memory_backfill_batches
+                    SET processed_events = processed_events + %s,
+                        generated_claims = generated_claims + %s,
+                        status = CASE
+                          WHEN status = 'ready' THEN 'processing'
+                          ELSE status
+                        END,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (processed_increment, generated_increment, batch_id),
+                )
             cur.execute(
                 """
                 UPDATE memory_backfill_batches
@@ -1060,6 +1446,23 @@ class WikiSynthesisEngine:
                 """,
                 (batch_id,),
             )
+
+    def _backfill_batches_have_decision_counters(self, conn) -> bool:
+        if self._backfill_batches_have_decision_counters_cache is not None:
+            return self._backfill_batches_have_decision_counters_cache
+        required = {"dropped_event_like", "kept_durable", "trusted_bypass"}
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'memory_backfill_batches'
+                """
+            )
+            present = {str(row[0]) for row in cur.fetchall()}
+        self._backfill_batches_have_decision_counters_cache = required.issubset(present)
+        return self._backfill_batches_have_decision_counters_cache
 
     def _finalize_ready_backfill_batches(self, conn) -> None:
         with conn.cursor() as cur:
@@ -1275,6 +1678,7 @@ class WikiSynthesisEngine:
         temporal_source: str,
     ) -> None:
         source_ids = self._extract_source_ids(claim.evidence)
+        decision_context = self._extract_operator_decision_context(claim)
         metadata = {
             "source": "claim_proposal",
             "evidence_count": len(claim.evidence),
@@ -1283,6 +1687,16 @@ class WikiSynthesisEngine:
             "assertion_class": assertion_class,
             "temporal_source": temporal_source,
         }
+        if claim.metadata:
+            metadata["claim_metadata"] = dict(claim.metadata)
+        if decision_context:
+            metadata["operator_decision"] = decision_context
+            ticket_ids = decision_context.get("ticket_ids")
+            if isinstance(ticket_ids, list) and ticket_ids:
+                metadata["linked_ticket_ids"] = ticket_ids
+            outcome = str(decision_context.get("outcome") or "").strip().lower()
+            if outcome:
+                metadata["resolution_outcome"] = outcome
         if valid_from is not None:
             metadata["valid_from"] = valid_from.isoformat()
         if valid_to is not None:
@@ -1457,6 +1871,29 @@ class WikiSynthesisEngine:
             "звонить",
         }
         has_preference_signal = bool(token_set & preference_words)
+        process_words = {
+            "process",
+            "procedure",
+            "workflow",
+            "runbook",
+            "playbook",
+            "sop",
+            "step",
+            "steps",
+            "checklist",
+            "escalation",
+            "handoff",
+            "if",
+            "when",
+            "then",
+            "процесс",
+            "процедура",
+            "регламент",
+            "инструкция",
+            "шаг",
+            "эскалация",
+        }
+        has_process_signal = bool(token_set & process_words)
         high_priority_words = {
             "blocked",
             "outage",
@@ -1553,12 +1990,14 @@ class WikiSynthesisEngine:
         ) and not has_override_signal
         has_durable_signal = (
             has_policy_signal
+            or has_process_signal
             or has_high_priority_signal
             or durable_signal_hits >= min_durable_signal_hits
         )
         assertion_class = self._infer_assertion_class(
             category_hint=category_hint,
             has_policy_signal=has_policy_signal,
+            has_process_signal=has_process_signal,
             has_preference_signal=has_preference_signal,
             has_high_priority_signal=has_high_priority_signal,
             has_event_stream_shape=has_event_stream_shape,
@@ -1643,6 +2082,7 @@ class WikiSynthesisEngine:
             require_multi_source_for_wiki
             and source_diversity < min_sources_for_wiki_candidate
             and evidence_count < min_evidence_for_wiki_candidate
+            and repeated_count <= 0
             and not has_override_signal
             and not has_durable_signal
         )
@@ -1673,6 +2113,7 @@ class WikiSynthesisEngine:
                     "is_short": is_short,
                     "has_operational_pattern": has_operational_pattern,
                     "has_policy_signal": has_policy_signal,
+                    "has_process_signal": has_process_signal,
                     "has_preference_signal": has_preference_signal,
                     "has_recent_open_conflict": has_recent_open_conflict,
                     "heuristic_score": score,
@@ -1752,6 +2193,7 @@ class WikiSynthesisEngine:
             "is_short": is_short,
             "has_operational_pattern": has_operational_pattern,
             "has_policy_signal": has_policy_signal,
+            "has_process_signal": has_process_signal,
             "has_preference_signal": has_preference_signal,
             "has_high_priority_signal": has_high_priority_signal,
             "has_override_signal": has_override_signal,
@@ -1960,6 +2402,36 @@ class WikiSynthesisEngine:
             value.get("durable_signal_keywords"),
             fallback=list(base["durable_signal_keywords"]),
         )
+        normalized["auto_publish_risk_keywords_high"] = self._normalize_policy_keyword_list(
+            value.get("auto_publish_risk_keywords_high"),
+            fallback=list(base["auto_publish_risk_keywords_high"]),
+        )
+        normalized["auto_publish_risk_keywords_medium"] = self._normalize_policy_keyword_list(
+            value.get("auto_publish_risk_keywords_medium"),
+            fallback=list(base["auto_publish_risk_keywords_medium"]),
+        )
+        normalized["auto_publish_force_human_required_levels"] = self._normalize_policy_keyword_list(
+            value.get("auto_publish_force_human_required_levels"),
+            fallback=list(base["auto_publish_force_human_required_levels"]),
+            limit=5,
+        )
+        normalized["process_simulation_require_for_page_types"] = self._normalize_policy_keyword_list(
+            value.get("process_simulation_require_for_page_types"),
+            fallback=list(base["process_simulation_require_for_page_types"]),
+            limit=10,
+        )
+        normalized["process_simulation_block_levels"] = self._normalize_policy_keyword_list(
+            value.get("process_simulation_block_levels"),
+            fallback=list(base["process_simulation_block_levels"]),
+            limit=5,
+        )
+        try:
+            simulation_sample_limit = int(
+                value.get("process_simulation_sample_limit", int(base["process_simulation_sample_limit"]))
+            )
+        except Exception:
+            simulation_sample_limit = int(base["process_simulation_sample_limit"])
+        normalized["process_simulation_sample_limit"] = max(1, min(50, simulation_sample_limit))
         normalized["publish_mode_by_assertion_class"] = self._normalize_publish_mode_map(
             value.get("publish_mode_by_assertion_class")
         )
@@ -2023,6 +2495,28 @@ class WikiSynthesisEngine:
         normalized["min_evidence_for_wiki_candidate"] = max(1, min(20, min_evidence))
         normalized["allow_policy_or_incident_override"] = bool(value.get("allow_policy_or_incident_override", True))
         normalized["backfill_requires_policy_signal"] = bool(value.get("backfill_requires_policy_signal", True))
+        llm_mode_raw = str(value.get("backfill_llm_classifier_mode", base["backfill_llm_classifier_mode"]) or "").strip().lower()
+        normalized["backfill_llm_classifier_mode"] = llm_mode_raw if llm_mode_raw in {"off", "assist", "enforce"} else str(
+            base["backfill_llm_classifier_mode"]
+        )
+        try:
+            backfill_llm_confidence = float(
+                value.get(
+                    "backfill_llm_classifier_min_confidence",
+                    base["backfill_llm_classifier_min_confidence"],
+                )
+            )
+        except Exception:
+            backfill_llm_confidence = float(base["backfill_llm_classifier_min_confidence"])
+        normalized["backfill_llm_classifier_min_confidence"] = max(0.0, min(1.0, backfill_llm_confidence))
+        normalized["backfill_llm_classifier_ambiguous_only"] = bool(
+            value.get(
+                "backfill_llm_classifier_ambiguous_only",
+                base["backfill_llm_classifier_ambiguous_only"],
+            )
+        )
+        model_value = str(value.get("backfill_llm_classifier_model") or "").strip()
+        normalized["backfill_llm_classifier_model"] = model_value[:128] if model_value else ""
         return normalized
 
     def _resolve_gatekeeper_config(self, conn, project_id: str) -> GatekeeperConfig:
@@ -2781,13 +3275,31 @@ class WikiSynthesisEngine:
         title = self._title_from_entity(claim.entity_key)
         slug_base = self._slugify(claim.entity_key) or self._slugify(claim.category) or "page"
         slug = self._ensure_unique_slug(conn, claim.project_id, slug_base)
-        bootstrap_markdown = (
-            f"# {title}\n\n"
-            f"## Summary\n"
-            f"- Draft page generated from claim `{claim.id}`.\n\n"
-            f"## {section_heading}\n"
-            f"- Pending approval.\n"
-        )
+        if page_type == "process":
+            bootstrap_markdown = (
+                f"# {title}\n\n"
+                f"## Summary\n"
+                f"- Draft process page generated from claim `{claim.id}`.\n"
+                f"- Goal: capture trigger -> action -> outcome workflow.\n\n"
+                f"## Triggers\n"
+                f"- Pending approval.\n\n"
+                f"## Steps\n"
+                f"- Pending approval.\n\n"
+                f"## Exceptions\n"
+                f"- Pending approval.\n\n"
+                f"## Escalation\n"
+                f"- Pending approval.\n\n"
+                f"## Outcome Verification\n"
+                f"- Pending approval.\n"
+            )
+        else:
+            bootstrap_markdown = (
+                f"# {title}\n\n"
+                f"## Summary\n"
+                f"- Draft page generated from claim `{claim.id}`.\n\n"
+                f"## {section_heading}\n"
+                f"- Pending approval.\n"
+            )
         metadata = {"created_from_claim": str(claim.id), "mode": "draft_generation"}
         with conn.cursor() as cur:
             cur.execute(
@@ -2972,6 +3484,9 @@ class WikiSynthesisEngine:
     ) -> str:
         evidence_suffix = self._format_evidence_suffix(claim.evidence)
         line = f"- {claim.claim_text}{evidence_suffix}"
+        process_triplet = self._extract_process_triplet_from_claim(claim)
+        if process_triplet is not None and section_key in {"triggers", "steps", "exceptions", "escalation", "verification"}:
+            line = self._format_process_triplet_line(process_triplet, section_key=section_key, evidence_suffix=evidence_suffix)
 
         if decision == "new_page":
             return (
@@ -2992,6 +3507,41 @@ class WikiSynthesisEngine:
         if decision == "conflict":
             return f"@@ page:{page.slug} section:{section_key}\n! conflict detected; human resolution required\n+ {line}\n"
         return f"@@ page:{page.slug} section:{section_key}\n+ {line}\n"
+
+    def _format_process_triplet_line(
+        self,
+        process_triplet: dict[str, Any],
+        *,
+        section_key: str,
+        evidence_suffix: str,
+    ) -> str:
+        trigger = str(process_triplet.get("trigger") or "").strip()
+        action = str(process_triplet.get("action") or "").strip()
+        outcome = str(process_triplet.get("outcome") or "").strip()
+
+        if section_key == "triggers":
+            body = trigger or action or outcome or "Pending trigger detail."
+            return f"- Trigger: {body}{evidence_suffix}"
+        if section_key == "exceptions":
+            body = outcome or action or trigger or "Pending exception detail."
+            return f"- Exception: {body}{evidence_suffix}"
+        if section_key == "escalation":
+            body = action or trigger or outcome or "Pending escalation rule."
+            return f"- Escalation: {body}{evidence_suffix}"
+        if section_key == "verification":
+            body = outcome or action or trigger or "Pending verification criteria."
+            return f"- Verification: {body}{evidence_suffix}"
+
+        parts: list[str] = []
+        if trigger:
+            parts.append(f"Trigger: {trigger}")
+        if action:
+            parts.append(f"Action: {action}")
+        if outcome:
+            parts.append(f"Outcome: {outcome}")
+        if not parts:
+            parts.append("Action: Pending process step detail.")
+        return f"- {' | '.join(parts)}{evidence_suffix}"
 
     def _build_semantic_diff(
         self,
@@ -3202,6 +3752,23 @@ class WikiSynthesisEngine:
         value = self._normalize_text(category)
         if any(token in value for token in ("access", "gate", "entry", "доступ", "шлагбаум", "въезд", "пропуск", "карта")):
             return "access"
+        if any(
+            token in value
+            for token in (
+                "process",
+                "procedure",
+                "workflow",
+                "runbook",
+                "playbook",
+                "sop",
+                "процесс",
+                "процедур",
+                "регламент",
+                "инструкц",
+                "эскалац",
+            )
+        ):
+            return "process"
         if any(token in value for token in ("incident", "problem", "error", "сбой", "ошибка", "полом", "авар", "инцидент")):
             return "incident"
         if any(token in value for token in ("customer", "client", "preference", "клиент", "предпочт", "контакт")):
@@ -3217,6 +3784,182 @@ class WikiSynthesisEngine:
             if keyword in normalized and section_key in allowed_keys:
                 return section_key
         return None
+
+    def _extract_process_triplet(self, text: str) -> dict[str, Any] | None:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return None
+
+        trigger = ""
+        action = ""
+        outcome = ""
+
+        pattern_if_then = re.search(
+            r"\b(?:if|when|если|когда)\b\s+(?P<trigger>[^.]{3,240}?)\s*(?:,|then|то)\s+(?P<action>[^.]{3,280})",
+            normalized,
+        )
+        if pattern_if_then:
+            trigger = str(pattern_if_then.group("trigger") or "").strip(" ,.;:")
+            action = str(pattern_if_then.group("action") or "").strip(" ,.;:")
+        else:
+            pattern_steps = re.search(
+                r"\b(?:process|workflow|procedure|runbook|playbook|sop|процесс|процедура|регламент|инструкция)\b[:\s-]*(?P<action>[^.]{6,320})",
+                normalized,
+            )
+            if pattern_steps:
+                action = str(pattern_steps.group("action") or "").strip(" ,.;:")
+
+        pattern_outcome = re.search(
+            r"\b(?:result|outcome|verify|sla|resolution|итог|результат|проверить|проверка)\b[:\s-]*(?P<outcome>[^.]{3,220})",
+            normalized,
+        )
+        if pattern_outcome:
+            outcome = str(pattern_outcome.group("outcome") or "").strip(" ,.;:")
+
+        if not trigger and not action and not outcome:
+            return None
+
+        confidence = 0.55
+        if action:
+            confidence += 0.2
+        if trigger:
+            confidence += 0.15
+        if outcome:
+            confidence += 0.1
+        confidence = max(0.0, min(1.0, round(confidence, 3)))
+        return {
+            "trigger": trigger,
+            "action": action,
+            "outcome": outcome,
+            "confidence": confidence,
+        }
+
+    def _extract_process_triplet_from_claim(self, claim: ClaimInput) -> dict[str, Any] | None:
+        metadata_triplet = claim.metadata.get("process_triplet") if isinstance(claim.metadata, dict) else None
+        if isinstance(metadata_triplet, dict):
+            trigger = str(metadata_triplet.get("trigger") or "").strip()
+            action = str(metadata_triplet.get("action") or "").strip()
+            outcome = str(metadata_triplet.get("outcome") or "").strip()
+            if trigger or action or outcome:
+                confidence = metadata_triplet.get("confidence")
+                if not isinstance(confidence, (int, float)):
+                    confidence = 0.85
+                return {
+                    "trigger": trigger,
+                    "action": action,
+                    "outcome": outcome,
+                    "confidence": max(0.0, min(1.0, round(float(confidence), 3))),
+                }
+
+        for evidence in claim.evidence:
+            if not isinstance(evidence, dict):
+                continue
+            evidence_triplet = evidence.get("process_triplet")
+            if isinstance(evidence_triplet, dict):
+                trigger = str(evidence_triplet.get("trigger") or "").strip()
+                action = str(evidence_triplet.get("action") or "").strip()
+                outcome = str(evidence_triplet.get("outcome") or "").strip()
+                if trigger or action or outcome:
+                    confidence = evidence_triplet.get("confidence")
+                    if not isinstance(confidence, (int, float)):
+                        confidence = 0.75
+                    return {
+                        "trigger": trigger,
+                        "action": action,
+                        "outcome": outcome,
+                        "confidence": max(0.0, min(1.0, round(float(confidence), 3))),
+                    }
+        return self._extract_process_triplet(claim.claim_text)
+
+    def _extract_ticket_ids_from_claim(self, claim: ClaimInput) -> list[str]:
+        candidates: set[str] = set()
+
+        def _collect(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text:
+                return
+            text_upper = text.upper()
+            if re.fullmatch(r"[A-Z]{2,10}-\d{1,10}", text_upper):
+                candidates.add(text_upper[:64])
+            elif re.fullmatch(r"\d{4,12}", text):
+                candidates.add(text[:64])
+
+        for pattern in (
+            r"\b([A-Z]{2,10}-\d{1,10})\b",
+            r"\b(?:ticket|case|incident|request|task)\s*(?:#|№|id)?\s*[:=-]?\s*([A-Z]{2,10}-\d{1,10}|\d{4,12})\b",
+        ):
+            for match in re.findall(pattern, claim.claim_text, flags=re.IGNORECASE):
+                _collect(match)
+
+        if isinstance(claim.metadata, dict):
+            for key in ("ticket_id", "ticket", "case_id", "incident_id", "request_id", "task_id", "external_ticket_id"):
+                _collect(claim.metadata.get(key))
+            list_values = claim.metadata.get("ticket_ids")
+            if isinstance(list_values, list):
+                for item in list_values:
+                    _collect(item)
+
+        for evidence in claim.evidence:
+            if not isinstance(evidence, dict):
+                continue
+            for key in ("ticket_id", "ticket", "case_id", "incident_id", "request_id", "task_id", "external_ticket_id"):
+                _collect(evidence.get(key))
+            meta = evidence.get("metadata")
+            if isinstance(meta, dict):
+                for key in ("ticket_id", "ticket", "case_id", "incident_id", "request_id", "task_id", "external_ticket_id"):
+                    _collect(meta.get(key))
+        return sorted(candidates)[:32]
+
+    def _extract_outcome_from_claim(self, claim: ClaimInput) -> str | None:
+        def _normalize(value: Any) -> str | None:
+            text = str(value or "").strip().lower()
+            return text if text else None
+
+        if isinstance(claim.metadata, dict):
+            for key in ("outcome", "resolution_outcome", "resolution", "status", "result"):
+                outcome = _normalize(claim.metadata.get(key))
+                if outcome:
+                    return outcome[:64]
+
+        for evidence in claim.evidence:
+            if not isinstance(evidence, dict):
+                continue
+            for key in ("outcome", "resolution_outcome", "resolution", "status", "result"):
+                outcome = _normalize(evidence.get(key))
+                if outcome:
+                    return outcome[:64]
+            meta = evidence.get("metadata")
+            if isinstance(meta, dict):
+                for key in ("outcome", "resolution_outcome", "resolution", "status", "result"):
+                    outcome = _normalize(meta.get(key))
+                    if outcome:
+                        return outcome[:64]
+
+        tokens = set(self._tokens(claim.claim_text))
+        if tokens & {"resolved", "fixed", "completed", "done", "restored", "решен", "закрыт"}:
+            return "resolved"
+        if tokens & {"escalated", "escalation", "handoff", "эскалация", "передан"}:
+            return "escalated"
+        if tokens & {"failed", "blocked", "error", "incident", "сбой", "ошибка", "неудача"}:
+            return "failed"
+        if tokens & {"pending", "waiting", "awaiting", "ожидание"}:
+            return "pending"
+        return None
+
+    def _extract_operator_decision_context(self, claim: ClaimInput) -> dict[str, Any]:
+        context: dict[str, Any] = {}
+        process_triplet = self._extract_process_triplet_from_claim(claim)
+        if process_triplet is not None:
+            context["process_triplet"] = process_triplet
+        ticket_ids = self._extract_ticket_ids_from_claim(claim)
+        if ticket_ids:
+            context["ticket_ids"] = ticket_ids
+        outcome = self._extract_outcome_from_claim(claim)
+        if outcome:
+            context["outcome"] = outcome
+        if context:
+            context["capture_mode"] = "online_claim"
+        return context
 
     def _format_evidence_suffix(self, evidence: list[dict[str, Any]]) -> str:
         if not evidence:
@@ -3324,6 +4067,7 @@ class WikiSynthesisEngine:
         *,
         category_hint: str,
         has_policy_signal: bool,
+        has_process_signal: bool,
         has_preference_signal: bool,
         has_high_priority_signal: bool,
         has_event_stream_shape: bool,
@@ -3336,6 +4080,8 @@ class WikiSynthesisEngine:
             return "incident"
         if has_preference_signal or category_hint == "customer":
             return "preference"
+        if has_process_signal or category_hint == "process":
+            return "process"
         if has_policy_signal or category_hint in {"access", "operations"}:
             return "policy"
         return "fact"
