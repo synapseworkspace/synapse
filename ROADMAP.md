@@ -42,6 +42,68 @@ Owner: Core team
 15. Process Playbook Intelligence (if/then runbooks, instruction capture, operator-outcome loops).
 16. Agent Directory & Operations Intelligence (AI orgchart, agent folders, daily worklogs, provenance).
 17. Public Launch & Positioning (package publication, onboarding KPI, Cognitive State Layer messaging).
+18. Field adoption hardening (knowledge ingest lane, bootstrap profile, rejection diagnostics, project reset, self-host defaults).
+
+## Real-World Adoption Backlog (April 2026)
+
+Status: `in_progress`
+
+Context from live integrations:
+- backfill accepted at API layer, but most records dropped into `claims.rejected` by default routing policy (especially `source_type=event|external_event`);
+- teams must write custom importers and manually tune policy for first useful wiki output;
+- self-host can boot backend while UI remains on stale profile/route path;
+- no safe project-scope reset API for clean reruns.
+
+### P0 (Adoption Critical)
+
+1. `planned` Split ingestion lanes (`knowledge` vs `event`):
+   - add dedicated corporate-memory ingest path (`knowledge_ingest`) that does not inherit event-stream deny defaults;
+   - preserve strict event filtering on runtime/event lane.
+2. `planned` Bootstrap profile for first wiki import:
+   - one-click API/UI preset with soft thresholds, safe noise filters, and sample-based auto-approve defaults.
+3. `planned` Rejection diagnostics endpoint:
+   - project-level aggregated visibility: top reject reasons, blocked patterns, representative examples, and suggested policy knobs.
+4. `planned` Admin project reset API:
+   - scoped reset (`wiki/events/claims/drafts`) with dry-run preview and audit trail; no Docker volume wipe required.
+5. `planned` Self-host one-command “core wiki” default:
+   - backend + worker + web with default `core` profile and `/wiki` route;
+   - eliminate advanced/localStorage trap on first run.
+
+P0 exit criteria:
+- a clean integration can run `import -> draft -> approve -> publish -> retrieval` without custom scripts;
+- first-pass import from `memory_items`/`ops_kb_items` yields useful drafts/pages by default (without manual policy surgery);
+- troubleshooting requires API diagnostics, not database forensics.
+
+### P1 (Next Iteration)
+
+1. `planned` Built-in import connectors:
+   - native adapters for `memory_items` and `ops_kb_items` with declarative mapping config.
+2. `planned` Pipeline visibility UI:
+   - end-to-end counters `accepted -> events -> claims -> drafts -> pages` with bottleneck highlighting.
+3. `planned` Noise-filter presets:
+   - reusable presets for order snapshots, telemetry streams, and raw event payloads before claim generation.
+4. `planned` Curated import mode:
+   - ingest constrained by explicit `namespaces`/`source_systems`.
+5. `planned` Predictable page listing/search:
+   - explicit “show all pages” behavior and removal of `q=*` ambiguity.
+
+### P2 (Release Process Hardening)
+
+1. `planned` API/Web compatibility contract:
+   - declare minimum compatible web build per backend version and enforce in CI/release notes.
+2. `planned` Upgrade checklist docs:
+   - migrations, worker restart, routing-policy migration steps, and rollback notes.
+3. `planned` Post-deploy smoke test:
+   - standard smoke flow: import 10 records -> produce 1 draft -> publish 1 page -> verify `/wiki` retrieval.
+
+Execution order for this track:
+1. P0.1 ingestion lane split.
+2. P0.2 bootstrap profile.
+3. P0.3 rejection diagnostics.
+4. P0.4 project reset API.
+5. P0.5 self-host default experience.
+6. P1 visibility + connectors.
+7. P2 release guardrails.
 
 ## Agent Worklog Intelligence TODO (April 2026)
 
@@ -689,6 +751,7 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-04-06: Added `Real-World Adoption Backlog` from production integration feedback with explicit `P0/P1/P2` priorities: split knowledge/event ingest lanes, bootstrap import profile, reject diagnostics API, scoped project reset API, and self-host core wiki defaults; added exit criteria and execution order.
 - 2026-04-06: Completed Agent Worklog Intelligence UI closure in core Operations route: added project-level worklog policy controls (timezone, local schedule, min activity score, idle-day mode, realtime trigger + lookback), `Sync worklogs now` action, and integrated live AI orgchart view (teams, handoffs, profile deep-links) backed by `GET /v1/agents/orgchart`.
 - 2026-04-06: Started Agent Worklog Intelligence TODO track (5 items): upgraded worklog sync payload with timezone/trigger/noise-gating controls, added richer daily report composition (`Done/Impact/Blockers/Escalations` + authored-page highlights), introduced graph-ready orgchart API (`GET /v1/agents/orgchart`), and extended worker scheduler with daily-batch schedule gating + realtime session/task-close trigger mode.
 - 2026-04-06: Completed self-hosted daily agent reporting automation: added worker job `agent_worklog_scheduler` (enabled by default) that discovers projects from `agent_directory_profiles` and calls `/v1/agents/worklogs/sync` on schedule; wired env/compose defaults (`SYNAPSE_WORKER_AGENT_WORKLOGS_*`), published runbook/docs updates, and added worker unit coverage for job wiring + scheduler helper behavior.
