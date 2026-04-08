@@ -917,6 +917,8 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     include_role_template: bool = False
     role_template_key: str | None = Field(default=None, pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops)$")
     role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    sync_processor_lookback_minutes: int = Field(default=30, ge=1, le=1440)
+    fail_on_sync_processor_unavailable: bool = False
 
 
 class AdoptionAgentWikiBootstrapRequest(BaseModel):
@@ -25545,6 +25547,88 @@ def _queue_enabled_legacy_sources_for_project(conn, *, project_id: str, requeste
     }
 
 
+def _legacy_sync_processor_health(
+    conn,
+    *,
+    project_id: str,
+    lookback_minutes: int = 30,
+) -> dict[str, Any]:
+    if not _legacy_import_sources_table_exists(conn) or not _public_table_exists(conn, "legacy_import_sync_runs"):
+        return {
+            "status": "unavailable",
+            "processor_available": False,
+            "reason_code": "legacy_sync_tables_unavailable",
+            "lookback_minutes": int(max(1, lookback_minutes)),
+            "queue": {
+                "queued": 0,
+                "running": 0,
+            },
+            "activity": {
+                "completed_recent": 0,
+                "failed_recent": 0,
+                "last_progress_at": None,
+            },
+        }
+
+    lookback = max(1, int(lookback_minutes))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = 'queued')::bigint AS queued_count,
+              COUNT(*) FILTER (WHERE status = 'running')::bigint AS running_count,
+              COUNT(*) FILTER (
+                WHERE status = 'completed'
+                  AND COALESCE(finished_at, updated_at, created_at) >= NOW() - (%s * INTERVAL '1 minute')
+              )::bigint AS completed_recent,
+              COUNT(*) FILTER (
+                WHERE status = 'failed'
+                  AND COALESCE(finished_at, updated_at, created_at) >= NOW() - (%s * INTERVAL '1 minute')
+              )::bigint AS failed_recent,
+              MAX(COALESCE(updated_at, finished_at, started_at, created_at)) FILTER (
+                WHERE status IN ('running', 'completed', 'failed', 'skipped')
+              ) AS last_progress_at
+            FROM legacy_import_sync_runs
+            WHERE project_id = %s
+            """,
+            (lookback, lookback, project_id),
+        )
+        row = cur.fetchone() or (0, 0, 0, 0, None)
+
+    queued = int(row[0] or 0)
+    running = int(row[1] or 0)
+    completed_recent = int(row[2] or 0)
+    failed_recent = int(row[3] or 0)
+    last_progress_at = row[4]
+    has_recent_activity = running > 0 or completed_recent > 0 or failed_recent > 0
+    processor_available = has_recent_activity
+
+    status = "healthy"
+    reason_code = "processor_active_recently"
+    if queued > 0 and not has_recent_activity:
+        status = "unavailable"
+        reason_code = "queue_has_no_recent_processor_activity"
+    elif queued == 0 and not has_recent_activity:
+        status = "idle"
+        reason_code = "no_recent_runs"
+
+    return {
+        "status": status,
+        "processor_available": bool(processor_available),
+        "reason_code": reason_code,
+        "lookback_minutes": lookback,
+        "queue": {
+            "queued": queued,
+            "running": running,
+        },
+        "activity": {
+            "completed_recent": completed_recent,
+            "failed_recent": failed_recent,
+            "last_progress_at": None if last_progress_at is None else last_progress_at.isoformat(),
+        },
+    }
+
+
 def _source_ref_slug(source_type: str, source_ref: str) -> str:
     source_bits = [bit for bit in re.split(r"[^a-zA-Z0-9]+", str(source_ref or "")) if bit]
     short_ref = "-".join(source_bits[:6]).lower() or "source"
@@ -26115,6 +26199,7 @@ def execute_adoption_sync_preset(
 
     updated_by = str(payload.updated_by or "").strip() or "ops_admin"
     reviewed_by = str(payload.reviewed_by or "").strip() or updated_by
+    warnings: list[dict[str, Any]] = []
     response: dict[str, Any] = {
         "status": "ok",
         "preset_key": payload.preset_key,
@@ -26160,6 +26245,41 @@ def execute_adoption_sync_preset(
                     project_id=project_id,
                     requested_by=updated_by,
                 )
+                processor_health = _legacy_sync_processor_health(
+                    conn,
+                    project_id=project_id,
+                    lookback_minutes=int(payload.sync_processor_lookback_minutes),
+                )
+                response["sync_queue_processor"] = processor_health
+                if (
+                    int((response.get("sync_queue") or {}).get("queued") or 0) > 0
+                    and str(processor_health.get("status") or "") == "unavailable"
+                ):
+                    warning_payload = {
+                        "code": "legacy_sync_processor_unavailable",
+                        "severity": "critical",
+                        "message": (
+                            "Legacy sync runs were queued but no recent queue processor activity was detected. "
+                            "Start/repair the worker legacy sync scheduler."
+                        ),
+                        "reason_code": processor_health.get("reason_code"),
+                        "lookback_minutes": int(processor_health.get("lookback_minutes") or payload.sync_processor_lookback_minutes),
+                        "queue": processor_health.get("queue"),
+                        "activity": processor_health.get("activity"),
+                        "next_action": "run_legacy_sync_scheduler",
+                    }
+                    warnings.append(warning_payload)
+                    if bool(payload.fail_on_sync_processor_unavailable):
+                        response["status"] = "failed"
+                        response["warnings"] = warnings
+                        mark_request_completed(
+                            conn,
+                            endpoint="/v1/adoption/sync-presets/execute",
+                            idempotency_key=idempotency_key,
+                            status_code=503,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=503, content=response)
             else:
                 response["sync_queue"] = {
                     "available": _legacy_import_sources_table_exists(conn),
@@ -26169,6 +26289,12 @@ def execute_adoption_sync_preset(
                     "run_ids": [],
                     "skipped": bool(payload.dry_run) or not payload.queue_enabled_sources,
                 }
+                if bool(payload.dry_run):
+                    response["sync_queue_processor"] = {
+                        "status": "dry_run",
+                        "processor_available": None,
+                        "lookback_minutes": int(payload.sync_processor_lookback_minutes),
+                    }
 
             if payload.run_bootstrap_approve:
                 recommended = recommendation.get("recommended") if isinstance(recommendation, dict) else {}
@@ -26212,6 +26338,8 @@ def execute_adoption_sync_preset(
                         publish=True,
                     )
                 )
+            if warnings:
+                response["warnings"] = warnings
 
             mark_request_completed(
                 conn,

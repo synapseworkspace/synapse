@@ -1,6 +1,6 @@
 # Self-Hosted Deployment Guide (API + Worker + MCP + Web)
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 This guide runs Synapse core services in Docker Compose with production-like defaults:
 - PostgreSQL (`pgvector`)
@@ -84,6 +84,12 @@ From repository root:
 
 This validates the core path end-to-end:
 `ingest -> synthesis draft -> moderation approve -> MCP retrieval`.
+
+Legacy connector queue smoke (worker scheduler + queued run processing + adoption pipeline):
+
+```bash
+./scripts/integration_legacy_sync_queue_processing.py --api-url http://localhost:8080
+```
 
 For a clean compose-profile acceptance (startup + acceptance + teardown):
 

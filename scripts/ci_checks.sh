@@ -35,6 +35,7 @@ python3 -m py_compile scripts/calibrate_gatekeeper_llm_thresholds.py
 python3 -m py_compile scripts/integration_openclaw_mcp_runtime.py
 python3 -m py_compile scripts/integration_openclaw_runtime_contract.py
 python3 -m py_compile scripts/integration_core_loop.py
+python3 -m py_compile scripts/integration_legacy_sync_queue_processing.py
 python3 -m py_compile scripts/integration_lifecycle_telemetry.py
 python3 -m py_compile scripts/check_queue_governance_policy.py
 python3 -m py_compile scripts/check_release_versions.py
@@ -1935,6 +1936,7 @@ fi
 echo "[5.97/6] Self-hosted backup/restore drill script smoke"
 ./scripts/run_selfhost_backup_restore_drill.sh --help >/dev/null
 ./scripts/run_selfhost_chaos_drill.sh --help >/dev/null
+./scripts/integration_legacy_sync_queue_processing.py --help >/dev/null
 
 echo "[6/6] Cleanup artifacts"
 find . -type d -name '__pycache__' -prune -exec rm -rf {} +

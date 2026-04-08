@@ -100,6 +100,51 @@ def parse_args() -> argparse.Namespace:
         help="Backfill extraction limit per synthesis run.",
     )
     parser.add_argument(
+        "--enable-legacy-sync",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_ENABLE_LEGACY_SYNC", True),
+        help="Enable periodic legacy import queue scheduler/processor job.",
+    )
+    parser.add_argument(
+        "--legacy-sync-interval-sec",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_LEGACY_SYNC_INTERVAL_SEC", 20),
+        help="Interval for legacy import sync scheduler job.",
+    )
+    parser.add_argument(
+        "--legacy-sync-enqueue-limit",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_LEGACY_SYNC_ENQUEUE_LIMIT", 50),
+        help="Maximum due legacy sources queued per scheduler run.",
+    )
+    parser.add_argument(
+        "--legacy-sync-process-limit",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_LEGACY_SYNC_PROCESS_LIMIT", 50),
+        help="Maximum queued legacy sync runs processed per scheduler run.",
+    )
+    parser.add_argument(
+        "--legacy-sync-all-projects",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_LEGACY_SYNC_ALL_PROJECTS", True),
+        help="Process legacy sync queue across all projects.",
+    )
+    parser.add_argument(
+        "--legacy-sync-api-url",
+        default=str(os.getenv("SYNAPSE_WORKER_LEGACY_SYNC_API_URL") or os.getenv("SYNAPSE_API_URL") or "http://api:8080"),
+        help="API URL passed to legacy sync scheduler for backfill upload.",
+    )
+    parser.add_argument(
+        "--legacy-sync-api-key",
+        default=str(os.getenv("SYNAPSE_WORKER_LEGACY_SYNC_API_KEY") or os.getenv("SYNAPSE_API_KEY") or ""),
+        help="Optional API key passed to legacy sync scheduler.",
+    )
+    parser.add_argument(
+        "--legacy-sync-requested-by",
+        default=str(os.getenv("SYNAPSE_WORKER_LEGACY_SYNC_REQUESTED_BY") or "legacy_sync_scheduler"),
+        help="Actor identity for scheduler-created legacy sync runs.",
+    )
+    parser.add_argument(
         "--enable-intelligence",
         action=argparse.BooleanOptionalAction,
         default=_env_bool("SYNAPSE_WORKER_ENABLE_INTELLIGENCE", True),
@@ -240,6 +285,32 @@ def build_jobs(args: argparse.Namespace) -> list[JobSpec]:
             enabled=True,
         )
     ]
+    if args.enable_legacy_sync:
+        legacy_sync_cmd = [
+            python_bin,
+            str(SCRIPT_DIR / "run_legacy_sync_scheduler.py"),
+            "--enqueue-limit",
+            str(max(1, int(args.legacy_sync_enqueue_limit))),
+            "--process-limit",
+            str(max(1, int(args.legacy_sync_process_limit))),
+            "--api-url",
+            str(args.legacy_sync_api_url).strip() or "http://api:8080",
+            "--requested-by",
+            str(args.legacy_sync_requested_by).strip() or "legacy_sync_scheduler",
+        ]
+        if bool(args.legacy_sync_all_projects):
+            legacy_sync_cmd.append("--all-projects")
+        api_key = str(args.legacy_sync_api_key).strip()
+        if api_key:
+            legacy_sync_cmd.extend(["--api-key", api_key])
+        jobs.append(
+            JobSpec(
+                name="legacy_sync_scheduler",
+                argv=legacy_sync_cmd,
+                interval_sec=max(1, int(args.legacy_sync_interval_sec)),
+                enabled=True,
+            )
+        )
     if args.enable_intelligence:
         intelligence_cmd = [
             python_bin,

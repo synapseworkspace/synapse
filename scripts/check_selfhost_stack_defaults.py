@@ -23,9 +23,10 @@ def main() -> int:
     compose_path = ROOT_DIR / "infra" / "docker-compose.selfhost.yml"
     env_example_path = ROOT_DIR / ".env.selfhost.example"
     mcp_dockerfile_path = ROOT_DIR / "services" / "mcp" / "Dockerfile"
+    worker_dockerfile_path = ROOT_DIR / "services" / "worker" / "Dockerfile"
     selfhost_doc_path = ROOT_DIR / "docs" / "self-hosted-deployment.md"
 
-    for path in (compose_path, env_example_path, mcp_dockerfile_path, selfhost_doc_path):
+    for path in (compose_path, env_example_path, mcp_dockerfile_path, worker_dockerfile_path, selfhost_doc_path):
         _assert(path.exists(), f"missing file: {path.relative_to(ROOT_DIR)}", errors)
     if errors:
         print(json.dumps({"status": "failed", "errors": errors}, ensure_ascii=False, indent=2))
@@ -34,6 +35,7 @@ def main() -> int:
     compose_text = compose_path.read_text(encoding="utf-8")
     env_example_text = env_example_path.read_text(encoding="utf-8")
     mcp_dockerfile_text = mcp_dockerfile_path.read_text(encoding="utf-8")
+    worker_dockerfile_text = worker_dockerfile_path.read_text(encoding="utf-8")
     selfhost_doc_text = selfhost_doc_path.read_text(encoding="utf-8")
 
     _assert(
@@ -52,6 +54,12 @@ def main() -> int:
         errors,
     )
     _assert(
+        "SYNAPSE_WORKER_ENABLE_LEGACY_SYNC=1" in env_example_text
+        and "SYNAPSE_WORKER_LEGACY_SYNC_INTERVAL_SEC=20" in env_example_text,
+        ".env.selfhost.example: worker legacy sync defaults must be present",
+        errors,
+    )
+    _assert(
         "container_name:" not in compose_text,
         "infra/docker-compose.selfhost.yml: avoid fixed container_name for multi-instance safety",
         errors,
@@ -59,6 +67,12 @@ def main() -> int:
     _assert(
         "\n  web:\n" in compose_text and "SYNAPSE_WEB_PORT:-4173" in compose_text,
         "infra/docker-compose.selfhost.yml: expected bundled web service with loopback port default",
+        errors,
+    )
+    _assert(
+        "SYNAPSE_WORKER_ENABLE_LEGACY_SYNC: ${SYNAPSE_WORKER_ENABLE_LEGACY_SYNC:-1}" in compose_text
+        and "SYNAPSE_WORKER_LEGACY_SYNC_INTERVAL_SEC: ${SYNAPSE_WORKER_LEGACY_SYNC_INTERVAL_SEC:-20}" in compose_text,
+        "infra/docker-compose.selfhost.yml: worker legacy sync defaults missing",
         errors,
     )
     bind_hits = len(re.findall(r'\$\{SYNAPSE_BIND_HOST:-127\.0\.0\.1\}:\$\{[^}]+\}', compose_text))
@@ -80,6 +94,16 @@ def main() -> int:
     _assert(
         'CMD ["python", "services/mcp/scripts/run_mcp_server.py"]' in mcp_dockerfile_text,
         "services/mcp/Dockerfile: expected runtime command without hardcoded transport",
+        errors,
+    )
+    _assert(
+        "COPY services/shared /app/services/shared" in worker_dockerfile_text,
+        "services/worker/Dockerfile: expected services/shared copy for legacy sync imports",
+        errors,
+    )
+    _assert(
+        "PYTHONPATH=/app/services:/app/services/worker:/app/packages/synapse-sdk-py/src" in worker_dockerfile_text,
+        "services/worker/Dockerfile: expected PYTHONPATH to include /app/services",
         errors,
     )
     _assert(
@@ -110,6 +134,7 @@ def main() -> int:
                     "compose": str(compose_path.relative_to(ROOT_DIR)),
                     "env_example": str(env_example_path.relative_to(ROOT_DIR)),
                     "mcp_dockerfile": str(mcp_dockerfile_path.relative_to(ROOT_DIR)),
+                    "worker_dockerfile": str(worker_dockerfile_path.relative_to(ROOT_DIR)),
                     "selfhost_doc": str(selfhost_doc_path.relative_to(ROOT_DIR)),
                 },
             },

@@ -43,6 +43,14 @@ SYNAPSE_WORKER_ENABLE_INTELLIGENCE=1
 SYNAPSE_WORKER_SYNTHESIS_INTERVAL_SEC=2
 SYNAPSE_WORKER_SYNTHESIS_LIMIT=100
 SYNAPSE_WORKER_SYNTHESIS_EXTRACT_LIMIT=200
+SYNAPSE_WORKER_ENABLE_LEGACY_SYNC=1
+SYNAPSE_WORKER_LEGACY_SYNC_INTERVAL_SEC=3
+SYNAPSE_WORKER_LEGACY_SYNC_ENQUEUE_LIMIT=100
+SYNAPSE_WORKER_LEGACY_SYNC_PROCESS_LIMIT=100
+SYNAPSE_WORKER_LEGACY_SYNC_ALL_PROJECTS=1
+SYNAPSE_WORKER_LEGACY_SYNC_API_URL=http://api:8080
+SYNAPSE_WORKER_LEGACY_SYNC_API_KEY=
+SYNAPSE_WORKER_LEGACY_SYNC_REQUESTED_BY=legacy_sync_scheduler
 SYNAPSE_WORKER_INTELLIGENCE_INTERVAL_SEC=600
 SYNAPSE_WORKER_INTELLIGENCE_DELIVERY_LIMIT=200
 
@@ -62,6 +70,7 @@ EOF
 
 HOST_DB_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}"
 API_URL="http://127.0.0.1:${API_PORT}"
+LEGACY_SQL_DSN_IN_CONTAINER="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
 COMPOSE=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 
 cleanup() {
@@ -110,6 +119,18 @@ if [[ "$MCP_RESTART_COUNT" != "0" ]]; then
   exit 1
 fi
 
+WORKER_CONTAINER_ID="$("${COMPOSE[@]}" ps -q worker)"
+if [[ -z "$WORKER_CONTAINER_ID" ]]; then
+  echo "[selfhost-acceptance] worker container id is empty" >&2
+  exit 1
+fi
+WORKER_RESTART_COUNT="$(docker inspect --format '{{.RestartCount}}' "$WORKER_CONTAINER_ID" 2>/dev/null || echo "999")"
+if [[ "$WORKER_RESTART_COUNT" != "0" ]]; then
+  echo "[selfhost-acceptance] worker restart loop detected (restart_count=$WORKER_RESTART_COUNT)" >&2
+  "${COMPOSE[@]}" logs --no-color worker | tail -n 200 >&2 || true
+  exit 1
+fi
+
 echo "[selfhost-acceptance] running core loop acceptance against compose stack"
 python3 "$ROOT_DIR/scripts/integration_core_loop.py" \
   --api-url "$API_URL" \
@@ -122,5 +143,13 @@ python3 "$ROOT_DIR/scripts/integration_core_loop.py" \
   --mcp-host 127.0.0.1 \
   --mcp-port "$MCP_PORT" \
   --project-id "core_selfhost_$(date +%s)"
+
+echo "[selfhost-acceptance] running legacy sync queue processing acceptance"
+python3 "$ROOT_DIR/scripts/integration_legacy_sync_queue_processing.py" \
+  --api-url "$API_URL" \
+  --legacy-sql-dsn "$LEGACY_SQL_DSN_IN_CONTAINER" \
+  --project-id "legacy_selfhost_$(date +%s)" \
+  --timeout-seconds 240 \
+  --poll-interval-seconds 2
 
 echo "[selfhost-acceptance] success"
