@@ -83,6 +83,10 @@ For initial migration, you can constrain ingestion before claims are generated:
 
 `/v1/backfill/knowledge` enables curated mode by default (`balanced`) unless explicitly disabled (`curated.enabled=false`).
 The API response returns filter diagnostics (`accepted_input`, `accepted`, `filtered_out`, `curated_filters.drop_reasons`) so teams can tune import scope without DB forensics.
+For pre-write simulation and connector validation, add:
+
+- `POST /v1/backfill/curated-explain` to preview `kept/dropped` + drop reasons before writing events.
+- `POST /v1/adoption/import-connectors/resolve` to apply connector field overrides and receive validation hints.
 
 ## Memory Tier Routing (Default Safety)
 
@@ -190,6 +194,11 @@ For first adoption in self-hosted mode, use the wiki-first UI without opening ad
 Preset source:
 - `GET /v1/wiki/drafts/bootstrap-approve/recommendation?project_id=...` provides server-side defaults based on
   source ownership, legacy connectors, queue pressure, and backfill quality counters (`dropped_event_like`, `kept_durable`, `trusted_bypass`).
+
+Quick policy + KPI loop:
+- `GET /v1/adoption/policy-calibration/quick-loop?project_id=...` for bottleneck-aware routing recommendations.
+- `POST /v1/adoption/policy-calibration/quick-loop/apply` (`dry_run=true` first) for safe preset apply with rollback snapshot.
+- `GET /v1/adoption/kpi?project_id=...&days=30` for onboarding KPI (`time_to_first_draft`, `time_to_first_publish`, `draft_noise_ratio`, `publish_revert_rate`).
 
 The UI intentionally keeps migration controls collapsed by default and exposes advanced filters only on demand.
 

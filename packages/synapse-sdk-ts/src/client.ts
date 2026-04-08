@@ -502,6 +502,173 @@ export class SynapseClient {
     return this.backfillMemory(records, { ...options, ingestLane: "knowledge" });
   }
 
+  async explainCuratedBackfill(
+    records: MemoryBackfillRecord[],
+    options: Omit<MemoryBackfillOptions, "batchId" | "chunkSize" | "cursor"> & {
+      sampleLimit?: number;
+    } = {}
+  ): Promise<Record<string, unknown>> {
+    const ingestLane = options.ingestLane ?? "knowledge";
+    if (ingestLane !== "event" && ingestLane !== "knowledge") {
+      throw new Error("ingestLane must be either 'event' or 'knowledge'");
+    }
+    if (!records.length) {
+      throw new Error("records must not be empty");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/backfill/curated-explain", {
+      method: "POST",
+      params: {
+        sample_limit: normalizeInt(options.sampleLimit ?? 12, 1, 100)
+      },
+      payload: {
+        batch: {
+          project_id: this.projectId,
+          source_system: options.sourceSystem ?? "sdk_bootstrap",
+          ingest_lane: ingestLane,
+          agent_id: options.agentId,
+          session_id: options.sessionId,
+          finalize: true,
+          created_by: options.createdBy,
+          records: records.map((record) => ({
+            source_id: record.source_id,
+            content: record.content,
+            observed_at: record.observed_at,
+            entity_key: record.entity_key,
+            category: record.category,
+            metadata: record.metadata ?? {},
+            tags: record.tags ?? []
+          })),
+          curated:
+            options.curatedEnabled !== undefined ||
+            options.curatedSourceSystems !== undefined ||
+            options.curatedNamespaces !== undefined ||
+            options.noisePreset !== undefined ||
+            options.curatedDropEventLike !== undefined
+              ? {
+                  enabled: options.curatedEnabled,
+                  source_systems: options.curatedSourceSystems,
+                  namespaces: options.curatedNamespaces,
+                  noise_preset:
+                    options.noisePreset !== undefined && String(options.noisePreset).trim()
+                      ? String(options.noisePreset).trim().toLowerCase()
+                      : undefined,
+                  drop_event_like: options.curatedDropEventLike
+                }
+              : undefined
+        }
+      }
+    });
+  }
+
+  async listAdoptionImportConnectors(options: {
+    sourceType?: "postgres_sql" | string;
+    profile?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/import-connectors", {
+      method: "GET",
+      params: {
+        source_type: String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql",
+        profile: asOptionalString(options.profile) ?? undefined
+      }
+    });
+  }
+
+  async resolveAdoptionImportConnector(options: {
+    connectorId: string;
+    sourceType?: "postgres_sql" | string;
+    fieldOverrides?: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    const connectorId = String(options.connectorId ?? "").trim();
+    if (!connectorId) {
+      throw new Error("connectorId is required");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/import-connectors/resolve", {
+      method: "POST",
+      payload: {
+        source_type: String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql",
+        connector_id: connectorId,
+        project_id: this.projectId,
+        field_overrides: options.fieldOverrides ?? {}
+      }
+    });
+  }
+
+  async listAdoptionNoisePresets(options: {
+    lane?: "event" | "knowledge";
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/noise-presets", {
+      method: "GET",
+      params: {
+        lane: options.lane
+      }
+    });
+  }
+
+  async getAdoptionKpi(options: {
+    days?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/kpi", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 30, 1, 180)
+      }
+    });
+  }
+
+  async getAdoptionPolicyCalibrationQuickLoop(options: {
+    days?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/policy-calibration/quick-loop", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90)
+      }
+    });
+  }
+
+  async applyAdoptionPolicyCalibrationQuickLoop(options: {
+    updatedBy: string;
+    presetKey?: string;
+    dryRun?: boolean;
+    note?: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/policy-calibration/quick-loop/apply", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        preset_key: asOptionalString(options.presetKey) ?? undefined,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? undefined : this.projectId,
+        note: asOptionalString(options.note) ?? undefined
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getSelfhostConsistencyGate(options: {
+    webBuild?: string;
+    uiProfile?: string;
+    routePath?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/selfhost/consistency", {
+      method: "GET",
+      params: {
+        web_build: asOptionalString(options.webBuild) ?? undefined,
+        ui_profile: asOptionalString(options.uiProfile) ?? undefined,
+        route_path: asOptionalString(options.routePath) ?? undefined
+      }
+    });
+  }
+
   async getBootstrapMigrationRecommendation(): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/wiki/drafts/bootstrap-approve/recommendation", {
       method: "GET",

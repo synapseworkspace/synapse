@@ -1,0 +1,71 @@
+# Adoption Connector Cookbook (Production)
+
+This cookbook shows repeatable connector setups for existing memory stacks.
+
+## 1) Resolve connector template with project overrides
+
+```bash
+curl -X POST "http://localhost:8080/v1/adoption/import-connectors/resolve" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_type": "postgres_sql",
+    "connector_id": "postgres_sql:ops_kb_items:polling",
+    "project_id": "omega_demo",
+    "field_overrides": {
+      "sql_dsn_env": "HW_MEMORY_DSN",
+      "max_records": 5000,
+      "chunk_size": 100,
+      "curated_import.noise_preset": "balanced",
+      "curated_import.drop_event_like": true
+    }
+  }'
+```
+
+Use `validation_hints.errors` as hard blockers and `validation_hints.warnings` as rollout checks.
+
+## 2) Polling mode (cron)
+
+1. Upsert source using the resolved `config_patch`.
+2. Run scheduler every 5 minutes.
+
+```bash
+*/5 * * * * cd /srv/synapse && python services/worker/scripts/run_legacy_sync_scheduler.py --all-projects
+```
+
+Recommended for stable SQL schemas and low operational complexity.
+
+## 3) WAL CDC mode (near realtime)
+
+Use connector id `postgres_sql:<profile>:wal_cdc` and provide:
+
+- `wal_slot`
+- `wal_publication`
+- optional `wal_tables`
+
+Run scheduler every minute (or continuous worker loop if your environment supports it).
+
+## 4) Curated import dry-run before first ingest
+
+```bash
+curl -X POST "http://localhost:8080/v1/backfill/curated-explain?sample_limit=12" \
+  -H "Content-Type: application/json" \
+  -d @sample_backfill_payload.json
+```
+
+Inspect:
+
+- `summary.drop_reasons`
+- `samples.dropped[]`
+- `apply_payload_template`
+
+Then submit the same curated profile to `/v1/backfill/knowledge`.
+
+## 5) First-day quality loop
+
+1. `GET /v1/adoption/pipeline/visibility`
+2. `GET /v1/adoption/rejections/diagnostics`
+3. `GET /v1/adoption/policy-calibration/quick-loop`
+4. `POST /v1/adoption/policy-calibration/quick-loop/apply` (`dry_run=true` first)
+5. `GET /v1/adoption/kpi`
+
+This sequence gives deterministic onboarding quality without DB forensics.

@@ -195,6 +195,13 @@ Operations includes:
 - AI Agent Orgchart: teams, handoffs, and direct links to agent wiki profiles.
 - Migration Mode: trusted-source bootstrap preview/apply flows for existing-memory adoption.
 
+Setup wizard v2 flow:
+1. Choose connector template.
+2. Validate connector config.
+3. Connect source and queue first sync.
+4. Preview curated import.
+5. Apply first trusted batch and continue in Drafts/Wiki.
+
 ## Agentic Onboarding Benchmark
 
 Measure day-0 onboarding KPI in one command:
@@ -236,6 +243,7 @@ KPI cards emitted per scenario:
 - CrewAI 5-minute quickstart: [docs/crewai-quickstart-5-min.md](docs/crewai-quickstart-5-min.md)
 - OpenClaw integration: [docs/openclaw-integration.md](docs/openclaw-integration.md)
 - Existing-memory adoption playbook: [docs/adoption-existing-memory.md](docs/adoption-existing-memory.md)
+- Adoption connector cookbook: [docs/adoption-connector-cookbook.md](docs/adoption-connector-cookbook.md)
 - Knowledge compiler RFC: [docs/knowledge-compiler-rfc.md](docs/knowledge-compiler-rfc.md)
 - Framework integrations: [docs/framework-integrations.md](docs/framework-integrations.md)
 - Cognitive State Layer (L2) positioning: [docs/cognitive-state-layer.md](docs/cognitive-state-layer.md)
@@ -243,6 +251,7 @@ KPI cards emitted per scenario:
 - Buyer ROI + rollout one-pager: [docs/buyer-roi-rollout.md](docs/buyer-roi-rollout.md)
 - Architecture diagram pack: [docs/architecture-diagram-pack.md](docs/architecture-diagram-pack.md)
 - Operations route runbook: [docs/operations-route-runbook.md](docs/operations-route-runbook.md)
+- Operator first-24h playbook: [docs/operator-first-24h.md](docs/operator-first-24h.md)
 - Wiki engine design: [docs/wiki-engine-design.md](docs/wiki-engine-design.md)
 - Wiki UX roles and metrics: [docs/wiki-ux-roles-metrics.md](docs/wiki-ux-roles-metrics.md)
 - Wiki UI visual gallery (CI artifacts): [docs/wiki-ui-visual-gallery.md](docs/wiki-ui-visual-gallery.md)

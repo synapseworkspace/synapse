@@ -498,6 +498,182 @@ class SynapseClient:
             chunk_size=chunk_size,
         )
 
+    def explain_curated_backfill(
+        self,
+        records: Sequence[MemoryBackfillRecord],
+        *,
+        ingest_lane: str = "knowledge",
+        source_system: str = "sdk_bootstrap",
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        created_by: str | None = None,
+        cursor: str | None = None,
+        curated_enabled: bool | None = None,
+        curated_source_systems: Sequence[str] | None = None,
+        curated_namespaces: Sequence[str] | None = None,
+        noise_preset: str | None = None,
+        curated_drop_event_like: bool | None = None,
+        sample_limit: int = 12,
+    ) -> dict[str, Any]:
+        resolved_ingest_lane = str(ingest_lane or "knowledge").strip().lower()
+        if resolved_ingest_lane not in {"event", "knowledge"}:
+            raise ValueError("ingest_lane must be either 'event' or 'knowledge'")
+        if not records:
+            raise ValueError("records must not be empty")
+        payload: dict[str, Any] = {
+            "batch": {
+                "project_id": self._config.project_id,
+                "source_system": source_system,
+                "ingest_lane": resolved_ingest_lane,
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "cursor": cursor,
+                "finalize": True,
+                "created_by": created_by,
+                "records": [self._serialize_backfill_record(record) for record in records],
+            }
+        }
+        curated_payload: dict[str, Any] = {}
+        if curated_enabled is not None:
+            curated_payload["enabled"] = bool(curated_enabled)
+        if curated_source_systems is not None:
+            curated_payload["source_systems"] = [str(item).strip() for item in curated_source_systems if str(item).strip()]
+        if curated_namespaces is not None:
+            curated_payload["namespaces"] = [str(item).strip() for item in curated_namespaces if str(item).strip()]
+        if noise_preset is not None and str(noise_preset).strip():
+            curated_payload["noise_preset"] = str(noise_preset).strip().lower()
+        if curated_drop_event_like is not None:
+            curated_payload["drop_event_like"] = bool(curated_drop_event_like)
+        if curated_payload:
+            payload["batch"]["curated"] = curated_payload
+        return self._request_json(
+            "/v1/backfill/curated-explain",
+            method="POST",
+            payload=payload,
+            params={"sample_limit": max(1, min(100, int(sample_limit)))},
+        )
+
+    def list_adoption_import_connectors(
+        self,
+        *,
+        source_type: str = "postgres_sql",
+        profile: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "source_type": str(source_type or "postgres_sql").strip().lower() or "postgres_sql",
+        }
+        if profile is not None and str(profile).strip():
+            params["profile"] = str(profile).strip()
+        return self._request_json(
+            "/v1/adoption/import-connectors",
+            method="GET",
+            params=params,
+        )
+
+    def resolve_adoption_import_connector(
+        self,
+        *,
+        connector_id: str,
+        source_type: str = "postgres_sql",
+        field_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_connector_id = str(connector_id or "").strip()
+        if not normalized_connector_id:
+            raise ValueError("connector_id is required")
+        return self._request_json(
+            "/v1/adoption/import-connectors/resolve",
+            method="POST",
+            payload={
+                "source_type": str(source_type or "postgres_sql").strip().lower() or "postgres_sql",
+                "connector_id": normalized_connector_id,
+                "project_id": self._config.project_id,
+                "field_overrides": dict(field_overrides or {}),
+            },
+        )
+
+    def list_adoption_noise_presets(
+        self,
+        *,
+        lane: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if lane is not None and str(lane).strip():
+            normalized_lane = str(lane).strip().lower()
+            if normalized_lane not in {"event", "knowledge"}:
+                raise ValueError("lane must be one of: event, knowledge")
+            params["lane"] = normalized_lane
+        return self._request_json(
+            "/v1/adoption/noise-presets",
+            method="GET",
+            params=params,
+        )
+
+    def get_adoption_kpi(self, *, days: int = 30) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/kpi",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(180, int(days))),
+            },
+        )
+
+    def get_adoption_policy_calibration_quick_loop(self, *, days: int = 14) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/policy-calibration/quick-loop",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+            },
+        )
+
+    def apply_adoption_policy_calibration_quick_loop(
+        self,
+        *,
+        updated_by: str,
+        preset_key: str | None = None,
+        dry_run: bool = True,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+            "preset_key": str(preset_key).strip() if preset_key is not None and str(preset_key).strip() else None,
+            "note": str(note).strip() if note is not None and str(note).strip() else None,
+        }
+        return self._request_json(
+            "/v1/adoption/policy-calibration/quick-loop/apply",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def get_selfhost_consistency_gate(
+        self,
+        *,
+        web_build: str | None = None,
+        ui_profile: str | None = None,
+        route_path: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if web_build is not None and str(web_build).strip():
+            params["web_build"] = str(web_build).strip()
+        if ui_profile is not None and str(ui_profile).strip():
+            params["ui_profile"] = str(ui_profile).strip()
+        if route_path is not None and str(route_path).strip():
+            params["route_path"] = str(route_path).strip()
+        return self._request_json(
+            "/v1/adoption/selfhost/consistency",
+            method="GET",
+            params=params,
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",

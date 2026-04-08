@@ -59,14 +59,20 @@ Environment:
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
 - `POST /v1/backfill/memory` (runtime/event lane backfill; strict event-noise filtering defaults)
 - `POST /v1/backfill/knowledge` (corporate knowledge lane backfill; avoids source-type transport hard-block defaults)
+- `POST /v1/backfill/curated-explain` (dry-run curated import explain: pre-write `kept/dropped`, reason breakdown, and sample records)
   - optional batch-level `curated` filters: `enabled`, `source_systems[]`, `namespaces[]`, `noise_preset`, `drop_event_like`
   - response includes curated diagnostics: `accepted_input`, `accepted`, `filtered_out`, `curated_filters.drop_reasons`
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
 - `GET /v1/adoption/import-connectors?source_type=postgres_sql&profile=ops_kb_items` (built-in connectors for `memory_items`/`ops_kb_items` with ready `config_patch` and sync contract metadata)
+- `POST /v1/adoption/import-connectors/resolve` (connector config resolution with field overrides and validation hints)
 - `GET /v1/adoption/noise-presets?lane=knowledge` (reusable pre-ingest noise suppression presets for snapshots/telemetry/raw payloads)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
 - `GET /v1/adoption/pipeline/visibility?project_id=...&days=14&source_systems=legacy_import,postgres_sql&namespaces=ops` (end-to-end counters `accepted -> events -> claims -> drafts -> pages` with transition drops and bottleneck hints)
+- `GET /v1/adoption/kpi?project_id=...&days=30` (adoption KPI cards and threshold alerts: first draft/publish latency, draft noise, revert rate)
+- `GET /v1/adoption/policy-calibration/quick-loop?project_id=...` (safe routing-policy recommendation from diagnostics + bottleneck analysis)
+- `POST /v1/adoption/policy-calibration/quick-loop/apply` (dry-run/apply quick preset with rollback snapshot safety)
+- `GET /v1/adoption/selfhost/consistency?web_build=...&ui_profile=core&route_path=/wiki` (self-host UI/API consistency gate)
 - `POST /v1/adoption/bootstrap-profile/apply` (one-click adoption profile for first wiki import; `dry_run=true` preview by default, applies gatekeeper soft-threshold profile + bootstrap recommendation bundle)
 - `POST /v1/adoption/project-reset` (project-scope reset with `dry_run=true` default, scoped deletes, and audit trail)
 - `GET /v1/adoption/source-ownership?project_id=...`

@@ -107,7 +107,7 @@ Execution order for this track:
 
 ## v0.1.3 Release Plan (Q2 2026)
 
-Status: `planned`
+Status: `done`
 
 Goal:
 - сделать внедрение Synapse по-настоящему “подключил и работает” для существующих agent-memory стеков;
@@ -115,25 +115,25 @@ Goal:
 - довести wiki-first UX до уровня production onboarding для новых команд.
 
 Checklist:
-1. `planned` Adoption setup wizard v2:
+1. `done` Adoption setup wizard v2:
    - единый onboarding flow в UI (`connect source -> preview curated import -> first publish`) без перехода в ops-тулзы;
    - шаблоны подключений для `ops_kb_items` / `memory_items` прямо из мастера.
-2. `planned` Curated import dry-run explain:
+2. `done` Curated import dry-run explain:
    - endpoint с предпросмотром фильтрации до записи событий (`kept/dropped` + reason breakdown sample);
    - one-click “apply this profile” из dry-run результата.
-3. `planned` Policy calibration quick loop:
+3. `done` Policy calibration quick loop:
    - в UI быстрые рекомендации по routing-policy на основе reject diagnostics + pipeline bottleneck;
    - safe preset apply с rollback snapshot.
-4. `planned` Self-host UX consistency gate:
+4. `done` Self-host UX consistency gate:
    - авто-проверка, что `/wiki` route и core profile активны после апгрейда/рестарта;
    - предупреждение в UI при несовместимой web/api версии.
-5. `planned` Adoption KPI dashboard:
+5. `done` Adoption KPI dashboard:
    - KPI: `time_to_first_draft`, `time_to_first_publish`, `draft_noise_ratio`, `publish_revert_rate`;
    - baseline alerts для деградации качества импорта.
-6. `planned` Connector pack hardening:
+6. `done` Connector pack hardening:
    - расширение built-in connectors для типовых custom SQL mapping сценариев (explicit field overrides + validation hints);
    - cookbook с production примерами cron/CDC sync.
-7. `planned` OSS launch polish pack:
+7. `done` OSS launch polish pack:
    - обновление README/Quickstart под новый setup wizard + curated import defaults;
    - релизный “operator playbook” для первых 24 часов после внедрения.
 
@@ -774,6 +774,7 @@ All items were completed and moved to `Recent Updates` for audit history.
 
 ## Recent Updates
 
+- 2026-04-08: Completed `v0.1.3` adoption hardening release pack: shipped setup wizard v2 (`connect -> curated preview -> first publish`), new curated dry-run explain API (`POST /v1/backfill/curated-explain`), connector resolve endpoint with field overrides + validation hints (`POST /v1/adoption/import-connectors/resolve`), policy calibration quick loop (`GET/POST /v1/adoption/policy-calibration/quick-loop*`) with rollback-safe apply, onboarding KPI endpoint (`GET /v1/adoption/kpi`), self-host consistency gate (`GET /v1/adoption/selfhost/consistency`), and docs polish (`adoption-connector-cookbook`, `operator-first-24h`).
 - 2026-04-06: Added `Real-World Adoption Backlog` from production integration feedback with explicit `P0/P1/P2` priorities: split knowledge/event ingest lanes, bootstrap import profile, reject diagnostics API, scoped project reset API, and self-host core wiki defaults; added exit criteria and execution order.
 - 2026-04-06: Completed Agent Worklog Intelligence UI closure in core Operations route: added project-level worklog policy controls (timezone, local schedule, min activity score, idle-day mode, realtime trigger + lookback), `Sync worklogs now` action, and integrated live AI orgchart view (teams, handoffs, profile deep-links) backed by `GET /v1/agents/orgchart`.
 - 2026-04-06: Started Agent Worklog Intelligence TODO track (5 items): upgraded worklog sync payload with timezone/trigger/noise-gating controls, added richer daily report composition (`Done/Impact/Blockers/Escalations` + authored-page highlights), introduced graph-ready orgchart API (`GET /v1/agents/orgchart`), and extended worker scheduler with daily-batch schedule gating + realtime session/task-close trigger mode.

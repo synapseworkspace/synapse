@@ -4,7 +4,7 @@ import unittest
 from typing import Any
 
 from synapse_sdk.client import Synapse
-from synapse_sdk.types import SynapseConfig
+from synapse_sdk.types import MemoryBackfillRecord, SynapseConfig
 
 
 class _DummyTransport:
@@ -108,6 +108,52 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["path"], "/v1/wiki/drafts/bootstrap-approve/recommendation")
         self.assertEqual(call["method"], "GET")
         self.assertEqual(call["params"].get("project_id"), "omega_demo")
+
+    def test_explain_curated_backfill_calls_preview_endpoint(self) -> None:
+        self.client.explain_curated_backfill(
+            [
+                MemoryBackfillRecord(
+                    source_id="rec-1",
+                    content='{"order_id":"123","status":"created"}',
+                    category="order_snapshot",
+                    metadata={"source_system": "postgres_sql", "namespace": "orders"},
+                )
+            ],
+            curated_enabled=True,
+            curated_source_systems=["postgres_sql"],
+            curated_namespaces=["orders"],
+            noise_preset="balanced",
+            sample_limit=9,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/backfill/curated-explain")
+        self.assertEqual(call["method"], "POST")
+        self.assertEqual(call["params"].get("sample_limit"), 9)
+        payload = call["payload"].get("batch") or {}
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("ingest_lane"), "knowledge")
+        self.assertEqual((payload.get("curated") or {}).get("noise_preset"), "balanced")
+
+    def test_resolve_adoption_import_connector_uses_project_scope(self) -> None:
+        self.client.resolve_adoption_import_connector(
+            connector_id="postgres_sql:ops_kb_items:polling",
+            field_overrides={"sql_dsn_env": "HW_MEMORY_DSN", "curated_import.noise_preset": "strict"},
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/import-connectors/resolve")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("connector_id"), "postgres_sql:ops_kb_items:polling")
+        self.assertIsInstance(payload.get("field_overrides"), dict)
+
+    def test_get_adoption_kpi_is_project_scoped(self) -> None:
+        self.client.get_adoption_kpi(days=21)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/kpi")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+        self.assertEqual(call["params"].get("days"), 21)
 
 
 if __name__ == "__main__":

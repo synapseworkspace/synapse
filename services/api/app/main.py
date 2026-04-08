@@ -238,6 +238,13 @@ class MemoryBackfillRequest(BaseModel):
     batch: MemoryBackfillBatchIn
 
 
+class AdoptionImportConnectorResolveRequest(BaseModel):
+    source_type: str = Field(default="postgres_sql", min_length=1, max_length=64)
+    connector_id: str = Field(min_length=1, max_length=256)
+    project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    field_overrides: dict[str, Any] | None = None
+
+
 class AuthSessionCreateRequest(BaseModel):
     session_ttl_minutes: int | None = Field(default=None, ge=15, le=43200)
     metadata: dict[str, Any] | None = None
@@ -423,6 +430,15 @@ class AdoptionBootstrapProfileApplyRequest(BaseModel):
     project_id: str
     updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
     profile: str = Field(default="initial_import", pattern="^(initial_import)$")
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class AdoptionPolicyCalibrationQuickApplyRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    preset_key: str | None = Field(default=None, max_length=128)
     dry_run: bool = True
     confirm_project_id: str | None = None
     note: str | None = Field(default=None, max_length=2000)
@@ -4268,6 +4284,29 @@ def _record_matches_noise_preset(record: MemoryBackfillRecordIn, *, preset_key: 
     return keys >= min_json_keys
 
 
+def _classify_backfill_record_drop_reason(
+    record: MemoryBackfillRecordIn,
+    *,
+    batch_source_system: str,
+    allowed_sources: set[str],
+    allowed_namespaces: set[str],
+    noise_preset: str,
+    drop_event_like: bool,
+) -> str | None:
+    source_system = _extract_backfill_record_source_system(
+        record,
+        fallback=_normalize_source_system(batch_source_system),
+    )
+    if allowed_sources and source_system not in allowed_sources:
+        return "source_system"
+    namespace = _extract_backfill_record_namespace(record)
+    if allowed_namespaces and namespace not in allowed_namespaces:
+        return "namespace"
+    if _record_matches_noise_preset(record, preset_key=noise_preset, drop_event_like=drop_event_like):
+        return "noise_preset"
+    return None
+
+
 def _resolve_backfill_curated_options(batch: MemoryBackfillBatchIn, *, ingest_lane: str) -> dict[str, Any]:
     curated = batch.curated
     explicit_enabled = curated.enabled if isinstance(curated, MemoryBackfillCuratedFilterIn) else None
@@ -4331,17 +4370,22 @@ def _apply_backfill_curated_filters(
     dropped_by_namespace = 0
     dropped_by_noise = 0
 
-    normalized_batch_source = _normalize_source_system(batch_source_system)
     for record in records:
-        source_system = _extract_backfill_record_source_system(record, fallback=normalized_batch_source)
-        if allowed_sources and source_system not in allowed_sources:
+        reason = _classify_backfill_record_drop_reason(
+            record,
+            batch_source_system=batch_source_system,
+            allowed_sources=allowed_sources,
+            allowed_namespaces=allowed_namespaces,
+            noise_preset=noise_preset,
+            drop_event_like=drop_event_like,
+        )
+        if reason == "source_system":
             dropped_by_source += 1
             continue
-        namespace = _extract_backfill_record_namespace(record)
-        if allowed_namespaces and namespace not in allowed_namespaces:
+        if reason == "namespace":
             dropped_by_namespace += 1
             continue
-        if _record_matches_noise_preset(record, preset_key=noise_preset, drop_event_like=drop_event_like):
+        if reason == "noise_preset":
             dropped_by_noise += 1
             continue
         kept.append(record)
@@ -14453,6 +14497,75 @@ def get_meta_compatibility(
     }
 
 
+@app.get("/v1/adoption/selfhost/consistency")
+def get_selfhost_consistency_gate(
+    web_build: str | None = Query(default=None),
+    ui_profile: str | None = Query(default=None),
+    route_path: str | None = Query(default=None),
+) -> dict[str, Any]:
+    compat = get_meta_compatibility(web_build=web_build)
+    normalized_profile = str(ui_profile or "").strip().lower()
+    normalized_route = str(route_path or "").strip().lower()
+    checks: list[dict[str, Any]] = []
+
+    checks.append(
+        {
+            "key": "web_build_compatibility",
+            "status": "ok" if compat.get("web_build_status") in {"ok", "not_provided"} else "warning",
+            "message": (
+                "Web build is compatible with API contract."
+                if compat.get("web_build_status") in {"ok", "not_provided"}
+                else "Web build is below API minimum compatibility contract."
+            ),
+            "meta": {
+                "web_build": compat.get("web_build"),
+                "web_build_status": compat.get("web_build_status"),
+                "minimum_web_build": (compat.get("compatibility") or {}).get("minimum_web_build"),
+                "recommended_web_build": (compat.get("compatibility") or {}).get("recommended_web_build"),
+            },
+        }
+    )
+
+    profile_ok = normalized_profile in {"", "core", "core-only", "wiki", "wiki-first"}
+    checks.append(
+        {
+            "key": "ui_profile_core",
+            "status": "ok" if profile_ok else "warning",
+            "message": "UI profile is wiki-first." if profile_ok else "UI profile is not core wiki-first.",
+            "meta": {
+                "ui_profile": normalized_profile or None,
+                "expected_profiles": ["core", "core-only", "wiki", "wiki-first"],
+            },
+        }
+    )
+
+    route_ok = normalized_route in {"", "/wiki"} or normalized_route.startswith("/wiki/")
+    checks.append(
+        {
+            "key": "route_is_wiki",
+            "status": "ok" if route_ok else "warning",
+            "message": "Route is wiki-first." if route_ok else "Route is not /wiki; users may land outside core workspace.",
+            "meta": {
+                "route_path": normalized_route or None,
+                "expected_prefix": "/wiki",
+            },
+        }
+    )
+
+    warnings = [item for item in checks if item.get("status") != "ok"]
+    return {
+        "status": "ok" if not warnings else "warning",
+        "checks": checks,
+        "warnings_total": len(warnings),
+        "recommendations": [
+            "Set web route to `/wiki` for default entry.",
+            "Run latest web build if compatibility status is outdated.",
+            "Keep UI profile in core/wiki-first mode for self-host onboarding.",
+        ],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _normalize_roles_list(values: list[str] | None) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -16195,6 +16308,115 @@ def _ingest_memory_backfill(
                     error_message=str(exc),
                 )
                 raise
+
+
+def _serialize_backfill_record_preview(record: MemoryBackfillRecordIn) -> dict[str, Any]:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    content = str(record.content or "")
+    return {
+        "source_id": str(record.source_id or ""),
+        "entity_key": str(record.entity_key or "") or None,
+        "category": str(record.category or "") or None,
+        "observed_at": record.observed_at.isoformat() if record.observed_at is not None else None,
+        "source_system": _extract_backfill_record_source_system(record, fallback="unknown"),
+        "namespace": _extract_backfill_record_namespace(record) or None,
+        "content_preview": content[:280],
+        "content_length": len(content),
+        "metadata_keys": sorted([str(key) for key in metadata.keys()])[:30],
+    }
+
+
+@app.post("/v1/backfill/curated-explain", response_model=None)
+def explain_curated_backfill(
+    payload: MemoryBackfillRequest,
+    sample_limit: int = Query(default=12, ge=1, le=100),
+) -> dict[str, Any]:
+    batch = payload.batch
+    ingest_lane = _normalize_backfill_ingest_lane(batch.ingest_lane, default="knowledge")
+    curated_options = _resolve_backfill_curated_options(batch, ingest_lane=ingest_lane)
+    records = list(batch.records)
+
+    allowed_sources = set(_normalize_source_system_list(curated_options.get("source_systems")))
+    allowed_namespaces = set(_normalize_namespace_list(curated_options.get("namespaces")))
+    noise_preset = _normalize_backfill_noise_preset(curated_options.get("noise_preset"), default="off")
+    drop_event_like = bool(curated_options.get("drop_event_like", True))
+
+    kept_records: list[MemoryBackfillRecordIn] = []
+    dropped_counts: dict[str, int] = {"source_system": 0, "namespace": 0, "noise_preset": 0}
+    dropped_samples: list[dict[str, Any]] = []
+
+    for record in records:
+        reason = _classify_backfill_record_drop_reason(
+            record,
+            batch_source_system=batch.source_system,
+            allowed_sources=allowed_sources,
+            allowed_namespaces=allowed_namespaces,
+            noise_preset=noise_preset,
+            drop_event_like=drop_event_like,
+        )
+        if reason is None:
+            kept_records.append(record)
+            continue
+        dropped_counts[reason] = int(dropped_counts.get(reason, 0)) + 1
+        if len(dropped_samples) < sample_limit:
+            sample = _serialize_backfill_record_preview(record)
+            sample["drop_reason"] = reason
+            dropped_samples.append(sample)
+
+    kept_samples = [_serialize_backfill_record_preview(record) for record in kept_records[:sample_limit]]
+    kept_total = len(kept_records)
+    dropped_total = len(records) - kept_total
+    drop_reasons = {key: value for key, value in dropped_counts.items() if int(value) > 0}
+
+    return {
+        "status": "ok",
+        "dry_run": True,
+        "project_id": batch.project_id,
+        "ingest_lane": ingest_lane,
+        "source_system": _normalize_source_system(batch.source_system),
+        "curated_filters": {
+            "enabled": bool(curated_options.get("enabled")),
+            "source_systems": sorted(allowed_sources),
+            "namespaces": sorted(allowed_namespaces),
+            "noise_preset": noise_preset,
+            "drop_event_like": drop_event_like,
+        },
+        "summary": {
+            "input_records": len(records),
+            "kept_records": kept_total,
+            "dropped_records": dropped_total,
+            "drop_reasons": drop_reasons,
+        },
+        "samples": {
+            "kept": kept_samples,
+            "dropped": dropped_samples,
+        },
+        "apply_payload_template": {
+            "endpoint": "/v1/backfill/knowledge",
+            "body": {
+                "batch": {
+                    "project_id": batch.project_id,
+                    "source_system": batch.source_system,
+                    "ingest_lane": "knowledge",
+                    "agent_id": batch.agent_id,
+                    "session_id": batch.session_id,
+                    "created_by": batch.created_by,
+                    "cursor": batch.cursor,
+                    "finalize": bool(batch.finalize),
+                    "curated": {
+                        "enabled": bool(curated_options.get("enabled")),
+                        "source_systems": sorted(allowed_sources),
+                        "namespaces": sorted(allowed_namespaces),
+                        "noise_preset": noise_preset,
+                        "drop_event_like": drop_event_like,
+                    },
+                    "records": "<same_records_as_preview_payload>",
+                }
+            },
+            "next_action": "Submit this payload to /v1/backfill/knowledge to apply the same curated profile.",
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 @app.post("/v1/backfill/memory", response_model=None)
@@ -24354,6 +24576,94 @@ def list_gatekeeper_decisions(
     return {"decisions": decisions}
 
 
+def _deep_merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(dict(merged.get(key) or {}), value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _set_nested_config_value(container: dict[str, Any], path: list[str], value: Any) -> None:
+    if not path:
+        return
+    cursor = container
+    for key in path[:-1]:
+        current = cursor.get(key)
+        if not isinstance(current, dict):
+            current = {}
+            cursor[key] = current
+        cursor = current
+    cursor[path[-1]] = value
+
+
+def _normalize_connector_overrides(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        if "." in key:
+            _set_nested_config_value(out, [segment for segment in key.split(".") if segment], raw_value)
+            continue
+        if isinstance(raw_value, dict):
+            out[key] = _normalize_connector_overrides(raw_value)
+        else:
+            out[key] = raw_value
+    return out
+
+
+def _build_connector_validation_hints(*, connector_id: str, source_type: str, sync_mode: str, config_patch: dict[str, Any]) -> dict[str, Any]:
+    warnings: list[str] = []
+    errors: list[str] = []
+    required_fields: list[str] = ["sql_dsn or sql_dsn_env"]
+    if sync_mode == "wal_cdc":
+        required_fields.append("wal_slot")
+
+    dsn = str(config_patch.get("sql_dsn") or "").strip()
+    dsn_env = str(config_patch.get("sql_dsn_env") or "").strip()
+    if not dsn and not dsn_env:
+        errors.append("Set `sql_dsn` or `sql_dsn_env` before first sync.")
+
+    chunk_size = _coerce_int(config_patch.get("chunk_size"), 100)
+    max_records = _coerce_int(config_patch.get("max_records"), 5000)
+    if chunk_size <= 0:
+        errors.append("`chunk_size` must be > 0.")
+    if max_records <= 0:
+        errors.append("`max_records` must be > 0.")
+    if chunk_size > max_records and max_records > 0:
+        warnings.append("`chunk_size` is greater than `max_records`; sync will process at most one chunk.")
+
+    curated_import = config_patch.get("curated_import") if isinstance(config_patch.get("curated_import"), dict) else {}
+    noise_preset = _normalize_backfill_noise_preset(curated_import.get("noise_preset"), default="balanced")
+    if bool(curated_import.get("enabled", True)) and noise_preset == "off":
+        warnings.append("Curated import is enabled with `noise_preset=off`; event-like payloads may increase draft noise.")
+
+    sql_profile = normalize_postgres_sql_profile(str(config_patch.get("sql_profile") or "").strip())
+    if source_type == "postgres_sql" and not sql_profile:
+        warnings.append("`sql_profile` is not set to a known template; verify `sql_mapping` fields before sync.")
+
+    if sync_mode == "wal_cdc":
+        wal_slot = str(config_patch.get("wal_slot") or "").strip()
+        if not wal_slot:
+            errors.append("`wal_slot` is required for wal_cdc mode.")
+        wal_tables = config_patch.get("wal_tables")
+        if isinstance(wal_tables, list) and not wal_tables:
+            warnings.append("`wal_tables` is empty; CDC stream may not capture any table changes.")
+
+    return {
+        "connector_id": connector_id,
+        "required_fields": required_fields,
+        "errors": errors,
+        "warnings": warnings,
+        "is_valid": len(errors) == 0,
+    }
+
+
 def _build_adoption_import_connectors(*, source_type: str, profile: str | None) -> list[dict[str, Any]]:
     normalized_source_type = str(source_type or "").strip().lower()
     if normalized_source_type != "postgres_sql":
@@ -24406,6 +24716,12 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
                     "runner_contract": dict(contract) if isinstance(contract, dict) else None,
                     "template_key": str(template.get("template_key") or ""),
                     "runner_contract_key": str(template.get("runner_contract_key") or ""),
+                    "validation_hints": _build_connector_validation_hints(
+                        connector_id=f"postgres_sql:{profile_key}:{mode}",
+                        source_type="postgres_sql",
+                        sync_mode=mode,
+                        config_patch=template.get("config_patch") if isinstance(template.get("config_patch"), dict) else {},
+                    ),
                 }
             )
     return connectors
@@ -24422,6 +24738,47 @@ def list_adoption_import_connectors(
         "source_type": normalized_source_type,
         "profile": normalize_postgres_sql_profile(profile),
         "connectors": connectors,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.post("/v1/adoption/import-connectors/resolve")
+def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveRequest) -> dict[str, Any]:
+    normalized_source_type = str(payload.source_type or "postgres_sql").strip().lower() or "postgres_sql"
+    connectors = _build_adoption_import_connectors(source_type=normalized_source_type, profile=None)
+    target_id = str(payload.connector_id or "").strip().lower()
+    selected: dict[str, Any] | None = None
+    for item in connectors:
+        if str(item.get("id") or "").strip().lower() == target_id:
+            selected = dict(item)
+            break
+    if selected is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "connector_not_found",
+                "connector_id": payload.connector_id,
+                "source_type": normalized_source_type,
+            },
+        )
+
+    base_patch = selected.get("config_patch") if isinstance(selected.get("config_patch"), dict) else {}
+    overrides = _normalize_connector_overrides(payload.field_overrides)
+    resolved_patch = _deep_merge_dict(dict(base_patch), overrides)
+    validation_hints = _build_connector_validation_hints(
+        connector_id=str(selected.get("id") or payload.connector_id),
+        source_type=str(selected.get("source_type") or normalized_source_type),
+        sync_mode=str(selected.get("sync_mode") or ""),
+        config_patch=resolved_patch,
+    )
+    selected["config_patch"] = resolved_patch
+    selected["validation_hints"] = validation_hints
+    return {
+        "status": "ok",
+        "source_type": normalized_source_type,
+        "project_id": payload.project_id,
+        "connector": selected,
+        "field_overrides": overrides,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -25034,6 +25391,436 @@ def get_adoption_pipeline_visibility(
         "stages": stages,
         "transitions": transitions,
         "bottleneck": bottleneck,
+    }
+
+
+@app.get("/v1/adoption/kpi")
+def get_adoption_kpi(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=180),
+) -> dict[str, Any]:
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    first_ingest_at: datetime | None = None
+    first_draft_at: datetime | None = None
+    first_publish_at: datetime | None = None
+    publish_total = 0
+    rollback_total = 0
+
+    pipeline = get_adoption_pipeline_visibility(project_id=project_id, days=days)
+    accepted_total = int((pipeline.get("pipeline") or {}).get("accepted") or 0)
+    rejected_event_like = int(pipeline.get("rejected_event_like") or 0)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MIN(observed_at)
+                FROM events
+                WHERE project_id = %s
+                  AND event_type = 'memory_backfill'
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                first_ingest_at = row[0]
+
+            if _public_table_exists(conn, "wiki_draft_changes"):
+                cur.execute(
+                    """
+                    SELECT MIN(created_at)
+                    FROM wiki_draft_changes
+                    WHERE project_id = %s
+                    """,
+                    (project_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    first_draft_at = row[0]
+
+            if _public_table_exists(conn, "moderation_actions"):
+                cur.execute(
+                    """
+                    SELECT MIN(created_at)
+                    FROM moderation_actions
+                    WHERE project_id = %s
+                      AND action_type = 'approve'
+                    """,
+                    (project_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    first_publish_at = row[0]
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::bigint
+                    FROM moderation_actions
+                    WHERE project_id = %s
+                      AND action_type = 'approve'
+                      AND created_at >= %s
+                    """,
+                    (project_id, cutoff),
+                )
+                row = cur.fetchone()
+                publish_total = int(row[0] or 0) if row else 0
+
+            if _public_table_exists(conn, "wiki_page_versions"):
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::bigint
+                    FROM wiki_page_versions
+                    WHERE project_id = %s
+                      AND created_at >= %s
+                      AND (
+                        LOWER(COALESCE(change_summary, '')) LIKE 'rollback to version%%'
+                        OR LOWER(COALESCE(change_summary, '')) LIKE 'rollback%%'
+                      )
+                    """,
+                    (project_id, cutoff),
+                )
+                row = cur.fetchone()
+                rollback_total = int(row[0] or 0) if row else 0
+
+    def _seconds_between(start: datetime | None, end: datetime | None) -> int | None:
+        if start is None or end is None:
+            return None
+        delta = end - start
+        return max(0, int(delta.total_seconds()))
+
+    time_to_first_draft = _seconds_between(first_ingest_at, first_draft_at)
+    time_to_first_publish = _seconds_between(first_ingest_at, first_publish_at)
+    draft_noise_ratio = round(float(rejected_event_like) / float(max(accepted_total, 1)), 4)
+    publish_revert_rate = round(float(rollback_total) / float(max(publish_total, 1)), 4)
+
+    alert_thresholds = {
+        "time_to_first_draft_max_sec": 6 * 3600,
+        "time_to_first_publish_max_sec": 24 * 3600,
+        "draft_noise_ratio_max": 0.35,
+        "publish_revert_rate_max": 0.08,
+    }
+    alerts: list[dict[str, Any]] = []
+    if time_to_first_draft is not None and time_to_first_draft > alert_thresholds["time_to_first_draft_max_sec"]:
+        alerts.append(
+            {
+                "metric": "time_to_first_draft",
+                "status": "warning",
+                "value_sec": time_to_first_draft,
+                "threshold_sec": alert_thresholds["time_to_first_draft_max_sec"],
+                "hint": "Backfill is not yielding drafts quickly; run curated dry-run explain and adjust source/noise filters.",
+            }
+        )
+    if time_to_first_publish is not None and time_to_first_publish > alert_thresholds["time_to_first_publish_max_sec"]:
+        alerts.append(
+            {
+                "metric": "time_to_first_publish",
+                "status": "warning",
+                "value_sec": time_to_first_publish,
+                "threshold_sec": alert_thresholds["time_to_first_publish_max_sec"],
+                "hint": "Moderation path is slow; use bootstrap recommendation and queue diagnostics.",
+            }
+        )
+    if draft_noise_ratio > alert_thresholds["draft_noise_ratio_max"]:
+        alerts.append(
+            {
+                "metric": "draft_noise_ratio",
+                "status": "warning",
+                "value": draft_noise_ratio,
+                "threshold": alert_thresholds["draft_noise_ratio_max"],
+                "hint": "Draft noise is high; tighten backfill curation and event-shape suppression.",
+            }
+        )
+    if publish_total >= 5 and publish_revert_rate > alert_thresholds["publish_revert_rate_max"]:
+        alerts.append(
+            {
+                "metric": "publish_revert_rate",
+                "status": "warning",
+                "value": publish_revert_rate,
+                "threshold": alert_thresholds["publish_revert_rate_max"],
+                "hint": "Revert rate is elevated; enable stricter process simulation or human-required publish mode.",
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "kpi": {
+            "time_to_first_draft_sec": time_to_first_draft,
+            "time_to_first_publish_sec": time_to_first_publish,
+            "draft_noise_ratio": draft_noise_ratio,
+            "publish_revert_rate": publish_revert_rate,
+        },
+        "supporting": {
+            "first_ingest_at": first_ingest_at.isoformat() if first_ingest_at is not None else None,
+            "first_draft_at": first_draft_at.isoformat() if first_draft_at is not None else None,
+            "first_publish_at": first_publish_at.isoformat() if first_publish_at is not None else None,
+            "accepted_records": accepted_total,
+            "rejected_event_like": rejected_event_like,
+            "publish_total_window": publish_total,
+            "rollback_total_window": rollback_total,
+        },
+        "thresholds": alert_thresholds,
+        "alerts": alerts,
+    }
+
+
+def _build_adoption_policy_calibration_quick_recommendation(
+    *,
+    project_id: str,
+    days: int = 14,
+) -> dict[str, Any]:
+    diagnostics = get_adoption_rejection_diagnostics(project_id=project_id, days=days, sample_limit=8)
+    pipeline = get_adoption_pipeline_visibility(project_id=project_id, days=days)
+    config_payload = get_gatekeeper_config(project_id=project_id)
+    current_config = config_payload.get("config") if isinstance(config_payload.get("config"), dict) else {}
+    current_routing = _normalize_gatekeeper_routing_policy(current_config.get("routing_policy"))
+
+    reason_counts = {
+        str(item.get("key") or ""): int(item.get("count") or 0)
+        for item in (diagnostics.get("top_reject_reasons") if isinstance(diagnostics.get("top_reject_reasons"), list) else [])
+        if str(item.get("key") or "").strip()
+    }
+    rejected_total = int((diagnostics.get("summary") or {}).get("rejected_total") or 0)
+    event_pressure = (
+        reason_counts.get("event_stream_shape", 0)
+        + reason_counts.get("runtime_noise", 0)
+        + reason_counts.get("blocked_source_type", 0)
+        + reason_counts.get("blocked_source_system", 0)
+    )
+    support_pressure = reason_counts.get("insufficient_support", 0) + reason_counts.get("backfill_without_durable_signal", 0)
+    event_pressure_ratio = float(event_pressure) / float(max(rejected_total, 1))
+    support_pressure_ratio = float(support_pressure) / float(max(rejected_total, 1))
+
+    bottleneck = pipeline.get("bottleneck") if isinstance(pipeline.get("bottleneck"), dict) else {}
+    bottleneck_key = (
+        str(bottleneck.get("from_stage") or "").strip().lower(),
+        str(bottleneck.get("to_stage") or "").strip().lower(),
+    )
+    bottleneck_drop_ratio = float(bottleneck.get("drop_ratio") or 0.0)
+    rejected_event_like = int(pipeline.get("rejected_event_like") or 0)
+    accepted = int((pipeline.get("pipeline") or {}).get("accepted") or 0)
+    event_like_ratio = float(rejected_event_like) / float(max(accepted, 1))
+
+    presets: dict[str, dict[str, Any]] = {}
+    presets["noise_guarded"] = {
+        "preset_key": "noise_guarded",
+        "title": "Noise-guarded routing",
+        "reason": "Event-like payloads dominate rejected claims.",
+        "routing_policy_patch": {
+            "event_stream_min_token_hits": max(2, min(8, int(current_routing.get("event_stream_min_token_hits") or 2) + 1)),
+            "event_stream_min_kv_hits": max(2, min(8, int(current_routing.get("event_stream_min_kv_hits") or 2) + 1)),
+            "min_durable_signal_hits_for_backfill": max(
+                2,
+                min(10, int(current_routing.get("min_durable_signal_hits_for_backfill") or 1)),
+            ),
+            "backfill_requires_policy_signal": True,
+        },
+    }
+    presets["bootstrap_relaxed"] = {
+        "preset_key": "bootstrap_relaxed",
+        "title": "Bootstrap-relaxed routing",
+        "reason": "Claims are blocked before draft stage due to strict durable-signal gates.",
+        "routing_policy_patch": {
+            "min_durable_signal_hits_for_backfill": max(
+                0,
+                int(current_routing.get("min_durable_signal_hits_for_backfill") or 1) - 1,
+            ),
+            "min_sources_for_wiki_candidate": max(
+                1,
+                int(current_routing.get("min_sources_for_wiki_candidate") or 2) - 1,
+            ),
+            "min_evidence_for_wiki_candidate": max(
+                1,
+                int(current_routing.get("min_evidence_for_wiki_candidate") or 2) - 1,
+            ),
+            "backfill_requires_policy_signal": False,
+        },
+    }
+    presets["balanced"] = {
+        "preset_key": "balanced",
+        "title": "Balanced calibration",
+        "reason": "No single dominant failure mode; apply conservative tuning.",
+        "routing_policy_patch": {
+            "event_stream_min_token_hits": max(2, min(6, int(current_routing.get("event_stream_min_token_hits") or 2))),
+            "event_stream_min_kv_hits": max(2, min(6, int(current_routing.get("event_stream_min_kv_hits") or 2))),
+            "min_durable_signal_hits_for_backfill": max(
+                1,
+                min(6, int(current_routing.get("min_durable_signal_hits_for_backfill") or 1)),
+            ),
+        },
+    }
+
+    recommended_key = "balanced"
+    if event_pressure_ratio >= 0.35 or event_like_ratio >= 0.35:
+        recommended_key = "noise_guarded"
+    elif bottleneck_key == ("claims", "drafts") and (
+        support_pressure_ratio >= 0.3 or bottleneck_drop_ratio >= 0.25
+    ):
+        recommended_key = "bootstrap_relaxed"
+
+    recommended = presets.get(recommended_key, presets["balanced"])
+    target_routing = _normalize_gatekeeper_routing_policy(
+        _deep_merge_dict(current_routing, recommended.get("routing_policy_patch") or {})
+    )
+    changed_keys = [
+        key
+        for key in sorted(target_routing.keys())
+        if target_routing.get(key) != current_routing.get(key)
+    ]
+
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "recommended": {
+            **recommended,
+            "changed_routing_keys": changed_keys,
+        },
+        "presets": list(presets.values()),
+        "inputs": {
+            "event_pressure_ratio": round(event_pressure_ratio, 4),
+            "support_pressure_ratio": round(support_pressure_ratio, 4),
+            "event_like_ratio": round(event_like_ratio, 4),
+            "bottleneck": bottleneck if isinstance(bottleneck, dict) else None,
+        },
+        "current_routing_policy": current_routing,
+        "target_routing_policy": target_routing,
+        "diagnostics": diagnostics,
+        "pipeline": pipeline,
+    }
+
+
+@app.get("/v1/adoption/policy-calibration/quick-loop")
+def get_adoption_policy_calibration_quick_loop(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+) -> dict[str, Any]:
+    payload = _build_adoption_policy_calibration_quick_recommendation(project_id=project_id, days=days)
+    payload["apply_endpoint"] = "/v1/adoption/policy-calibration/quick-loop/apply"
+    payload["rollback_preview_endpoint"] = "/v1/gatekeeper/config/rollback/preview"
+    return payload
+
+
+@app.post("/v1/adoption/policy-calibration/quick-loop/apply", response_model=None)
+def apply_adoption_policy_calibration_quick_loop(payload: AdoptionPolicyCalibrationQuickApplyRequest) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm_value = str(payload.confirm_project_id or "").strip()
+        if not confirm_value or confirm_value != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "policy_quick_apply_confirmation_required",
+                    "message": "For non-dry-run apply, `confirm_project_id` must exactly match `project_id`.",
+                    "project_id": project_id,
+                },
+            )
+
+    quick = _build_adoption_policy_calibration_quick_recommendation(project_id=project_id, days=14)
+    recommended = quick.get("recommended") if isinstance(quick.get("recommended"), dict) else {}
+    presets = quick.get("presets") if isinstance(quick.get("presets"), list) else []
+    selected_key = str(payload.preset_key or recommended.get("preset_key") or "").strip().lower()
+    selected: dict[str, Any] | None = None
+    for item in presets:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("preset_key") or "").strip().lower() == selected_key:
+            selected = item
+            break
+    if selected is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "policy_quick_preset_invalid",
+                "preset_key": selected_key,
+                "allowed_presets": [
+                    str(item.get("preset_key") or "")
+                    for item in presets
+                    if isinstance(item, dict) and str(item.get("preset_key") or "").strip()
+                ],
+            },
+        )
+
+    current_config_payload = get_gatekeeper_config(project_id=project_id)
+    current_config = (
+        current_config_payload.get("config") if isinstance(current_config_payload.get("config"), dict) else {}
+    )
+    current_routing = _normalize_gatekeeper_routing_policy(current_config.get("routing_policy"))
+    patch = selected.get("routing_policy_patch") if isinstance(selected.get("routing_policy_patch"), dict) else {}
+    target_routing = _normalize_gatekeeper_routing_policy(_deep_merge_dict(current_routing, patch))
+    changed_keys = [key for key in sorted(target_routing.keys()) if current_routing.get(key) != target_routing.get(key)]
+
+    response_base = {
+        "project_id": project_id,
+        "preset": selected,
+        "changed_routing_keys": changed_keys,
+        "current_routing_policy": current_routing,
+        "target_routing_policy": target_routing,
+        "rollback_preview_endpoint": "/v1/gatekeeper/config/rollback/preview",
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if payload.dry_run:
+        return {
+            "status": "dry_run",
+            **response_base,
+            "next_action": "rerun_with_dry_run=false_and_confirm_project_id",
+        }
+
+    snapshot_payload = create_gatekeeper_config_snapshot(
+        GatekeeperConfigSnapshotCreateRequest(
+            project_id=project_id,
+            approved_by=payload.updated_by,
+            source="manual",
+            note=payload.note or f"Quick policy calibration snapshot ({selected_key})",
+            config=current_config,
+            guardrails_met=True,
+            calibration_report={
+                "quick_loop": True,
+                "preset_key": selected_key,
+                "changed_routing_keys": changed_keys,
+            },
+            artifact_refs={
+                "quick_loop_endpoint": "/v1/adoption/policy-calibration/quick-loop",
+                "applied_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    )
+    snapshot = snapshot_payload.get("snapshot") if isinstance(snapshot_payload.get("snapshot"), dict) else {}
+    upsert_payload = GatekeeperConfigUpsertRequest(
+        project_id=project_id,
+        updated_by=payload.updated_by,
+        min_sources_for_golden=int(current_config.get("min_sources_for_golden", 3)),
+        conflict_free_days=int(current_config.get("conflict_free_days", 7)),
+        min_score_for_golden=float(current_config.get("min_score_for_golden", 0.72)),
+        operational_short_text_len=int(current_config.get("operational_short_text_len", 32)),
+        operational_short_token_len=int(current_config.get("operational_short_token_len", 5)),
+        llm_assist_enabled=bool(current_config.get("llm_assist_enabled", False)),
+        llm_provider=str(current_config.get("llm_provider", "openai")),
+        llm_model=str(current_config.get("llm_model", "gpt-4.1-mini")),
+        llm_score_weight=float(current_config.get("llm_score_weight", 0.35)),
+        llm_min_confidence=float(current_config.get("llm_min_confidence", 0.65)),
+        llm_timeout_ms=int(current_config.get("llm_timeout_ms", 3500)),
+        publish_mode_default=str(current_config.get("publish_mode_default", "auto_publish")),
+        publish_mode_by_category=(
+            current_config.get("publish_mode_by_category")
+            if isinstance(current_config.get("publish_mode_by_category"), dict)
+            else {}
+        ),
+        routing_policy=target_routing,
+        auto_publish_min_score=float(current_config.get("auto_publish_min_score", 0.9)),
+        auto_publish_min_sources=int(current_config.get("auto_publish_min_sources", 3)),
+        auto_publish_require_golden=bool(current_config.get("auto_publish_require_golden", True)),
+        auto_publish_allow_conflicts=bool(current_config.get("auto_publish_allow_conflicts", False)),
+    )
+    updated = upsert_gatekeeper_config(upsert_payload)
+    return {
+        "status": "applied",
+        **response_base,
+        "snapshot_id": snapshot.get("id"),
+        "applied_config": updated.get("config") if isinstance(updated, dict) else None,
     }
 
 

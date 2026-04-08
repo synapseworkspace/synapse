@@ -1,4 +1,5 @@
 import {
+  Alert,
   ActionIcon,
   Badge,
   Box,
@@ -27,6 +28,7 @@ import {
 import { notifications } from "@mantine/notifications";
 import {
   IconArrowsShuffle,
+  IconAlertTriangle,
   IconBell,
   IconBookmark,
   IconBookmarkFilled,
@@ -849,6 +851,74 @@ type LegacyImportProfilesPayload = {
   profiles: LegacyImportProfile[];
 };
 
+type AdoptionImportConnectorItem = {
+  id: string;
+  source_type: string;
+  profile: string;
+  sync_mode: string;
+  label: string;
+  description: string;
+  config_patch: Record<string, unknown>;
+  validation_hints?: {
+    required_fields?: string[];
+    errors?: string[];
+    warnings?: string[];
+    is_valid?: boolean;
+  };
+};
+
+type AdoptionImportConnectorsPayload = {
+  source_type: string;
+  profile: string | null;
+  connectors: AdoptionImportConnectorItem[];
+};
+
+type AdoptionImportConnectorResolvePayload = {
+  status: string;
+  connector?: AdoptionImportConnectorItem;
+  field_overrides?: Record<string, unknown>;
+};
+
+type AdoptionKpiPayload = {
+  project_id: string;
+  window_days: number;
+  generated_at?: string;
+  kpi?: {
+    time_to_first_draft_sec?: number | null;
+    time_to_first_publish_sec?: number | null;
+    draft_noise_ratio?: number;
+    publish_revert_rate?: number;
+  };
+  alerts?: Array<{
+    metric: string;
+    status: string;
+    hint?: string;
+  }>;
+};
+
+type AdoptionPolicyQuickLoopPayload = {
+  project_id: string;
+  window_days: number;
+  recommended?: {
+    preset_key?: string;
+    title?: string;
+    reason?: string;
+    changed_routing_keys?: string[];
+  };
+  apply_endpoint?: string;
+  rollback_preview_endpoint?: string;
+};
+
+type SelfhostConsistencyPayload = {
+  status: "ok" | "warning";
+  checks?: Array<{
+    key: string;
+    status: string;
+    message?: string;
+  }>;
+  warnings_total?: number;
+};
+
 type LegacyImportSource = {
   id: string;
   project_id: string;
@@ -1299,6 +1369,7 @@ type CoreWorkspaceTab = "wiki" | "drafts" | "tasks";
 type CoreWorkspaceRoute = "wiki" | "operations";
 
 const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
+const WEB_BUILD = String(import.meta.env.VITE_SYNAPSE_WEB_BUILD || "0.1.0").trim() || "0.1.0";
 const REQUESTED_UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
   .trim()
   .toLowerCase();
@@ -1876,9 +1947,20 @@ export default function App() {
   const [adoptionPipelineLoading, setAdoptionPipelineLoading] = useState(false);
   const [, setLoadingBootstrapRecommendation] = useState(false);
   const [legacyProfiles, setLegacyProfiles] = useState<LegacyImportProfile[]>([]);
+  const [adoptionImportConnectors, setAdoptionImportConnectors] = useState<AdoptionImportConnectorItem[]>([]);
+  const [selectedConnectorId, setSelectedConnectorId] = useState<string | null>(null);
+  const [resolvedConnector, setResolvedConnector] = useState<AdoptionImportConnectorItem | null>(null);
+  const [loadingConnectorResolve, setLoadingConnectorResolve] = useState(false);
   const [legacySources, setLegacySources] = useState<LegacyImportSource[]>([]);
   const [, setLoadingLegacyProfiles] = useState(false);
   const [, setLoadingLegacySources] = useState(false);
+  const [adoptionKpi, setAdoptionKpi] = useState<AdoptionKpiPayload | null>(null);
+  const [loadingAdoptionKpi, setLoadingAdoptionKpi] = useState(false);
+  const [policyQuickLoop, setPolicyQuickLoop] = useState<AdoptionPolicyQuickLoopPayload | null>(null);
+  const [loadingPolicyQuickLoop, setLoadingPolicyQuickLoop] = useState(false);
+  const [applyingPolicyQuickLoop, setApplyingPolicyQuickLoop] = useState(false);
+  const [selfhostConsistency, setSelfhostConsistency] = useState<SelfhostConsistencyPayload | null>(null);
+  const [loadingSelfhostConsistency, setLoadingSelfhostConsistency] = useState(false);
   const [connectingLegacySource, setConnectingLegacySource] = useState(false);
   const [, setRunningLegacySyncSourceId] = useState<string | null>(null);
   const [legacySourceRef, setLegacySourceRef] = useState("existing_memory");
@@ -1890,6 +1972,10 @@ export default function App() {
   const [legacyAutoOpenMigrationMode, setLegacyAutoOpenMigrationMode] = useState(true);
   const [showLegacySetupModal, setShowLegacySetupModal] = useState(false);
   const [legacySetupStep, setLegacySetupStep] = useState(1);
+  const [legacyWizardStep1Done, setLegacyWizardStep1Done] = useState(false);
+  const [legacyWizardStep2Done, setLegacyWizardStep2Done] = useState(false);
+  const [legacyWizardStep3Done, setLegacyWizardStep3Done] = useState(false);
+  const [legacyWizardStep4Done, setLegacyWizardStep4Done] = useState(false);
   const [draftDetail, setDraftDetail] = useState<DraftDetailPayload | null>(null);
   const [selectedPageDetail, setSelectedPageDetail] = useState<WikiPageDetailPayload | null>(null);
   const [pageHistory, setPageHistory] = useState<WikiPageHistoryPayload | null>(null);
@@ -2343,6 +2429,10 @@ export default function App() {
   const legacySelectedProfile = useMemo(
     () => legacyProfiles.find((item) => item.profile === legacySqlProfile) || null,
     [legacyProfiles, legacySqlProfile],
+  );
+  const selectedAdoptionConnector = useMemo(
+    () => adoptionImportConnectors.find((item) => item.id === selectedConnectorId) || resolvedConnector || null,
+    [adoptionImportConnectors, resolvedConnector, selectedConnectorId],
   );
 
   const scopedDrafts = useMemo(
@@ -3622,6 +3712,56 @@ export default function App() {
     }
   }, [apiUrl, legacySqlProfile]);
 
+  const loadAdoptionImportConnectors = useCallback(async () => {
+    try {
+      const payload = await apiFetch<AdoptionImportConnectorsPayload>(
+        apiUrl,
+        "/v1/adoption/import-connectors?source_type=postgres_sql",
+      );
+      const connectors = Array.isArray(payload.connectors) ? payload.connectors : [];
+      setAdoptionImportConnectors(connectors);
+      if (connectors.length > 0 && !selectedConnectorId) {
+        const preferred = connectors.find((item) => item.profile === legacySqlProfile && item.sync_mode === "polling");
+        setSelectedConnectorId((preferred || connectors[0]).id);
+      }
+    } catch {
+      setAdoptionImportConnectors([]);
+      setSelectedConnectorId(null);
+      setResolvedConnector(null);
+    }
+  }, [apiUrl, legacySqlProfile, selectedConnectorId]);
+
+  const resolveConnectorConfig = useCallback(
+    async (connectorId: string, fieldOverrides?: Record<string, unknown>) => {
+      if (!connectorId.trim()) {
+        setResolvedConnector(null);
+        return;
+      }
+      setLoadingConnectorResolve(true);
+      try {
+        const payload = await apiFetch<AdoptionImportConnectorResolvePayload>(
+          apiUrl,
+          "/v1/adoption/import-connectors/resolve",
+          {
+            method: "POST",
+            body: {
+              source_type: "postgres_sql",
+              connector_id: connectorId,
+              project_id: projectId.trim() || undefined,
+              field_overrides: fieldOverrides || {},
+            },
+          },
+        );
+        setResolvedConnector(payload.connector || null);
+      } catch {
+        setResolvedConnector(null);
+      } finally {
+        setLoadingConnectorResolve(false);
+      }
+    },
+    [apiUrl, projectId],
+  );
+
   const loadLegacyImportSources = useCallback(async () => {
     const project = projectId.trim();
     if (!project) {
@@ -3686,6 +3826,114 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadAdoptionKpi = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setAdoptionKpi(null);
+      return;
+    }
+    setLoadingAdoptionKpi(true);
+    try {
+      const payload = await apiFetch<AdoptionKpiPayload>(
+        apiUrl,
+        `/v1/adoption/kpi?project_id=${encodeURIComponent(project)}&days=30`,
+      );
+      setAdoptionKpi(payload);
+    } catch {
+      setAdoptionKpi(null);
+    } finally {
+      setLoadingAdoptionKpi(false);
+    }
+  }, [apiUrl, projectId]);
+
+  const loadPolicyQuickLoop = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setPolicyQuickLoop(null);
+      return;
+    }
+    setLoadingPolicyQuickLoop(true);
+    try {
+      const payload = await apiFetch<AdoptionPolicyQuickLoopPayload>(
+        apiUrl,
+        `/v1/adoption/policy-calibration/quick-loop?project_id=${encodeURIComponent(project)}&days=14`,
+      );
+      setPolicyQuickLoop(payload);
+    } catch {
+      setPolicyQuickLoop(null);
+    } finally {
+      setLoadingPolicyQuickLoop(false);
+    }
+  }, [apiUrl, projectId]);
+
+  const applyPolicyQuickLoopPreset = useCallback(
+    async (dryRun: boolean) => {
+      const project = projectId.trim();
+      const actor = reviewer.trim();
+      if (!project || !actor) {
+        notifications.show({
+          color: "red",
+          title: "Project and reviewer required",
+          message: "Set Project ID and reviewer before applying quick policy calibration.",
+        });
+        return;
+      }
+      setApplyingPolicyQuickLoop(true);
+      try {
+        const payload = await apiFetch<{ status: string; changed_routing_keys?: string[] }>(
+          apiUrl,
+          "/v1/adoption/policy-calibration/quick-loop/apply",
+          {
+            method: "POST",
+            body: {
+              project_id: project,
+              updated_by: actor,
+              preset_key: policyQuickLoop?.recommended?.preset_key || undefined,
+              dry_run: dryRun,
+              confirm_project_id: dryRun ? undefined : project,
+            },
+          },
+        );
+        notifications.show({
+          color: dryRun ? "violet" : "teal",
+          title: dryRun ? "Policy quick loop preview ready" : "Policy quick loop applied",
+          message:
+            payload.changed_routing_keys && payload.changed_routing_keys.length > 0
+              ? `Changed routing keys: ${payload.changed_routing_keys.slice(0, 6).join(", ")}`
+              : "No routing changes were required.",
+        });
+        await loadGatekeeperConfig();
+        await loadPolicyQuickLoop();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Policy quick loop failed",
+          message: String(error),
+        });
+      } finally {
+        setApplyingPolicyQuickLoop(false);
+      }
+    },
+    [apiUrl, loadGatekeeperConfig, loadPolicyQuickLoop, policyQuickLoop?.recommended?.preset_key, projectId, reviewer],
+  );
+
+  const loadSelfhostConsistency = useCallback(async () => {
+    setLoadingSelfhostConsistency(true);
+    try {
+      const payload = await apiFetch<SelfhostConsistencyPayload>(
+        apiUrl,
+        `/v1/adoption/selfhost/consistency?web_build=${encodeURIComponent(WEB_BUILD)}&ui_profile=${encodeURIComponent(
+          "core",
+        )}&route_path=${encodeURIComponent("/wiki")}`,
+      );
+      setSelfhostConsistency(payload);
+    } catch {
+      setSelfhostConsistency(null);
+    } finally {
+      setLoadingSelfhostConsistency(false);
+    }
+  }, [apiUrl]);
+
   const runLegacySourceSync = useCallback(
     async (sourceId: string) => {
       const project = projectId.trim();
@@ -3716,6 +3964,8 @@ export default function App() {
         await loadLegacyImportSources();
         await loadBootstrapRecommendation();
         await loadAdoptionPipelineVisibility();
+        await loadAdoptionKpi();
+        await loadPolicyQuickLoop();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -3726,13 +3976,28 @@ export default function App() {
         setRunningLegacySyncSourceId(null);
       }
     },
-    [apiUrl, loadAdoptionPipelineVisibility, loadBootstrapRecommendation, loadLegacyImportSources, projectId, reviewer],
+    [
+      apiUrl,
+      loadAdoptionKpi,
+      loadAdoptionPipelineVisibility,
+      loadBootstrapRecommendation,
+      loadLegacyImportSources,
+      loadPolicyQuickLoop,
+      projectId,
+      reviewer,
+    ],
   );
 
   const connectLegacyMemoryQuickstart = useCallback(async (): Promise<boolean> => {
     const project = projectId.trim();
     const sourceRef = legacySourceRef.trim();
-    const profile = legacySqlProfile.trim();
+    const selectedConnector =
+      adoptionImportConnectors.find((item) => item.id === selectedConnectorId) || resolvedConnector || null;
+    const profile = String(
+      selectedConnector?.profile || resolvedConnector?.profile || legacySqlProfile || "",
+    )
+      .trim()
+      .toLowerCase();
     const dsnEnv = legacySqlDsnEnv.trim();
     if (!project) {
       notifications.show({
@@ -3766,9 +4031,20 @@ export default function App() {
       });
       return false;
     }
-    const interval = Math.max(1, Math.min(10080, Number(legacySyncIntervalMinutes || "5") || 5));
+    const intervalDefault =
+      String(selectedConnector?.sync_mode || "").trim().toLowerCase() === "wal_cdc" ? 1 : Number(legacySyncIntervalMinutes || "5") || 5;
+    const interval = Math.max(1, Math.min(10080, intervalDefault));
     const maxRecords = Math.max(1, Math.min(50000, Number(legacyMaxRecords || "5000") || 5000));
     const chunkSize = Math.max(1, Math.min(500, Number(legacyChunkSize || "100") || 100));
+    const baseConfig = resolvedConnector?.config_patch ? { ...resolvedConnector.config_patch } : {};
+    const connectorSyncMode = String(selectedConnector?.sync_mode || "").trim().toLowerCase();
+    if (connectorSyncMode) {
+      baseConfig["sql_sync_mode"] = connectorSyncMode;
+    }
+    baseConfig["sql_profile"] = profile;
+    baseConfig["sql_dsn_env"] = dsnEnv;
+    baseConfig["max_records"] = maxRecords;
+    baseConfig["chunk_size"] = chunkSize;
 
     setConnectingLegacySource(true);
     let connected = false;
@@ -3783,10 +4059,7 @@ export default function App() {
           sync_interval_minutes: interval,
           updated_by: reviewer.trim() || "web_ui",
           config: {
-            sql_dsn_env: dsnEnv,
-            sql_profile: profile,
-            max_records: maxRecords,
-            chunk_size: chunkSize,
+            ...baseConfig,
           },
         },
       });
@@ -3817,9 +4090,12 @@ export default function App() {
       await loadLegacyImportSources();
       await loadBootstrapRecommendation();
       await loadAdoptionPipelineVisibility();
+      await loadAdoptionKpi();
+      await loadPolicyQuickLoop();
     }
     return connected;
   }, [
+    adoptionImportConnectors,
     apiUrl,
     legacyAutoOpenMigrationMode,
     legacyChunkSize,
@@ -3830,19 +4106,34 @@ export default function App() {
     legacySyncIntervalMinutes,
     loadAdoptionPipelineVisibility,
     loadBootstrapRecommendation,
+    loadAdoptionKpi,
     loadLegacyImportSources,
+    loadPolicyQuickLoop,
     projectId,
+    resolvedConnector,
     reviewer,
     runLegacySourceSync,
+    selectedConnectorId,
   ]);
 
   const completeLegacySetupWizard = useCallback(async () => {
     const ok = await connectLegacyMemoryQuickstart();
     if (ok) {
-      setShowLegacySetupModal(false);
-      setLegacySetupStep(1);
+      setLegacyWizardStep1Done(true);
+      setLegacyWizardStep2Done(true);
+      setLegacyWizardStep3Done(true);
+      setLegacySetupStep(4);
     }
   }, [connectLegacyMemoryQuickstart]);
+
+  const openLegacySetupWizard = useCallback(() => {
+    setLegacySetupStep(1);
+    setLegacyWizardStep1Done(false);
+    setLegacyWizardStep2Done(false);
+    setLegacyWizardStep3Done(false);
+    setLegacyWizardStep4Done(false);
+    setShowLegacySetupModal(true);
+  }, []);
 
   const loadNotificationsInbox = useCallback(
     async (targetRecipient?: string) => {
@@ -4284,17 +4575,37 @@ export default function App() {
   useEffect(() => {
     if (!projectId.trim()) {
       setLegacyProfiles([]);
+      setAdoptionImportConnectors([]);
+      setSelectedConnectorId(null);
+      setResolvedConnector(null);
       setLegacySources([]);
       setBootstrapRecommendation(null);
       setAdoptionPipeline(null);
+      setAdoptionKpi(null);
+      setPolicyQuickLoop(null);
       return;
     }
     void loadLegacyImportProfiles();
+    void loadAdoptionImportConnectors();
     void loadLegacyImportSources();
     void loadBootstrapRecommendation();
     void loadAdoptionPipelineVisibility();
-    void loadAdoptionPipelineVisibility();
-  }, [loadAdoptionPipelineVisibility, loadBootstrapRecommendation, loadLegacyImportProfiles, loadLegacyImportSources, projectId]);
+    void loadAdoptionKpi();
+    void loadPolicyQuickLoop();
+  }, [
+    loadAdoptionImportConnectors,
+    loadAdoptionKpi,
+    loadAdoptionPipelineVisibility,
+    loadBootstrapRecommendation,
+    loadLegacyImportProfiles,
+    loadLegacyImportSources,
+    loadPolicyQuickLoop,
+    projectId,
+  ]);
+
+  useEffect(() => {
+    void loadSelfhostConsistency();
+  }, [coreWorkspaceRoute, loadSelfhostConsistency, selectedPageSlug]);
 
   useEffect(() => {
     if (!projectId.trim()) return;
@@ -4309,6 +4620,22 @@ export default function App() {
     const nextSourceRef = projectToken ? `${projectToken}_${suffix}` : `existing_${suffix}`;
     setLegacySourceRef(nextSourceRef);
   }, [legacySourceRef, legacySqlProfile, projectId]);
+
+  useEffect(() => {
+    const connectorId = String(selectedConnectorId || "").trim();
+    if (!connectorId) {
+      setResolvedConnector(null);
+      return;
+    }
+    void resolveConnectorConfig(connectorId, {
+      sql_dsn_env: legacySqlDsnEnv.trim() || undefined,
+      max_records: Number(legacyMaxRecords || "5000") || 5000,
+      chunk_size: Number(legacyChunkSize || "100") || 100,
+      "curated_import.noise_preset": "balanced",
+      "curated_import.drop_event_like": true,
+      "curated_import.enabled": true,
+    });
+  }, [legacyChunkSize, legacyMaxRecords, legacySqlDsnEnv, resolveConnectorConfig, selectedConnectorId]);
 
   useEffect(() => {
     void loadNotificationsInbox();
@@ -7031,6 +7358,27 @@ export default function App() {
           }}
           onOpenRolesGuide={() => setShowRolesGuideModal(true)}
         />
+        {selfhostConsistency?.status === "warning" ? (
+          <Alert
+            variant="light"
+            color="yellow"
+            icon={<IconAlertTriangle size={16} />}
+            title="Self-host consistency warning"
+            mx="md"
+            mt="sm"
+          >
+            {(selfhostConsistency.checks || [])
+              .filter((item) => item.status !== "ok")
+              .map((item) => item.message || item.key)
+              .slice(0, 2)
+              .join(" ")}
+          </Alert>
+        ) : null}
+        {loadingSelfhostConsistency ? (
+          <Text size="xs" c="dimmed" px="md" mt={6}>
+            Checking UI/API consistency…
+          </Text>
+        ) : null}
 
         <Box className="confluence-layout">
           <CoreWorkspaceLeftRail
@@ -7693,6 +8041,14 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="teal"
+                              onClick={openLegacySetupWizard}
+                            >
+                              Setup wizard
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="gray"
                               loading={adoptionPipelineLoading}
                               onClick={() => void loadAdoptionPipelineVisibility()}
@@ -7805,6 +8161,108 @@ export default function App() {
                               Pipeline visibility is unavailable for current project yet.
                             </Text>
                           )}
+                          <Paper withBorder p="xs" radius="md">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Text size="sm" fw={700}>
+                                  Adoption KPI
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  loading={loadingAdoptionKpi}
+                                  onClick={() => void loadAdoptionKpi()}
+                                >
+                                  Refresh KPI
+                                </Button>
+                              </Group>
+                              {adoptionKpi?.kpi ? (
+                                <SimpleGrid cols={{ base: 2, sm: 4 }} spacing={6}>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    first draft{" "}
+                                    {adoptionKpi.kpi.time_to_first_draft_sec == null
+                                      ? "—"
+                                      : `${Math.round(Number(adoptionKpi.kpi.time_to_first_draft_sec) / 60)}m`}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    first publish{" "}
+                                    {adoptionKpi.kpi.time_to_first_publish_sec == null
+                                      ? "—"
+                                      : `${Math.round(Number(adoptionKpi.kpi.time_to_first_publish_sec) / 60)}m`}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    draft noise{" "}
+                                    {Number.isFinite(Number(adoptionKpi.kpi.draft_noise_ratio))
+                                      ? `${Math.round(Number(adoptionKpi.kpi.draft_noise_ratio) * 100)}%`
+                                      : "—"}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    revert rate{" "}
+                                    {Number.isFinite(Number(adoptionKpi.kpi.publish_revert_rate))
+                                      ? `${Math.round(Number(adoptionKpi.kpi.publish_revert_rate) * 100)}%`
+                                      : "—"}
+                                  </Badge>
+                                </SimpleGrid>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  KPI are not available yet for this project.
+                                </Text>
+                              )}
+                              {Array.isArray(adoptionKpi?.alerts) && adoptionKpi?.alerts.length > 0 ? (
+                                <Text size="xs" c="dimmed">
+                                  {adoptionKpi.alerts.slice(0, 2).map((item) => item.hint || item.metric).join(" ")}
+                                </Text>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  KPI health is stable for the last {adoptionKpi?.window_days || 30} days.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
+                          <Paper withBorder p="xs" radius="md">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Text size="sm" fw={700}>
+                                  Policy quick loop
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  loading={loadingPolicyQuickLoop}
+                                  onClick={() => void loadPolicyQuickLoop()}
+                                >
+                                  Refresh recommendation
+                                </Button>
+                              </Group>
+                              <Text size="xs" c="dimmed">
+                                {policyQuickLoop?.recommended?.title || "No recommendation yet"}.
+                              </Text>
+                              {policyQuickLoop?.recommended?.changed_routing_keys?.length ? (
+                                <Text size="xs" c="dimmed">
+                                  Will tune: {policyQuickLoop.recommended.changed_routing_keys.slice(0, 6).join(", ")}.
+                                </Text>
+                              ) : null}
+                              <Group gap="xs" wrap="wrap">
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="violet"
+                                  loading={applyingPolicyQuickLoop}
+                                  onClick={() => void applyPolicyQuickLoopPreset(true)}
+                                >
+                                  Preview quick preset
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  color="violet"
+                                  loading={applyingPolicyQuickLoop}
+                                  onClick={() => void applyPolicyQuickLoopPreset(false)}
+                                >
+                                  Apply quick preset
+                                </Button>
+                              </Group>
+                            </Stack>
+                          </Paper>
                           {bootstrapProfileResult ? (
                             <Text size="xs" c="dimmed">
                               Profile `{bootstrapProfileResult.profile}` {bootstrapProfileResult.status}. Changed gatekeeper keys:{" "}
@@ -9445,48 +9903,73 @@ export default function App() {
         >
           <Stack gap="sm">
             <Badge variant="light" color="teal">
-              Step {legacySetupStep} of 3
+              Step {legacySetupStep} of 5
             </Badge>
             {legacySetupStep === 1 && (
               <Stack gap={8}>
                 <Text size="sm" fw={700}>
-                  1. Choose your memory profile
+                  1. Choose connector template
                 </Text>
                 <Text size="sm" c="dimmed">
-                  Start with the schema that matches your existing DB.
+                  Select a prebuilt connector for your existing memory schema.
                 </Text>
                 <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
-                  {(legacyProfiles.length > 0
-                    ? legacyProfiles
+                  {(adoptionImportConnectors.length > 0
+                    ? adoptionImportConnectors
                     : [
-                        { profile: "ops_kb_items", label: "Ops KB Items", description: "Operational KB table." },
-                        { profile: "memory_items", label: "Memory Items", description: "Generic runtime memory." },
+                        {
+                          id: "postgres_sql:ops_kb_items:polling",
+                          profile: "ops_kb_items",
+                          sync_mode: "polling",
+                          label: "Ops KB Items (Polling)",
+                          description: "Operational KB table via incremental polling.",
+                          validation_hints: { warnings: [] },
+                        },
+                        {
+                          id: "postgres_sql:memory_items:polling",
+                          profile: "memory_items",
+                          sync_mode: "polling",
+                          label: "Memory Items (Polling)",
+                          description: "Runtime memory table via incremental polling.",
+                          validation_hints: { warnings: [] },
+                        },
                       ]
-                  ).map((profile) => (
+                  ).map((connector) => (
                     <Paper
-                      key={`legacy-profile-${profile.profile}`}
+                      key={`legacy-connector-${connector.id}`}
                       withBorder
                       p="xs"
                       radius="md"
                       style={{ cursor: "pointer" }}
-                      onClick={() => setLegacySqlProfile(profile.profile)}
+                      onClick={() => {
+                        setSelectedConnectorId(connector.id);
+                        setLegacySqlProfile(connector.profile);
+                      }}
                     >
                       <Stack gap={4}>
                         <Group justify="space-between" align="center">
                           <Text size="sm" fw={700}>
-                            {profile.label}
+                            {connector.label}
                           </Text>
                           <Badge
                             size="xs"
-                            variant={legacySqlProfile === profile.profile ? "filled" : "light"}
-                            color={legacySqlProfile === profile.profile ? "teal" : "gray"}
+                            variant={selectedConnectorId === connector.id ? "filled" : "light"}
+                            color={selectedConnectorId === connector.id ? "teal" : "gray"}
                           >
-                            {legacySqlProfile === profile.profile ? "selected" : "choose"}
+                            {selectedConnectorId === connector.id ? "selected" : "choose"}
                           </Badge>
                         </Group>
                         <Text size="xs" c="dimmed">
-                          {profile.description}
+                          profile: {connector.profile} • mode: {connector.sync_mode}
                         </Text>
+                        <Text size="xs" c="dimmed">
+                          {connector.description}
+                        </Text>
+                        {connector.validation_hints?.warnings && connector.validation_hints.warnings.length > 0 ? (
+                          <Text size="xs" c="dimmed">
+                            {connector.validation_hints.warnings[0]}
+                          </Text>
+                        ) : null}
                       </Stack>
                     </Paper>
                   ))}
@@ -9499,7 +9982,7 @@ export default function App() {
                   2. Configure connector
                 </Text>
                 <Text size="sm" c="dimmed">
-                  These fields are enough for zero-custom-script adoption.
+                  These are the only required fields for day-0 adoption.
                 </Text>
                 <TextInput
                   label="Source ref"
@@ -9512,6 +9995,17 @@ export default function App() {
                   value={legacySqlDsnEnv}
                   onChange={(event) => setLegacySqlDsnEnv(event.currentTarget.value)}
                   placeholder="HW_MEMORY_DSN"
+                />
+                <Select
+                  label="Noise preset"
+                  value="balanced"
+                  data={[
+                    { value: "balanced", label: "balanced" },
+                    { value: "strict", label: "strict" },
+                    { value: "order_snapshots", label: "order_snapshots" },
+                    { value: "telemetry", label: "telemetry" },
+                  ]}
+                  disabled
                 />
                 <Select
                   label="Sync interval"
@@ -9529,15 +10023,43 @@ export default function App() {
                   ]}
                   allowDeselect={false}
                 />
+                {loadingConnectorResolve ? (
+                  <Text size="xs" c="dimmed">
+                    Resolving connector overrides…
+                  </Text>
+                ) : null}
+                {resolvedConnector?.validation_hints ? (
+                  <Paper withBorder p="xs" radius="md">
+                    <Stack gap={4}>
+                      <Text size="xs" fw={700}>
+                        Validation
+                      </Text>
+                      {resolvedConnector.validation_hints.errors && resolvedConnector.validation_hints.errors.length > 0 ? (
+                        <Text size="xs" c="red">
+                          {resolvedConnector.validation_hints.errors.join(" ")}
+                        </Text>
+                      ) : (
+                        <Text size="xs" c="teal">
+                          Connector config is valid for first sync.
+                        </Text>
+                      )}
+                      {resolvedConnector.validation_hints.warnings && resolvedConnector.validation_hints.warnings.length > 0 ? (
+                        <Text size="xs" c="dimmed">
+                          {resolvedConnector.validation_hints.warnings[0]}
+                        </Text>
+                      ) : null}
+                    </Stack>
+                  </Paper>
+                ) : null}
               </Stack>
             )}
             {legacySetupStep === 3 && (
               <Stack gap={8}>
                 <Text size="sm" fw={700}>
-                  3. Review and start
+                  3. Connect source and queue sync
                 </Text>
                 <Text size="sm" c="dimmed">
-                  Synapse will create/update connector and queue first sync run.
+                  Synapse will create/update connector and enqueue first import run.
                 </Text>
                 <Paper withBorder p="xs" radius="md">
                   <Stack gap={4}>
@@ -9545,7 +10067,13 @@ export default function App() {
                       Profile
                     </Text>
                     <Text size="sm" fw={700}>
-                      {legacySelectedProfile?.label || legacySqlProfile}
+                      {selectedAdoptionConnector?.label || legacySelectedProfile?.label || legacySqlProfile}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Connector
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      {selectedAdoptionConnector?.id || "manual"}
                     </Text>
                     <Text size="xs" c="dimmed">
                       Source
@@ -9574,6 +10102,68 @@ export default function App() {
                 />
               </Stack>
             )}
+            {legacySetupStep === 4 && (
+              <Stack gap={8}>
+                <Text size="sm" fw={700}>
+                  4. Preview curated import
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Run trusted-source preview to confirm draft quality before publish.
+                </Text>
+                <Paper withBorder p="xs" radius="md">
+                  <Stack gap={4}>
+                    <Text size="xs" c="dimmed">
+                      Trusted sources
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      {bootstrapTrustedSources || "legacy_import,postgres_sql"}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      Recommendation
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      min_confidence {Number(bootstrapRecommendation?.recommended?.min_confidence || 0.85).toFixed(2)} • limit{" "}
+                      {Number(bootstrapRecommendation?.recommended?.limit || 50)}
+                    </Text>
+                    {bootstrapResult?.dry_run ? (
+                      <Text size="xs" c="teal">
+                        Preview ready: {Number(bootstrapResult.summary?.candidates || 0)} candidates, sample{" "}
+                        {Number(bootstrapResult.summary?.sample_size || 0)}.
+                      </Text>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        Run preview now to inspect migration candidates.
+                      </Text>
+                    )}
+                  </Stack>
+                </Paper>
+              </Stack>
+            )}
+            {legacySetupStep === 5 && (
+              <Stack gap={8}>
+                <Text size="sm" fw={700}>
+                  5. First publish batch
+                </Text>
+                <Text size="sm" c="dimmed">
+                  Apply the trusted batch and jump to Wiki/Drafts for final review.
+                </Text>
+                <Paper withBorder p="xs" radius="md">
+                  <Stack gap={4}>
+                    <Text size="xs" c="dimmed">
+                      Preview status
+                    </Text>
+                    <Text size="sm" fw={700}>
+                      {bootstrapResult?.dry_run
+                        ? `${Number(bootstrapResult.summary?.candidates || 0)} candidates`
+                        : "Preview missing (run step 4 first)."}
+                    </Text>
+                    <Text size="xs" c="dimmed">
+                      After apply, Synapse opens Drafts tab so you can verify quality instantly.
+                    </Text>
+                  </Stack>
+                </Paper>
+              </Stack>
+            )}
             <Group justify="space-between">
               <Button
                 size="compact-sm"
@@ -9595,11 +10185,15 @@ export default function App() {
                 {legacySetupStep < 3 ? (
                   <Button
                     size="compact-sm"
-                    onClick={() => setLegacySetupStep((prev) => Math.min(3, prev + 1))}
+                    onClick={() => {
+                      if (legacySetupStep === 1) setLegacyWizardStep1Done(true);
+                      if (legacySetupStep === 2) setLegacyWizardStep2Done(true);
+                      setLegacySetupStep((prev) => Math.min(5, prev + 1));
+                    }}
                   >
                     Next
                   </Button>
-                ) : (
+                ) : legacySetupStep === 3 ? (
                   <Button
                     size="compact-sm"
                     color="teal"
@@ -9608,8 +10202,50 @@ export default function App() {
                   >
                     Connect & queue sync
                   </Button>
+                ) : legacySetupStep === 4 ? (
+                  <Button
+                    size="compact-sm"
+                    color="indigo"
+                    loading={bootstrapLoading}
+                    onClick={async () => {
+                      await runRecommendedBootstrapPreview();
+                      setLegacyWizardStep4Done(true);
+                      setLegacySetupStep(5);
+                    }}
+                  >
+                    Preview curated import
+                  </Button>
+                ) : (
+                  <Button
+                    size="compact-sm"
+                    color="teal"
+                    loading={bootstrapLoading}
+                    onClick={async () => {
+                      await runRecommendedBootstrapApply();
+                      setCoreWorkspaceRoute("wiki");
+                      setCoreWorkspaceTab("drafts");
+                      setShowLegacySetupModal(false);
+                      setLegacySetupStep(1);
+                    }}
+                  >
+                    Apply first batch
+                  </Button>
                 )}
               </Group>
+            </Group>
+            <Group gap={6} wrap="wrap">
+              <Badge size="xs" color={legacyWizardStep1Done ? "teal" : "gray"} variant="light">
+                template {legacyWizardStep1Done ? "done" : "todo"}
+              </Badge>
+              <Badge size="xs" color={legacyWizardStep2Done ? "teal" : "gray"} variant="light">
+                config {legacyWizardStep2Done ? "done" : "todo"}
+              </Badge>
+              <Badge size="xs" color={legacyWizardStep3Done ? "teal" : "gray"} variant="light">
+                connect {legacyWizardStep3Done ? "done" : "todo"}
+              </Badge>
+              <Badge size="xs" color={legacyWizardStep4Done ? "teal" : "gray"} variant="light">
+                preview {legacyWizardStep4Done ? "done" : "todo"}
+              </Badge>
             </Group>
           </Stack>
         </Modal>
