@@ -147,6 +147,7 @@ class MemoryBackfillBatchIn(BaseModel):
     batch_id: UUID | None = None
     project_id: str
     source_system: str = Field(default="sdk_bootstrap", min_length=1, max_length=128)
+    ingest_lane: str | None = Field(default=None, pattern="^(event|knowledge)$")
     agent_id: str | None = None
     session_id: str | None = None
     cursor: str | None = None
@@ -3943,6 +3944,15 @@ def _normalize_source_system(value: Any, *, default: str = "unknown") -> str:
     if not text:
         return default
     return text[:128]
+
+
+def _normalize_backfill_ingest_lane(value: Any, *, default: str = "event") -> str:
+    lane = str(value or "").strip().lower()
+    if lane not in {"event", "knowledge"}:
+        lane = str(default or "event").strip().lower()
+    if lane not in {"event", "knowledge"}:
+        return "event"
+    return lane
 
 
 def _normalize_source_system_list(value: Any) -> list[str]:
@@ -15165,14 +15175,18 @@ def propose_fact(
     return response
 
 
-@app.post("/v1/backfill/memory", response_model=None)
-def ingest_memory_backfill(
+def _ingest_memory_backfill(
     payload: MemoryBackfillRequest,
     request: Request,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    *,
+    endpoint: str,
+    source_ownership_domain: str,
+    default_ingest_lane: str,
+    idempotency_key: str | None = None,
 ) -> Any:
     batch = payload.batch
     batch_id = batch.batch_id or uuid4()
+    ingest_lane = _normalize_backfill_ingest_lane(batch.ingest_lane, default=default_ingest_lane)
     inserted = 0
     accepted = len(batch.records)
     source_ownership_advisories = 0
@@ -15188,16 +15202,16 @@ def ingest_memory_backfill(
                 check = _enforce_source_ownership_write(
                     policies_by_domain=policies,
                     project_id=project_id,
-                    domain="runtime_memory",
+                    domain=source_ownership_domain,
                     source_system=source_hint,
-                    endpoint="/v1/backfill/memory",
+                    endpoint=endpoint,
                 )
                 if check.get("status") == "advisory":
                     source_ownership_advisories += 1
         maybe_cleanup_expired_requests(conn)
         decision = acquire_request_slot(
             conn,
-            endpoint="/v1/backfill/memory",
+            endpoint=endpoint,
             idempotency_key=idempotency_key,
             request_payload=payload.model_dump(mode="json"),
         )
@@ -15240,7 +15254,7 @@ def ingest_memory_backfill(
                     response = {"error": "batch_id_project_mismatch"}
                     mark_request_failed(
                         conn,
-                        endpoint="/v1/backfill/memory",
+                        endpoint=endpoint,
                         idempotency_key=idempotency_key,
                         error_message="batch_id_project_mismatch",
                     )
@@ -15248,6 +15262,7 @@ def ingest_memory_backfill(
                 if existing_status == "completed":
                     response = {
                         "batch_id": str(batch_id),
+                        "ingest_lane": ingest_lane,
                         "status": "completed",
                         "accepted": accepted,
                         "inserted": 0,
@@ -15257,7 +15272,7 @@ def ingest_memory_backfill(
                         response["source_ownership_advisories"] = source_ownership_advisories
                     mark_request_completed(
                         conn,
-                        endpoint="/v1/backfill/memory",
+                        endpoint=endpoint,
                         idempotency_key=idempotency_key,
                         status_code=200,
                         response_body=response,
@@ -15277,6 +15292,7 @@ def ingest_memory_backfill(
                         "backfill": {
                             "batch_id": str(batch_id),
                             "source_system": batch.source_system,
+                            "ingest_lane": ingest_lane,
                             "cursor": batch.cursor,
                             "ingested_at": datetime.now(UTC).isoformat(),
                         },
@@ -15324,6 +15340,7 @@ def ingest_memory_backfill(
                 total_items, inserted_events, saved_status = cur.fetchone()
                 response = {
                     "batch_id": str(batch_id),
+                    "ingest_lane": ingest_lane,
                     "status": saved_status,
                     "accepted": accepted,
                     "inserted": inserted,
@@ -15336,7 +15353,7 @@ def ingest_memory_backfill(
                     response["source_ownership_advisories"] = source_ownership_advisories
                 mark_request_completed(
                     conn,
-                    endpoint="/v1/backfill/memory",
+                    endpoint=endpoint,
                     idempotency_key=idempotency_key,
                     status_code=200,
                     response_body=response,
@@ -15345,11 +15362,43 @@ def ingest_memory_backfill(
             except Exception as exc:
                 mark_request_failed(
                     conn,
-                    endpoint="/v1/backfill/memory",
+                    endpoint=endpoint,
                     idempotency_key=idempotency_key,
                     error_message=str(exc),
                 )
                 raise
+
+
+@app.post("/v1/backfill/memory", response_model=None)
+def ingest_memory_backfill(
+    payload: MemoryBackfillRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    return _ingest_memory_backfill(
+        payload,
+        request,
+        endpoint="/v1/backfill/memory",
+        source_ownership_domain="runtime_memory",
+        default_ingest_lane="event",
+        idempotency_key=idempotency_key,
+    )
+
+
+@app.post("/v1/backfill/knowledge", response_model=None)
+def ingest_knowledge_backfill(
+    payload: MemoryBackfillRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    return _ingest_memory_backfill(
+        payload,
+        request,
+        endpoint="/v1/backfill/knowledge",
+        source_ownership_domain="synapse_wiki",
+        default_ingest_lane="knowledge",
+        idempotency_key=idempotency_key,
+    )
 
 
 @app.get("/v1/backfill/batches/{batch_id}")
@@ -23450,6 +23499,181 @@ def list_gatekeeper_decisions(
         for row in rows
     ]
     return {"decisions": decisions}
+
+
+@app.get("/v1/adoption/rejections/diagnostics")
+def get_adoption_rejection_diagnostics(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    sample_limit: int = Query(default=5, ge=1, le=25),
+) -> dict[str, Any]:
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  d.claim_id::text,
+                  d.rationale,
+                  d.features,
+                  d.updated_at,
+                  c.entity_key,
+                  c.category,
+                  c.claim_text
+                FROM gatekeeper_decisions d
+                LEFT JOIN claims c ON c.id = d.claim_id AND c.project_id = d.project_id
+                WHERE d.project_id = %s
+                  AND d.tier = 'operational_memory'
+                  AND d.updated_at >= %s
+                ORDER BY d.updated_at DESC
+                LIMIT 2000
+                """,
+                (project_id, cutoff),
+            )
+            rows = cur.fetchall() or []
+
+    reason_counts: dict[str, int] = {}
+    blocked_source_type_counts: dict[str, int] = {}
+    blocked_source_system_counts: dict[str, int] = {}
+    blocked_tool_counts: dict[str, int] = {}
+    examples: list[dict[str, Any]] = []
+
+    def _bump(counter: dict[str, int], key: str | None) -> None:
+        text = str(key or "").strip().lower()
+        if not text:
+            return
+        counter[text] = int(counter.get(text, 0)) + 1
+
+    def _bump_many(counter: dict[str, int], values: Any) -> None:
+        if not isinstance(values, list):
+            return
+        for value in values:
+            _bump(counter, str(value or ""))
+
+    def _reason_tags(features: dict[str, Any], rationale: str) -> list[str]:
+        tags: list[str] = []
+        if bool(features.get("blocked_by_source_id")):
+            tags.append("blocked_source_id")
+        if bool(features.get("blocked_by_source_type")):
+            tags.append("blocked_source_type")
+        if bool(features.get("blocked_by_source_system")):
+            tags.append("blocked_source_system")
+        if bool(features.get("blocked_by_category")):
+            tags.append("blocked_category")
+        if bool(features.get("blocked_by_entity")):
+            tags.append("blocked_entity")
+        if bool(features.get("has_event_stream_shape")):
+            tags.append("event_stream_shape")
+        if bool(features.get("backfill_without_durable_signal")):
+            tags.append("backfill_without_durable_signal")
+        if bool(features.get("insufficient_support")):
+            tags.append("insufficient_support")
+        if bool(features.get("looks_like_runtime_noise")):
+            tags.append("runtime_noise")
+        if not tags and bool(features.get("routing_hard_block")):
+            tags.append("routing_hard_block")
+        if not tags and rationale:
+            tags.append("rationale_only")
+        return tags
+
+    for row in rows:
+        claim_id = str(row[0] or "")
+        rationale = str(row[1] or "").strip()
+        features = row[2] if isinstance(row[2], dict) else {}
+        updated_at = row[3]
+        entity_key = str(row[4] or "")
+        category = str(row[5] or "")
+        claim_text = str(row[6] or "")
+
+        tags = _reason_tags(features, rationale)
+        for tag in tags:
+            _bump(reason_counts, tag)
+
+        _bump_many(blocked_source_type_counts, features.get("incoming_source_types"))
+        _bump_many(blocked_source_system_counts, features.get("incoming_source_systems"))
+        _bump_many(blocked_tool_counts, features.get("incoming_tool_names"))
+
+        if len(examples) < sample_limit:
+            examples.append(
+                {
+                    "claim_id": claim_id,
+                    "entity_key": entity_key,
+                    "category": category,
+                    "reason_tags": tags,
+                    "rationale": rationale,
+                    "updated_at": updated_at.isoformat() if updated_at is not None else None,
+                    "claim_text_snippet": claim_text[:240],
+                }
+            )
+
+    def _top(counter: dict[str, int], *, limit: int = 8) -> list[dict[str, Any]]:
+        return [
+            {"key": key, "count": int(count)}
+            for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
+        ]
+
+    top_reasons = _top(reason_counts, limit=10)
+    top_source_types = _top(blocked_source_type_counts, limit=10)
+    top_source_systems = _top(blocked_source_system_counts, limit=10)
+    top_tool_names = _top(blocked_tool_counts, limit=10)
+
+    suggestions: list[dict[str, str]] = []
+    reason_top_keys = {item["key"] for item in top_reasons[:5]}
+    if "blocked_source_type" in reason_top_keys or "blocked_source_system" in reason_top_keys:
+        suggestions.append(
+            {
+                "knob": "routing_policy.blocked_source_type_keywords / blocked_source_system_keywords",
+                "hint": "Use `/v1/backfill/knowledge` for curated memory imports instead of event lane defaults.",
+            }
+        )
+    if "event_stream_shape" in reason_top_keys:
+        suggestions.append(
+            {
+                "knob": "routing_policy.event_stream_min_*",
+                "hint": "Snapshot-like payloads dominate; pre-filter order/telemetry events before backfill.",
+            }
+        )
+    if "backfill_without_durable_signal" in reason_top_keys:
+        suggestions.append(
+            {
+                "knob": "routing_policy.min_durable_signal_hits_for_backfill / backfill_requires_policy_signal",
+                "hint": "For first migration, use bootstrap profile with softer durable-signal thresholds.",
+            }
+        )
+    if "insufficient_support" in reason_top_keys:
+        suggestions.append(
+            {
+                "knob": "routing_policy.min_sources_for_wiki_candidate / min_evidence_for_wiki_candidate",
+                "hint": "Many records are single-source; bootstrap import should apply curated auto-approve sampling.",
+            }
+        )
+    if not suggestions:
+        suggestions.append(
+            {
+                "knob": "routing_policy",
+                "hint": "No dominant reject pattern detected; inspect sample rejections and adjust policy by reason tags.",
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "since": cutoff.isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": {
+            "rejected_total": len(rows),
+            "sampled_examples": len(examples),
+        },
+        "top_reject_reasons": top_reasons,
+        "top_blocked_patterns": {
+            "source_types": top_source_types,
+            "source_systems": top_source_systems,
+            "tool_names": top_tool_names,
+        },
+        "examples": examples,
+        "suggested_policy_knobs": suggestions,
+    }
 
 
 @app.get("/v1/gatekeeper/config")

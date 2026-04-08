@@ -91,6 +91,7 @@ _ROUTE_POLICIES: list[RoutePolicy] = [
     RoutePolicy({"POST"}, re.compile(r"^/v1/events$"), _ROLE_AGENT, "events_ingest"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/facts/proposals$"), _ROLE_AGENT, "facts_propose"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/backfill/memory$"), _ROLE_AGENT, "memory_backfill"),
+    RoutePolicy({"POST"}, re.compile(r"^/v1/backfill/knowledge$"), _ROLE_AGENT, "knowledge_backfill"),
     RoutePolicy(
         {"GET", "PUT", "DELETE"},
         re.compile(r"^/v1/adoption/source-ownership(?:/[^/]+)?$"),

@@ -29,6 +29,7 @@ import type {
   SynthesisContext,
   SynapseConfig,
   SynapseTransport,
+  RequestOptions,
   DegradationMode,
   OpenClawBootstrapPreset,
   OpenClawListTasksResolver,
@@ -401,6 +402,10 @@ export class SynapseClient {
 
   async backfillMemory(records: MemoryBackfillRecord[], options: MemoryBackfillOptions = {}): Promise<string> {
     const chunkSize = options.chunkSize ?? 100;
+    const ingestLane = options.ingestLane ?? "knowledge";
+    if (ingestLane !== "event" && ingestLane !== "knowledge") {
+      throw new Error("ingestLane must be either 'event' or 'knowledge'");
+    }
     if (chunkSize <= 0) {
       throw new Error("chunkSize must be greater than 0");
     }
@@ -417,6 +422,7 @@ export class SynapseClient {
           batch_id: batchId,
           project_id: this.config.projectId,
           source_system: options.sourceSystem ?? "sdk_bootstrap",
+          ingest_lane: ingestLane,
           agent_id: options.agentId,
           session_id: options.sessionId,
           cursor: isLast ? options.cursor : undefined,
@@ -435,9 +441,10 @@ export class SynapseClient {
       };
       const idempotencyKey = makeBackfillIdempotencyKey(batchId, start, chunk.length, isLast);
       try {
-        await this.transport.ingestMemoryBackfill(payload, { idempotencyKey });
+        await this.transportIngestBackfill(payload, ingestLane, { idempotencyKey });
         this.emitDebug("backfill_chunk_sent", {
           batch_id: batchId,
+          ingest_lane: ingestLane,
           start,
           size: chunk.length,
           finalized: isLast
@@ -448,6 +455,7 @@ export class SynapseClient {
         if (this.degradationMode === "drop") {
           this.emitDebug("backfill_chunk_dropped", {
             batch_id: batchId,
+            ingest_lane: ingestLane,
             start,
             size: chunk.length,
             finalized: isLast,
@@ -459,6 +467,7 @@ export class SynapseClient {
         this.pendingBackfill.push({ payload, idempotencyKey });
         this.emitDebug("backfill_chunk_buffered", {
           batch_id: batchId,
+          ingest_lane: ingestLane,
           start,
           size: chunk.length,
           finalized: isLast,
@@ -470,6 +479,10 @@ export class SynapseClient {
     }
 
     return batchId;
+  }
+
+  async backfillKnowledge(records: MemoryBackfillRecord[], options: Omit<MemoryBackfillOptions, "ingestLane"> = {}): Promise<string> {
+    return this.backfillMemory(records, { ...options, ingestLane: "knowledge" });
   }
 
   async getBootstrapMigrationRecommendation(): Promise<Record<string, unknown>> {
@@ -2072,13 +2085,15 @@ export class SynapseClient {
     this.emitDebug("flush_pending_backfill_start", { count: pending.length });
     for (let index = 0; index < pending.length; index += 1) {
       const item = pending[index];
+      const ingestLane = this.resolveBackfillIngestLaneFromPayload(item.payload);
       try {
-        await this.transport.ingestMemoryBackfill(item.payload, { idempotencyKey: item.idempotencyKey });
+        await this.transportIngestBackfill(item.payload, ingestLane, { idempotencyKey: item.idempotencyKey });
       } catch (error) {
         const errorType = error instanceof Error ? error.name : "Error";
         const errorMessage = error instanceof Error ? error.message : String(error);
         if (this.degradationMode === "drop") {
           this.emitDebug("flush_pending_backfill_dropped", {
+            ingest_lane: ingestLane,
             error_type: errorType,
             error_message: errorMessage
           });
@@ -2087,6 +2102,7 @@ export class SynapseClient {
         const rest = pending.slice(index);
         this.pendingBackfill.unshift(...rest);
         this.emitDebug("flush_pending_backfill_requeued", {
+          ingest_lane: ingestLane,
           error_type: errorType,
           error_message: errorMessage,
           pending_backfill: this.pendingBackfill.length
@@ -2095,6 +2111,54 @@ export class SynapseClient {
       }
     }
     this.emitDebug("flush_pending_backfill_success", { count: pending.length });
+  }
+
+  private resolveBackfillIngestLaneFromPayload(payload: Record<string, unknown>): "event" | "knowledge" {
+    const batch = payload.batch;
+    if (!isPlainObject(batch)) {
+      return "event";
+    }
+    const lane = String(batch.ingest_lane ?? "").trim().toLowerCase();
+    if (lane === "knowledge") {
+      return "knowledge";
+    }
+    return "event";
+  }
+
+  private async transportIngestBackfill(
+    payload: Record<string, unknown>,
+    ingestLane: "event" | "knowledge",
+    options?: RequestOptions
+  ): Promise<void> {
+    if (ingestLane === "knowledge" && typeof this.transport.ingestKnowledgeBackfill === "function") {
+      try {
+        await this.transport.ingestKnowledgeBackfill(payload, options);
+        return;
+      } catch (error) {
+        const statusCode = this.transportErrorStatusCode(error);
+        if (statusCode !== 404 && statusCode !== 405) {
+          throw error;
+        }
+        this.emitDebug("backfill_knowledge_endpoint_fallback", {
+          status_code: statusCode,
+          fallback_endpoint: "/v1/backfill/memory"
+        });
+      }
+    }
+    await this.transport.ingestMemoryBackfill(payload, options);
+  }
+
+  private transportErrorStatusCode(error: unknown): number | null {
+    if (error == null || (typeof error !== "object" && typeof error !== "function")) {
+      return null;
+    }
+    const maybeStatusCode = (error as { statusCode?: unknown; status_code?: unknown }).statusCode;
+    const maybeSnakeStatusCode = (error as { statusCode?: unknown; status_code?: unknown }).status_code;
+    const value = maybeStatusCode ?? maybeSnakeStatusCode;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    return null;
   }
 
   private async flushPendingClaims(): Promise<void> {

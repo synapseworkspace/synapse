@@ -75,6 +75,18 @@ class HttpTransport:
             idempotency_key=idempotency_key,
         )
 
+    def ingest_knowledge_backfill(
+        self,
+        batch_payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> None:
+        self._post_json(
+            "/v1/backfill/knowledge",
+            batch_payload,
+            idempotency_key=idempotency_key,
+        )
+
     def _post_json(
         self,
         path: str,

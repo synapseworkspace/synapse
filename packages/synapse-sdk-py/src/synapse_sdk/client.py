@@ -42,6 +42,7 @@ class Transport(Protocol):
     def send_events(self, events: list[ObservationEvent], *, idempotency_key: str | None = None) -> None: ...
     def propose_fact(self, claim: Claim, *, idempotency_key: str | None = None) -> None: ...
     def ingest_memory_backfill(self, batch_payload: dict[str, Any], *, idempotency_key: str | None = None) -> None: ...
+    def ingest_knowledge_backfill(self, batch_payload: dict[str, Any], *, idempotency_key: str | None = None) -> None: ...
 
 
 class SynapseClient:
@@ -253,19 +254,32 @@ class SynapseClient:
         if pending_backfill:
             self._emit_debug("flush_pending_backfill_start", {"count": len(pending_backfill)})
         for payload, idempotency_key in pending_backfill:
+            ingest_lane = self._resolve_backfill_ingest_lane_from_payload(payload)
             try:
-                self._transport.ingest_memory_backfill(payload, idempotency_key=idempotency_key)
+                self._transport_ingest_backfill(
+                    payload,
+                    ingest_lane=ingest_lane,
+                    idempotency_key=idempotency_key,
+                )
             except Exception as exc:
                 if self._degradation_mode == "drop":
                     self._emit_debug(
                         "flush_pending_backfill_dropped",
-                        {"error_type": type(exc).__name__, "error_message": str(exc)},
+                        {
+                            "ingest_lane": ingest_lane,
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc),
+                        },
                     )
                     continue
                 self._push_pending_backfill(payload, idempotency_key=idempotency_key, to_front=True)
                 self._emit_debug(
                     "flush_pending_backfill_requeued",
-                    {"error_type": type(exc).__name__, "error_message": str(exc)},
+                    {
+                        "ingest_lane": ingest_lane,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
                 )
                 break
         else:
@@ -342,6 +356,7 @@ class SynapseClient:
         records: Sequence[MemoryBackfillRecord],
         *,
         batch_id: str | None = None,
+        ingest_lane: str = "knowledge",
         source_system: str = "sdk_bootstrap",
         agent_id: str | None = None,
         session_id: str | None = None,
@@ -349,6 +364,9 @@ class SynapseClient:
         cursor: str | None = None,
         chunk_size: int = 100,
     ) -> str:
+        resolved_ingest_lane = str(ingest_lane or "knowledge").strip().lower()
+        if resolved_ingest_lane not in {"event", "knowledge"}:
+            raise ValueError("ingest_lane must be either 'event' or 'knowledge'")
         if chunk_size <= 0:
             raise ValueError("chunk_size must be > 0")
         if not records:
@@ -372,6 +390,7 @@ class SynapseClient:
                     "batch_id": resolved_batch_id,
                     "project_id": self._config.project_id,
                     "source_system": source_system,
+                    "ingest_lane": resolved_ingest_lane,
                     "agent_id": agent_id,
                     "session_id": session_id,
                     "cursor": cursor if is_last else None,
@@ -381,11 +400,16 @@ class SynapseClient:
                 }
             }
             try:
-                self._transport.ingest_memory_backfill(batch_payload, idempotency_key=idempotency_key)
+                self._transport_ingest_backfill(
+                    batch_payload,
+                    ingest_lane=resolved_ingest_lane,
+                    idempotency_key=idempotency_key,
+                )
                 self._emit_debug(
                     "backfill_chunk_sent",
                     {
                         "batch_id": resolved_batch_id,
+                        "ingest_lane": resolved_ingest_lane,
                         "start": start,
                         "size": len(chunk),
                         "finalized": is_last,
@@ -397,6 +421,7 @@ class SynapseClient:
                         "backfill_chunk_dropped",
                         {
                             "batch_id": resolved_batch_id,
+                            "ingest_lane": resolved_ingest_lane,
                             "start": start,
                             "size": len(chunk),
                             "finalized": is_last,
@@ -410,6 +435,7 @@ class SynapseClient:
                     "backfill_chunk_buffered",
                     {
                         "batch_id": resolved_batch_id,
+                        "ingest_lane": resolved_ingest_lane,
                         "start": start,
                         "size": len(chunk),
                         "finalized": is_last,
@@ -419,9 +445,38 @@ class SynapseClient:
                 )
         self._emit_debug(
             "backfill_completed",
-            {"batch_id": resolved_batch_id, "records": total, "chunk_size": chunk_size},
+            {
+                "batch_id": resolved_batch_id,
+                "ingest_lane": resolved_ingest_lane,
+                "records": total,
+                "chunk_size": chunk_size,
+            },
         )
         return resolved_batch_id
+
+    def backfill_knowledge(
+        self,
+        records: Sequence[MemoryBackfillRecord],
+        *,
+        batch_id: str | None = None,
+        source_system: str = "sdk_bootstrap",
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        created_by: str | None = None,
+        cursor: str | None = None,
+        chunk_size: int = 100,
+    ) -> str:
+        return self.backfill_memory(
+            records,
+            batch_id=batch_id,
+            ingest_lane="knowledge",
+            source_system=source_system,
+            agent_id=agent_id,
+            session_id=session_id,
+            created_by=created_by,
+            cursor=cursor,
+            chunk_size=chunk_size,
+        )
 
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
@@ -1341,6 +1396,37 @@ class SynapseClient:
                 self._pending_backfill.insert(0, item)
             else:
                 self._pending_backfill.append(item)
+
+    def _resolve_backfill_ingest_lane_from_payload(self, payload: dict[str, Any]) -> str:
+        batch = payload.get("batch")
+        if isinstance(batch, dict):
+            lane = str(batch.get("ingest_lane") or "").strip().lower()
+            if lane in {"event", "knowledge"}:
+                return lane
+        return "event"
+
+    def _transport_ingest_backfill(
+        self,
+        payload: dict[str, Any],
+        *,
+        ingest_lane: str,
+        idempotency_key: str | None,
+    ) -> None:
+        if ingest_lane == "knowledge":
+            method = getattr(self._transport, "ingest_knowledge_backfill", None)
+            if callable(method):
+                try:
+                    method(payload, idempotency_key=idempotency_key)
+                    return
+                except Exception as exc:
+                    status_code = int(getattr(exc, "status_code", 0) or 0)
+                    if status_code not in {404, 405}:
+                        raise
+                    self._emit_debug(
+                        "backfill_knowledge_endpoint_fallback",
+                        {"status_code": status_code, "fallback_endpoint": "/v1/backfill/memory"},
+                    )
+        self._transport.ingest_memory_backfill(payload, idempotency_key=idempotency_key)
 
     def collect_insight(
         self,

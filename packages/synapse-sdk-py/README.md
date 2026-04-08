@@ -232,7 +232,7 @@ and subscribes to configured OpenClaw runtime hook events.
 
 If no provenance secret is configured, connector falls back to digest-only mode.
 
-When `bootstrap_memory` is set, `attach(...)` also imports existing runtime memory via `/v1/backfill/memory` before normal live monitoring starts.
+When `bootstrap_memory` is set, `attach(...)` imports existing memory via the knowledge lane (`/v1/backfill/knowledge`) before normal live monitoring starts.
 
 ## Task Core Helpers
 
@@ -370,7 +370,8 @@ batch_id = synapse.backfill_memory(
 print("Backfill batch:", batch_id)
 ```
 
-This sends historical memory into `/v1/backfill/memory` and marks the final chunk as `finalize=true`.
+By default this sends historical memory into `/v1/backfill/knowledge` and marks the final chunk as `finalize=true`.
+Use `ingest_lane="event"` only for runtime/event stream replay.
 
 You can also do this during `attach(...)`:
 

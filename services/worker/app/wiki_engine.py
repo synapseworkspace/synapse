@@ -927,6 +927,7 @@ class WikiSynthesisEngine:
         source_id = str(payload.get("source_id") or event_id)
         metadata = payload.get("metadata")
         metadata_dict = metadata if isinstance(metadata, dict) else {}
+        ingest_lane = self._resolve_backfill_ingest_lane(payload=payload, metadata=metadata_dict)
         entity_key, entity_source = self._resolve_backfill_entity_key(payload=payload, metadata=metadata_dict, source_id=source_id, content=content)
         category, category_source = self._resolve_backfill_category(payload=payload, metadata=metadata_dict, content=content)
         evaluation = suppression_eval or self._evaluate_backfill_suppression(
@@ -951,17 +952,33 @@ class WikiSynthesisEngine:
         )
         claim_id = self._stable_uuid(f"synapse:backfill-claim:{fingerprint_material}")
         observed_iso = observed_at.isoformat() if observed_at else None
+        evidence_source_type = "knowledge_ingest" if ingest_lane == "knowledge" else "external_event"
+        evidence_tool_name = "knowledge_backfill" if ingest_lane == "knowledge" else "memory_backfill"
+        backfill_meta = payload.get("backfill")
+        backfill_source_system = None
+        if isinstance(backfill_meta, dict):
+            raw_backfill_source_system = str(backfill_meta.get("source_system") or "").strip()
+            if raw_backfill_source_system:
+                backfill_source_system = raw_backfill_source_system
+        if backfill_source_system is None:
+            raw_metadata_source_system = str(
+                metadata_dict.get("source_system") or metadata_dict.get("source") or ""
+            ).strip()
+            if raw_metadata_source_system:
+                backfill_source_system = raw_metadata_source_system
         evidence = [
             {
-                "source_type": "external_event",
+                "source_type": evidence_source_type,
                 "source_id": source_id,
                 "session_id": session_id,
                 "snippet": content[:280],
                 "observed_at": observed_iso,
-                "tool_name": "memory_backfill",
+                "tool_name": evidence_tool_name,
                 "url": None,
                 "event_id": str(event_id),
                 "agent_id": agent_id,
+                "ingest_lane": ingest_lane,
+                "source_system": backfill_source_system,
                 "entity_inference_source": entity_source,
                 "category_inference_source": category_source,
                 "process_triplet": process_triplet,
@@ -1011,6 +1028,7 @@ class WikiSynthesisEngine:
         metadata: dict[str, Any],
         routing_policy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        ingest_lane = self._resolve_backfill_ingest_lane(payload=payload, metadata=metadata)
         trusted_hint = self._has_backfill_trusted_knowledge_hint(payload=payload, metadata=metadata)
         if trusted_hint:
             return {
@@ -1018,6 +1036,7 @@ class WikiSynthesisEngine:
                 "reason": None,
                 "trusted_hint": True,
                 "has_durable_signal": True,
+                "ingest_lane": ingest_lane,
             }
 
         policy = self._normalize_gatekeeper_routing_policy(routing_policy)
@@ -1107,6 +1126,7 @@ class WikiSynthesisEngine:
             (blocked_by_source_system or blocked_by_source_type)
             and not has_durable_signal
             and category_hint in {"general", "operations"}
+            and ingest_lane != "knowledge"
         )
         heuristic_skip = False
         heuristic_reason: str | None = None
@@ -1209,6 +1229,7 @@ class WikiSynthesisEngine:
             "reason": heuristic_reason,
             "trusted_hint": False,
             "has_durable_signal": has_durable_signal,
+            "ingest_lane": ingest_lane,
             "heuristic_reason": heuristic_reason,
             "llm_mode": llm_mode,
             "llm_ambiguous": llm_ambiguous,
@@ -1246,6 +1267,24 @@ class WikiSynthesisEngine:
             if kind in {"knowledge", "policy", "incident", "preference", "runbook", "manual", "sop"}:
                 return True
         return False
+
+    def _resolve_backfill_ingest_lane(
+        self,
+        *,
+        payload: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> str:
+        candidates: list[Any] = []
+        backfill = payload.get("backfill")
+        if isinstance(backfill, dict):
+            candidates.append(backfill.get("ingest_lane"))
+        candidates.append(payload.get("ingest_lane"))
+        candidates.append(metadata.get("ingest_lane"))
+        for raw in candidates:
+            lane = str(raw or "").strip().lower()
+            if lane in {"knowledge", "event"}:
+                return lane
+        return "event"
 
     def _resolve_backfill_entity_key(
         self,
@@ -1921,6 +1960,8 @@ class WikiSynthesisEngine:
         incoming_source_systems = self._extract_source_systems(claim.evidence)
         incoming_source_types = self._extract_source_types(claim.evidence)
         incoming_tool_names = self._extract_tool_names(claim.evidence)
+        incoming_ingest_lanes = self._extract_ingest_lanes(claim.evidence)
+        is_knowledge_ingest = "knowledge" in incoming_ingest_lanes
         source_diversity = max(historical_source_count, len(incoming_source_ids))
         source_id_blob = " ".join(self._normalize_text(item) for item in incoming_source_ids)
         blocked_by_category = any(keyword in normalized_category for keyword in blocked_category_keywords if keyword)
@@ -1936,6 +1977,9 @@ class WikiSynthesisEngine:
             for keyword in blocked_source_type_keywords
             if keyword
         )
+        if is_knowledge_ingest:
+            blocked_by_source_system = False
+            blocked_by_source_type = False
         blocked_by_entity = any(keyword in normalized_entity_key for keyword in blocked_entity_keywords if keyword)
         blocked_by_source_id = any(keyword in source_id_blob for keyword in blocked_source_id_keywords if keyword)
         numeric_token_count = sum(1 for token in tokens if any(ch.isdigit() for ch in token))
@@ -2128,6 +2172,8 @@ class WikiSynthesisEngine:
                     "blocked_by_source_id": blocked_by_source_id,
                     "has_event_stream_shape": has_event_stream_shape,
                     "has_backfill_evidence": has_backfill_evidence,
+                    "incoming_ingest_lanes": incoming_ingest_lanes,
+                    "is_knowledge_ingest": is_knowledge_ingest,
                 },
             )
         llm_applied = False
@@ -2169,6 +2215,8 @@ class WikiSynthesisEngine:
             "incoming_source_systems": incoming_source_systems,
             "incoming_source_types": incoming_source_types,
             "incoming_tool_names": incoming_tool_names,
+            "incoming_ingest_lanes": incoming_ingest_lanes,
+            "is_knowledge_ingest": is_knowledge_ingest,
             "all_runtime_sources": all_runtime_sources,
             "looks_like_runtime_noise": looks_like_runtime_noise,
             "routing_policy": routing_policy,
@@ -4030,6 +4078,22 @@ class WikiSynthesisEngine:
             if value:
                 tool_names.add(value[:128])
         return sorted(tool_names)
+
+    def _extract_ingest_lanes(self, evidence: list[dict[str, Any]]) -> list[str]:
+        ingest_lanes: set[str] = set()
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            lane = str(item.get("ingest_lane") or "").strip().lower()
+            if lane in {"event", "knowledge"}:
+                ingest_lanes.add(lane)
+                continue
+            metadata = item.get("metadata")
+            if isinstance(metadata, dict):
+                meta_lane = str(metadata.get("ingest_lane") or "").strip().lower()
+                if meta_lane in {"event", "knowledge"}:
+                    ingest_lanes.add(meta_lane)
+        return sorted(ingest_lanes)
 
     def _count_keyword_hits(
         self,

@@ -60,6 +60,10 @@ export class HttpTransport implements SynapseTransport {
     await this.requestJson("/v1/backfill/memory", { method: "POST", payload, idempotencyKey: options?.idempotencyKey });
   }
 
+  async ingestKnowledgeBackfill(payload: Record<string, unknown>, options?: RequestOptions): Promise<void> {
+    await this.requestJson("/v1/backfill/knowledge", { method: "POST", payload, idempotencyKey: options?.idempotencyKey });
+  }
+
   async requestJson<T = Record<string, unknown>>(
     path: string,
     options: {

@@ -366,6 +366,7 @@ export interface AttachBootstrapMemoryOptions {
 
 export interface MemoryBackfillOptions {
   batchId?: string;
+  ingestLane?: "event" | "knowledge";
   sourceSystem?: string;
   agentId?: string;
   sessionId?: string;
@@ -464,4 +465,5 @@ export interface SynapseTransport {
   sendEvents(events: ObservationEvent[], options?: RequestOptions): Promise<void>;
   proposeFact(claim: Claim, options?: RequestOptions): Promise<void>;
   ingestMemoryBackfill(payload: Record<string, unknown>, options?: RequestOptions): Promise<void>;
+  ingestKnowledgeBackfill?(payload: Record<string, unknown>, options?: RequestOptions): Promise<void>;
 }

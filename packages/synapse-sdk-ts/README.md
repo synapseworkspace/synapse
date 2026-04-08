@@ -304,7 +304,8 @@ const batchId = await synapse.backfillMemory([
 console.log("Backfill batch:", batchId);
 ```
 
-Historical memory is uploaded via `/v1/backfill/memory`; final chunk is automatically marked `finalize=true`.
+Historical memory is uploaded via `/v1/backfill/knowledge` by default; final chunk is automatically marked `finalize=true`.
+Use `ingestLane: "event"` only for runtime/event stream replay.
 
 You can also bootstrap during attach:
 

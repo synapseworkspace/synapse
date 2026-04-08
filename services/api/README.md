@@ -56,9 +56,11 @@ Environment:
 - `POST /v1/events` (idempotent by `event.id`, plus request-level idempotency via `Idempotency-Key`)
 - `GET /v1/events/throughput?project_id=...&window_hours=24&event_type=tool_result` (ingest latency + throughput SLO metrics)
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
-- `POST /v1/backfill/memory` (bulk historical memory ingestion with `batch_id` and status transitions)
+- `POST /v1/backfill/memory` (runtime/event lane backfill; strict event-noise filtering defaults)
+- `POST /v1/backfill/knowledge` (corporate knowledge lane backfill; avoids source-type transport hard-block defaults)
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
+- `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
 - `GET /v1/adoption/source-ownership?project_id=...`
 - `PUT /v1/adoption/source-ownership`
 - `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
@@ -289,7 +291,7 @@ Incident secret RBAC:
 - in-progress request with same key: waits briefly, then returns `409` + `Retry-After` if still processing.
 
 Source ownership enforcement:
-- write-path endpoints (`/v1/events`, `/v1/facts/proposals`, `/v1/backfill/memory`, wiki moderation/publish paths) can be governed by project-level source ownership rules from `/v1/adoption/source-ownership`.
+- write-path endpoints (`/v1/events`, `/v1/facts/proposals`, `/v1/backfill/memory`, `/v1/backfill/knowledge`, wiki moderation/publish paths) can be governed by project-level source ownership rules from `/v1/adoption/source-ownership`.
 - pass `X-Synapse-Source-System` to identify caller/source system for enforcement decisions.
 - in `advisory` mode, writes succeed and response includes `source_ownership_advisories`.
 - in `enforce` mode, writes from disallowed sources fail with `403` (`source_ownership_denied`).

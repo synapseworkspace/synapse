@@ -114,6 +114,26 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertFalse(bool(evaluation.get("skip")))
         self.assertTrue(bool(evaluation.get("trusted_hint")))
 
+    def test_backfill_suppression_knowledge_lane_ignores_source_transport_block(self) -> None:
+        event_lane = self.engine._evaluate_backfill_suppression(
+            source_id="legacy_memory_42",
+            content="Warehouse entry note: call security desk before opening gate override.",
+            category="operations",
+            payload={"backfill": {"ingest_lane": "event"}},
+            metadata={"source_system": "event_stream", "source_type": "external_event"},
+        )
+        knowledge_lane = self.engine._evaluate_backfill_suppression(
+            source_id="legacy_memory_42",
+            content="Warehouse entry note: call security desk before opening gate override.",
+            category="operations",
+            payload={"backfill": {"ingest_lane": "knowledge"}},
+            metadata={"source_system": "event_stream", "source_type": "external_event"},
+        )
+        self.assertTrue(bool(event_lane.get("skip")))
+        self.assertEqual(str(event_lane.get("reason")), "event_transport_low_signal")
+        self.assertFalse(bool(knowledge_lane.get("skip")))
+        self.assertEqual(str(knowledge_lane.get("ingest_lane")), "knowledge")
+
     def test_backfill_suppression_enforce_mode_can_override_keep(self) -> None:
         class _Classifier:
             def classify(self, *, claim, features, config):  # type: ignore[no-untyped-def]
@@ -348,6 +368,57 @@ class WikiEngineRoutingTests(unittest.TestCase):
         process_triplet = first.get("process_triplet")
         self.assertIsInstance(process_triplet, dict)
         self.assertTrue(str(process_triplet.get("action") or "").strip())
+
+    def test_backfill_claim_evidence_uses_knowledge_lane_markers(self) -> None:
+        payload = {
+            "source_id": "ops_playbook_knowledge_1",
+            "content": "Dispatch policy: escalate delayed critical shipment to on-call within 15 minutes.",
+            "metadata": {"source_system": "legacy_kb"},
+            "backfill": {"ingest_lane": "knowledge", "source_system": "legacy_kb"},
+        }
+        claim_payload = self.engine._claim_payload_from_backfill_event(
+            event_id=uuid.uuid4(),
+            project_id="omega_demo",
+            agent_id="agent_1",
+            session_id="session_1",
+            payload=payload,
+            observed_at=datetime.now(timezone.utc),
+        )
+        self.assertIsNotNone(claim_payload)
+        assert claim_payload is not None
+        first = claim_payload["evidence"][0]
+        self.assertEqual(first.get("ingest_lane"), "knowledge")
+        self.assertEqual(first.get("source_type"), "knowledge_ingest")
+        self.assertEqual(first.get("tool_name"), "knowledge_backfill")
+
+    def test_gatekeeper_knowledge_ingest_does_not_hard_block_by_source_type(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="warehouse_gate_policy",
+            category="access",
+            claim_text="Warehouse gate policy requires physical key-card after 10:00.",
+            evidence=[
+                {
+                    "source_type": "external_event",
+                    "source_id": "legacy_policy_1",
+                    "tool_name": "knowledge_backfill",
+                    "source_system": "event_stream",
+                    "ingest_lane": "knowledge",
+                }
+            ],
+            metadata={},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["legacy_policy_1"],
+            has_recent_open_conflict=False,
+        )
+        self.assertFalse(bool(decision.features.get("blocked_by_source_type")))
+        self.assertFalse(bool(decision.features.get("blocked_by_source_system")))
 
     def test_gatekeeper_marks_process_assertion_class(self) -> None:
         claim = ClaimInput(
