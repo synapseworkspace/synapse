@@ -888,8 +888,35 @@ class WikiPageCreateRequest(BaseModel):
 class AdoptionFirstRunBootstrapRequest(BaseModel):
     project_id: str
     created_by: str = Field(default="bootstrap_wizard", min_length=1, max_length=256)
-    profile: str = Field(default="standard", pattern="^(standard|support_ops)$")
+    profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
     publish: bool = True
+
+
+class AdoptionWikiSpaceTemplateApplyRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    template_key: str = Field(pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    publish: bool = True
+
+
+class AdoptionSyncPresetExecuteRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    reviewed_by: str | None = Field(default=None, min_length=1, max_length=256)
+    preset_key: str = Field(default="enterprise_curated_safe", pattern="^(enterprise_curated_safe)$")
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    source_system: str = Field(default="legacy_import", min_length=1, max_length=128)
+    apply_bootstrap_profile: bool = True
+    queue_enabled_sources: bool = True
+    run_bootstrap_approve: bool = True
+    include_starter_pages: bool = True
+    starter_profile: str = Field(default="support_ops", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    include_role_template: bool = False
+    role_template_key: str | None = Field(default=None, pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class WikiPageUpdateRequest(BaseModel):
@@ -4205,6 +4232,37 @@ _BACKFILL_NOISE_PRESET_DEFS: dict[str, dict[str, Any]] = {
         "drop_json_payload": True,
         "min_json_keys": 5,
     },
+    "knowledge_v2": {
+        "label": "Knowledge v2",
+        "description": "Enterprise default: strict snapshot suppression + operational summary noise guard.",
+        "source_id_patterns": [
+            r"order[_-]?(snapshot|event|stream)",
+            r"invoice[_-]?(snapshot|event|stream)",
+            r"telemetry",
+            r"metric",
+            r"trace",
+            r"span",
+            r"raw[_-]?event",
+            r"daily[_-]?report",
+            r"ops[_-]?summary",
+        ],
+        "category_patterns": [
+            r"order[_-]?event",
+            r"invoice[_-]?event",
+            r"telemetry",
+            r"metrics?",
+            r"events?",
+            r"summary",
+            r"snapshot",
+        ],
+        "content_patterns": [
+            r"\border(_id|\s*id|\s*#)\b",
+            r"\binvoice(_id|\s*id|\s*#)\b",
+            r"\b(status|updated_at|created_at|event_type|payload)\b",
+        ],
+        "drop_json_payload": True,
+        "min_json_keys": 4,
+    },
     "order_snapshots": {
         "label": "Order Snapshots",
         "description": "Drop order/invoice snapshot records before claim generation.",
@@ -4275,9 +4333,13 @@ def _record_matches_noise_preset(record: MemoryBackfillRecordIn, *, preset_key: 
     for pattern in preset.get("category_patterns") or []:
         if re.search(str(pattern), category):
             return True
+    content = str(record.content or "").strip()
+    lowered_content = content.lower()
+    for pattern in preset.get("content_patterns") or []:
+        if re.search(str(pattern), lowered_content):
+            return True
     if not drop_event_like or not bool(preset.get("drop_json_payload")):
         return False
-    content = str(record.content or "").strip()
     if not content:
         return False
     # JSON-ish payloads with dense key/value structure usually represent runtime snapshots.
@@ -4331,7 +4393,7 @@ def _resolve_backfill_curated_options(batch: MemoryBackfillBatchIn, *, ingest_la
     drop_event_like = True
     if isinstance(curated, MemoryBackfillCuratedFilterIn) and curated.drop_event_like is not None:
         drop_event_like = bool(curated.drop_event_like)
-    default_noise = "balanced" if enabled and ingest_lane == "knowledge" else "off"
+    default_noise = "knowledge_v2" if enabled and ingest_lane == "knowledge" else "off"
     noise_preset = _normalize_backfill_noise_preset(
         curated.noise_preset if isinstance(curated, MemoryBackfillCuratedFilterIn) else None,
         default=default_noise,
@@ -24711,7 +24773,7 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
             "max_records": 5000,
             "curated_import": {
                 "enabled": True,
-                "noise_preset": "balanced",
+                "noise_preset": "knowledge_v2",
                 "drop_event_like": True,
             },
         }
@@ -24780,6 +24842,23 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
             contract = contract_by_mode.get(mode)
             if template is None:
                 continue
+            template_config_patch = (
+                dict(template.get("config_patch"))
+                if isinstance(template.get("config_patch"), dict)
+                else {}
+            )
+            curated_import = (
+                dict(template_config_patch.get("curated_import"))
+                if isinstance(template_config_patch.get("curated_import"), dict)
+                else {}
+            )
+            if "noise_preset" not in curated_import:
+                curated_import["noise_preset"] = "knowledge_v2"
+            if "drop_event_like" not in curated_import:
+                curated_import["drop_event_like"] = True
+            if "enabled" not in curated_import:
+                curated_import["enabled"] = True
+            template_config_patch["curated_import"] = curated_import
             connectors.append(
                 {
                     "id": f"postgres_sql:{profile_key}:{mode}",
@@ -24788,7 +24867,7 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
                     "sync_mode": mode,
                     "label": str(template.get("label") or f"{profile_key} ({mode})"),
                     "description": str(template.get("description") or row.get("description") or "").strip(),
-                    "config_patch": template.get("config_patch") if isinstance(template.get("config_patch"), dict) else {},
+                    "config_patch": template_config_patch,
                     "runner_contract": dict(contract) if isinstance(contract, dict) else None,
                     "template_key": str(template.get("template_key") or ""),
                     "runner_contract_key": str(template.get("runner_contract_key") or ""),
@@ -24796,7 +24875,7 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
                         connector_id=f"postgres_sql:{profile_key}:{mode}",
                         source_type="postgres_sql",
                         sync_mode=mode,
-                        config_patch=template.get("config_patch") if isinstance(template.get("config_patch"), dict) else {},
+                        config_patch=template_config_patch,
                     ),
                 }
             )
@@ -24859,11 +24938,37 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
     }
 
 
-def _build_first_run_starter_pages(profile: str) -> list[dict[str, str]]:
-    common = [
+def _normalize_space_key(value: Any, *, default: str = "") -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return default
+    parts = [_slugify_segment(part) for part in raw.split("/") if _slugify_segment(part)]
+    return "/".join(parts)
+
+
+def _space_slug(space_key: str, leaf: str) -> str:
+    normalized_space = _normalize_space_key(space_key, default="")
+    normalized_leaf = _slugify_segment(leaf)
+    if normalized_space:
+        return _normalize_wiki_slug(f"{normalized_space}/{normalized_leaf}", normalized_leaf)
+    return _normalize_wiki_slug(normalized_leaf, normalized_leaf)
+
+
+def _build_first_run_starter_pages(profile: str, *, space_key: str | None = None) -> list[dict[str, str]]:
+    space = _normalize_space_key(space_key or "", default="")
+    if not space:
+        default_space_by_profile = {
+            "standard": "operations",
+            "support_ops": "support",
+            "logistics_ops": "logistics",
+            "sales_ops": "sales",
+            "compliance_ops": "compliance",
+        }
+        space = default_space_by_profile.get(profile, "operations")
+    pages: list[dict[str, str]] = [
         {
             "title": "Agent Profile",
-            "slug": "agents/agent-profile",
+            "slug": _space_slug(space, "agent-profile"),
             "page_type": "agent_profile",
             "markdown": (
                 "# Agent Profile\n\n"
@@ -24879,7 +24984,7 @@ def _build_first_run_starter_pages(profile: str) -> list[dict[str, str]]:
         },
         {
             "title": "Data Map",
-            "slug": "operations/data-map",
+            "slug": _space_slug(space, "data-map"),
             "page_type": "data_map",
             "markdown": (
                 "# Data Map\n\n"
@@ -24893,7 +24998,7 @@ def _build_first_run_starter_pages(profile: str) -> list[dict[str, str]]:
         },
         {
             "title": "Operational Runbook",
-            "slug": "runbooks/operational-runbook",
+            "slug": _space_slug(space, "operational-runbook"),
             "page_type": "runbook",
             "markdown": (
                 "# Operational Runbook\n\n"
@@ -24907,10 +25012,10 @@ def _build_first_run_starter_pages(profile: str) -> list[dict[str, str]]:
         },
     ]
     if profile == "support_ops":
-        common.append(
+        pages.append(
             {
                 "title": "Support Escalation Matrix",
-                "slug": "runbooks/support-escalation-matrix",
+                "slug": _space_slug(space, "support-escalation-matrix"),
                 "page_type": "runbook",
                 "markdown": (
                     "# Support Escalation Matrix\n\n"
@@ -24923,198 +25028,243 @@ def _build_first_run_starter_pages(profile: str) -> list[dict[str, str]]:
                 ),
             }
         )
-    return common
+    if profile == "logistics_ops":
+        pages.append(
+            {
+                "title": "Dispatch Escalation Policy",
+                "slug": _space_slug(space, "dispatch-escalation-policy"),
+                "page_type": "policy",
+                "markdown": (
+                    "# Dispatch Escalation Policy\n\n"
+                    "## Trigger Conditions\n"
+                    "- Late pickup, access failure, or route dead-end.\n\n"
+                    "## Required Actions\n"
+                    "- Notify dispatch channel, update ETA, and create incident task.\n"
+                ),
+            }
+        )
+    if profile == "sales_ops":
+        pages.append(
+            {
+                "title": "Deal Stage Playbook",
+                "slug": _space_slug(space, "deal-stage-playbook"),
+                "page_type": "runbook",
+                "markdown": (
+                    "# Deal Stage Playbook\n\n"
+                    "## Qualification\n"
+                    "- Mandatory checks before stage transition.\n\n"
+                    "## Handoff\n"
+                    "- Required context for support/onboarding transfer.\n"
+                ),
+            }
+        )
+    if profile == "compliance_ops":
+        pages.append(
+            {
+                "title": "Compliance Control Map",
+                "slug": _space_slug(space, "compliance-control-map"),
+                "page_type": "policy",
+                "markdown": (
+                    "# Compliance Control Map\n\n"
+                    "## Control Catalog\n"
+                    "- Controls, owners, and evidence sources.\n\n"
+                    "## Audit Trail\n"
+                    "- Review cadence and exception workflow.\n"
+                ),
+            }
+        )
+    return pages
 
 
-@app.post("/v1/adoption/first-run/bootstrap")
-def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) -> dict[str, Any]:
-    pages = _build_first_run_starter_pages(payload.profile)
-    requested_status = "published" if payload.publish else "reviewed"
+def _insert_bootstrap_pages(
+    conn,
+    *,
+    project_id: str,
+    created_by: str,
+    profile: str,
+    pages: list[dict[str, str]],
+    requested_status: str,
+) -> dict[str, Any]:
     created: list[dict[str, Any]] = []
     existing: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     downgraded_to_reviewed = 0
+    created_page_ids: list[str] = []
     snapshot_id_text: str | None = None
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            created_page_ids: list[str] = []
-            for spec in pages:
-                title = str(spec.get("title") or "").strip()
-                slug = _normalize_wiki_slug(str(spec.get("slug") or title), title)
-                page_type = str(spec.get("page_type") or "operations").strip().lower() or "operations"
-                markdown = str(spec.get("markdown") or f"# {title}\n").rstrip() + "\n"
-                space_key = _wiki_space_key_from_slug(slug)
-                entity_key = slug
+    with conn.cursor() as cur:
+        for spec in pages:
+            title = str(spec.get("title") or "").strip()
+            slug = _normalize_wiki_slug(str(spec.get("slug") or title), title)
+            page_type = str(spec.get("page_type") or "operations").strip().lower() or "operations"
+            markdown = str(spec.get("markdown") or f"# {title}\n").rstrip() + "\n"
+            space_key = _wiki_space_key_from_slug(slug)
+            entity_key = slug
 
-                cur.execute(
-                    """
-                    SELECT id::text, status, current_version
-                    FROM wiki_pages
-                    WHERE project_id = %s
-                      AND slug = %s
-                    LIMIT 1
-                    """,
-                    (payload.project_id, slug),
-                )
-                current = cur.fetchone()
-                if current is not None:
-                    existing.append(
-                        {
-                            "id": current[0],
-                            "slug": slug,
-                            "title": title,
-                            "status": str(current[1] or ""),
-                            "version": int(current[2] or 1),
-                        }
-                    )
-                    continue
-
-                policy_check = _check_wiki_policy_access(
-                    cur,
-                    project_id=payload.project_id,
-                    space_key=space_key,
-                    actor=payload.created_by,
-                    action="write",
-                    page_id=None,
-                )
-                if not policy_check["allowed"]:
-                    skipped.append(
-                        {
-                            "slug": slug,
-                            "title": title,
-                            "reason": "wiki_policy_denied",
-                            "detail": str(policy_check.get("reason") or "not_allowed"),
-                        }
-                    )
-                    continue
-
-                status = requested_status
-                if status == "published":
-                    guard = _resolve_agent_publish_mode(
-                        cur,
-                        project_id=payload.project_id,
-                        actor=payload.created_by,
-                        page_type=page_type,
-                    )
-                    if str(guard.get("mode") or "") == "human_required":
-                        status = "reviewed"
-                        downgraded_to_reviewed += 1
-
-                page_id = uuid4()
-                cur.execute(
-                    """
-                    INSERT INTO wiki_pages (
-                      id, project_id, page_type, title, slug, entity_key, status, current_version, metadata
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s)
-                    """,
-                    (
-                        page_id,
-                        payload.project_id,
-                        page_type,
-                        title,
-                        slug,
-                        entity_key,
-                        status,
-                        Jsonb({"source": "first_run_bootstrap", "created_by": payload.created_by, "profile": payload.profile}),
-                    ),
-                )
-                cur.execute(
-                    """
-                    INSERT INTO wiki_page_versions (
-                      id, page_id, version, markdown, ast_json, source, created_by, change_summary
-                    )
-                    VALUES (%s, %s, 1, %s, %s, 'human', %s, %s)
-                    """,
-                    (uuid4(), page_id, markdown, Jsonb([]), payload.created_by, "Created by first-run bootstrap"),
-                )
-
-                sections = _extract_sections_from_markdown(markdown)
-                statements_count = 0
-                for index, section in enumerate(sections):
-                    section_key = str(section.get("section_key") or f"section_{index + 1}")
-                    heading = str(section.get("heading") or _section_heading_from_key(section_key))
-                    statements = section.get("statements") or []
-                    cur.execute(
-                        """
-                        INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
-                        VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (page_id, section_key) DO UPDATE
-                        SET heading = EXCLUDED.heading,
-                            order_index = EXCLUDED.order_index,
-                            statement_count = EXCLUDED.statement_count
-                        """,
-                        (page_id, section_key, heading, index, len(statements)),
-                    )
-                    for statement_text in statements:
-                        statement = str(statement_text).strip()
-                        if not statement:
-                            continue
-                        statements_count += 1
-                        statement_id = uuid4()
-                        cur.execute(
-                            """
-                            INSERT INTO wiki_statements (
-                              id, project_id, page_id, section_key, statement_text, normalized_text,
-                              claim_fingerprint, status, metadata, valid_from
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
-                            """,
-                            (
-                                statement_id,
-                                payload.project_id,
-                                page_id,
-                                section_key,
-                                statement,
-                                _normalize_statement_text(statement),
-                                _compute_claim_fingerprint(payload.project_id, entity_key, page_type, statement),
-                                Jsonb({"source": "first_run_bootstrap", "created_by": payload.created_by}),
-                            ),
-                        )
-
-                created.append(
+            cur.execute(
+                """
+                SELECT id::text, status, current_version
+                FROM wiki_pages
+                WHERE project_id = %s
+                  AND slug = %s
+                LIMIT 1
+                """,
+                (project_id, slug),
+            )
+            current = cur.fetchone()
+            if current is not None:
+                existing.append(
                     {
-                        "id": str(page_id),
+                        "id": current[0],
                         "slug": slug,
                         "title": title,
-                        "status": status,
-                        "version": 1,
-                        "sections": len(sections),
-                        "statements": statements_count,
+                        "status": str(current[1] or ""),
+                        "version": int(current[2] or 1),
                     }
                 )
-                created_page_ids.append(str(page_id))
+                continue
 
-            if created_page_ids:
-                snapshot_id = uuid4()
-                snapshot_id_text = str(snapshot_id)
+            policy_check = _check_wiki_policy_access(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                actor=created_by,
+                action="write",
+                page_id=None,
+            )
+            if not policy_check["allowed"]:
+                skipped.append(
+                    {
+                        "slug": slug,
+                        "title": title,
+                        "reason": "wiki_policy_denied",
+                        "detail": str(policy_check.get("reason") or "not_allowed"),
+                    }
+                )
+                continue
+
+            status = requested_status
+            if status == "published":
+                guard = _resolve_agent_publish_mode(
+                    cur,
+                    project_id=project_id,
+                    actor=created_by,
+                    page_type=page_type,
+                )
+                if str(guard.get("mode") or "") == "human_required":
+                    status = "reviewed"
+                    downgraded_to_reviewed += 1
+
+            page_id = uuid4()
+            cur.execute(
+                """
+                INSERT INTO wiki_pages (
+                  id, project_id, page_type, title, slug, entity_key, status, current_version, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s)
+                """,
+                (
+                    page_id,
+                    project_id,
+                    page_type,
+                    title,
+                    slug,
+                    entity_key,
+                    status,
+                    Jsonb({"source": "first_run_bootstrap", "created_by": created_by, "profile": profile}),
+                ),
+            )
+            cur.execute(
+                """
+                INSERT INTO wiki_page_versions (
+                  id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                )
+                VALUES (%s, %s, 1, %s, %s, 'human', %s, %s)
+                """,
+                (uuid4(), page_id, markdown, Jsonb([]), created_by, "Created by first-run bootstrap"),
+            )
+
+            sections = _extract_sections_from_markdown(markdown)
+            statements_count = 0
+            for index, section in enumerate(sections):
+                section_key = str(section.get("section_key") or f"section_{index + 1}")
+                heading = str(section.get("heading") or _section_heading_from_key(section_key))
+                statements = section.get("statements") or []
                 cur.execute(
                     """
-                    INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (page_id, section_key) DO UPDATE
+                    SET heading = EXCLUDED.heading,
+                        order_index = EXCLUDED.order_index,
+                        statement_count = EXCLUDED.statement_count
                     """,
-                    (
-                        snapshot_id,
-                        payload.project_id,
-                        payload.created_by,
-                        f"First-run bootstrap ({payload.profile}) created {len(created_page_ids)} page(s)",
-                    ),
+                    (page_id, section_key, heading, index, len(statements)),
                 )
-                for page_id_text in created_page_ids:
+                for statement_text in statements:
+                    statement = str(statement_text).strip()
+                    if not statement:
+                        continue
+                    statements_count += 1
+                    statement_id = uuid4()
                     cur.execute(
                         """
-                        INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
-                        VALUES (%s, %s::uuid, 1)
+                        INSERT INTO wiki_statements (
+                          id, project_id, page_id, section_key, statement_text, normalized_text,
+                          claim_fingerprint, status, metadata, valid_from
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
                         """,
-                        (snapshot_id, page_id_text),
+                        (
+                            statement_id,
+                            project_id,
+                            page_id,
+                            section_key,
+                            statement,
+                            _normalize_statement_text(statement),
+                            _compute_claim_fingerprint(project_id, entity_key, page_type, statement),
+                            Jsonb({"source": "first_run_bootstrap", "created_by": created_by}),
+                        ),
                     )
 
+            created.append(
+                {
+                    "id": str(page_id),
+                    "slug": slug,
+                    "title": title,
+                    "status": status,
+                    "version": 1,
+                    "sections": len(sections),
+                    "statements": statements_count,
+                }
+            )
+            created_page_ids.append(str(page_id))
+
+        if created_page_ids:
+            snapshot_id = uuid4()
+            snapshot_id_text = str(snapshot_id)
+            cur.execute(
+                """
+                INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    snapshot_id,
+                    project_id,
+                    created_by,
+                    f"Bootstrap ({profile}) created {len(created_page_ids)} page(s)",
+                ),
+            )
+            for page_id_text in created_page_ids:
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                    VALUES (%s, %s::uuid, 1)
+                    """,
+                    (snapshot_id, page_id_text),
+                )
+
     return {
-        "status": "ok",
-        "project_id": payload.project_id,
-        "profile": payload.profile,
-        "requested_status": requested_status,
         "created": created,
         "existing": existing,
         "skipped": skipped,
@@ -25125,6 +25275,418 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
             "published_downgraded_to_reviewed": downgraded_to_reviewed,
         },
         "snapshot_id": snapshot_id_text,
+    }
+
+
+def _wiki_space_template_catalog() -> list[dict[str, Any]]:
+    return [
+        {
+            "template_key": "support_ops",
+            "label": "Support Ops",
+            "default_space_key": "support",
+            "description": "Triage, escalation, and customer communication playbooks.",
+            "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+        },
+        {
+            "template_key": "logistics_ops",
+            "label": "Logistics Ops",
+            "default_space_key": "logistics",
+            "description": "Dispatch rules, access procedures, and incident handling.",
+            "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+        },
+        {
+            "template_key": "sales_ops",
+            "label": "Sales Ops",
+            "default_space_key": "sales",
+            "description": "Qualification rules, stage playbooks, and handoff contracts.",
+            "policy": {"write_mode": "open", "comment_mode": "open", "review_assignment_required": False},
+        },
+        {
+            "template_key": "compliance_ops",
+            "label": "Compliance Ops",
+            "default_space_key": "compliance",
+            "description": "Control catalog, evidence workflow, and audit readiness.",
+            "policy": {"write_mode": "owners_only", "comment_mode": "owners_only", "review_assignment_required": True},
+        },
+    ]
+
+
+def _get_wiki_space_template(template_key: str) -> dict[str, Any] | None:
+    key = str(template_key or "").strip().lower()
+    for item in _wiki_space_template_catalog():
+        if str(item.get("template_key") or "").strip().lower() == key:
+            return dict(item)
+    return None
+
+
+def _build_role_template_pages(template_key: str, *, space_key: str | None = None) -> list[dict[str, str]]:
+    template = _get_wiki_space_template(template_key) or {}
+    space = _normalize_space_key(space_key or "", default=_normalize_space_key(template.get("default_space_key"), default="operations"))
+    if template_key == "support_ops":
+        return [
+            {
+                "title": "Ticket Triage Playbook",
+                "slug": _space_slug(space, "ticket-triage-playbook"),
+                "page_type": "runbook",
+                "markdown": "# Ticket Triage Playbook\n\n## Intake\n- Capture issue class, severity, and impact.\n\n## Decision\n- Route by SLA and ownership matrix.\n",
+            },
+            {
+                "title": "Support Escalation Rules",
+                "slug": _space_slug(space, "support-escalation-rules"),
+                "page_type": "policy",
+                "markdown": "# Support Escalation Rules\n\n## Escalate When\n- SLA risk or repeated customer impact.\n\n## Notify\n- On-call + owner channel with incident reference.\n",
+            },
+            {
+                "title": "Customer Communication Standard",
+                "slug": _space_slug(space, "customer-communication-standard"),
+                "page_type": "policy",
+                "markdown": "# Customer Communication Standard\n\n## Cadence\n- Provide periodic updates by severity level.\n\n## Message Quality\n- Include impact, ETA, and next checkpoint.\n",
+            },
+        ]
+    if template_key == "logistics_ops":
+        return [
+            {
+                "title": "Dispatch Decision Runbook",
+                "slug": _space_slug(space, "dispatch-decision-runbook"),
+                "page_type": "runbook",
+                "markdown": "# Dispatch Decision Runbook\n\n## Route Validation\n- Validate access constraints and fallback routes.\n\n## Escalation\n- Open incident when route safety or SLA is at risk.\n",
+            },
+            {
+                "title": "Warehouse Exception Flow",
+                "slug": _space_slug(space, "warehouse-exception-flow"),
+                "page_type": "runbook",
+                "markdown": "# Warehouse Exception Flow\n\n## Exceptions\n- Quarantine, ramp outage, stock mismatch.\n\n## Required Actions\n- Re-route, notify, and record mitigation.\n",
+            },
+            {
+                "title": "Delivery SLA Escalation",
+                "slug": _space_slug(space, "delivery-sla-escalation"),
+                "page_type": "policy",
+                "markdown": "# Delivery SLA Escalation\n\n## Trigger\n- ETA drift above agreed threshold.\n\n## Action\n- Notify owner, customer, and dispatch channel.\n",
+            },
+        ]
+    if template_key == "sales_ops":
+        return [
+            {
+                "title": "Lead Qualification Policy",
+                "slug": _space_slug(space, "lead-qualification-policy"),
+                "page_type": "policy",
+                "markdown": "# Lead Qualification Policy\n\n## Required Signals\n- Budget, timeline, stakeholder readiness.\n",
+            },
+            {
+                "title": "Deal Stage Playbook",
+                "slug": _space_slug(space, "deal-stage-playbook"),
+                "page_type": "runbook",
+                "markdown": "# Deal Stage Playbook\n\n## Stage Gates\n- Exit criteria and next action for each stage.\n",
+            },
+            {
+                "title": "Sales-to-Support Handoff",
+                "slug": _space_slug(space, "sales-to-support-handoff"),
+                "page_type": "runbook",
+                "markdown": "# Sales-to-Support Handoff\n\n## Required Context\n- Contract scope, commitments, and success criteria.\n",
+            },
+        ]
+    return [
+        {
+            "title": "Compliance Control Catalog",
+            "slug": _space_slug(space, "compliance-control-catalog"),
+            "page_type": "policy",
+            "markdown": "# Compliance Control Catalog\n\n## Controls\n- Control owner, objective, and evidence source.\n",
+        },
+        {
+            "title": "Incident Reporting Procedure",
+            "slug": _space_slug(space, "incident-reporting-procedure"),
+            "page_type": "runbook",
+            "markdown": "# Incident Reporting Procedure\n\n## Report Timeline\n- Initial report and update cadence by severity.\n",
+        },
+        {
+            "title": "Audit Evidence Checklist",
+            "slug": _space_slug(space, "audit-evidence-checklist"),
+            "page_type": "runbook",
+            "markdown": "# Audit Evidence Checklist\n\n## Evidence Readiness\n- Owner, retention, and validation cadence.\n",
+        },
+    ]
+
+
+def _queue_enabled_legacy_sources_for_project(conn, *, project_id: str, requested_by: str) -> dict[str, Any]:
+    if not _legacy_import_sources_table_exists(conn) or not _public_table_exists(conn, "legacy_import_sync_runs"):
+        return {"available": False, "queued": 0, "already_queued": 0, "sources_scanned": 0, "run_ids": []}
+    queued = 0
+    already_queued = 0
+    run_ids: list[str] = []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id
+            FROM legacy_import_sources
+            WHERE project_id = %s
+              AND enabled = TRUE
+            ORDER BY updated_at DESC
+            LIMIT 200
+            """,
+            (project_id,),
+        )
+        source_rows = cur.fetchall() or []
+        for row in source_rows:
+            source_id = row[0]
+            cur.execute(
+                """
+                SELECT 1
+                FROM legacy_import_sync_runs
+                WHERE source_id = %s
+                  AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (source_id,),
+            )
+            if cur.fetchone() is not None:
+                already_queued += 1
+                continue
+            run_id = uuid4()
+            cur.execute(
+                """
+                INSERT INTO legacy_import_sync_runs (
+                  id,
+                  source_id,
+                  project_id,
+                  status,
+                  trigger_mode,
+                  requested_by,
+                  summary,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, 'queued', 'manual', %s, '{}'::jsonb, NOW(), NOW())
+                """,
+                (run_id, source_id, project_id, requested_by),
+            )
+            queued += 1
+            run_ids.append(str(run_id))
+    return {
+        "available": True,
+        "sources_scanned": len(source_rows),
+        "queued": queued,
+        "already_queued": already_queued,
+        "run_ids": run_ids,
+    }
+
+
+@app.get("/v1/adoption/wiki-space-templates")
+def list_adoption_wiki_space_templates() -> dict[str, Any]:
+    return {"templates": _wiki_space_template_catalog(), "generated_at": datetime.now(UTC).isoformat()}
+
+
+@app.post("/v1/adoption/wiki-space-templates/apply")
+def apply_adoption_wiki_space_template(payload: AdoptionWikiSpaceTemplateApplyRequest) -> dict[str, Any]:
+    template = _get_wiki_space_template(payload.template_key)
+    if template is None:
+        raise HTTPException(status_code=422, detail="template_not_found")
+    effective_space_key = _normalize_space_key(
+        payload.space_key or template.get("default_space_key") or "",
+        default="operations",
+    )
+    pages = _build_role_template_pages(payload.template_key, space_key=effective_space_key)
+    requested_status = "published" if payload.publish else "reviewed"
+    policy_result: dict[str, Any] | None = None
+    policy_warning: str | None = None
+
+    try:
+        policy_payload = WikiSpacePolicyUpsertRequest(
+            project_id=payload.project_id,
+            space_key=effective_space_key,
+            updated_by=payload.updated_by,
+            write_mode=str((template.get("policy") or {}).get("write_mode") or "open"),
+            comment_mode=str((template.get("policy") or {}).get("comment_mode") or "open"),
+            review_assignment_required=bool((template.get("policy") or {}).get("review_assignment_required")),
+            metadata={
+                "space_template": payload.template_key,
+                "applied_by": payload.updated_by,
+            },
+        )
+        policy_any = upsert_wiki_space_policy(effective_space_key, policy_payload)
+        if isinstance(policy_any, JSONResponse):
+            policy_warning = f"space_policy_not_applied:http_{policy_any.status_code}"
+        elif isinstance(policy_any, dict):
+            policy_result = policy_any
+    except Exception as exc:
+        policy_warning = str(exc)
+
+    with get_conn() as conn:
+        page_result = _insert_bootstrap_pages(
+            conn,
+            project_id=payload.project_id,
+            created_by=payload.updated_by,
+            profile=f"space_template:{payload.template_key}",
+            pages=pages,
+            requested_status=requested_status,
+        )
+
+    response: dict[str, Any] = {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "template_key": payload.template_key,
+        "space_key": effective_space_key,
+        "requested_status": requested_status,
+        **page_result,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if policy_result is not None:
+        response["policy"] = policy_result
+    if policy_warning:
+        response["warning"] = policy_warning
+    return response
+
+
+@app.post("/v1/adoption/sync-presets/execute", response_model=None)
+def execute_adoption_sync_preset(
+    payload: AdoptionSyncPresetExecuteRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm = str(payload.confirm_project_id or "").strip()
+        if confirm != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    updated_by = str(payload.updated_by or "").strip() or "ops_admin"
+    reviewed_by = str(payload.reviewed_by or "").strip() or updated_by
+    response: dict[str, Any] = {
+        "status": "ok",
+        "preset_key": payload.preset_key,
+        "project_id": project_id,
+        "dry_run": bool(payload.dry_run),
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/adoption/sync-presets/execute",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        try:
+            recommendation = get_wiki_bootstrap_approve_recommendation(project_id=project_id)
+            response["recommendation"] = recommendation
+
+            if payload.apply_bootstrap_profile:
+                response["bootstrap_profile"] = apply_adoption_bootstrap_profile(
+                    AdoptionBootstrapProfileApplyRequest(
+                        project_id=project_id,
+                        updated_by=updated_by,
+                        profile="initial_import",
+                        dry_run=bool(payload.dry_run),
+                        confirm_project_id=project_id if not payload.dry_run else None,
+                        note="Applied from adoption sync preset.",
+                    ),
+                    idempotency_key=None,
+                )
+
+            if payload.queue_enabled_sources and not payload.dry_run:
+                response["sync_queue"] = _queue_enabled_legacy_sources_for_project(
+                    conn,
+                    project_id=project_id,
+                    requested_by=updated_by,
+                )
+            else:
+                response["sync_queue"] = {
+                    "available": _legacy_import_sources_table_exists(conn),
+                    "queued": 0,
+                    "already_queued": 0,
+                    "sources_scanned": 0,
+                    "run_ids": [],
+                    "skipped": bool(payload.dry_run) or not payload.queue_enabled_sources,
+                }
+
+            if payload.run_bootstrap_approve:
+                recommended = recommendation.get("recommended") if isinstance(recommendation, dict) else {}
+                if not isinstance(recommended, dict):
+                    recommended = {}
+                response["bootstrap_approve"] = run_wiki_bootstrap_approve(
+                    WikiBootstrapApproveRunRequest(
+                        project_id=project_id,
+                        reviewed_by=reviewed_by,
+                        source_system=payload.source_system,
+                        dry_run=bool(payload.dry_run),
+                        limit=max(1, min(2000, int(recommended.get("limit") or 50))),
+                        sample_size=max(1, min(200, int(recommended.get("sample_size") or 15))),
+                        min_confidence=max(0.0, min(1.0, float(recommended.get("min_confidence") or 0.9))),
+                        require_conflict_free=bool(recommended.get("require_conflict_free", True)),
+                        trusted_source_systems=[
+                            str(item) for item in (recommended.get("trusted_source_systems") or []) if str(item).strip()
+                        ],
+                        allow_large_batch=bool(recommended.get("allow_large_batch", False)),
+                        require_trusted_sources_on_apply=bool(recommended.get("require_trusted_sources_on_apply", True)),
+                    )
+                )
+
+            if payload.include_starter_pages and not payload.dry_run:
+                response["starter_pages"] = run_adoption_first_run_bootstrap(
+                    AdoptionFirstRunBootstrapRequest(
+                        project_id=project_id,
+                        created_by=updated_by,
+                        profile=payload.starter_profile,
+                        publish=True,
+                    )
+                )
+
+            if payload.include_role_template and payload.role_template_key and not payload.dry_run:
+                response["role_template"] = apply_adoption_wiki_space_template(
+                    AdoptionWikiSpaceTemplateApplyRequest(
+                        project_id=project_id,
+                        updated_by=updated_by,
+                        template_key=payload.role_template_key,
+                        space_key=payload.role_template_space_key,
+                        publish=True,
+                    )
+                )
+
+            mark_request_completed(
+                conn,
+                endpoint="/v1/adoption/sync-presets/execute",
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint="/v1/adoption/sync-presets/execute",
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
+
+
+@app.post("/v1/adoption/first-run/bootstrap")
+def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) -> dict[str, Any]:
+    pages = _build_first_run_starter_pages(payload.profile, space_key=payload.space_key)
+    requested_status = "published" if payload.publish else "reviewed"
+    with get_conn() as conn:
+        page_result = _insert_bootstrap_pages(
+            conn,
+            project_id=payload.project_id,
+            created_by=payload.created_by,
+            profile=payload.profile,
+            pages=pages,
+            requested_status=requested_status,
+        )
+    return {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "profile": payload.profile,
+        "space_key": _normalize_space_key(payload.space_key or "", default=""),
+        "requested_status": requested_status,
+        **page_result,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -25134,9 +25696,9 @@ def list_adoption_noise_presets(
     lane: str | None = Query(default=None, pattern="^(event|knowledge)$"),
 ) -> dict[str, Any]:
     if lane is None:
-        recommended = {"event": "off", "knowledge": "balanced"}
+        recommended = {"event": "off", "knowledge": "knowledge_v2"}
     else:
-        recommended = {lane: "off" if lane == "event" else "balanced"}
+        recommended = {lane: "off" if lane == "event" else "knowledge_v2"}
     presets = [
         {
             "key": key,

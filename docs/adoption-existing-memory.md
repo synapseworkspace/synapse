@@ -51,6 +51,7 @@ Discover available profiles:
 - `GET /v1/legacy-import/sync-contracts?source_type=postgres_sql`
 - `GET /v1/adoption/import-connectors?source_type=postgres_sql|memory_api` (profile-aware connector catalog with `config_patch`)
 - `GET /v1/adoption/noise-presets?lane=knowledge` (reusable preset catalog for snapshot/telemetry suppression)
+- `GET /v1/adoption/wiki-space-templates` (role-based wiki structure presets)
 
 SDK parity (no custom importer script):
 
@@ -79,15 +80,17 @@ For initial migration, you can constrain ingestion before claims are generated:
 
 - batch-level `curated.source_systems[]`
 - batch-level `curated.namespaces[]`
-- `curated.noise_preset` (`off|balanced|strict|order_snapshots|telemetry|raw_event_payloads`)
+- `curated.noise_preset` (`off|balanced|strict|knowledge_v2|order_snapshots|telemetry|raw_event_payloads`)
 
-`/v1/backfill/knowledge` enables curated mode by default (`balanced`) unless explicitly disabled (`curated.enabled=false`).
+`/v1/backfill/knowledge` enables curated mode by default (`knowledge_v2`) unless explicitly disabled (`curated.enabled=false`).
 The API response returns filter diagnostics (`accepted_input`, `accepted`, `filtered_out`, `curated_filters.drop_reasons`) so teams can tune import scope without DB forensics.
 For pre-write simulation and connector validation, add:
 
 - `POST /v1/backfill/curated-explain` to preview `kept/dropped` + drop reasons before writing events.
 - `POST /v1/adoption/import-connectors/resolve` to apply connector field overrides and receive validation hints.
 - `POST /v1/adoption/first-run/bootstrap` to auto-create starter wiki pages after initial connect (`Agent Profile`, `Data Map`, `Runbook`).
+- `POST /v1/adoption/wiki-space-templates/apply` to apply role-based wiki space scaffolding.
+- `POST /v1/adoption/sync-presets/execute` for one-command enterprise bootstrap flow.
 
 ## Memory Tier Routing (Default Safety)
 

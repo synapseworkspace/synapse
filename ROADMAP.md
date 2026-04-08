@@ -139,29 +139,29 @@ Checklist:
 
 ## v0.1.4 Adoption UX Hardening (Q2 2026)
 
-Status: `in_progress`
+Status: `done`
 
 Goal:
 - убрать последние “ручные костыли” при первом внедрении;
 - сделать first-run experience предсказуемым для self-host и enterprise команд.
 
 Checklist:
-1. `in_progress` Built-in Memory API connector:
+1. `done` Built-in Memory API connector:
    - добавить `memory_api` source type в legacy sync + adoption connector catalog;
    - убрать необходимость писать кастомный importer для типового REST memory API.
-2. `in_progress` First-run bootstrap pages:
+2. `done` First-run bootstrap pages:
    - one-click API/UI шаг, создающий стартовые wiki-страницы (`Agent Profile`, `Data Map`, `Runbook`) c idempotent поведением.
-3. `in_progress` Self-host basePath resilience:
+3. `done` Self-host basePath resilience:
    - поддержка `/synapse/` маршрута без ручной пересборки web ассетов.
-4. `planned` UI profile single-mode guard:
+4. `done` UI profile single-mode guard:
    - упростить профильный режим до единого core-first поведения без stale localStorage trap.
-5. `planned` Source-quality defaults v2:
+5. `done` Source-quality defaults v2:
    - усилить default-фильтры для отделения operational summary/telemetry от durable knowledge.
-6. `planned` One-command enterprise sync preset:
+6. `done` One-command enterprise sync preset:
    - curated import + synthesis + safe bootstrap approve как единый workflow API.
 7. `done` Onboarding funnel visibility:
    - прозрачная воронка `accepted -> events -> claims -> drafts -> pages` + reject diagnostics в API/UI.
-8. `planned` Role-based wiki-space templates:
+8. `done` Role-based wiki-space templates:
    - шаблоны структур страниц под роли (Support, Logistics, SalesOps, Compliance) при подключении.
 
 ## Agent Worklog Intelligence TODO (April 2026)
@@ -1180,3 +1180,4 @@ All items were completed and moved to `Recent Updates` for audit history.
 - 2026-04-08: Completed Real-World Adoption Backlog `P2.2` upgrade checklist: published `docs/upgrade-checklist.md` with pre-upgrade snapshot, migration/restart order, routing-policy safety checks, and rollback flow.
 - 2026-04-08: Completed Real-World Adoption Backlog `P2.3` post-deploy smoke runbook: standardized smoke contract in `docs/post-deploy-smoke.md` and anchored it to `scripts/run_selfhost_core_acceptance.sh` (`import -> draft -> publish -> retrieval` verification).
 - 2026-04-08: Started `v0.1.4 Adoption UX Hardening`: added `memory_api` source type support (`legacy-import` + connector catalog), introduced first-run starter wiki bootstrap API (`POST /v1/adoption/first-run/bootstrap`), upgraded setup wizard to optionally seed starter pages after first trusted batch, and made web build base-path resilient for `/synapse/...` routing without manual asset rebuild.
+- 2026-04-08: Completed `v0.1.4 Adoption UX Hardening`: shipped one-command enterprise preset API (`POST /v1/adoption/sync-presets/execute`), added role-based wiki-space templates (`GET/POST /v1/adoption/wiki-space-templates*`), upgraded default knowledge ingest noise profile to `knowledge_v2`, and hardened wiki-first UI state by rotating local storage schema key (`synapse_web_console_v5`) with legacy-key cleanup.

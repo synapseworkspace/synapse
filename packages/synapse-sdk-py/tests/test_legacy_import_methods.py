@@ -166,6 +166,38 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("profile"), "support_ops")
         self.assertTrue(payload.get("publish"))
 
+    def test_apply_adoption_wiki_space_template_posts_expected_payload(self) -> None:
+        self.client.apply_adoption_wiki_space_template(
+            updated_by="ops_admin",
+            template_key="support_ops",
+            space_key="support",
+            publish=True,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/wiki-space-templates/apply")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("template_key"), "support_ops")
+        self.assertEqual(payload.get("space_key"), "support")
+
+    def test_execute_adoption_sync_preset_posts_expected_payload(self) -> None:
+        self.client.execute_adoption_sync_preset(
+            updated_by="ops_admin",
+            dry_run=False,
+            include_role_template=True,
+            role_template_key="logistics_ops",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/sync-presets/execute")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("role_template_key"), "logistics_ops")
+
 
 if __name__ == "__main__":
     unittest.main()

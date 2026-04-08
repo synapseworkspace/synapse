@@ -679,23 +679,112 @@ class SynapseClient:
         *,
         created_by: str,
         profile: str = "standard",
+        space_key: str | None = None,
         publish: bool = True,
     ) -> dict[str, Any]:
         actor = str(created_by or "").strip()
         if not actor:
             raise ValueError("created_by is required")
         normalized_profile = str(profile or "standard").strip().lower() or "standard"
-        if normalized_profile not in {"standard", "support_ops"}:
-            raise ValueError("profile must be one of: standard, support_ops")
+        if normalized_profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
+            raise ValueError("profile must be one of: standard, support_ops, logistics_ops, sales_ops, compliance_ops")
+        request_payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "created_by": actor,
+            "profile": normalized_profile,
+            "publish": bool(publish),
+        }
+        if space_key is not None and str(space_key).strip():
+            request_payload["space_key"] = str(space_key).strip()
         return self._request_json(
             "/v1/adoption/first-run/bootstrap",
             method="POST",
-            payload={
-                "project_id": self._config.project_id,
-                "created_by": actor,
-                "profile": normalized_profile,
-                "publish": bool(publish),
-            },
+            payload=request_payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def list_adoption_wiki_space_templates(self) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/wiki-space-templates",
+            method="GET",
+        )
+
+    def apply_adoption_wiki_space_template(
+        self,
+        *,
+        updated_by: str,
+        template_key: str,
+        space_key: str | None = None,
+        publish: bool = True,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        key = str(template_key or "").strip().lower()
+        if key not in {"support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
+            raise ValueError("template_key must be one of: support_ops, logistics_ops, sales_ops, compliance_ops")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "template_key": key,
+            "publish": bool(publish),
+        }
+        if space_key is not None and str(space_key).strip():
+            payload["space_key"] = str(space_key).strip()
+        return self._request_json(
+            "/v1/adoption/wiki-space-templates/apply",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def execute_adoption_sync_preset(
+        self,
+        *,
+        updated_by: str,
+        reviewed_by: str | None = None,
+        dry_run: bool = True,
+        apply_bootstrap_profile: bool = True,
+        queue_enabled_sources: bool = True,
+        run_bootstrap_approve: bool = True,
+        include_starter_pages: bool = True,
+        starter_profile: str = "support_ops",
+        include_role_template: bool = False,
+        role_template_key: str | None = None,
+        role_template_space_key: str | None = None,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        profile = str(starter_profile or "support_ops").strip().lower() or "support_ops"
+        if profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
+            raise ValueError("starter_profile is invalid")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "reviewed_by": str(reviewed_by).strip() if reviewed_by is not None and str(reviewed_by).strip() else None,
+            "preset_key": "enterprise_curated_safe",
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+            "apply_bootstrap_profile": bool(apply_bootstrap_profile),
+            "queue_enabled_sources": bool(queue_enabled_sources),
+            "run_bootstrap_approve": bool(run_bootstrap_approve),
+            "include_starter_pages": bool(include_starter_pages),
+            "starter_profile": profile,
+            "include_role_template": bool(include_role_template),
+            "role_template_key": (
+                str(role_template_key).strip().lower() if role_template_key is not None and str(role_template_key).strip() else None
+            ),
+            "role_template_space_key": (
+                str(role_template_space_key).strip()
+                if role_template_space_key is not None and str(role_template_space_key).strip()
+                else None
+            ),
+        }
+        return self._request_json(
+            "/v1/adoption/sync-presets/execute",
+            method="POST",
+            payload=payload,
             idempotency_key=str(uuid4()),
         )
 

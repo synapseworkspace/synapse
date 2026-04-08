@@ -108,3 +108,25 @@ curl -X POST "http://localhost:8080/v1/adoption/first-run/bootstrap" \
 ```
 
 Default pages: `Agent Profile`, `Data Map`, `Operational Runbook` (+ support escalation page for `support_ops`).
+
+## 8) One-command enterprise sync preset
+
+```bash
+curl -X POST "http://localhost:8080/v1/adoption/sync-presets/execute" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "omega_demo",
+    "updated_by": "ops_manager",
+    "reviewed_by": "ops_manager",
+    "dry_run": false,
+    "confirm_project_id": "omega_demo",
+    "preset_key": "enterprise_curated_safe",
+    "apply_bootstrap_profile": true,
+    "queue_enabled_sources": true,
+    "run_bootstrap_approve": true,
+    "include_starter_pages": true,
+    "starter_profile": "support_ops"
+  }'
+```
+
+This is the fastest path for enterprise onboarding: profile apply + source queue + curated bootstrap approve + starter wiki pages.

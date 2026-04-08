@@ -919,6 +919,26 @@ type SelfhostConsistencyPayload = {
   warnings_total?: number;
 };
 
+type AdoptionSyncPresetPayload = {
+  status: string;
+  project_id: string;
+  dry_run: boolean;
+  bootstrap_profile?: Record<string, unknown>;
+  sync_queue?: {
+    queued?: number;
+    already_queued?: number;
+    sources_scanned?: number;
+  };
+  bootstrap_approve?: {
+    dry_run?: boolean;
+    summary?: {
+      candidates?: number;
+      approved?: number;
+      failed?: number;
+    };
+  };
+};
+
 type AdoptionFirstRunBootstrapPayload = {
   status: string;
   project_id: string;
@@ -1139,7 +1159,9 @@ type SpacePolicyAdoptionSummary = {
   lastUpdatedAt: string | null;
 };
 
-const STORAGE_KEY = "synapse_web_console_v4";
+// v5 drops legacy/stale profile state from pre-wiki-first builds.
+const STORAGE_KEY = "synapse_web_console_v5";
+const LEGACY_STORAGE_KEYS = ["synapse_web_console_v4", "synapse_web_console_v3"];
 
 const DEFAULT_APPROVE_FORM: ApproveFormState = {
   note: "",
@@ -1973,6 +1995,7 @@ export default function App() {
   const [policyQuickLoop, setPolicyQuickLoop] = useState<AdoptionPolicyQuickLoopPayload | null>(null);
   const [loadingPolicyQuickLoop, setLoadingPolicyQuickLoop] = useState(false);
   const [applyingPolicyQuickLoop, setApplyingPolicyQuickLoop] = useState(false);
+  const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [selfhostConsistency, setSelfhostConsistency] = useState<SelfhostConsistencyPayload | null>(null);
   const [loadingSelfhostConsistency, setLoadingSelfhostConsistency] = useState(false);
   const [connectingLegacySource, setConnectingLegacySource] = useState(false);
@@ -2527,6 +2550,16 @@ export default function App() {
     );
     return pageNodes.filter((item) => conflictSlugs.has(item.slug));
   }, [drafts, pageNodes]);
+
+  useEffect(() => {
+    try {
+      for (const key of LEGACY_STORAGE_KEYS) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // ignore storage access failures
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -4681,7 +4714,7 @@ export default function App() {
     const overrides: Record<string, unknown> = {
       max_records: Number(legacyMaxRecords || "5000") || 5000,
       chunk_size: Number(legacyChunkSize || "100") || 100,
-      "curated_import.noise_preset": "balanced",
+      "curated_import.noise_preset": "knowledge_v2",
       "curated_import.drop_event_like": true,
       "curated_import.enabled": true,
     };
@@ -5339,6 +5372,71 @@ export default function App() {
     }
     await runBootstrapApprove(false, preset);
   }, [applyRecommendedBootstrapPreset, bootstrapResult, projectId, runBootstrapApprove]);
+
+  const executeAdoptionSyncPreset = useCallback(
+    async (dryRun: boolean) => {
+      const project = projectId.trim();
+      if (!project) return;
+      setRunningSyncPreset(true);
+      try {
+        const payload = await apiFetch<AdoptionSyncPresetPayload>(apiUrl, "/v1/adoption/sync-presets/execute", {
+          method: "POST",
+          body: {
+            project_id: project,
+            updated_by: reviewer.trim() || "web_ui",
+            reviewed_by: reviewer.trim() || "web_ui",
+            preset_key: "enterprise_curated_safe",
+            dry_run: Boolean(dryRun),
+            confirm_project_id: dryRun ? undefined : project,
+            apply_bootstrap_profile: true,
+            queue_enabled_sources: true,
+            run_bootstrap_approve: true,
+            include_starter_pages: !dryRun,
+            starter_profile: "support_ops",
+            include_role_template: false,
+          },
+          idempotencyKey: randomKey(),
+        });
+        if (dryRun) {
+          notifications.show({
+            color: "indigo",
+            title: "Sync preset preview ready",
+            message: `Candidates: ${Number(payload.bootstrap_approve?.summary?.candidates || 0)}.`,
+          });
+        } else {
+          notifications.show({
+            color: "teal",
+            title: "Sync preset applied",
+            message: `Queued ${Number(payload.sync_queue?.queued || 0)} source(s), approved ${Number(payload.bootstrap_approve?.summary?.approved || 0)} draft(s).`,
+          });
+          setCoreWorkspaceTab("drafts");
+        }
+        await loadLegacyImportSources();
+        await loadAdoptionPipelineVisibility();
+        await loadAdoptionKpi();
+        await loadPolicyQuickLoop();
+        await loadWikiPages();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Sync preset failed",
+          message: String(error),
+        });
+      } finally {
+        setRunningSyncPreset(false);
+      }
+    },
+    [
+      apiUrl,
+      loadAdoptionKpi,
+      loadAdoptionPipelineVisibility,
+      loadLegacyImportSources,
+      loadPolicyQuickLoop,
+      loadWikiPages,
+      projectId,
+      reviewer,
+    ],
+  );
 
   const runFirstRunStarterBootstrap = useCallback(async () => {
     const project = projectId.trim();
@@ -8169,6 +8267,23 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="cyan"
+                              loading={runningSyncPreset}
+                              onClick={() => void executeAdoptionSyncPreset(true)}
+                            >
+                              Preview sync preset
+                            </Button>
+                            <Button
+                              size="xs"
+                              color="cyan"
+                              loading={runningSyncPreset}
+                              onClick={() => void executeAdoptionSyncPreset(false)}
+                            >
+                              Run sync preset
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="indigo"
                               loading={bootstrapLoading || bootstrapProfileLoading}
                               onClick={() => void runRecommendedBootstrapPreview()}
@@ -10112,9 +10227,9 @@ export default function App() {
                 )}
                 <Select
                   label="Noise preset"
-                  value="balanced"
+                  value="knowledge_v2"
                   data={[
-                    { value: "balanced", label: "balanced" },
+                    { value: "knowledge_v2", label: "knowledge_v2 (recommended)" },
                     { value: "strict", label: "strict" },
                     { value: "order_snapshots", label: "order_snapshots" },
                     { value: "telemetry", label: "telemetry" },

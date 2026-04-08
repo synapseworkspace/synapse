@@ -203,6 +203,9 @@ Setup wizard v2 flow:
 5. Apply first trusted batch.
 6. Optional: auto-create starter wiki pages (`Agent Profile`, `Data Map`, `Runbook`) and continue in Drafts/Wiki.
 
+Enterprise shortcut (single API call):
+- `POST /v1/adoption/sync-presets/execute` runs curated bootstrap profile, queues legacy-source sync, executes trusted draft bootstrap, and seeds starter pages.
+
 ## Agentic Onboarding Benchmark
 
 Measure day-0 onboarding KPI in one command:

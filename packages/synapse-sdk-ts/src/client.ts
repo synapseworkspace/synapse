@@ -671,7 +671,8 @@ export class SynapseClient {
 
   async runAdoptionFirstRunBootstrap(options: {
     createdBy: string;
-    profile?: "standard" | "support_ops" | string;
+    profile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+    spaceKey?: string;
     publish?: boolean;
     idempotencyKey?: string;
   }): Promise<Record<string, unknown>> {
@@ -680,17 +681,104 @@ export class SynapseClient {
       throw new Error("createdBy is required");
     }
     const profileRaw = String(options.profile ?? "standard").trim().toLowerCase() || "standard";
-    if (!["standard", "support_ops"].includes(profileRaw)) {
-      throw new Error("profile must be one of: standard, support_ops");
+    if (!["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"].includes(profileRaw)) {
+      throw new Error("profile must be one of: standard, support_ops, logistics_ops, sales_ops, compliance_ops");
+    }
+    const payload: Record<string, unknown> = {
+      project_id: this.projectId,
+      created_by: createdBy,
+      profile: profileRaw,
+      publish: options.publish ?? true
+    };
+    if (asOptionalString(options.spaceKey) !== null) {
+      payload.space_key = String(options.spaceKey).trim();
     }
     return this.requestJson<Record<string, unknown>>("/v1/adoption/first-run/bootstrap", {
       method: "POST",
-      payload: {
-        project_id: this.projectId,
-        created_by: createdBy,
-        profile: profileRaw,
-        publish: options.publish ?? true
-      },
+      payload,
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async listAdoptionWikiSpaceTemplates(): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/wiki-space-templates", {
+      method: "GET"
+    });
+  }
+
+  async applyAdoptionWikiSpaceTemplate(options: {
+    updatedBy: string;
+    templateKey: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+    spaceKey?: string;
+    publish?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const templateKey = String(options.templateKey ?? "").trim().toLowerCase();
+    if (!["support_ops", "logistics_ops", "sales_ops", "compliance_ops"].includes(templateKey)) {
+      throw new Error("templateKey must be one of: support_ops, logistics_ops, sales_ops, compliance_ops");
+    }
+    const payload: Record<string, unknown> = {
+      project_id: this.projectId,
+      updated_by: updatedBy,
+      template_key: templateKey,
+      publish: options.publish ?? true
+    };
+    if (asOptionalString(options.spaceKey) !== null) {
+      payload.space_key = String(options.spaceKey).trim();
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/wiki-space-templates/apply", {
+      method: "POST",
+      payload,
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async executeAdoptionSyncPreset(options: {
+    updatedBy: string;
+    reviewedBy?: string;
+    dryRun?: boolean;
+    applyBootstrapProfile?: boolean;
+    queueEnabledSources?: boolean;
+    runBootstrapApprove?: boolean;
+    includeStarterPages?: boolean;
+    starterProfile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+    includeRoleTemplate?: boolean;
+    roleTemplateKey?: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+    roleTemplateSpaceKey?: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    const starterProfile = String(options.starterProfile ?? "support_ops").trim().toLowerCase() || "support_ops";
+    if (!["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"].includes(starterProfile)) {
+      throw new Error("starterProfile is invalid");
+    }
+    const payload: Record<string, unknown> = {
+      project_id: this.projectId,
+      updated_by: updatedBy,
+      reviewed_by: asOptionalString(options.reviewedBy) ?? undefined,
+      preset_key: "enterprise_curated_safe",
+      dry_run: dryRun,
+      confirm_project_id: dryRun ? undefined : this.projectId,
+      apply_bootstrap_profile: options.applyBootstrapProfile ?? true,
+      queue_enabled_sources: options.queueEnabledSources ?? true,
+      run_bootstrap_approve: options.runBootstrapApprove ?? true,
+      include_starter_pages: options.includeStarterPages ?? true,
+      starter_profile: starterProfile,
+      include_role_template: options.includeRoleTemplate ?? false,
+      role_template_key: asOptionalString(options.roleTemplateKey)?.toLowerCase() ?? undefined,
+      role_template_space_key: asOptionalString(options.roleTemplateSpaceKey) ?? undefined
+    };
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/sync-presets/execute", {
+      method: "POST",
+      payload,
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
   }
