@@ -393,7 +393,10 @@ class SQLImporter:
 
         params = dict(self.query_params)
         cursor_key = str(cursor_param or "cursor").strip() or "cursor"
-        if cursor is not None and f"%({cursor_key})s" in self.query:
+        cursor_placeholder = f"%({cursor_key})s"
+        if cursor_placeholder in self.query and (cursor is not None or cursor_key not in params):
+            # Keep placeholder binding explicit even when cursor is None.
+            # Otherwise psycopg executes raw SQL with "%(... )s" tokens and Postgres raises syntax error at "%".
             params[cursor_key] = cursor
         if max_records is not None and max_records <= 0:
             return SQLImportResult(records=[], parser_warnings=list(self._warnings), next_cursor=_to_iso_text(cursor))
