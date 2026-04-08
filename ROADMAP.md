@@ -105,6 +105,38 @@ Execution order for this track:
 6. P1 visibility + connectors.
 7. P2 release guardrails.
 
+## v0.1.3 Release Plan (Q2 2026)
+
+Status: `planned`
+
+Goal:
+- сделать внедрение Synapse по-настоящему “подключил и работает” для существующих agent-memory стеков;
+- уменьшить ручной тюнинг gatekeeper и политику импорта на первом дне;
+- довести wiki-first UX до уровня production onboarding для новых команд.
+
+Checklist:
+1. `planned` Adoption setup wizard v2:
+   - единый onboarding flow в UI (`connect source -> preview curated import -> first publish`) без перехода в ops-тулзы;
+   - шаблоны подключений для `ops_kb_items` / `memory_items` прямо из мастера.
+2. `planned` Curated import dry-run explain:
+   - endpoint с предпросмотром фильтрации до записи событий (`kept/dropped` + reason breakdown sample);
+   - one-click “apply this profile” из dry-run результата.
+3. `planned` Policy calibration quick loop:
+   - в UI быстрые рекомендации по routing-policy на основе reject diagnostics + pipeline bottleneck;
+   - safe preset apply с rollback snapshot.
+4. `planned` Self-host UX consistency gate:
+   - авто-проверка, что `/wiki` route и core profile активны после апгрейда/рестарта;
+   - предупреждение в UI при несовместимой web/api версии.
+5. `planned` Adoption KPI dashboard:
+   - KPI: `time_to_first_draft`, `time_to_first_publish`, `draft_noise_ratio`, `publish_revert_rate`;
+   - baseline alerts для деградации качества импорта.
+6. `planned` Connector pack hardening:
+   - расширение built-in connectors для типовых custom SQL mapping сценариев (explicit field overrides + validation hints);
+   - cookbook с production примерами cron/CDC sync.
+7. `planned` OSS launch polish pack:
+   - обновление README/Quickstart под новый setup wizard + curated import defaults;
+   - релизный “operator playbook” для первых 24 часов после внедрения.
+
 ## Agent Worklog Intelligence TODO (April 2026)
 
 Status: `done`
@@ -203,11 +235,6 @@ Checklist:
    - Viewer / Editor / Approver / Admin language + simple permission table in UI/docs.
 12. `done` UX metrics:
    - track TTFV, time-to-first-publish, and click-depth to open/publish.
-
-Next Up (execution order):
-1. Remove dead legacy workspace render branch from `apps/web/src/App.tsx` (keep one canonical shell path).
-2. Consolidate duplicated operations controls that still exist in non-canonical render path before full branch removal.
-3. Split `App.tsx` canonical shell into focused components (`TopBar`, `LeftRail`, `WikiMain`, `DraftMain`) to reduce file-size risk before dead-branch extraction.
 
 ## Process Playbook Intelligence (Support Ops Focus)
 
@@ -727,16 +754,12 @@ Checklist:
    - add concise “Why now / ROI / rollout modes” one-pager and architecture slide-ready diagram pack;
    - include side-by-side “raw RAG vs Synapse L2” operational comparison.
 
-## Next Up (Execution Queue)
+## Execution Queue Archive
 
-1. Canonical shell extraction:
-   - `done`: split current `App.tsx` wiki shell into focused components (`TopBar`, `LeftRail`, `DraftTab`, `WikiMain`) with `/wiki` and `/operations` parity preserved.
-2. Legacy render path removal:
-   - `done`: physically deleted non-canonical advanced workspace render blocks from `App.tsx` (`wiki-command-bar`, legacy task panel, legacy `wiki-core-grid`);
-   - `done`: removed temporary compile-sink and completed direct dead-code cleanup pass for legacy helpers/state not used in canonical wiki/drafts/tasks flow.
-3. Utility Gate observability polish:
-   - `done`: added docs parity CI check for Utility Gate controls in `/operations` runbook;
-   - `done`: added explicit e2e assertion for Draft detail `Gatekeeper Signal` / `gatekeeper.llm.reason_code` rendering in core Draft detail flow.
+Status: `done`
+
+This section previously tracked the short-lived extraction queue (`canonical shell`, `legacy render removal`, `utility-gate observability polish`).
+All items were completed and moved to `Recent Updates` for audit history.
 
 ## Risks to Watch
 
@@ -853,21 +876,21 @@ Checklist:
 - 2026-04-04: Completed Process Playbook item #9 (simulation safety check): `PUT /v1/wiki/pages/{slug}` publish path now enforces process simulation for configured page types (`routing_policy.process_simulation_require_for_page_types`) and blocks risky publish with `409 publish_blocked_by_process_simulation` unless explicit `confirm_high_risk_publish=true`; publish modal now supports high-risk acknowledgment checkbox and inline simulation review before publish.
 - 2026-04-04: Completed Process Playbook item #6 (auto onboarding packs): shipped role-aware day-0 packs in MCP (`get_onboarding_pack`) and API (`GET /v1/wiki/onboarding-pack`) with structured sections (`critical_playbooks`, `escalation_rules`, `forbidden_actions`, `fresh_changes`) and freshness window controls.
 - 2026-04-04: Extended Process Playbook simulation UX: wiki publish modal now includes `Run safety simulation` action wired to `/v1/wiki/process/simulate`, showing risk badges, suggested publish mode, changed-term/impact metrics, high-risk keyword hits, and top impacted pages before publish.
-- 2026-04-04: Started Process Playbook item #9 (`in_progress`): added pre-publish process safety simulation endpoint `POST /v1/wiki/process/simulate` that computes change-term diff, scans impacted process/policy/incident pages, reports queue/conflict pressure, assigns risk tier, suggests publish mode (`auto_publish|conditional|human_required`), and returns rollback hints.
+- 2026-04-04: Completed Process Playbook item #9 (phase-1 delivery): added pre-publish process safety simulation endpoint `POST /v1/wiki/process/simulate` that computes change-term diff, scans impacted process/policy/incident pages, reports queue/conflict pressure, assigns risk tier, suggests publish mode (`auto_publish|conditional|human_required`), and returns rollback hints.
 - 2026-04-04: Completed Process Playbook item #8 (process instruction provenance): retrieval explain now carries claim-linked provenance (`claim_id`, `source_ids`, `ticket_ids`, `outcome`) end-to-end, context-injection snippets include provenance payloads, and web Retrieval Diagnostics surfaces “Why this step exists” cards for each statement and injected snippet.
-- 2026-04-04: Started Process Playbook item #6 (`in_progress`): MCP runtime now exposes `get_onboarding_pack` with role-aware day-0 sections (`critical_playbooks`, `escalation_rules`, `forbidden_actions`, `fresh_changes`) generated from published wiki statements and freshness window controls.
-- 2026-04-04: Advanced Process Playbook provenance track (`in_progress`): retrieval SQL now carries latest claim evidence context (`claim_id`, `claim_metadata`, `claim_evidence`, `claim_observed_at`) and MCP/API retrieval explain responses now expose normalized `provenance` payloads (`source_ids`, `ticket_ids`, `outcome`) for each statement so operators can trace why a process step exists.
+- 2026-04-04: Completed Process Playbook item #6 (phase-1 delivery): MCP runtime now exposes `get_onboarding_pack` with role-aware day-0 sections (`critical_playbooks`, `escalation_rules`, `forbidden_actions`, `fresh_changes`) generated from published wiki statements and freshness window controls.
+- 2026-04-04: Advanced Process Playbook provenance track (phase-1 delivery): retrieval SQL now carries latest claim evidence context (`claim_id`, `claim_metadata`, `claim_evidence`, `claim_observed_at`) and MCP/API retrieval explain responses now expose normalized `provenance` payloads (`source_ids`, `ticket_ids`, `outcome`) for each statement so operators can trace why a process step exists.
 - 2026-04-04: Completed Process Playbook Intelligence item #4 (risk-tiered publish + rollback): auto-publish runner now classifies each pending draft into `low|medium|high` risk using configurable routing-policy keywords (`auto_publish_risk_keywords_high|medium`) and force-level guardrails (`auto_publish_force_human_required_levels`), automatically forcing high-risk legal/financial/security-like updates into `human_required`; rollout remains rollback-safe via existing wiki version rollback path and gatekeeper rollback workflows.
 - 2026-04-04: Completed Process Playbook Intelligence item #5 (intent-aware context injection): added shared retrieval intent engine (`auto|general|process|policy|incident|preference`) with deterministic intent inference + explainability, intent-aware result reranking (`intent_alignment`, `intent_rank_score`), and runtime/API `context_injection.snippets` (top-k verified snippets) via new controls (`retrieval_intent`, `max_context_snippets`, env defaults `SYNAPSE_MCP_RETRIEVAL_INTENT_DEFAULT`, `SYNAPSE_MCP_CONTEXT_MAX_SNIPPETS`); added retrieval intent unit tests and kept MCP/API parity smoke green.
 - 2026-04-04: Advanced Process Playbook Intelligence online capture: API now accepts `claim.metadata`, worker normalizes operator decision context for all incoming claims (`process_triplet`, `ticket_ids`, `outcome`) and stores it in `claims.metadata` (`operator_decision`, `linked_ticket_ids`, `resolution_outcome`); process markdown patches now render structured Trigger/Action/Outcome lines for process sections.
-- 2026-04-04: Started Process Playbook Intelligence implementation (`in_progress`): extended knowledge compiler with process-aware page taxonomy (`triggers/steps/exceptions/escalation/verification`), process signal detection and assertion class (`process`) in Gatekeeper routing, process-oriented backfill category inference, trigger→action→outcome triplet extraction for process claims, and worker unit tests for process classification/section routing.
+- 2026-04-04: Completed Process Playbook Intelligence implementation (phase-1): extended knowledge compiler with process-aware page taxonomy (`triggers/steps/exceptions/escalation/verification`), process signal detection and assertion class (`process`) in Gatekeeper routing, process-oriented backfill category inference, trigger→action→outcome triplet extraction for process claims, and worker unit tests for process classification/section routing.
 - 2026-04-04: Extended wiki template layer for process onboarding in UI: added `Issue Playbook`, `Escalation Rule`, `Customer Exception`, and `Known Incident` page templates and bound create-flow `pageType` to selected template for cleaner process-page scaffolding.
 - 2026-04-04: Completed M15.2 automation hardening: added pre-publish clean-room install matrix from built artifacts (`verify-artifact-install-matrix`, Linux + macOS), added post-publish release evidence bundle generator (`scripts/generate_release_evidence_bundle.py`) and workflow artifact (`release-evidence-pack`) to produce markdown/json evidence for release notes with registry verification and install-proof references.
 - 2026-04-04: Completed M15.5 positioning refresh: aligned top-level docs with dual framing (Agentic Wiki interface + L2 Cognitive State Layer), added positioning consistency guard (`scripts/check_positioning_consistency.py`) and wired it into CI to prevent message drift.
 - 2026-04-04: Completed M15.6 buyer-facing packaging: added ROI + rollout one-pager (`docs/buyer-roi-rollout.md`) and architecture diagram pack (`docs/architecture-diagram-pack.md`) including raw-RAG-vs-Synapse-L2 comparison and slide-ready core-loop/adoption/governance diagrams.
 - 2026-04-04: Advanced M15.2 release hardening: added clean-room install matrix job in release workflow (`verify-install-matrix`, Linux + macOS) that performs real registry install/import checks for both Python and npm packages at the tagged release version after registry propagation succeeds.
 - 2026-04-04: Completed M15.3 + M15.4 implementation: added deterministic Agentic Onboarding benchmark kit (`scripts/benchmark_agentic_onboarding.py`, `eval/agentic_onboarding_cases.json`, `docs/agentic-onboarding-benchmark.md`) with KPI cards (`first_useful_answer`, `first_approved_draft`, `first_policy_safe_publish`) and CI guardrail thresholds; added framework quickstart parity validator (`scripts/check_framework_quickstart_parity.py`) wired into CI to enforce 5-minute structure consistency across OpenClaw/LangGraph/LangChain/CrewAI docs.
-- 2026-04-04: Started M15 implementation (`in_progress`): added registry availability validator (`scripts/check_registry_package_availability.py`) and release workflow post-publish verification job (`verify-registry`), removed static “not published yet” wording from core onboarding docs in favor of registry-first installs + fallback editable mode, added LangGraph/LangChain/CrewAI 5-minute quickstarts, and introduced explicit L2 positioning doc (`docs/cognitive-state-layer.md`) linked from README.
+- 2026-04-04: Completed M15 implementation (phase-1): added registry availability validator (`scripts/check_registry_package_availability.py`) and release workflow post-publish verification job (`verify-registry`), removed static “not published yet” wording from core onboarding docs in favor of registry-first installs + fallback editable mode, added LangGraph/LangChain/CrewAI 5-minute quickstarts, and introduced explicit L2 positioning doc (`docs/cognitive-state-layer.md`) linked from README.
 - 2026-04-04: Added roadmap milestone `M15: Public Launch & Positioning` to operationalize GTM feedback: eliminate “not published yet” friction via registry-verified releases, make Agentic Onboarding a measurable primary narrative, enforce OpenClaw/LangGraph/LangChain/CrewAI onboarding parity, and refresh product framing to “Cognitive State Layer (L2)” with wiki as the governance interface.
 - 2026-04-04: Added new roadmap track `Agent Directory & Operations Intelligence` with phased delivery (`MVP -> Scale -> Governance`): AI orgchart index, attach-time self-profile updates, standard agent folder scaffold, agent-authored page index, daily worklog synthesis, capability/handoff maps, agent scorecards, provenance+rollback, and risk-tiered publish guardrails.
 - 2026-04-04: Added new roadmap track `Process Playbook Intelligence (Support Ops Focus)` to move Synapse from fact-only wiki toward process-aware operational documentation; queued operator decision capture, template-first playbook pages, process-quality gatekeeper routing, risk-tiered auto-publish with rollback, intent-aware context injection, auto onboarding packs, ticket/outcome linkage, provenance for process steps, and pre-publish process simulation checks.
