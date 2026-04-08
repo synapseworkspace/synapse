@@ -198,6 +198,31 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("role_template_key"), "logistics_ops")
 
+    def test_run_adoption_agent_wiki_bootstrap_posts_expected_payload(self) -> None:
+        self.client.run_adoption_agent_wiki_bootstrap(
+            updated_by="ops_admin",
+            dry_run=False,
+            space_key="operations",
+            include_data_sources_catalog=True,
+            include_agent_capability_profile=True,
+            include_operational_logic=True,
+            max_sources=12,
+            max_agents=30,
+            max_signals=15,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/agent-wiki-bootstrap")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("space_key"), "operations")
+        self.assertEqual(payload.get("max_sources"), 12)
+        self.assertEqual(payload.get("max_agents"), 30)
+        self.assertEqual(payload.get("max_signals"), 15)
+
 
 if __name__ == "__main__":
     unittest.main()

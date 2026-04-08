@@ -783,6 +783,46 @@ export class SynapseClient {
     });
   }
 
+  async runAdoptionAgentWikiBootstrap(options: {
+    updatedBy: string;
+    dryRun?: boolean;
+    publish?: boolean;
+    spaceKey?: string;
+    includeDataSourcesCatalog?: boolean;
+    includeAgentCapabilityProfile?: boolean;
+    includeOperationalLogic?: boolean;
+    includeFirstRunStarter?: boolean;
+    maxSources?: number;
+    maxAgents?: number;
+    maxSignals?: number;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/agent-wiki-bootstrap", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? undefined : this.projectId,
+        publish: options.publish ?? true,
+        space_key: asOptionalString(options.spaceKey) ?? "operations",
+        include_data_sources_catalog: options.includeDataSourcesCatalog ?? true,
+        include_agent_capability_profile: options.includeAgentCapabilityProfile ?? true,
+        include_operational_logic: options.includeOperationalLogic ?? true,
+        include_first_run_starter: options.includeFirstRunStarter ?? true,
+        max_sources: normalizeInt(options.maxSources ?? 25, 1, 150),
+        max_agents: normalizeInt(options.maxAgents ?? 100, 1, 5000),
+        max_signals: normalizeInt(options.maxSignals ?? 40, 1, 200)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async getBootstrapMigrationRecommendation(): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/wiki/drafts/bootstrap-approve/recommendation", {
       method: "GET",

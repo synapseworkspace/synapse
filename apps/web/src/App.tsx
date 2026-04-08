@@ -939,6 +939,34 @@ type AdoptionSyncPresetPayload = {
   };
 };
 
+type AdoptionAgentWikiBootstrapPayload = {
+  status: string;
+  project_id: string;
+  dry_run: boolean;
+  requested_status?: string;
+  plan?: {
+    pages_total?: number;
+    pages?: Array<{
+      title?: string;
+      slug?: string;
+      page_type?: string;
+      words?: number;
+    }>;
+  };
+  summary?: {
+    created?: number;
+    existing?: number;
+    skipped?: number;
+  };
+  definition_of_done?: {
+    agent_page?: boolean;
+    data_sources_page?: boolean;
+    operational_process_page?: boolean;
+    published_minimum_ready?: boolean;
+    pages_total?: number;
+  };
+};
+
 type AdoptionFirstRunBootstrapPayload = {
   status: string;
   project_id: string;
@@ -1996,6 +2024,8 @@ export default function App() {
   const [loadingPolicyQuickLoop, setLoadingPolicyQuickLoop] = useState(false);
   const [applyingPolicyQuickLoop, setApplyingPolicyQuickLoop] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
+  const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
+  const [agentWikiBootstrapResult, setAgentWikiBootstrapResult] = useState<AdoptionAgentWikiBootstrapPayload | null>(null);
   const [selfhostConsistency, setSelfhostConsistency] = useState<SelfhostConsistencyPayload | null>(null);
   const [loadingSelfhostConsistency, setLoadingSelfhostConsistency] = useState(false);
   const [connectingLegacySource, setConnectingLegacySource] = useState(false);
@@ -5438,6 +5468,60 @@ export default function App() {
     ],
   );
 
+  const runAgentWikiBootstrap = useCallback(
+    async (dryRun: boolean) => {
+      const project = projectId.trim();
+      if (!project) return;
+      setRunningAgentWikiBootstrap(true);
+      try {
+        const payload = await apiFetch<AdoptionAgentWikiBootstrapPayload>(apiUrl, "/v1/adoption/agent-wiki-bootstrap", {
+          method: "POST",
+          body: {
+            project_id: project,
+            updated_by: reviewer.trim() || "web_ui",
+            dry_run: Boolean(dryRun),
+            confirm_project_id: dryRun ? undefined : project,
+            publish: true,
+            space_key: "operations",
+            include_data_sources_catalog: true,
+            include_agent_capability_profile: true,
+            include_operational_logic: true,
+            include_first_run_starter: true,
+            max_sources: 25,
+            max_agents: 120,
+            max_signals: 40,
+          },
+          idempotencyKey: randomKey(),
+        });
+        setAgentWikiBootstrapResult(payload);
+        if (dryRun) {
+          notifications.show({
+            color: "indigo",
+            title: "Bootstrap Wiki preview ready",
+            message: `Planned pages: ${Number(payload.plan?.pages_total || 0)}.`,
+          });
+        } else {
+          notifications.show({
+            color: "teal",
+            title: "Bootstrap Wiki completed",
+            message: `Created ${Number(payload.summary?.created || 0)} page(s), existing ${Number(payload.summary?.existing || 0)}.`,
+          });
+        }
+        await loadWikiPages();
+        await loadAdoptionPipelineVisibility();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Bootstrap Wiki failed",
+          message: String(error),
+        });
+      } finally {
+        setRunningAgentWikiBootstrap(false);
+      }
+    },
+    [apiUrl, loadAdoptionPipelineVisibility, loadWikiPages, projectId, reviewer],
+  );
+
   const runFirstRunStarterBootstrap = useCallback(async () => {
     const project = projectId.trim();
     if (!project) return null;
@@ -8284,6 +8368,23 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="blue"
+                              loading={runningAgentWikiBootstrap}
+                              onClick={() => void runAgentWikiBootstrap(true)}
+                            >
+                              Preview Bootstrap Wiki
+                            </Button>
+                            <Button
+                              size="xs"
+                              color="blue"
+                              loading={runningAgentWikiBootstrap}
+                              onClick={() => void runAgentWikiBootstrap(false)}
+                            >
+                              Bootstrap Wiki
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="indigo"
                               loading={bootstrapLoading || bootstrapProfileLoading}
                               onClick={() => void runRecommendedBootstrapPreview()}
@@ -8309,6 +8410,16 @@ export default function App() {
                               {showBootstrapTools ? "Hide bootstrap settings" : "Open bootstrap settings"}
                             </Button>
                           </Group>
+                          {agentWikiBootstrapResult ? (
+                            <Text size="xs" c="dimmed">
+                              Bootstrap Wiki {agentWikiBootstrapResult.dry_run ? "preview" : "run"}:{" "}
+                              {Number(agentWikiBootstrapResult.plan?.pages_total || 0)} planned page(s), created{" "}
+                              {Number(agentWikiBootstrapResult.summary?.created || 0)}. DoD: agent{" "}
+                              {agentWikiBootstrapResult.definition_of_done?.agent_page ? "yes" : "no"}, sources{" "}
+                              {agentWikiBootstrapResult.definition_of_done?.data_sources_page ? "yes" : "no"}, process{" "}
+                              {agentWikiBootstrapResult.definition_of_done?.operational_process_page ? "yes" : "no"}.
+                            </Text>
+                          ) : null}
                           {adoptionPipeline ? (
                             <Paper withBorder p="xs" radius="md">
                               <Stack gap={6}>

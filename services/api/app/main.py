@@ -919,6 +919,22 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
 
 
+class AdoptionAgentWikiBootstrapRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    publish: bool = True
+    space_key: str | None = Field(default="operations", min_length=1, max_length=256)
+    include_data_sources_catalog: bool = True
+    include_agent_capability_profile: bool = True
+    include_operational_logic: bool = True
+    include_first_run_starter: bool = True
+    max_sources: int = Field(default=25, ge=1, le=150)
+    max_agents: int = Field(default=100, ge=1, le=5000)
+    max_signals: int = Field(default=40, ge=1, le=200)
+
+
 class WikiPageUpdateRequest(BaseModel):
     project_id: str
     updated_by: str = Field(min_length=1, max_length=256)
@@ -25470,6 +25486,495 @@ def _queue_enabled_legacy_sources_for_project(conn, *, project_id: str, requeste
     }
 
 
+def _source_ref_slug(source_type: str, source_ref: str) -> str:
+    source_bits = [bit for bit in re.split(r"[^a-zA-Z0-9]+", str(source_ref or "")) if bit]
+    short_ref = "-".join(source_bits[:6]).lower() or "source"
+    return _slugify_segment(f"{_slugify_segment(source_type)}-{short_ref}")
+
+
+def _format_freshness_label(last_success_at: datetime | None, last_run_at: datetime | None) -> str:
+    ts = last_success_at or last_run_at
+    if ts is None:
+        return "unknown"
+    delta = datetime.now(UTC) - ts
+    hours = int(max(0, delta.total_seconds() // 3600))
+    if hours < 1:
+        return "fresh (<1h)"
+    if hours < 24:
+        return f"fresh ({hours}h)"
+    days = int(hours // 24)
+    return f"stale ({days}d)"
+
+
+def _extract_source_location(source_type: str, source_ref: str, config: dict[str, Any]) -> str:
+    if source_type == "postgres_sql":
+        dsn_env = str(config.get("sql_dsn_env") or "").strip()
+        table = str(config.get("sql_table") or "").strip()
+        query = str(config.get("sql_query") or "").strip()
+        profile = str(config.get("sql_profile") or config.get("profile") or "").strip()
+        table_or_query = table or ("custom_query" if query else "")
+        if dsn_env and table_or_query:
+            return f"{dsn_env}:{table_or_query}"
+        if dsn_env:
+            return dsn_env
+        if table_or_query:
+            return table_or_query
+        if profile:
+            return f"profile:{profile}"
+    if source_type == "memory_api":
+        api_url = str(config.get("api_url") or source_ref or "").strip()
+        method = str(config.get("api_method") or "GET").strip().upper()
+        return f"{method} {api_url}" if api_url else method
+    if source_ref:
+        return str(source_ref).strip()
+    return "n/a"
+
+
+def _extract_source_owner(config: dict[str, Any], fallback: str) -> str:
+    owner = (
+        config.get("owner")
+        or config.get("owner_name")
+        or config.get("team_owner")
+        or config.get("data_owner")
+        or config.get("updated_by")
+        or fallback
+    )
+    text = str(owner or "").strip()
+    return text or "unassigned"
+
+
+def _extract_source_key_fields(source_type: str, config: dict[str, Any]) -> list[str]:
+    raw: list[str] = []
+    if source_type == "postgres_sql":
+        for key in ("sql_cursor_field", "sql_updated_field", "sql_entity_field", "sql_category_field"):
+            value = str(config.get(key) or "").strip()
+            if value:
+                raw.append(value)
+    if source_type == "memory_api":
+        mapping = config.get("api_mapping") if isinstance(config.get("api_mapping"), dict) else {}
+        for key in ("id", "content", "observed_at", "entity_key", "category", "source_system", "namespace"):
+            value = str(mapping.get(key) or "").strip()
+            if value:
+                raw.append(value)
+    generic = config.get("key_fields")
+    if isinstance(generic, list):
+        for item in generic:
+            value = str(item or "").strip()
+            if value:
+                raw.append(value)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped[:8]
+
+
+def _collect_agent_source_usage(
+    cur: Any,
+    *,
+    project_id: str,
+) -> dict[str, set[str]]:
+    usage: dict[str, set[str]] = {}
+    if not _wiki_feature_table_exists(cur, "public.agent_directory_profiles"):
+        return usage
+    cur.execute(
+        """
+        SELECT agent_id, data_sources
+        FROM agent_directory_profiles
+        WHERE project_id = %s
+        """,
+        (project_id,),
+    )
+    rows = cur.fetchall() or []
+    for row in rows:
+        agent_id = str(row[0] or "").strip()
+        data_sources = row[1] if isinstance(row[1], list) else []
+        if not agent_id:
+            continue
+        for item in data_sources:
+            token = str(item or "").strip().lower()
+            if not token:
+                continue
+            usage.setdefault(token, set()).add(agent_id)
+            for part in re.split(r"[^a-zA-Z0-9_:/.-]+", token):
+                normalized = part.strip().lower()
+                if normalized:
+                    usage.setdefault(normalized, set()).add(agent_id)
+    return usage
+
+
+def _build_data_sources_catalog_pages(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_sources: int,
+) -> list[dict[str, str]]:
+    pages: list[dict[str, str]] = []
+    if not _legacy_import_sources_table_exists_from_cursor(cur):
+        return pages
+
+    cur.execute(
+        """
+        SELECT
+          source_type,
+          source_ref,
+          config,
+          updated_by,
+          last_success_at,
+          last_run_at
+        FROM legacy_import_sources
+        WHERE project_id = %s
+          AND enabled = TRUE
+        ORDER BY updated_at DESC
+        LIMIT %s
+        """,
+        (project_id, max(1, min(150, int(max_sources)))),
+    )
+    source_rows = cur.fetchall() or []
+    usage_map = _collect_agent_source_usage(cur, project_id=project_id)
+
+    table_lines = [
+        "# Data Sources Catalog",
+        "",
+        "## Connected Sources",
+        "| Source | Type | Location | Owner | Freshness | Key Fields | Used by Agents |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    if not source_rows:
+        table_lines.extend(["| n/a | n/a | n/a | n/a | n/a | n/a | n/a |", ""])
+    detail_pages: list[dict[str, str]] = []
+    for row in source_rows:
+        source_type = _normalize_source_system(row[0], default="unknown")
+        source_ref = str(row[1] or "").strip() or "source"
+        config = row[2] if isinstance(row[2], dict) else {}
+        updated_by = str(row[3] or "").strip() or "unknown"
+        last_success_at = row[4] if isinstance(row[4], datetime) else None
+        last_run_at = row[5] if isinstance(row[5], datetime) else None
+        location = _extract_source_location(source_type, source_ref, config)
+        owner = _extract_source_owner(config, updated_by)
+        freshness = _format_freshness_label(last_success_at, last_run_at)
+        key_fields = _extract_source_key_fields(source_type, config)
+        key_fields_label = ", ".join(key_fields[:5]) if key_fields else "n/a"
+
+        usage_tokens = {
+            source_ref.lower(),
+            source_type.lower(),
+            str(config.get("sql_profile") or "").strip().lower(),
+            str(config.get("source_system") or "").strip().lower(),
+        }
+        used_by: set[str] = set()
+        for token in usage_tokens:
+            if not token:
+                continue
+            used_by.update(usage_map.get(token, set()))
+        used_by_agents = ", ".join(sorted(used_by)[:4]) if used_by else "none"
+
+        source_slug_leaf = _source_ref_slug(source_type, source_ref)
+        source_slug = _space_slug(space_key, f"source-{source_slug_leaf}")
+        detail_pages.append(
+            {
+                "title": f"Source: {source_ref}",
+                "slug": source_slug,
+                "page_type": "data_map",
+                "markdown": (
+                    f"# Source: {source_ref}\n\n"
+                    "## Contract\n"
+                    f"- Type: `{source_type}`\n"
+                    f"- Location: `{location}`\n"
+                    f"- Owner: `{owner}`\n"
+                    f"- Freshness: `{freshness}`\n\n"
+                    "## Key Fields\n"
+                    + ("\n".join([f"- `{field}`" for field in key_fields]) if key_fields else "- n/a")
+                    + "\n\n## Agent Usage\n"
+                    + (f"- Used by: {used_by_agents}" if used_by else "- No explicit usage mapped yet.")
+                    + "\n"
+                ),
+            }
+        )
+        safe_source_ref = source_ref.replace("|", "/")
+        table_lines.append(
+            f"| [{safe_source_ref}](/wiki/{source_slug}) | {source_type} | `{location}` | {owner} | {freshness} | {key_fields_label} | {used_by_agents} |"
+        )
+    table_lines.append("")
+    catalog_slug = _space_slug(space_key, "data-sources-catalog")
+    pages.append(
+        {
+            "title": "Data Sources Catalog",
+            "slug": catalog_slug,
+            "page_type": "data_map",
+            "markdown": "\n".join(table_lines),
+        }
+    )
+    pages.extend(detail_pages[:50])
+    return pages
+
+
+def _build_agent_capability_bootstrap_page(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_agents: int,
+) -> list[dict[str, str]]:
+    pages: list[dict[str, str]] = []
+    if not _agent_directory_table_exists_from_cursor(cur):
+        markdown = (
+            "# Agent Capability Profile\n\n"
+            "No registered agents found yet.\n\n"
+            "## Next Step\n"
+            "- Register agents via `/v1/agents/register` or Synapse SDK attach integration.\n"
+        )
+        pages.append(
+            {
+                "title": "Agent Capability Profile",
+                "slug": _space_slug(space_key, "agent-capability-profile"),
+                "page_type": "agent_profile",
+                "markdown": markdown,
+            }
+        )
+        return pages
+
+    orgchart_payload = get_agent_orgchart(project_id=project_id, include_handoffs=True, include_retired=False, max_agents=max_agents, max_edges=500)
+    nodes = orgchart_payload.get("nodes") if isinstance(orgchart_payload, dict) else []
+    edges = orgchart_payload.get("edges") if isinstance(orgchart_payload, dict) else []
+    teams = orgchart_payload.get("teams") if isinstance(orgchart_payload, dict) else []
+    matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+
+    lines = [
+        "# Agent Capability Profile",
+        "",
+        "## Orgchart",
+        "| Agent | Team | Role | Status | Profile |",
+        "|---|---|---|---|---|",
+    ]
+    if isinstance(nodes, list) and nodes:
+        for node in nodes[: max_agents]:
+            agent_id = str(node.get("agent_id") or "").strip()
+            display_name = str(node.get("display_name") or agent_id or "Agent").strip() or "Agent"
+            team = str(node.get("team") or "Unassigned")
+            role = str(node.get("role") or "Agent")
+            status = str(node.get("status") or "active")
+            profile_slug = str(node.get("profile_slug") or f"agents/{_slugify_segment(agent_id)}")
+            lines.append(f"| {display_name} (`{agent_id}`) | {team} | {role} | {status} | [Open](/wiki/{profile_slug}) |")
+    else:
+        lines.append("| n/a | n/a | n/a | n/a | n/a |")
+
+    lines.extend(["", "## Capability Matrix", _render_agent_capability_matrix_markdown(matrix=matrix).strip(), ""])
+    lines.extend(["## Handoffs", _render_agent_handoff_markdown(edges=edges if isinstance(edges, list) else []).strip(), ""])
+    if isinstance(teams, list) and teams:
+        lines.extend(["## Teams", "| Team | Agents |", "|---|---:|"])
+        for team in teams[:30]:
+            lines.append(f"| {str(team.get('team') or 'Unassigned')} | {int(team.get('agents_total') or 0)} |")
+        lines.append("")
+    pages.append(
+        {
+            "title": "Agent Capability Profile",
+            "slug": _space_slug(space_key, "agent-capability-profile"),
+            "page_type": "agent_profile",
+            "markdown": "\n".join(lines),
+        }
+    )
+    return pages
+
+
+def _derive_action_candidate(text: str, category: str) -> str:
+    normalized = text.lower()
+    if any(token in normalized for token in ("escalat", "urgent", "critical", "severe", "blocked")):
+        return "Open escalation task and notify on-call owner."
+    if any(token in normalized for token in ("policy", "rule", "must", "forbidden", "required")):
+        return "Update policy page and assign reviewer."
+    if any(token in normalized for token in ("delay", "late", "timeout", "failed", "error")):
+        return "Trigger mitigation runbook and add incident note."
+    if "logistics" in category or "dispatch" in category:
+        return "Apply dispatch fallback route and notify operations channel."
+    return "Create/refresh runbook step and monitor repeat signals."
+
+
+def _derive_escalation_rule(text: str, confidence: float, category: str) -> str:
+    normalized = text.lower()
+    if confidence < 0.7:
+        return "Escalate if repeated by >=2 independent sources in 24h."
+    if any(token in normalized for token in ("critical", "urgent", "incident", "outage")):
+        return "Immediate escalation to on-call with incident severity."
+    if "policy" in category or "compliance" in category:
+        return "Require human review before publish."
+    return "Escalate when SLA risk is detected or customer impact is explicit."
+
+
+def _build_operational_logic_bootstrap_page(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_signals: int,
+) -> list[dict[str, str]]:
+    cur.execute(
+        """
+        SELECT claim_payload
+        FROM claim_proposals
+        WHERE project_id = %s
+        ORDER BY updated_at DESC
+        LIMIT %s
+        """,
+        (project_id, max(20, min(1000, int(max_signals) * 10))),
+    )
+    rows = cur.fetchall() or []
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        payload = row[0] if isinstance(row[0], dict) else {}
+        claim_text = str(payload.get("claim_text") or "").strip()
+        if not claim_text:
+            continue
+        normalized_key = _normalize_statement_text(claim_text)[:180]
+        if not normalized_key or normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+        category = str(payload.get("category") or "operations").strip() or "operations"
+        confidence = float(payload.get("confidence") or 0.0)
+        entries.append(
+            {
+                "comment": claim_text[:180],
+                "signal": category,
+                "action_candidate": _derive_action_candidate(claim_text, category),
+                "escalation_rule": _derive_escalation_rule(claim_text, confidence, category),
+                "confidence": confidence,
+            }
+        )
+        if len(entries) >= max(5, min(200, int(max_signals))):
+            break
+
+    lines = [
+        "# Operational Logic Map",
+        "",
+        "## Pattern Template",
+        "`comment -> signal -> action candidate -> escalation rule`",
+        "",
+        "## Synthesized Patterns",
+        "| Comment | Signal | Action Candidate | Escalation Rule |",
+        "|---|---|---|---|",
+    ]
+    if entries:
+        for item in entries:
+            lines.append(
+                f"| {item['comment'].replace('|', '/')} | `{item['signal']}` | {item['action_candidate']} | {item['escalation_rule']} |"
+            )
+    else:
+        lines.append("| No high-signal patterns yet | operations | Capture more durable signals | Escalate on repeated evidence |")
+    lines.extend(
+        [
+            "",
+            "## Governance",
+            "- Noise goes to operational/event layer; only reusable patterns stay in wiki.",
+            "- Policy-like updates require human review when confidence is low or impact is high.",
+            "",
+        ]
+    )
+    return [
+        {
+            "title": "Operational Logic Map",
+            "slug": _space_slug(space_key, "operational-logic-map"),
+            "page_type": "process",
+            "markdown": "\n".join(lines),
+        }
+    ]
+
+
+def _build_agent_wiki_bootstrap_pages(
+    conn,
+    *,
+    project_id: str,
+    space_key: str,
+    include_data_sources_catalog: bool,
+    include_agent_capability_profile: bool,
+    include_operational_logic: bool,
+    include_first_run_starter: bool,
+    max_sources: int,
+    max_agents: int,
+    max_signals: int,
+) -> list[dict[str, str]]:
+    pages: list[dict[str, str]] = []
+    if include_first_run_starter:
+        pages.extend(_build_first_run_starter_pages("standard", space_key=space_key))
+    with conn.cursor() as cur:
+        if include_data_sources_catalog:
+            pages.extend(
+                _build_data_sources_catalog_pages(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_sources=max_sources,
+                )
+            )
+        if include_agent_capability_profile:
+            pages.extend(
+                _build_agent_capability_bootstrap_page(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_agents=max_agents,
+                )
+            )
+        if include_operational_logic:
+            pages.extend(
+                _build_operational_logic_bootstrap_page(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_signals=max_signals,
+                )
+            )
+    deduped: list[dict[str, str]] = []
+    seen_slugs: set[str] = set()
+    for spec in pages:
+        slug = _normalize_wiki_slug(str(spec.get("slug") or spec.get("title") or "page"), str(spec.get("title") or "page"))
+        if slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        deduped.append(
+            {
+                "title": str(spec.get("title") or slug),
+                "slug": slug,
+                "page_type": str(spec.get("page_type") or "operations"),
+                "markdown": str(spec.get("markdown") or f"# {str(spec.get('title') or slug)}\n"),
+            }
+        )
+    return deduped
+
+
+def _agent_wiki_bootstrap_dod(
+    *,
+    pages: list[dict[str, str]] | None = None,
+    created_slugs: list[str] | None = None,
+) -> dict[str, Any]:
+    scope = {str(item.get("slug") or "") for item in (pages or [])}
+    if created_slugs:
+        scope.update(str(item or "") for item in created_slugs)
+    has_agent = any(slug.startswith("agents/") or slug.endswith("/agent-capability-profile") or slug == "agent-capability-profile" for slug in scope)
+    has_data_sources = any("data-sources-catalog" in slug or slug.endswith("/data-map") or slug == "data-map" for slug in scope)
+    has_process = any("operational-logic-map" in slug or "runbook" in slug for slug in scope)
+    return {
+        "agent_page": bool(has_agent),
+        "data_sources_page": bool(has_data_sources),
+        "operational_process_page": bool(has_process),
+        "published_minimum_ready": bool(has_agent and has_data_sources and has_process),
+        "pages_total": len(scope),
+    }
+
+
+def _legacy_import_sources_table_exists_from_cursor(cur: Any) -> bool:
+    return _wiki_feature_table_exists(cur, "public.legacy_import_sources")
+
+
+def _agent_directory_table_exists_from_cursor(cur: Any) -> bool:
+    return _wiki_feature_table_exists(cur, "public.agent_directory_profiles")
+
+
 @app.get("/v1/adoption/wiki-space-templates")
 def list_adoption_wiki_space_templates() -> dict[str, Any]:
     return {"templates": _wiki_space_template_catalog(), "generated_at": datetime.now(UTC).isoformat()}
@@ -25661,6 +26166,111 @@ def execute_adoption_sync_preset(
             mark_request_failed(
                 conn,
                 endpoint="/v1/adoption/sync-presets/execute",
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
+
+
+@app.post("/v1/adoption/agent-wiki-bootstrap", response_model=None)
+def run_adoption_agent_wiki_bootstrap(
+    payload: AdoptionAgentWikiBootstrapRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm = str(payload.confirm_project_id or "").strip()
+        if confirm != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    actor = str(payload.updated_by or "").strip() or "web_ui"
+    space_key = _normalize_space_key(payload.space_key or "", default="operations")
+    requested_status = "published" if bool(payload.publish) else "reviewed"
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/adoption/agent-wiki-bootstrap",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        try:
+            plan_pages = _build_agent_wiki_bootstrap_pages(
+                conn,
+                project_id=project_id,
+                space_key=space_key,
+                include_data_sources_catalog=bool(payload.include_data_sources_catalog),
+                include_agent_capability_profile=bool(payload.include_agent_capability_profile),
+                include_operational_logic=bool(payload.include_operational_logic),
+                include_first_run_starter=bool(payload.include_first_run_starter),
+                max_sources=int(payload.max_sources),
+                max_agents=int(payload.max_agents),
+                max_signals=int(payload.max_signals),
+            )
+            page_preview = [
+                {
+                    "title": str(item.get("title") or ""),
+                    "slug": str(item.get("slug") or ""),
+                    "page_type": str(item.get("page_type") or "operations"),
+                    "words": len(str(item.get("markdown") or "").split()),
+                }
+                for item in plan_pages
+            ]
+            response: dict[str, Any] = {
+                "status": "ok",
+                "project_id": project_id,
+                "dry_run": bool(payload.dry_run),
+                "space_key": space_key,
+                "requested_status": requested_status,
+                "plan": {
+                    "pages_total": len(page_preview),
+                    "pages": page_preview,
+                },
+                "quality_routing": {
+                    "event_lane_recommended_noise_preset": "off",
+                    "knowledge_lane_recommended_noise_preset": "knowledge_v2",
+                    "note": "Operational/event stream stays out of wiki pages; reusable process knowledge is promoted.",
+                },
+                "definition_of_done": _agent_wiki_bootstrap_dod(pages=plan_pages),
+                "generated_at": datetime.now(UTC).isoformat(),
+            }
+            if not payload.dry_run:
+                page_result = _insert_bootstrap_pages(
+                    conn,
+                    project_id=project_id,
+                    created_by=actor,
+                    profile="agent_wiki_bootstrap",
+                    pages=plan_pages,
+                    requested_status=requested_status,
+                )
+                created_slugs = [str(item.get("slug") or "") for item in (page_result.get("created") or [])]
+                response.update(page_result)
+                response["definition_of_done"] = _agent_wiki_bootstrap_dod(
+                    pages=plan_pages,
+                    created_slugs=created_slugs,
+                )
+
+            mark_request_completed(
+                conn,
+                endpoint="/v1/adoption/agent-wiki-bootstrap",
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint="/v1/adoption/agent-wiki-bootstrap",
                 idempotency_key=idempotency_key,
                 error_message=str(exc),
             )

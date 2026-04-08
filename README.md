@@ -205,6 +205,7 @@ Setup wizard v2 flow:
 
 Enterprise shortcut (single API call):
 - `POST /v1/adoption/sync-presets/execute` runs curated bootstrap profile, queues legacy-source sync, executes trusted draft bootstrap, and seeds starter pages.
+- `POST /v1/adoption/agent-wiki-bootstrap` previews/applies a practical wiki pack (Data Sources Catalog, Agent Capability Profile, Operational Logic Map) so teams see useful published pages immediately.
 
 ## Agentic Onboarding Benchmark
 

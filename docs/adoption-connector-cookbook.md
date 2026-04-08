@@ -130,3 +130,43 @@ curl -X POST "http://localhost:8080/v1/adoption/sync-presets/execute" \
 ```
 
 This is the fastest path for enterprise onboarding: profile apply + source queue + curated bootstrap approve + starter wiki pages.
+
+## 9) Agent Wiki Bootstrap (people-useful wiki out of box)
+
+Use one endpoint to generate a practical starter wiki from connected sources and agent directory:
+
+```bash
+curl -X POST "http://localhost:8080/v1/adoption/agent-wiki-bootstrap" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "omega_demo",
+    "updated_by": "ops_manager",
+    "dry_run": true,
+    "space_key": "operations",
+    "include_data_sources_catalog": true,
+    "include_agent_capability_profile": true,
+    "include_operational_logic": true,
+    "include_first_run_starter": true
+  }'
+```
+
+Then apply:
+
+```bash
+curl -X POST "http://localhost:8080/v1/adoption/agent-wiki-bootstrap" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "omega_demo",
+    "updated_by": "ops_manager",
+    "dry_run": false,
+    "confirm_project_id": "omega_demo",
+    "space_key": "operations",
+    "publish": true
+  }'
+```
+
+Resulting pages include:
+- Data Sources Catalog (+ per-source detail pages)
+- Agent Capability Profile (orgchart + capability matrix + handoffs)
+- Operational Logic Map (`comment -> signal -> action candidate -> escalation rule`)
+- Starter wiki pages (`Agent Profile`, `Data Map`, `Operational Runbook`)

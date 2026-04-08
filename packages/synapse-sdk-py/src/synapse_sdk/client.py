@@ -788,6 +788,47 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def run_adoption_agent_wiki_bootstrap(
+        self,
+        *,
+        updated_by: str,
+        dry_run: bool = True,
+        publish: bool = True,
+        space_key: str = "operations",
+        include_data_sources_catalog: bool = True,
+        include_agent_capability_profile: bool = True,
+        include_operational_logic: bool = True,
+        include_first_run_starter: bool = True,
+        max_sources: int = 25,
+        max_agents: int = 100,
+        max_signals: int = 40,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        normalized_space_key = str(space_key or "").strip() or "operations"
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+            "publish": bool(publish),
+            "space_key": normalized_space_key,
+            "include_data_sources_catalog": bool(include_data_sources_catalog),
+            "include_agent_capability_profile": bool(include_agent_capability_profile),
+            "include_operational_logic": bool(include_operational_logic),
+            "include_first_run_starter": bool(include_first_run_starter),
+            "max_sources": max(1, min(150, int(max_sources))),
+            "max_agents": max(1, min(5000, int(max_agents))),
+            "max_signals": max(1, min(200, int(max_signals))),
+        }
+        return self._request_json(
+            "/v1/adoption/agent-wiki-bootstrap",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",
