@@ -363,6 +363,11 @@ class SynapseClient:
         created_by: str | None = None,
         cursor: str | None = None,
         chunk_size: int = 100,
+        curated_enabled: bool | None = None,
+        curated_source_systems: Sequence[str] | None = None,
+        curated_namespaces: Sequence[str] | None = None,
+        noise_preset: str | None = None,
+        curated_drop_event_like: bool | None = None,
     ) -> str:
         resolved_ingest_lane = str(ingest_lane or "knowledge").strip().lower()
         if resolved_ingest_lane not in {"event", "knowledge"}:
@@ -399,6 +404,21 @@ class SynapseClient:
                     "records": [self._serialize_backfill_record(record) for record in chunk],
                 }
             }
+            curated_payload: dict[str, Any] = {}
+            if curated_enabled is not None:
+                curated_payload["enabled"] = bool(curated_enabled)
+            if curated_source_systems is not None:
+                curated_payload["source_systems"] = [
+                    str(item).strip() for item in curated_source_systems if str(item).strip()
+                ]
+            if curated_namespaces is not None:
+                curated_payload["namespaces"] = [str(item).strip() for item in curated_namespaces if str(item).strip()]
+            if noise_preset is not None and str(noise_preset).strip():
+                curated_payload["noise_preset"] = str(noise_preset).strip().lower()
+            if curated_drop_event_like is not None:
+                curated_payload["drop_event_like"] = bool(curated_drop_event_like)
+            if curated_payload:
+                batch_payload["batch"]["curated"] = curated_payload
             try:
                 self._transport_ingest_backfill(
                     batch_payload,

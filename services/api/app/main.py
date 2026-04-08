@@ -93,6 +93,75 @@ except ModuleNotFoundError:
     )
 
 
+_ROOT_DIR = Path(__file__).resolve().parents[3]
+_API_WEB_COMPAT_PATH = _ROOT_DIR / "config" / "api_web_compat.json"
+_DEFAULT_API_WEB_COMPAT_CONTRACT: dict[str, str] = {
+    "api_version": "0.1.2",
+    "minimum_web_build": "0.1.0",
+    "recommended_web_build": "0.1.0",
+}
+
+
+def _version_to_tuple(raw: Any) -> tuple[int, ...]:
+    text = str(raw or "").strip()
+    if not text:
+        return ()
+    parts = re.split(r"[^0-9]+", text)
+    out: list[int] = []
+    for part in parts:
+        if not part:
+            continue
+        out.append(int(part))
+    return tuple(out)
+
+
+def _compare_version_strings(left: Any, right: Any) -> int:
+    left_parts = _version_to_tuple(left)
+    right_parts = _version_to_tuple(right)
+    if not left_parts and not right_parts:
+        return 0
+    if not left_parts:
+        return -1
+    if not right_parts:
+        return 1
+    width = max(len(left_parts), len(right_parts))
+    left_pad = list(left_parts) + [0] * max(0, width - len(left_parts))
+    right_pad = list(right_parts) + [0] * max(0, width - len(right_parts))
+    if left_pad < right_pad:
+        return -1
+    if left_pad > right_pad:
+        return 1
+    return 0
+
+
+def _load_api_web_compat_contract() -> dict[str, str]:
+    contract = dict(_DEFAULT_API_WEB_COMPAT_CONTRACT)
+    if _API_WEB_COMPAT_PATH.exists():
+        try:
+            raw = json.loads(_API_WEB_COMPAT_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for key in ("api_version", "minimum_web_build", "recommended_web_build"):
+                    value = raw.get(key)
+                    if isinstance(value, str) and value.strip():
+                        contract[key] = value.strip()
+        except Exception:
+            # Keep service alive even if optional contract file is malformed.
+            pass
+
+    env_overrides = {
+        "api_version": os.getenv("SYNAPSE_API_VERSION"),
+        "minimum_web_build": os.getenv("SYNAPSE_MINIMUM_WEB_BUILD"),
+        "recommended_web_build": os.getenv("SYNAPSE_RECOMMENDED_WEB_BUILD"),
+    }
+    for key, value in env_overrides.items():
+        text = str(value or "").strip()
+        if text:
+            contract[key] = text
+    if not str(contract.get("recommended_web_build") or "").strip():
+        contract["recommended_web_build"] = str(contract.get("minimum_web_build") or "").strip()
+    return contract
+
+
 class EventIn(BaseModel):
     id: str
     schema_version: str = Field(pattern="^v1$")
@@ -143,6 +212,14 @@ class MemoryBackfillRecordIn(BaseModel):
     tags: list[str] | None = None
 
 
+class MemoryBackfillCuratedFilterIn(BaseModel):
+    enabled: bool | None = None
+    source_systems: list[str] | None = Field(default=None, max_length=64)
+    namespaces: list[str] | None = Field(default=None, max_length=64)
+    noise_preset: str | None = Field(default=None, max_length=64)
+    drop_event_like: bool | None = None
+
+
 class MemoryBackfillBatchIn(BaseModel):
     batch_id: UUID | None = None
     project_id: str
@@ -153,6 +230,7 @@ class MemoryBackfillBatchIn(BaseModel):
     cursor: str | None = None
     finalize: bool = False
     created_by: str | None = None
+    curated: MemoryBackfillCuratedFilterIn | None = None
     records: list[MemoryBackfillRecordIn] = Field(min_length=1, max_length=500)
 
 
@@ -4053,6 +4131,240 @@ def _normalize_namespace_csv(value: Any) -> list[str]:
         return []
     parts = [item for item in value.split(",")]
     return _normalize_namespace_list(parts)
+
+
+_BACKFILL_NOISE_PRESET_DEFS: dict[str, dict[str, Any]] = {
+    "off": {
+        "label": "Off",
+        "description": "Do not apply pre-ingest noise suppression.",
+        "source_id_patterns": [],
+        "category_patterns": [],
+        "drop_json_payload": False,
+        "min_json_keys": 9999,
+    },
+    "balanced": {
+        "label": "Balanced",
+        "description": "Drop obvious runtime snapshots/telemetry while keeping borderline knowledge records.",
+        "source_id_patterns": [
+            r"order[_-]?snapshot",
+            r"invoice[_-]?snapshot",
+            r"raw[_-]?event",
+            r"event[_-]?stream",
+            r"telemetry",
+        ],
+        "category_patterns": [
+            r"order[_-]?snapshot",
+            r"event[_-]?payload",
+            r"telemetry",
+        ],
+        "drop_json_payload": True,
+        "min_json_keys": 8,
+    },
+    "strict": {
+        "label": "Strict",
+        "description": "Aggressive import profile for first-time cleanup of event-heavy memory dumps.",
+        "source_id_patterns": [
+            r"order[_-]?(snapshot|event|stream)",
+            r"invoice[_-]?(snapshot|event|stream)",
+            r"telemetry",
+            r"metric",
+            r"trace",
+            r"span",
+            r"raw[_-]?event",
+        ],
+        "category_patterns": [
+            r"order[_-]?event",
+            r"invoice[_-]?event",
+            r"telemetry",
+            r"metrics?",
+            r"events?",
+        ],
+        "drop_json_payload": True,
+        "min_json_keys": 5,
+    },
+    "order_snapshots": {
+        "label": "Order Snapshots",
+        "description": "Drop order/invoice snapshot records before claim generation.",
+        "source_id_patterns": [r"order[_-]?snapshot", r"invoice[_-]?snapshot", r"order[_-]?payload"],
+        "category_patterns": [r"order[_-]?snapshot", r"invoice[_-]?snapshot"],
+        "drop_json_payload": False,
+        "min_json_keys": 9999,
+    },
+    "telemetry": {
+        "label": "Telemetry",
+        "description": "Drop metrics/trace/span noise before claim generation.",
+        "source_id_patterns": [r"telemetry", r"metrics?", r"trace", r"span"],
+        "category_patterns": [r"telemetry", r"metrics?", r"trace", r"span"],
+        "drop_json_payload": False,
+        "min_json_keys": 9999,
+    },
+    "raw_event_payloads": {
+        "label": "Raw Event Payloads",
+        "description": "Drop large JSON-like event payloads with high key density.",
+        "source_id_patterns": [],
+        "category_patterns": [],
+        "drop_json_payload": True,
+        "min_json_keys": 6,
+    },
+}
+
+
+def _normalize_backfill_noise_preset(value: Any, *, default: str = "off") -> str:
+    text = str(value or "").strip().lower()
+    if text not in _BACKFILL_NOISE_PRESET_DEFS:
+        fallback = str(default or "off").strip().lower() or "off"
+        if fallback not in _BACKFILL_NOISE_PRESET_DEFS:
+            return "off"
+        return fallback
+    return text
+
+
+def _count_json_like_keys(text: str) -> int:
+    if not text:
+        return 0
+    # Lightweight heuristic only; we avoid full JSON parse for ingestion throughput.
+    return len(re.findall(r'"[^"\\]{1,64}"\s*:', text))
+
+
+def _extract_backfill_record_source_system(record: MemoryBackfillRecordIn, *, fallback: str) -> str:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    for key in ("source_system", "source", "source_connector", "connector"):
+        if key in metadata:
+            return _normalize_source_system(metadata.get(key), default=_normalize_source_system(fallback))
+    return _normalize_source_system(fallback)
+
+
+def _extract_backfill_record_namespace(record: MemoryBackfillRecordIn) -> str:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    for key in ("namespace", "source_namespace", "space", "domain"):
+        if key in metadata:
+            return _normalize_namespace(metadata.get(key), default="")
+    return ""
+
+
+def _record_matches_noise_preset(record: MemoryBackfillRecordIn, *, preset_key: str, drop_event_like: bool) -> bool:
+    preset = _BACKFILL_NOISE_PRESET_DEFS.get(preset_key) or _BACKFILL_NOISE_PRESET_DEFS["off"]
+    source_id = str(record.source_id or "").strip().lower()
+    category = str(record.category or "").strip().lower()
+    for pattern in preset.get("source_id_patterns") or []:
+        if re.search(str(pattern), source_id):
+            return True
+    for pattern in preset.get("category_patterns") or []:
+        if re.search(str(pattern), category):
+            return True
+    if not drop_event_like or not bool(preset.get("drop_json_payload")):
+        return False
+    content = str(record.content or "").strip()
+    if not content:
+        return False
+    # JSON-ish payloads with dense key/value structure usually represent runtime snapshots.
+    looks_like_json = (content.startswith("{") and content.endswith("}")) or (
+        content.startswith("[") and content.endswith("]")
+    )
+    if not looks_like_json:
+        return False
+    keys = _count_json_like_keys(content)
+    min_json_keys = max(1, int(preset.get("min_json_keys") or 1))
+    return keys >= min_json_keys
+
+
+def _resolve_backfill_curated_options(batch: MemoryBackfillBatchIn, *, ingest_lane: str) -> dict[str, Any]:
+    curated = batch.curated
+    explicit_enabled = curated.enabled if isinstance(curated, MemoryBackfillCuratedFilterIn) else None
+    enabled = bool(explicit_enabled) if explicit_enabled is not None else ingest_lane == "knowledge"
+    source_filters = (
+        _normalize_source_system_list(curated.source_systems)
+        if isinstance(curated, MemoryBackfillCuratedFilterIn) and isinstance(curated.source_systems, list)
+        else []
+    )
+    namespace_filters = (
+        _normalize_namespace_list(curated.namespaces)
+        if isinstance(curated, MemoryBackfillCuratedFilterIn) and isinstance(curated.namespaces, list)
+        else []
+    )
+    drop_event_like = True
+    if isinstance(curated, MemoryBackfillCuratedFilterIn) and curated.drop_event_like is not None:
+        drop_event_like = bool(curated.drop_event_like)
+    default_noise = "balanced" if enabled and ingest_lane == "knowledge" else "off"
+    noise_preset = _normalize_backfill_noise_preset(
+        curated.noise_preset if isinstance(curated, MemoryBackfillCuratedFilterIn) else None,
+        default=default_noise,
+    )
+    return {
+        "enabled": enabled,
+        "source_systems": source_filters,
+        "namespaces": namespace_filters,
+        "noise_preset": noise_preset,
+        "drop_event_like": bool(drop_event_like),
+        "ingest_lane": ingest_lane,
+    }
+
+
+def _apply_backfill_curated_filters(
+    records: list[MemoryBackfillRecordIn],
+    *,
+    batch_source_system: str,
+    options: dict[str, Any],
+) -> tuple[list[MemoryBackfillRecordIn], dict[str, Any]]:
+    input_total = len(records)
+    enabled = bool(options.get("enabled"))
+    allowed_sources = set(_normalize_source_system_list(options.get("source_systems")))
+    allowed_namespaces = set(_normalize_namespace_list(options.get("namespaces")))
+    noise_preset = _normalize_backfill_noise_preset(options.get("noise_preset"), default="off")
+    drop_event_like = bool(options.get("drop_event_like", True))
+
+    if not enabled:
+        return list(records), {
+            "enabled": False,
+            "noise_preset": "off",
+            "drop_event_like": False,
+            "source_systems": [],
+            "namespaces": [],
+            "input_records": input_total,
+            "kept_records": input_total,
+            "dropped_records": 0,
+            "drop_reasons": {},
+        }
+
+    kept: list[MemoryBackfillRecordIn] = []
+    dropped_by_source = 0
+    dropped_by_namespace = 0
+    dropped_by_noise = 0
+
+    normalized_batch_source = _normalize_source_system(batch_source_system)
+    for record in records:
+        source_system = _extract_backfill_record_source_system(record, fallback=normalized_batch_source)
+        if allowed_sources and source_system not in allowed_sources:
+            dropped_by_source += 1
+            continue
+        namespace = _extract_backfill_record_namespace(record)
+        if allowed_namespaces and namespace not in allowed_namespaces:
+            dropped_by_namespace += 1
+            continue
+        if _record_matches_noise_preset(record, preset_key=noise_preset, drop_event_like=drop_event_like):
+            dropped_by_noise += 1
+            continue
+        kept.append(record)
+
+    dropped_total = input_total - len(kept)
+    drop_reasons: dict[str, int] = {}
+    if dropped_by_source > 0:
+        drop_reasons["source_system"] = dropped_by_source
+    if dropped_by_namespace > 0:
+        drop_reasons["namespace"] = dropped_by_namespace
+    if dropped_by_noise > 0:
+        drop_reasons["noise_preset"] = dropped_by_noise
+    return kept, {
+        "enabled": True,
+        "noise_preset": noise_preset,
+        "drop_event_like": bool(drop_event_like),
+        "source_systems": sorted(allowed_sources),
+        "namespaces": sorted(allowed_namespaces),
+        "input_records": input_total,
+        "kept_records": len(kept),
+        "dropped_records": dropped_total,
+        "drop_reasons": drop_reasons,
+    }
 
 
 def _normalize_source_ownership_domain(value: Any, *, default: str = "runtime_memory") -> str:
@@ -14117,6 +14429,30 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/v1/meta/compatibility")
+def get_meta_compatibility(
+    web_build: str | None = Query(default=None),
+) -> dict[str, Any]:
+    contract = _load_api_web_compat_contract()
+    minimum_web_build = str(contract.get("minimum_web_build") or "").strip()
+    provided_web_build = str(web_build or "").strip()
+
+    web_status = "not_provided"
+    if provided_web_build:
+        if minimum_web_build:
+            cmp = _compare_version_strings(provided_web_build, minimum_web_build)
+            web_status = "ok" if cmp >= 0 else "outdated"
+        else:
+            web_status = "unknown"
+
+    return {
+        "compatibility": contract,
+        "web_build": provided_web_build or None,
+        "web_build_status": web_status,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _normalize_roles_list(values: list[str] | None) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -15666,8 +16002,15 @@ def _ingest_memory_backfill(
     batch = payload.batch
     batch_id = batch.batch_id or uuid4()
     ingest_lane = _normalize_backfill_ingest_lane(batch.ingest_lane, default=default_ingest_lane)
+    curated_options = _resolve_backfill_curated_options(batch, ingest_lane=ingest_lane)
+    filtered_records, filter_summary = _apply_backfill_curated_filters(
+        list(batch.records),
+        batch_source_system=batch.source_system,
+        options=curated_options,
+    )
     inserted = 0
-    accepted = len(batch.records)
+    accepted_input = len(batch.records)
+    accepted = len(filtered_records)
     source_ownership_advisories = 0
 
     with get_conn() as conn:
@@ -15743,9 +16086,12 @@ def _ingest_memory_backfill(
                         "batch_id": str(batch_id),
                         "ingest_lane": ingest_lane,
                         "status": "completed",
+                        "accepted_input": accepted_input,
                         "accepted": accepted,
                         "inserted": 0,
                         "deduplicated": accepted,
+                        "filtered_out": accepted_input - accepted,
+                        "curated_filters": filter_summary,
                     }
                     if source_ownership_advisories > 0:
                         response["source_ownership_advisories"] = source_ownership_advisories
@@ -15758,7 +16104,7 @@ def _ingest_memory_backfill(
                     )
                     return response
 
-                for record in batch.records:
+                for record in filtered_records:
                     event_payload = {
                         "source_id": record.source_id,
                         "content": record.content,
@@ -15821,9 +16167,12 @@ def _ingest_memory_backfill(
                     "batch_id": str(batch_id),
                     "ingest_lane": ingest_lane,
                     "status": saved_status,
+                    "accepted_input": accepted_input,
                     "accepted": accepted,
                     "inserted": inserted,
                     "deduplicated": accepted - inserted,
+                    "filtered_out": accepted_input - accepted,
+                    "curated_filters": filter_summary,
                     "total_items": int(total_items),
                     "inserted_events": int(inserted_events),
                     "next_action": "run_worker" if next_status == "ready" else "continue_upload",
@@ -24003,6 +24352,108 @@ def list_gatekeeper_decisions(
         for row in rows
     ]
     return {"decisions": decisions}
+
+
+def _build_adoption_import_connectors(*, source_type: str, profile: str | None) -> list[dict[str, Any]]:
+    normalized_source_type = str(source_type or "").strip().lower()
+    if normalized_source_type != "postgres_sql":
+        return []
+    normalized_profile = normalize_postgres_sql_profile(profile)
+    profile_rows = list_postgres_sql_profiles()
+    templates = list_legacy_mapper_templates(
+        source_type="postgres_sql",
+        profile=normalized_profile if normalized_profile else None,
+    )
+    contracts = list_legacy_sync_runner_contracts(
+        source_type="postgres_sql",
+        profile=normalized_profile if normalized_profile else None,
+    )
+
+    contract_by_mode: dict[str, dict[str, Any]] = {}
+    for item in contracts:
+        mode = str(item.get("sync_mode") or "").strip().lower()
+        if mode and mode not in contract_by_mode:
+            contract_by_mode[mode] = dict(item)
+
+    template_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in templates:
+        profile_key = str(item.get("profile") or "").strip().lower()
+        mode = str(item.get("sync_mode") or "").strip().lower()
+        if profile_key and mode:
+            template_by_key[(profile_key, mode)] = dict(item)
+
+    connectors: list[dict[str, Any]] = []
+    for row in profile_rows:
+        profile_key = str(row.get("profile") or "").strip().lower()
+        if not profile_key:
+            continue
+        if normalized_profile and normalized_profile not in {"auto", profile_key}:
+            continue
+        for mode in ("polling", "wal_cdc"):
+            template = template_by_key.get((profile_key, mode))
+            contract = contract_by_mode.get(mode)
+            if template is None:
+                continue
+            connectors.append(
+                {
+                    "id": f"postgres_sql:{profile_key}:{mode}",
+                    "source_type": "postgres_sql",
+                    "profile": profile_key,
+                    "sync_mode": mode,
+                    "label": str(template.get("label") or f"{profile_key} ({mode})"),
+                    "description": str(template.get("description") or row.get("description") or "").strip(),
+                    "config_patch": template.get("config_patch") if isinstance(template.get("config_patch"), dict) else {},
+                    "runner_contract": dict(contract) if isinstance(contract, dict) else None,
+                    "template_key": str(template.get("template_key") or ""),
+                    "runner_contract_key": str(template.get("runner_contract_key") or ""),
+                }
+            )
+    return connectors
+
+
+@app.get("/v1/adoption/import-connectors")
+def list_adoption_import_connectors(
+    source_type: str = Query(default="postgres_sql"),
+    profile: str | None = Query(default=None),
+) -> dict[str, Any]:
+    normalized_source_type = str(source_type or "").strip().lower()
+    connectors = _build_adoption_import_connectors(source_type=normalized_source_type, profile=profile)
+    return {
+        "source_type": normalized_source_type,
+        "profile": normalize_postgres_sql_profile(profile),
+        "connectors": connectors,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/adoption/noise-presets")
+def list_adoption_noise_presets(
+    lane: str | None = Query(default=None, pattern="^(event|knowledge)$"),
+) -> dict[str, Any]:
+    if lane is None:
+        recommended = {"event": "off", "knowledge": "balanced"}
+    else:
+        recommended = {lane: "off" if lane == "event" else "balanced"}
+    presets = [
+        {
+            "key": key,
+            "label": str(config.get("label") or key),
+            "description": str(config.get("description") or "").strip(),
+            "drop_json_payload": bool(config.get("drop_json_payload")),
+            "min_json_keys": int(config.get("min_json_keys") or 0),
+            "matches": {
+                "source_id_patterns": list(config.get("source_id_patterns") or []),
+                "category_patterns": list(config.get("category_patterns") or []),
+            },
+        }
+        for key, config in _BACKFILL_NOISE_PRESET_DEFS.items()
+    ]
+    return {
+        "lane": lane,
+        "recommended_by_lane": recommended,
+        "presets": presets,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 @app.get("/v1/adoption/rejections/diagnostics")

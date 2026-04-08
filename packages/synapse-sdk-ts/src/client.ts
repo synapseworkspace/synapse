@@ -436,7 +436,24 @@ export class SynapseClient {
             category: record.category,
             metadata: record.metadata ?? {},
             tags: record.tags ?? []
-          }))
+          })),
+          curated:
+            options.curatedEnabled !== undefined ||
+            options.curatedSourceSystems !== undefined ||
+            options.curatedNamespaces !== undefined ||
+            options.noisePreset !== undefined ||
+            options.curatedDropEventLike !== undefined
+              ? {
+                  enabled: options.curatedEnabled,
+                  source_systems: options.curatedSourceSystems,
+                  namespaces: options.curatedNamespaces,
+                  noise_preset:
+                    options.noisePreset !== undefined && String(options.noisePreset).trim()
+                      ? String(options.noisePreset).trim().toLowerCase()
+                      : undefined,
+                  drop_event_like: options.curatedDropEventLike
+                }
+              : undefined
         }
       };
       const idempotencyKey = makeBackfillIdempotencyKey(batchId, start, chunk.length, isLast);

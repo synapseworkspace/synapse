@@ -394,6 +394,7 @@ class LegacySyncEngine:
         source_system = str(config.get("source_system") or f"legacy_sync:{source.source_type}")
         chunk_size = max(1, int(config.get("chunk_size", 100)))
         created_by = run.requested_by or self.default_requested_by
+        curated_import = config.get("curated_import") if isinstance(config.get("curated_import"), dict) else None
 
         collected, source_state_patch = self._collect_records(source=source, max_records=max_records)
         records = list(collected.records)
@@ -478,9 +479,12 @@ class LegacySyncEngine:
             chunk_size=chunk_size,
             created_by=created_by,
             batch_id=str(run.id),
+            curated_import=curated_import,
         )
         summary["batch_id"] = batch_id
         summary["source_system"] = source_system
+        if isinstance(curated_import, dict):
+            summary["curated_import"] = curated_import
         self._mark_run_completed(
             conn,
             run_id=run.id,
@@ -1313,6 +1317,7 @@ class LegacySyncEngine:
         chunk_size: int,
         created_by: str,
         batch_id: str,
+        curated_import: dict[str, Any] | None = None,
     ) -> str:
         try:
             from synapse_sdk import MemoryBackfillRecord, Synapse, SynapseConfig
@@ -1342,6 +1347,11 @@ class LegacySyncEngine:
             source_system=source_system,
             created_by=created_by,
             chunk_size=chunk_size,
+            curated_enabled=(curated_import or {}).get("enabled"),
+            curated_source_systems=(curated_import or {}).get("source_systems"),
+            curated_namespaces=(curated_import or {}).get("namespaces"),
+            noise_preset=(curated_import or {}).get("noise_preset"),
+            curated_drop_event_like=(curated_import or {}).get("drop_event_like"),
         )
         return str(run_batch_id)
 

@@ -31,6 +31,7 @@ Environment:
 ## Endpoints
 
 - `GET /health`
+- `GET /v1/meta/compatibility?web_build=0.1.0` (API↔Web compatibility contract with minimum/recommended web build and status check)
 - `GET /v1/auth/mode`
 - `GET /v1/enterprise/rbac/decisions?project_id=...&decision=deny&path_prefix=/v1/wiki/&limit=100` (compliance audit stream for RBAC/tenancy policy decisions)
 - `GET /v1/enterprise/idp/connections?tenant_id=...&provider=saml` (enterprise IdP bridge registry)
@@ -58,8 +59,12 @@ Environment:
 - `POST /v1/facts/proposals` (request-level idempotency via `Idempotency-Key`)
 - `POST /v1/backfill/memory` (runtime/event lane backfill; strict event-noise filtering defaults)
 - `POST /v1/backfill/knowledge` (corporate knowledge lane backfill; avoids source-type transport hard-block defaults)
+  - optional batch-level `curated` filters: `enabled`, `source_systems[]`, `namespaces[]`, `noise_preset`, `drop_event_like`
+  - response includes curated diagnostics: `accepted_input`, `accepted`, `filtered_out`, `curated_filters.drop_reasons`
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
+- `GET /v1/adoption/import-connectors?source_type=postgres_sql&profile=ops_kb_items` (built-in connectors for `memory_items`/`ops_kb_items` with ready `config_patch` and sync contract metadata)
+- `GET /v1/adoption/noise-presets?lane=knowledge` (reusable pre-ingest noise suppression presets for snapshots/telemetry/raw payloads)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
 - `GET /v1/adoption/pipeline/visibility?project_id=...&days=14&source_systems=legacy_import,postgres_sql&namespaces=ops` (end-to-end counters `accepted -> events -> claims -> drafts -> pages` with transition drops and bottleneck hints)
 - `POST /v1/adoption/bootstrap-profile/apply` (one-click adoption profile for first wiki import; `dry_run=true` preview by default, applies gatekeeper soft-threshold profile + bootstrap recommendation bundle)

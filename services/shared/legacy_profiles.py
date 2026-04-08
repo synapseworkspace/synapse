@@ -227,6 +227,11 @@ def _build_postgres_sql_mapper_template(profile: str, preset: dict[str, Any], *,
             "sql_cursor_param": "cursor",
             "max_records": 5000,
             "chunk_size": 100,
+            "curated_import": {
+                "enabled": True,
+                "noise_preset": "balanced",
+                "drop_event_like": True,
+            },
             "sql_mapping": mapping,
         }
         if observed_field:
@@ -244,6 +249,11 @@ def _build_postgres_sql_mapper_template(profile: str, preset: dict[str, Any], *,
             "sql_source_id_prefix": source_prefix,
             "max_records": 5000,
             "chunk_size": 100,
+            "curated_import": {
+                "enabled": True,
+                "noise_preset": "balanced",
+                "drop_event_like": True,
+            },
             "sql_mapping": mapping,
         }
         template_key = f"postgres_sql.{profile}.wal_cdc"

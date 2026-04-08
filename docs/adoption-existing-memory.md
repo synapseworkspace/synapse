@@ -33,6 +33,11 @@ Synapse resolves table + column mapping automatically, generates safe polling SQ
   "config": {
     "sql_dsn_env": "HW_MEMORY_DSN",
     "sql_profile": "ops_kb_items",
+    "curated_import": {
+      "enabled": true,
+      "noise_preset": "balanced",
+      "drop_event_like": true
+    },
     "max_records": 5000,
     "chunk_size": 100
   }
@@ -44,6 +49,8 @@ Discover available profiles:
 - `GET /v1/legacy-import/profiles?source_type=postgres_sql`
 - `GET /v1/legacy-import/mapper-templates?source_type=postgres_sql`
 - `GET /v1/legacy-import/sync-contracts?source_type=postgres_sql`
+- `GET /v1/adoption/import-connectors?source_type=postgres_sql` (profile-aware connector catalog with `config_patch`)
+- `GET /v1/adoption/noise-presets?lane=knowledge` (reusable preset catalog for snapshot/telemetry suppression)
 
 SDK parity (no custom importer script):
 
@@ -65,6 +72,17 @@ curl "http://localhost:8080/v1/legacy-import/sync-contracts?source_type=postgres
 ```
 
 This is the canonical way to build cron/CDC sync services without writing one-off importer scripts.
+
+### Curated Import Mode (Namespace/Source Scoping)
+
+For initial migration, you can constrain ingestion before claims are generated:
+
+- batch-level `curated.source_systems[]`
+- batch-level `curated.namespaces[]`
+- `curated.noise_preset` (`off|balanced|strict|order_snapshots|telemetry|raw_event_payloads`)
+
+`/v1/backfill/knowledge` enables curated mode by default (`balanced`) unless explicitly disabled (`curated.enabled=false`).
+The API response returns filter diagnostics (`accepted_input`, `accepted`, `filtered_out`, `curated_filters.drop_reasons`) so teams can tune import scope without DB forensics.
 
 ## Memory Tier Routing (Default Safety)
 

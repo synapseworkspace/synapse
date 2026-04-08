@@ -373,6 +373,11 @@ export interface MemoryBackfillOptions {
   createdBy?: string;
   cursor?: string;
   chunkSize?: number;
+  curatedEnabled?: boolean;
+  curatedSourceSystems?: string[];
+  curatedNamespaces?: string[];
+  noisePreset?: "off" | "balanced" | "strict" | "order_snapshots" | "telemetry" | "raw_event_payloads" | string;
+  curatedDropEventLike?: boolean;
 }
 
 export type TaskStatus = "todo" | "in_progress" | "blocked" | "done" | "canceled";

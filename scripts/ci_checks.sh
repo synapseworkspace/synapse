@@ -43,6 +43,7 @@ python3 -m py_compile scripts/check_publish_hygiene.py
 python3 -m py_compile scripts/generate_sdk_api_reference.py
 python3 -m py_compile scripts/check_repo_hygiene.py
 python3 -m py_compile scripts/check_registry_package_availability.py
+python3 -m py_compile scripts/check_api_web_compat_contract.py
 python3 -m py_compile scripts/run_performance_tuning_advisor.py
 python3 -m py_compile scripts/verify_openclaw_provenance.py
 python3 -m py_compile scripts/smoke_openclaw_provenance_verification.py
@@ -64,6 +65,7 @@ python3 -m py_compile scripts/run_reliability_drills.py
 python3 -m py_compile scripts/export_enterprise_governance_pack.py
 python3 -m py_compile scripts/check_selfhost_stack_defaults.py
 python3 -m py_compile scripts/check_legacy_sync_wal_connector.py
+python3 scripts/check_api_web_compat_contract.py
 
 echo "[2.1/6] Worker routing unit tests"
 python3 -m unittest discover -s services/worker/tests -p 'test_*.py' >/dev/null

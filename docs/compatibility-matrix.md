@@ -23,6 +23,12 @@ This matrix captures runtime support and current CI coverage for OSS packages.
 | Web UI (`apps/web`) | Node.js + browser | Node `22`, Playwright Chromium |
 | Database | PostgreSQL | `15+` |
 
+## API ↔ Web Contract
+
+| Contract | Status | Verification source |
+| --- | --- | --- |
+| Backend minimum web build contract (`/v1/meta/compatibility`) | Supported | `config/api_web_compat.json` + `scripts/check_api_web_compat_contract.py` |
+
 ## Agent Framework Integrations
 
 | Integration path | Status | Verification source |
@@ -40,5 +46,6 @@ This matrix captures runtime support and current CI coverage for OSS packages.
 - Framework adapter version targets are documented in `docs/framework-integrations.md` (`Version Compatibility` section).
 - Additional versions in policy are expected to work and should be validated by downstream users before production rollout.
 - Any support baseline change must update this document, package metadata, and `CHANGELOG.md` together.
+- API/Web compatibility guardrails are declared in `config/api_web_compat.json`; endpoint `/v1/meta/compatibility` publishes runtime contract for deployed clients.
 - OpenClaw integration now includes evidence-level signed provenance metadata (`synapse.openclaw.provenance.v1`) with contract coverage.
 - Audit-time provenance verification tooling is available via API + CLI (`/v1/openclaw/provenance/verify`, `scripts/verify_openclaw_provenance.py`).

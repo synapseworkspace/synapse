@@ -46,7 +46,7 @@ Owner: Core team
 
 ## Real-World Adoption Backlog (April 2026)
 
-Status: `in_progress`
+Status: `done`
 
 Context from live integrations:
 - backfill accepted at API layer, but most records dropped into `claims.rejected` by default routing policy (especially `source_type=event|external_event`);
@@ -76,24 +76,24 @@ P0 exit criteria:
 
 ### P1 (Next Iteration)
 
-1. `planned` Built-in import connectors:
+1. `done` Built-in import connectors:
    - native adapters for `memory_items` and `ops_kb_items` with declarative mapping config.
 2. `done` Pipeline visibility UI:
    - end-to-end counters `accepted -> events -> claims -> drafts -> pages` with bottleneck highlighting.
-3. `planned` Noise-filter presets:
+3. `done` Noise-filter presets:
    - reusable presets for order snapshots, telemetry streams, and raw event payloads before claim generation.
-4. `planned` Curated import mode:
+4. `done` Curated import mode:
    - ingest constrained by explicit `namespaces`/`source_systems`.
 5. `done` Predictable page listing/search:
    - explicit “show all pages” behavior and removal of `q=*` ambiguity.
 
 ### P2 (Release Process Hardening)
 
-1. `planned` API/Web compatibility contract:
+1. `done` API/Web compatibility contract:
    - declare minimum compatible web build per backend version and enforce in CI/release notes.
-2. `planned` Upgrade checklist docs:
+2. `done` Upgrade checklist docs:
    - migrations, worker restart, routing-policy migration steps, and rollback notes.
-3. `planned` Post-deploy smoke test:
+3. `done` Post-deploy smoke test:
    - standard smoke flow: import 10 records -> produce 1 draft -> publish 1 page -> verify `/wiki` retrieval.
 
 Execution order for this track:
@@ -1122,3 +1122,9 @@ Checklist:
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.5` self-host core defaults: bundled `web` service into `infra/docker-compose.selfhost.yml` (loopback default port `4173`), added SPA-safe `apps/web/Dockerfile` + `nginx` fallback for `/wiki` routes, updated `.env.selfhost.example` + self-host runbook, and extended `scripts/check_selfhost_stack_defaults.py` to fail CI when web/core-route defaults regress.
 - 2026-04-08: Completed Real-World Adoption Backlog `P1.2` pipeline visibility: added `GET /v1/adoption/pipeline/visibility` with stage counters (`accepted -> events -> claims -> drafts -> pages`), conversion ratios, queue posture, and bottleneck hints; wired Operations Migration Mode UI card with one-click refresh and stage badges.
 - 2026-04-08: Completed Real-World Adoption Backlog `P1.5` predictable page listing/search: normalized wildcard query mode (`q=*|all`) for both `GET /v1/wiki/pages` and `GET /v1/wiki/pages/search`, added explicit `query_mode=all_pages` filter metadata, and removed ambiguous “empty result for wildcard” behavior.
+- 2026-04-08: Completed Real-World Adoption Backlog `P1.1` built-in import connectors: added `GET /v1/adoption/import-connectors` catalog that exposes profile-native `postgres_sql` connectors (`ops_kb_items` / `memory_items`) with ready `config_patch` payloads, sync contracts, and declarative mapper metadata to avoid custom importer scripts.
+- 2026-04-08: Completed Real-World Adoption Backlog `P1.3` noise-filter presets: introduced reusable adoption presets (`off`, `balanced`, `strict`, `order_snapshots`, `telemetry`, `raw_event_payloads`) with API discovery endpoint `GET /v1/adoption/noise-presets` and deterministic pre-ingest signal suppression heuristics for event-like payloads.
+- 2026-04-08: Completed Real-World Adoption Backlog `P1.4` curated import mode: extended backfill contract with batch-level `curated` controls (`enabled`, `source_systems`, `namespaces`, `noise_preset`, `drop_event_like`), enabled balanced curated defaults for knowledge-lane imports, propagated curated settings through legacy-sync + SDKs, and returned per-batch filter diagnostics (`accepted_input`, `filtered_out`, reason breakdown).
+- 2026-04-08: Completed Real-World Adoption Backlog `P2.1` API/Web compatibility contract: added runtime endpoint `GET /v1/meta/compatibility` backed by `config/api_web_compat.json` (with env overrides) and CI guard `scripts/check_api_web_compat_contract.py` wired into `scripts/ci_checks.sh` to prevent API/web drift.
+- 2026-04-08: Completed Real-World Adoption Backlog `P2.2` upgrade checklist: published `docs/upgrade-checklist.md` with pre-upgrade snapshot, migration/restart order, routing-policy safety checks, and rollback flow.
+- 2026-04-08: Completed Real-World Adoption Backlog `P2.3` post-deploy smoke runbook: standardized smoke contract in `docs/post-deploy-smoke.md` and anchored it to `scripts/run_selfhost_core_acceptance.sh` (`import -> draft -> publish -> retrieval` verification).
