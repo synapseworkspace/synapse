@@ -324,8 +324,12 @@ LEFT JOIN LATERAL (
     c.id::text AS claim_id,
     c.category,
     c.metadata,
-    c.evidence,
-    c.observed_at
+    COALESCE(
+      to_jsonb(c)->'evidence',
+      c.metadata->'evidence',
+      '[]'::jsonb
+    ) AS evidence,
+    c.valid_from AS observed_at
   FROM claims c
   WHERE c.project_id = st.project_id
     AND c.claim_fingerprint = st.claim_fingerprint
