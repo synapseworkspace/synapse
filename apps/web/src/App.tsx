@@ -792,6 +792,50 @@ type AdoptionBootstrapProfileApplyPayload = {
   generated_at?: string;
 };
 
+type AdoptionPipelineVisibilityPayload = {
+  project_id: string;
+  window_days: number;
+  since: string;
+  generated_at?: string;
+  filters_applied?: {
+    source_systems?: string[];
+    namespaces?: string[];
+  };
+  pipeline: {
+    accepted: number;
+    events: number;
+    claims: number;
+    drafts: number;
+    pages: number;
+  };
+  accepted_source?: string;
+  rejected_event_like?: number;
+  conversions?: {
+    accepted_to_events?: number | null;
+    events_to_claims?: number | null;
+    claims_to_drafts?: number | null;
+    drafts_to_pages?: number | null;
+  };
+  draft_queue?: {
+    pending_review?: number;
+    blocked_conflict?: number;
+    open_total?: number;
+  };
+  bottleneck?: {
+    from_stage: string;
+    to_stage: string;
+    drop_count: number;
+    drop_ratio: number;
+    status: string;
+    hint?: string;
+  } | null;
+  stages?: Array<{
+    key: string;
+    label: string;
+    count: number;
+  }>;
+};
+
 type LegacyImportProfile = {
   profile: string;
   label: string;
@@ -1828,6 +1872,8 @@ export default function App() {
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapApproveRunPayload | null>(null);
   const [bootstrapRecommendation, setBootstrapRecommendation] = useState<BootstrapApproveRecommendationPayload | null>(null);
   const [bootstrapProfileResult, setBootstrapProfileResult] = useState<AdoptionBootstrapProfileApplyPayload | null>(null);
+  const [adoptionPipeline, setAdoptionPipeline] = useState<AdoptionPipelineVisibilityPayload | null>(null);
+  const [adoptionPipelineLoading, setAdoptionPipelineLoading] = useState(false);
   const [, setLoadingBootstrapRecommendation] = useState(false);
   const [legacyProfiles, setLegacyProfiles] = useState<LegacyImportProfile[]>([]);
   const [legacySources, setLegacySources] = useState<LegacyImportSource[]>([]);
@@ -3616,6 +3662,30 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadAdoptionPipelineVisibility = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setAdoptionPipeline(null);
+      return;
+    }
+    setAdoptionPipelineLoading(true);
+    try {
+      const query = new URLSearchParams({
+        project_id: project,
+        days: "14",
+      });
+      const payload = await apiFetch<AdoptionPipelineVisibilityPayload>(
+        apiUrl,
+        `/v1/adoption/pipeline/visibility?${query.toString()}`,
+      );
+      setAdoptionPipeline(payload);
+    } catch {
+      setAdoptionPipeline(null);
+    } finally {
+      setAdoptionPipelineLoading(false);
+    }
+  }, [apiUrl, projectId]);
+
   const runLegacySourceSync = useCallback(
     async (sourceId: string) => {
       const project = projectId.trim();
@@ -3645,6 +3715,7 @@ export default function App() {
         });
         await loadLegacyImportSources();
         await loadBootstrapRecommendation();
+        await loadAdoptionPipelineVisibility();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -3655,7 +3726,7 @@ export default function App() {
         setRunningLegacySyncSourceId(null);
       }
     },
-    [apiUrl, loadBootstrapRecommendation, loadLegacyImportSources, projectId, reviewer],
+    [apiUrl, loadAdoptionPipelineVisibility, loadBootstrapRecommendation, loadLegacyImportSources, projectId, reviewer],
   );
 
   const connectLegacyMemoryQuickstart = useCallback(async (): Promise<boolean> => {
@@ -3745,6 +3816,7 @@ export default function App() {
       setConnectingLegacySource(false);
       await loadLegacyImportSources();
       await loadBootstrapRecommendation();
+      await loadAdoptionPipelineVisibility();
     }
     return connected;
   }, [
@@ -3756,6 +3828,7 @@ export default function App() {
     legacySqlDsnEnv,
     legacySqlProfile,
     legacySyncIntervalMinutes,
+    loadAdoptionPipelineVisibility,
     loadBootstrapRecommendation,
     loadLegacyImportSources,
     projectId,
@@ -4213,12 +4286,15 @@ export default function App() {
       setLegacyProfiles([]);
       setLegacySources([]);
       setBootstrapRecommendation(null);
+      setAdoptionPipeline(null);
       return;
     }
     void loadLegacyImportProfiles();
     void loadLegacyImportSources();
     void loadBootstrapRecommendation();
-  }, [loadBootstrapRecommendation, loadLegacyImportProfiles, loadLegacyImportSources, projectId]);
+    void loadAdoptionPipelineVisibility();
+    void loadAdoptionPipelineVisibility();
+  }, [loadAdoptionPipelineVisibility, loadBootstrapRecommendation, loadLegacyImportProfiles, loadLegacyImportSources, projectId]);
 
   useEffect(() => {
     if (!projectId.trim()) return;
@@ -4665,6 +4741,7 @@ export default function App() {
             message: `Candidates: ${payload.summary.candidates}; sample: ${payload.summary.sample_size ?? 0}.`,
           });
           await loadBootstrapRecommendation();
+          await loadAdoptionPipelineVisibility();
           return;
         }
         notifications.show({
@@ -4678,6 +4755,7 @@ export default function App() {
           await loadConflictExplain(selectedDraftId);
         }
         await loadBootstrapRecommendation();
+        await loadAdoptionPipelineVisibility();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -4699,6 +4777,7 @@ export default function App() {
       loadConflictExplain,
       loadDraftDetail,
       loadDrafts,
+      loadAdoptionPipelineVisibility,
       loadBootstrapRecommendation,
       projectId,
       reviewer,
@@ -4835,6 +4914,7 @@ export default function App() {
             : "Gatekeeper profile switched to initial-import mode.",
         });
         await loadBootstrapRecommendation();
+        await loadAdoptionPipelineVisibility();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -4845,7 +4925,7 @@ export default function App() {
         setBootstrapProfileLoading(false);
       }
     },
-    [apiUrl, applyRecommendedBootstrapPreset, loadBootstrapRecommendation, projectId, reviewer],
+    [apiUrl, applyRecommendedBootstrapPreset, loadAdoptionPipelineVisibility, loadBootstrapRecommendation, projectId, reviewer],
   );
 
   const runRecommendedBootstrapPreview = useCallback(async () => {
@@ -7613,6 +7693,15 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="gray"
+                              loading={adoptionPipelineLoading}
+                              onClick={() => void loadAdoptionPipelineVisibility()}
+                            >
+                              Refresh pipeline
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="violet"
                               loading={bootstrapProfileLoading}
                               onClick={() => void applyAdoptionBootstrapProfile(true)}
@@ -7655,6 +7744,67 @@ export default function App() {
                               {showBootstrapTools ? "Hide bootstrap settings" : "Open bootstrap settings"}
                             </Button>
                           </Group>
+                          {adoptionPipeline ? (
+                            <Paper withBorder p="xs" radius="md">
+                              <Stack gap={6}>
+                                <Group justify="space-between" align="center" wrap="wrap">
+                                  <Text size="xs" fw={700}>
+                                    Pipeline visibility ({adoptionPipeline.window_days}d)
+                                  </Text>
+                                  {adoptionPipeline.bottleneck ? (
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={
+                                        adoptionPipeline.bottleneck.status === "critical"
+                                          ? "red"
+                                          : adoptionPipeline.bottleneck.status === "watch"
+                                            ? "orange"
+                                            : "teal"
+                                      }
+                                    >
+                                      Bottleneck: {adoptionPipeline.bottleneck.from_stage} → {adoptionPipeline.bottleneck.to_stage}
+                                    </Badge>
+                                  ) : (
+                                    <Badge size="xs" variant="light" color="teal">
+                                      No major bottleneck
+                                    </Badge>
+                                  )}
+                                </Group>
+                                <SimpleGrid cols={{ base: 2, sm: 5 }} spacing={6}>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    accepted {adoptionPipeline.pipeline.accepted}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    events {adoptionPipeline.pipeline.events}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    claims {adoptionPipeline.pipeline.claims}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    drafts {adoptionPipeline.pipeline.drafts}
+                                  </Badge>
+                                  <Badge size="xs" variant="light" color="gray">
+                                    pages {adoptionPipeline.pipeline.pages}
+                                  </Badge>
+                                </SimpleGrid>
+                                <Text size="xs" c="dimmed">
+                                  Queue: {adoptionPipeline.draft_queue?.open_total ?? 0} open ({adoptionPipeline.draft_queue?.pending_review ?? 0} pending,{" "}
+                                  {adoptionPipeline.draft_queue?.blocked_conflict ?? 0} conflicts). Rejected event-like:{" "}
+                                  {adoptionPipeline.rejected_event_like ?? 0}.
+                                </Text>
+                                {adoptionPipeline.bottleneck?.hint ? (
+                                  <Text size="xs" c="dimmed">
+                                    {adoptionPipeline.bottleneck.hint}
+                                  </Text>
+                                ) : null}
+                              </Stack>
+                            </Paper>
+                          ) : (
+                            <Text size="xs" c="dimmed">
+                              Pipeline visibility is unavailable for current project yet.
+                            </Text>
+                          )}
                           {bootstrapProfileResult ? (
                             <Text size="xs" c="dimmed">
                               Profile `{bootstrapProfileResult.profile}` {bootstrapProfileResult.status}. Changed gatekeeper keys:{" "}

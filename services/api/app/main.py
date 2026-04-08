@@ -4018,6 +4018,43 @@ def _normalize_source_system_list(value: Any) -> list[str]:
     return out
 
 
+def _normalize_source_system_csv(value: Any) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    parts = [item for item in value.split(",")]
+    return _normalize_source_system_list(parts)
+
+
+def _normalize_namespace(value: Any, *, default: str = "") -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_./:-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    if not text:
+        return default
+    return text[:128]
+
+
+def _normalize_namespace_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        namespace = _normalize_namespace(item, default="")
+        if not namespace or namespace in seen:
+            continue
+        seen.add(namespace)
+        out.append(namespace)
+    return out
+
+
+def _normalize_namespace_csv(value: Any) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    parts = [item for item in value.split(",")]
+    return _normalize_namespace_list(parts)
+
+
 def _normalize_source_ownership_domain(value: Any, *, default: str = "runtime_memory") -> str:
     text = str(value or "").strip().lower()
     if text not in _SOURCE_OWNERSHIP_DOMAINS:
@@ -17694,48 +17731,68 @@ def search_wiki_pages(
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
     needle = q.strip().lower()
+    wildcard_all = needle in {"*", "all", "__all__"}
     like = f"%{needle}%"
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                  p.id::text,
-                  p.title,
-                  p.slug,
-                  p.entity_key,
-                  p.page_type,
-                  p.status,
-                  CASE
-                    WHEN lower(p.entity_key) = %s THEN 1.00
-                    WHEN lower(p.slug) = %s THEN 0.95
-                    WHEN lower(p.title) LIKE %s THEN 0.85
-                    WHEN EXISTS (
-                      SELECT 1
-                      FROM wiki_page_aliases a
-                      WHERE a.page_id = p.id
-                        AND lower(a.alias_text) LIKE %s
-                    ) THEN 0.80
-                    ELSE 0.40
-                  END AS score
-                FROM wiki_pages p
-                WHERE p.project_id = %s
-                  AND (
-                    lower(p.entity_key) = %s
-                    OR lower(p.slug) = %s
-                    OR lower(p.title) LIKE %s
-                    OR EXISTS (
-                      SELECT 1
-                      FROM wiki_page_aliases a
-                      WHERE a.page_id = p.id
-                        AND lower(a.alias_text) LIKE %s
-                    )
-                  )
-                ORDER BY score DESC, p.updated_at DESC
-                LIMIT %s
-                """,
-                (needle, needle, like, like, project_id, needle, needle, like, like, limit),
-            )
+            if wildcard_all:
+                cur.execute(
+                    """
+                    SELECT
+                      p.id::text,
+                      p.title,
+                      p.slug,
+                      p.entity_key,
+                      p.page_type,
+                      p.status,
+                      0.50::float AS score
+                    FROM wiki_pages p
+                    WHERE p.project_id = %s
+                    ORDER BY p.updated_at DESC, p.created_at DESC
+                    LIMIT %s
+                    """,
+                    (project_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                      p.id::text,
+                      p.title,
+                      p.slug,
+                      p.entity_key,
+                      p.page_type,
+                      p.status,
+                      CASE
+                        WHEN lower(p.entity_key) = %s THEN 1.00
+                        WHEN lower(p.slug) = %s THEN 0.95
+                        WHEN lower(p.title) LIKE %s THEN 0.85
+                        WHEN EXISTS (
+                          SELECT 1
+                          FROM wiki_page_aliases a
+                          WHERE a.page_id = p.id
+                            AND lower(a.alias_text) LIKE %s
+                        ) THEN 0.80
+                        ELSE 0.40
+                      END AS score
+                    FROM wiki_pages p
+                    WHERE p.project_id = %s
+                      AND (
+                        lower(p.entity_key) = %s
+                        OR lower(p.slug) = %s
+                        OR lower(p.title) LIKE %s
+                        OR EXISTS (
+                          SELECT 1
+                          FROM wiki_page_aliases a
+                          WHERE a.page_id = p.id
+                            AND lower(a.alias_text) LIKE %s
+                        )
+                      )
+                    ORDER BY score DESC, p.updated_at DESC
+                    LIMIT %s
+                    """,
+                    (needle, needle, like, like, project_id, needle, needle, like, like, limit),
+                )
             rows = cur.fetchall()
             cur.execute(
                 """
@@ -17783,6 +17840,7 @@ def search_wiki_pages(
             "filters_applied": {
                 "query": q.strip(),
                 "normalized_query": needle,
+                "query_mode": "all_pages" if wildcard_all else "search",
                 "limit": int(limit),
             },
             "counts": {
@@ -17819,6 +17877,9 @@ def list_wiki_pages(
 
     normalized_updated_by = str(updated_by or "").strip()
     normalized_query = str(q or "").strip()
+    wildcard_all = normalized_query.lower() in {"*", "all", "__all__"}
+    if wildcard_all:
+        normalized_query = ""
     normalized_limit = normalize_limit_value(limit, default=200, minimum=1, maximum=1000)
     normalized_offset = max(0, int(offset))
     normalized_sort_by = str(sort_by or "activity").strip().lower()
@@ -17954,6 +18015,7 @@ def list_wiki_pages(
                 "updated_by": normalized_updated_by or None,
                 "with_open_drafts": with_open_drafts,
                 "query": normalized_query or None,
+                "query_mode": "all_pages" if wildcard_all else "search",
                 "limit": normalized_limit,
                 "offset": normalized_offset,
                 "sort_by": normalized_sort_by,
@@ -24115,6 +24177,412 @@ def get_adoption_rejection_diagnostics(
         },
         "examples": examples,
         "suggested_policy_knobs": suggestions,
+    }
+
+
+@app.get("/v1/adoption/pipeline/visibility")
+def get_adoption_pipeline_visibility(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    source_systems: str | None = Query(default=None),
+    namespaces: str | None = Query(default=None),
+) -> dict[str, Any]:
+    source_filters = _normalize_source_system_csv(source_systems)
+    namespace_filters = _normalize_namespace_csv(namespaces)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+
+    accepted_records = 0
+    events_total = 0
+    claims_total = 0
+    drafts_total = 0
+    pages_total = 0
+    queue_pending_review = 0
+    queue_blocked_conflict = 0
+    rejected_event_like = 0
+    accepted_source = "events_estimated"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if _memory_backfill_batches_table_exists(conn):
+                params: list[Any] = [project_id, cutoff]
+                where_sql = ["project_id = %s", "updated_at >= %s"]
+                if source_filters:
+                    where_sql.append("LOWER(source_system) = ANY(%s::text[])")
+                    params.append(source_filters)
+                if _backfill_batch_has_decision_counters(conn):
+                    cur.execute(
+                        f"""
+                        SELECT
+                          COALESCE(SUM(total_items), 0)::bigint,
+                          COALESCE(SUM(inserted_events), 0)::bigint,
+                          COALESCE(SUM(generated_claims), 0)::bigint,
+                          COALESCE(SUM(dropped_event_like), 0)::bigint
+                        FROM memory_backfill_batches
+                        WHERE {' AND '.join(where_sql)}
+                        """,
+                        tuple(params),
+                    )
+                    row = cur.fetchone() or (0, 0, 0, 0)
+                else:
+                    cur.execute(
+                        f"""
+                        SELECT
+                          COALESCE(SUM(total_items), 0)::bigint,
+                          COALESCE(SUM(inserted_events), 0)::bigint,
+                          COALESCE(SUM(generated_claims), 0)::bigint
+                        FROM memory_backfill_batches
+                        WHERE {' AND '.join(where_sql)}
+                        """,
+                        tuple(params),
+                    )
+                    batch_row = cur.fetchone() or (0, 0, 0)
+                    row = (batch_row[0], batch_row[1], batch_row[2], 0)
+                batch_total_items = int(row[0] or 0)
+                rejected_event_like = int(row[3] or 0)
+                if not namespace_filters:
+                    accepted_records = batch_total_items
+                    accepted_source = "memory_backfill_batches"
+
+            event_filters = ["e.project_id = %s", "e.event_type = 'memory_backfill'", "e.observed_at >= %s"]
+            event_params: list[Any] = [project_id, cutoff]
+            if source_filters:
+                event_filters.append(
+                    """
+                    LOWER(
+                      COALESCE(
+                        NULLIF(e.payload->'backfill'->>'source_system', ''),
+                        NULLIF(e.payload->>'source_system', ''),
+                        NULLIF(e.payload->'metadata'->>'source_system', ''),
+                        NULLIF(e.payload->'metadata'->>'source', '')
+                      )
+                    ) = ANY(%s::text[])
+                    """.strip()
+                )
+                event_params.append(source_filters)
+            if namespace_filters:
+                event_filters.append(
+                    """
+                    LOWER(
+                      COALESCE(
+                        NULLIF(e.payload->'metadata'->>'namespace', ''),
+                        NULLIF(e.payload->>'namespace', ''),
+                        NULLIF(e.payload->'metadata'->>'source_namespace', '')
+                      )
+                    ) = ANY(%s::text[])
+                    """.strip()
+                )
+                event_params.append(namespace_filters)
+            cur.execute(
+                f"""
+                SELECT COUNT(*)::bigint
+                FROM events e
+                WHERE {' AND '.join(event_filters)}
+                """,
+                tuple(event_params),
+            )
+            event_row = cur.fetchone()
+            events_total = int((event_row[0] if event_row else 0) or 0)
+            if accepted_records <= 0:
+                accepted_records = events_total
+                accepted_source = "events_estimated"
+
+            if _public_table_exists(conn, "claims"):
+                claim_filters = ["c.project_id = %s", "c.created_at >= %s"]
+                claim_params: list[Any] = [project_id, cutoff]
+                if source_filters or namespace_filters:
+                    evidence_filters: list[str] = []
+                    if source_filters:
+                        evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        claim_params.append(source_filters)
+                    if namespace_filters:
+                        evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->'metadata'->>'namespace', ''),
+                                NULLIF(ev->>'namespace', ''),
+                                NULLIF(ev->'metadata'->>'source_namespace', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        claim_params.append(namespace_filters)
+                    claim_filters.append(
+                        f"""
+                        EXISTS (
+                          SELECT 1
+                          FROM jsonb_array_elements(COALESCE(c.evidence, '[]'::jsonb)) ev
+                          WHERE {' AND '.join(evidence_filters)}
+                        )
+                        """.strip()
+                    )
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*)::bigint
+                    FROM claims c
+                    WHERE {' AND '.join(claim_filters)}
+                    """,
+                    tuple(claim_params),
+                )
+                claim_row = cur.fetchone()
+                claims_total = int((claim_row[0] if claim_row else 0) or 0)
+
+            if _public_table_exists(conn, "wiki_draft_changes"):
+                draft_filters = ["d.project_id = %s", "d.created_at >= %s"]
+                draft_params: list[Any] = [project_id, cutoff]
+                if source_filters or namespace_filters:
+                    draft_evidence_filters: list[str] = []
+                    if source_filters:
+                        draft_evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        draft_params.append(source_filters)
+                    if namespace_filters:
+                        draft_evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->'metadata'->>'namespace', ''),
+                                NULLIF(ev->>'namespace', ''),
+                                NULLIF(ev->'metadata'->>'source_namespace', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        draft_params.append(namespace_filters)
+                    draft_filters.append(
+                        f"""
+                        EXISTS (
+                          SELECT 1
+                          FROM jsonb_array_elements(COALESCE(d.evidence, '[]'::jsonb)) ev
+                          WHERE {' AND '.join(draft_evidence_filters)}
+                        )
+                        """.strip()
+                    )
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*)::bigint
+                    FROM wiki_draft_changes d
+                    WHERE {' AND '.join(draft_filters)}
+                    """,
+                    tuple(draft_params),
+                )
+                draft_row = cur.fetchone()
+                drafts_total = int((draft_row[0] if draft_row else 0) or 0)
+
+            if _public_table_exists(conn, "moderation_actions") and _public_table_exists(conn, "wiki_draft_changes"):
+                page_filters = [
+                    "ma.project_id = %s",
+                    "ma.action_type = 'approve'",
+                    "ma.created_at >= %s",
+                    "d.page_id IS NOT NULL",
+                ]
+                page_params: list[Any] = [project_id, cutoff]
+                if source_filters or namespace_filters:
+                    page_evidence_filters: list[str] = []
+                    if source_filters:
+                        page_evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        page_params.append(source_filters)
+                    if namespace_filters:
+                        page_evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->'metadata'->>'namespace', ''),
+                                NULLIF(ev->>'namespace', ''),
+                                NULLIF(ev->'metadata'->>'source_namespace', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        page_params.append(namespace_filters)
+                    page_filters.append(
+                        f"""
+                        EXISTS (
+                          SELECT 1
+                          FROM jsonb_array_elements(COALESCE(d.evidence, '[]'::jsonb)) ev
+                          WHERE {' AND '.join(page_evidence_filters)}
+                        )
+                        """.strip()
+                    )
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT d.page_id)::bigint
+                    FROM moderation_actions ma
+                    JOIN wiki_draft_changes d ON d.id = ma.draft_id
+                    WHERE {' AND '.join(page_filters)}
+                    """,
+                    tuple(page_params),
+                )
+                page_row = cur.fetchone()
+                pages_total = int((page_row[0] if page_row else 0) or 0)
+
+            if _public_table_exists(conn, "wiki_draft_changes"):
+                queue_filters = ["project_id = %s", "status IN ('pending_review', 'blocked_conflict')"]
+                queue_params: list[Any] = [project_id]
+                if source_filters or namespace_filters:
+                    queue_evidence_filters: list[str] = []
+                    if source_filters:
+                        queue_evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source_system', ''),
+                                NULLIF(ev->'metadata'->>'source', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        queue_params.append(source_filters)
+                    if namespace_filters:
+                        queue_evidence_filters.append(
+                            """
+                            LOWER(
+                              COALESCE(
+                                NULLIF(ev->'metadata'->>'namespace', ''),
+                                NULLIF(ev->>'namespace', ''),
+                                NULLIF(ev->'metadata'->>'source_namespace', '')
+                              )
+                            ) = ANY(%s::text[])
+                            """.strip()
+                        )
+                        queue_params.append(namespace_filters)
+                    queue_filters.append(
+                        f"""
+                        EXISTS (
+                          SELECT 1
+                          FROM jsonb_array_elements(COALESCE(evidence, '[]'::jsonb)) ev
+                          WHERE {' AND '.join(queue_evidence_filters)}
+                        )
+                        """.strip()
+                    )
+                cur.execute(
+                    f"""
+                    SELECT
+                      COUNT(*) FILTER (WHERE status = 'pending_review')::bigint,
+                      COUNT(*) FILTER (WHERE status = 'blocked_conflict')::bigint
+                    FROM wiki_draft_changes
+                    WHERE {' AND '.join(queue_filters)}
+                    """,
+                    tuple(queue_params),
+                )
+                queue_row = cur.fetchone() or (0, 0)
+                queue_pending_review = int(queue_row[0] or 0)
+                queue_blocked_conflict = int(queue_row[1] or 0)
+
+    def _stage_ratio(prev_value: int, next_value: int) -> float | None:
+        if prev_value <= 0:
+            return None
+        return round(float(next_value) / float(prev_value), 4)
+
+    stages = [
+        {"key": "accepted", "label": "Accepted", "count": int(max(0, accepted_records))},
+        {"key": "events", "label": "Events", "count": int(max(0, events_total))},
+        {"key": "claims", "label": "Claims", "count": int(max(0, claims_total))},
+        {"key": "drafts", "label": "Drafts", "count": int(max(0, drafts_total))},
+        {"key": "pages", "label": "Pages", "count": int(max(0, pages_total))},
+    ]
+    transitions: list[dict[str, Any]] = []
+    for index in range(len(stages) - 1):
+        left = stages[index]
+        right = stages[index + 1]
+        drop_count = max(0, int(left["count"]) - int(right["count"]))
+        drop_ratio = round(float(drop_count) / float(max(int(left["count"]), 1)), 4)
+        transitions.append(
+            {
+                "from_stage": str(left["key"]),
+                "to_stage": str(right["key"]),
+                "from_count": int(left["count"]),
+                "to_count": int(right["count"]),
+                "drop_count": int(drop_count),
+                "drop_ratio": float(drop_ratio),
+                "conversion_ratio": _stage_ratio(int(left["count"]), int(right["count"])),
+            }
+        )
+
+    bottleneck: dict[str, Any] | None = None
+    if transitions:
+        top = max(transitions, key=lambda item: (float(item["drop_ratio"]), int(item["drop_count"])))
+        if int(top["drop_count"]) > 0:
+            hint_by_stage = {
+                ("accepted", "events"): "High dedup/noise at ingestion edge. Review source IDs and event-shape suppression.",
+                ("events", "claims"): "Events are not turning into claims. Inspect worker extraction rules and record quality.",
+                ("claims", "drafts"): "Claims are blocked before draft stage. Review gatekeeper thresholds and rejection diagnostics.",
+                ("drafts", "pages"): "Moderation/publish is bottlenecked. Use bootstrap sampling or auto-publish policy tuning.",
+            }
+            ratio_value = float(top["drop_ratio"])
+            level = "healthy"
+            if ratio_value >= 0.5:
+                level = "critical"
+            elif ratio_value >= 0.25:
+                level = "watch"
+            bottleneck = {
+                **top,
+                "status": level,
+                "hint": hint_by_stage.get((str(top["from_stage"]), str(top["to_stage"])), "Inspect stage diagnostics."),
+            }
+
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "since": cutoff.isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "filters_applied": {
+            "source_systems": source_filters,
+            "namespaces": namespace_filters,
+        },
+        "pipeline": {
+            "accepted": int(stages[0]["count"]),
+            "events": int(stages[1]["count"]),
+            "claims": int(stages[2]["count"]),
+            "drafts": int(stages[3]["count"]),
+            "pages": int(stages[4]["count"]),
+        },
+        "accepted_source": accepted_source,
+        "rejected_event_like": int(max(0, rejected_event_like)),
+        "conversions": {
+            "accepted_to_events": _stage_ratio(int(stages[0]["count"]), int(stages[1]["count"])),
+            "events_to_claims": _stage_ratio(int(stages[1]["count"]), int(stages[2]["count"])),
+            "claims_to_drafts": _stage_ratio(int(stages[2]["count"]), int(stages[3]["count"])),
+            "drafts_to_pages": _stage_ratio(int(stages[3]["count"]), int(stages[4]["count"])),
+        },
+        "draft_queue": {
+            "pending_review": queue_pending_review,
+            "blocked_conflict": queue_blocked_conflict,
+            "open_total": int(queue_pending_review + queue_blocked_conflict),
+        },
+        "stages": stages,
+        "transitions": transitions,
+        "bottleneck": bottleneck,
     }
 
 

@@ -61,12 +61,13 @@ Environment:
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
+- `GET /v1/adoption/pipeline/visibility?project_id=...&days=14&source_systems=legacy_import,postgres_sql&namespaces=ops` (end-to-end counters `accepted -> events -> claims -> drafts -> pages` with transition drops and bottleneck hints)
 - `POST /v1/adoption/bootstrap-profile/apply` (one-click adoption profile for first wiki import; `dry_run=true` preview by default, applies gatekeeper soft-threshold profile + bootstrap recommendation bundle)
 - `POST /v1/adoption/project-reset` (project-scope reset with `dry_run=true` default, scoped deletes, and audit trail)
 - `GET /v1/adoption/source-ownership?project_id=...`
 - `PUT /v1/adoption/source-ownership`
 - `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
-- `GET /v1/wiki/pages/search?project_id=...&q=...` (includes `meta` debug payload: scope, filters, page/draft status counters)
+- `GET /v1/wiki/pages/search?project_id=...&q=...` (includes `meta` debug payload: scope, filters, page/draft status counters; `q=*` switches to predictable “show all pages” mode)
 - `GET /v1/wiki/pages?project_id=...&status=published&updated_by=ops_manager&with_open_drafts=true&q=...&sort_by=activity&sort_dir=desc&limit=200&offset=0` (page index for wiki tree; includes draft counters per page, plus actor/open-draft filters)
 - `GET /v1/wiki/stats?project_id=...` (page/draft status counters and latest update timestamps)
 - `GET /v1/wiki/lifecycle/stats?project_id=...&stale_days=21&critical_days=45&stale_limit=20&space_key=operations` (lifecycle counters + stale page candidates for dashboards/diagnostics; optional `space_key` narrows scope for high-cardinality workspaces; response `meta` includes `searched_scope`, `filters_applied`, and `empty_scope` diagnostics with explanation codes `no_published|all_open_drafts|below_threshold`, details counters, and actionable `suggested_actions` hints)

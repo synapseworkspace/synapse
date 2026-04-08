@@ -78,13 +78,13 @@ P0 exit criteria:
 
 1. `planned` Built-in import connectors:
    - native adapters for `memory_items` and `ops_kb_items` with declarative mapping config.
-2. `planned` Pipeline visibility UI:
+2. `done` Pipeline visibility UI:
    - end-to-end counters `accepted -> events -> claims -> drafts -> pages` with bottleneck highlighting.
 3. `planned` Noise-filter presets:
    - reusable presets for order snapshots, telemetry streams, and raw event payloads before claim generation.
 4. `planned` Curated import mode:
    - ingest constrained by explicit `namespaces`/`source_systems`.
-5. `planned` Predictable page listing/search:
+5. `done` Predictable page listing/search:
    - explicit “show all pages” behavior and removal of `q=*` ambiguity.
 
 ### P2 (Release Process Hardening)
@@ -1120,3 +1120,5 @@ Checklist:
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.4` admin project reset: added migration-backed audit table (`056_adoption_project_resets.sql`) and safe API `POST /v1/adoption/project-reset` with scope normalization, `dry_run=true` preview default, explicit `confirm_project_id` guard for destructive mode, idempotency support, and per-table deleted-row counters.
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.2` bootstrap profile: added one-click API `POST /v1/adoption/bootstrap-profile/apply` (`dry_run` preview + explicit confirm guard + idempotency) that applies initial-import gatekeeper soft-threshold profile, preserves noise filters, returns config diff/excerpts, and bundles trusted-source bootstrap recommendation diagnostics for immediate `preview -> approve` migration flow.
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.5` self-host core defaults: bundled `web` service into `infra/docker-compose.selfhost.yml` (loopback default port `4173`), added SPA-safe `apps/web/Dockerfile` + `nginx` fallback for `/wiki` routes, updated `.env.selfhost.example` + self-host runbook, and extended `scripts/check_selfhost_stack_defaults.py` to fail CI when web/core-route defaults regress.
+- 2026-04-08: Completed Real-World Adoption Backlog `P1.2` pipeline visibility: added `GET /v1/adoption/pipeline/visibility` with stage counters (`accepted -> events -> claims -> drafts -> pages`), conversion ratios, queue posture, and bottleneck hints; wired Operations Migration Mode UI card with one-click refresh and stage badges.
+- 2026-04-08: Completed Real-World Adoption Backlog `P1.5` predictable page listing/search: normalized wildcard query mode (`q=*|all`) for both `GET /v1/wiki/pages` and `GET /v1/wiki/pages/search`, added explicit `query_mode=all_pages` filter metadata, and removed ambiguous “empty result for wildcard” behavior.
