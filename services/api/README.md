@@ -65,7 +65,9 @@ Environment:
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
 - `GET /v1/adoption/import-connectors?source_type=postgres_sql&profile=ops_kb_items` (built-in connectors for `memory_items`/`ops_kb_items` with ready `config_patch` and sync contract metadata)
+- `GET /v1/adoption/import-connectors?source_type=memory_api` (built-in connector for existing REST memory APIs with path-based mapping config)
 - `POST /v1/adoption/import-connectors/resolve` (connector config resolution with field overrides and validation hints)
+- `POST /v1/adoption/first-run/bootstrap` (create starter wiki pages on first run: `Agent Profile`, `Data Map`, `Runbook`, idempotent allow-existing behavior)
 - `GET /v1/adoption/noise-presets?lane=knowledge` (reusable pre-ingest noise suppression presets for snapshots/telemetry/raw payloads)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
 - `GET /v1/adoption/pipeline/visibility?project_id=...&days=14&source_systems=legacy_import,postgres_sql&namespaces=ops` (end-to-end counters `accepted -> events -> claims -> drafts -> pages` with transition drops and bottleneck hints)
@@ -215,7 +217,7 @@ Environment:
 - `PUT /v1/intelligence/delivery/targets`
 - `GET /v1/intelligence/delivery/attempts?project_id=...&kind=daily|weekly|incident_escalation_daily`
 - `GET /v1/legacy-import/sources?project_id=...`
-- `GET /v1/legacy-import/profiles?source_type=postgres_sql`
+- `GET /v1/legacy-import/profiles?source_type=postgres_sql|memory_api`
 - `GET /v1/legacy-import/mapper-templates?source_type=postgres_sql&profile=ops_kb_items`
 - `GET /v1/legacy-import/sync-contracts?source_type=postgres_sql&profile=ops_kb_items`
 - `PUT /v1/legacy-import/sources`
@@ -232,6 +234,10 @@ Legacy source types for `PUT /v1/legacy-import/sources`:
   - explicit sync runner contracts (`/v1/legacy-import/sync-contracts`) for cron/CDC services (required config + state keys + scheduler cadence);
   - query-based pull from existing Postgres memory schema (`sql_sync_mode=polling`);
   - low-latency logical-slot ingestion (`sql_sync_mode=wal_cdc`).
+- `memory_api`:
+  - pull from existing memory REST endpoints (`api_url`) with cursor-based polling;
+  - path-based mapping (`api_mapping`) for `source_id/content/observed_at/entity_key/category/metadata`;
+  - optional env-backed headers (`api_headers` values: `env:VAR` or `$env:VAR`) for auth tokens.
 - `POST /v1/simulator/runs`
 - `GET /v1/simulator/runs?project_id=...`
 - `GET /v1/simulator/runs/{run_id}?project_id=...&findings_limit=50`

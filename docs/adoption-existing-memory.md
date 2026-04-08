@@ -49,7 +49,7 @@ Discover available profiles:
 - `GET /v1/legacy-import/profiles?source_type=postgres_sql`
 - `GET /v1/legacy-import/mapper-templates?source_type=postgres_sql`
 - `GET /v1/legacy-import/sync-contracts?source_type=postgres_sql`
-- `GET /v1/adoption/import-connectors?source_type=postgres_sql` (profile-aware connector catalog with `config_patch`)
+- `GET /v1/adoption/import-connectors?source_type=postgres_sql|memory_api` (profile-aware connector catalog with `config_patch`)
 - `GET /v1/adoption/noise-presets?lane=knowledge` (reusable preset catalog for snapshot/telemetry suppression)
 
 SDK parity (no custom importer script):
@@ -87,6 +87,7 @@ For pre-write simulation and connector validation, add:
 
 - `POST /v1/backfill/curated-explain` to preview `kept/dropped` + drop reasons before writing events.
 - `POST /v1/adoption/import-connectors/resolve` to apply connector field overrides and receive validation hints.
+- `POST /v1/adoption/first-run/bootstrap` to auto-create starter wiki pages after initial connect (`Agent Profile`, `Data Map`, `Runbook`).
 
 ## Memory Tier Routing (Default Safety)
 

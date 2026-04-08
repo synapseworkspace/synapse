@@ -196,11 +196,12 @@ Operations includes:
 - Migration Mode: trusted-source bootstrap preview/apply flows for existing-memory adoption.
 
 Setup wizard v2 flow:
-1. Choose connector template.
+1. Choose connector template (`postgres_sql` or `memory_api`).
 2. Validate connector config.
 3. Connect source and queue first sync.
 4. Preview curated import.
-5. Apply first trusted batch and continue in Drafts/Wiki.
+5. Apply first trusted batch.
+6. Optional: auto-create starter wiki pages (`Agent Profile`, `Data Map`, `Runbook`) and continue in Drafts/Wiki.
 
 ## Agentic Onboarding Benchmark
 

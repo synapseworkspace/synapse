@@ -9,6 +9,9 @@ import os
 import re
 import sys
 from typing import Any
+from urllib import error as url_error
+from urllib import parse as url_parse
+from urllib import request as url_request
 from uuid import UUID, uuid4
 
 try:
@@ -545,6 +548,15 @@ class LegacySyncEngine:
                 return notion_importer.collect_from_root_page(source.source_ref, max_records=max_records), {}
             return notion_importer.collect_from_database(source.source_ref, max_records=max_records), {}
 
+        if source.source_type == "memory_api":
+            result, source_patch = self._collect_memory_api(
+                config=config,
+                source_ref=source.source_ref,
+                max_records=max_records,
+                max_chars=max_chars,
+            )
+            return result, source_patch
+
         if source.source_type == "postgres_sql":
             resolved_config, profile_meta = apply_postgres_sql_profile_defaults(config, source_ref=source.source_ref)
             dsn = self._resolve_sql_dsn(resolved_config)
@@ -581,6 +593,145 @@ class LegacySyncEngine:
             )
 
         raise RuntimeError(f"unsupported source_type: {source.source_type}")
+
+    @staticmethod
+    def _extract_path_value(payload: Any, path: str) -> Any:
+        current = payload
+        for segment in [part for part in str(path or "").split(".") if part]:
+            if isinstance(current, dict):
+                current = current.get(segment)
+            else:
+                return None
+        return current
+
+    def _collect_memory_api(
+        self,
+        *,
+        config: dict[str, Any],
+        source_ref: str,
+        max_records: int,
+        max_chars: int,
+    ) -> tuple[LegacyImportResult, dict[str, Any]]:
+        api_url = str(config.get("api_url") or source_ref or "").strip()
+        if not api_url:
+            raise RuntimeError("missing memory_api url (config.api_url or source_ref)")
+        api_method = str(config.get("api_method") or "GET").strip().upper() or "GET"
+        if api_method not in {"GET", "POST"}:
+            raise RuntimeError("memory_api api_method must be GET or POST")
+        timeout_sec = max(1, int(config.get("api_timeout_sec", 20)))
+        limit = max(1, int(config.get("api_limit", 1000)))
+        limit = min(limit, max_records)
+        cursor = str(config.get("api_cursor") or "").strip() or None
+        cursor_param = str(config.get("api_cursor_param") or "cursor").strip() or "cursor"
+        limit_param = str(config.get("api_limit_param") or "limit").strip() or "limit"
+        records_path = str(config.get("api_records_path") or "items").strip() or "items"
+        next_cursor_path = str(config.get("api_pagination_cursor_path") or "next_cursor").strip() or "next_cursor"
+        headers_config = config.get("api_headers") if isinstance(config.get("api_headers"), dict) else {}
+        headers: dict[str, str] = {"Accept": "application/json"}
+        for key, value in headers_config.items():
+            name = str(key or "").strip()
+            if not name:
+                continue
+            header_value = str(value or "")
+            if header_value.startswith("$env:"):
+                env_name = header_value[5:].strip()
+                header_value = str(os.getenv(env_name) or "").strip()
+            elif header_value.startswith("env:"):
+                env_name = header_value[4:].strip()
+                header_value = str(os.getenv(env_name) or "").strip()
+            headers[name] = header_value
+
+        mapping = config.get("api_mapping") if isinstance(config.get("api_mapping"), dict) else {}
+        source_id_path = str(mapping.get("source_id") or "id").strip() or "id"
+        content_path = str(mapping.get("content") or "content").strip() or "content"
+        observed_at_path = str(mapping.get("observed_at") or "observed_at").strip() or "observed_at"
+        entity_key_path = str(mapping.get("entity_key") or "entity_key").strip() or "entity_key"
+        category_path = str(mapping.get("category") or "category").strip() or "category"
+        metadata_path = str(mapping.get("metadata") or "metadata").strip() or "metadata"
+        parser_warnings: list[str] = []
+        records: list[dict[str, Any]] = []
+        page_number = 0
+        source_patch: dict[str, Any] = {}
+
+        while len(records) < max_records:
+            page_number += 1
+            query = {limit_param: str(limit)}
+            if cursor:
+                query[cursor_param] = cursor
+            parsed = url_parse.urlsplit(api_url)
+            existing_query = dict(url_parse.parse_qsl(parsed.query, keep_blank_values=True))
+            existing_query.update(query)
+            target_url = url_parse.urlunsplit(
+                (parsed.scheme, parsed.netloc, parsed.path, url_parse.urlencode(existing_query), parsed.fragment)
+            )
+            body_bytes: bytes | None = None
+            if api_method == "POST":
+                body_bytes = json.dumps(existing_query).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            req = url_request.Request(url=target_url, method=api_method, headers=headers, data=body_bytes)
+            try:
+                with url_request.urlopen(req, timeout=timeout_sec) as response:
+                    payload_raw = response.read().decode("utf-8", errors="replace")
+            except url_error.HTTPError as exc:
+                raise RuntimeError(f"memory_api http error {exc.code}") from exc
+            except url_error.URLError as exc:
+                raise RuntimeError(f"memory_api request failed: {exc}") from exc
+
+            try:
+                payload = json.loads(payload_raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("memory_api response is not valid JSON") from exc
+
+            if isinstance(payload, list):
+                rows = payload
+                next_cursor = None
+            else:
+                rows = self._extract_path_value(payload, records_path)
+                next_cursor = self._extract_path_value(payload, next_cursor_path)
+            if not isinstance(rows, list):
+                raise RuntimeError(f"memory_api records_path `{records_path}` did not resolve to a list")
+
+            for raw_row in rows:
+                if len(records) >= max_records:
+                    break
+                if not isinstance(raw_row, dict):
+                    parser_warnings.append("memory_api row skipped: non-object payload")
+                    continue
+                content = str(self._extract_path_value(raw_row, content_path) or "").strip()
+                if not content:
+                    continue
+                if len(content) > max_chars:
+                    content = f"{content[:max_chars].rstrip()}..."
+                source_id = str(self._extract_path_value(raw_row, source_id_path) or "").strip()
+                if not source_id:
+                    source_id = f"memory_api:{sha256(content.encode('utf-8')).hexdigest()[:16]}"
+                metadata = self._extract_path_value(raw_row, metadata_path)
+                metadata_obj = dict(metadata) if isinstance(metadata, dict) else {}
+                metadata_obj.setdefault("memory_api_raw_keys", sorted(raw_row.keys()))
+                observed_at = str(self._extract_path_value(raw_row, observed_at_path) or "").strip() or None
+                entity_key = str(self._extract_path_value(raw_row, entity_key_path) or "").strip() or None
+                category = str(self._extract_path_value(raw_row, category_path) or "").strip() or None
+                records.append(
+                    {
+                        "source_id": source_id,
+                        "content": content,
+                        "observed_at": observed_at,
+                        "entity_key": entity_key,
+                        "category": category,
+                        "metadata": metadata_obj,
+                    }
+                )
+
+            if not rows or not next_cursor:
+                cursor = None
+                break
+            cursor = str(next_cursor).strip() or None
+            if cursor is None:
+                break
+        if cursor is not None:
+            source_patch["api_cursor"] = cursor
+        source_patch["api_last_success_at"] = datetime.now(UTC).isoformat()
+        return LegacyImportResult(records=records, skipped_files=[], parser_warnings=parser_warnings), source_patch
 
     def _resolve_notion_token(self, config: dict[str, Any]) -> str | None:
         token = str(config.get("notion_token") or "").strip()

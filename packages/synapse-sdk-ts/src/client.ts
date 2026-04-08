@@ -669,6 +669,32 @@ export class SynapseClient {
     });
   }
 
+  async runAdoptionFirstRunBootstrap(options: {
+    createdBy: string;
+    profile?: "standard" | "support_ops" | string;
+    publish?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const createdBy = String(options.createdBy ?? "").trim();
+    if (!createdBy) {
+      throw new Error("createdBy is required");
+    }
+    const profileRaw = String(options.profile ?? "standard").trim().toLowerCase() || "standard";
+    if (!["standard", "support_ops"].includes(profileRaw)) {
+      throw new Error("profile must be one of: standard, support_ops");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/first-run/bootstrap", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        created_by: createdBy,
+        profile: profileRaw,
+        publish: options.publish ?? true
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async getBootstrapMigrationRecommendation(): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/wiki/drafts/bootstrap-approve/recommendation", {
       method: "GET",
@@ -730,7 +756,7 @@ export class SynapseClient {
   }
 
   async upsertLegacyImportSource(options: {
-    sourceType: "local_dir" | "notion_root_page" | "postgres_sql" | string;
+    sourceType: "local_dir" | "notion_root_page" | "postgres_sql" | "memory_api" | string;
     sourceRef: string;
     updatedBy: string;
     enabled?: boolean;

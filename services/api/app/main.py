@@ -818,7 +818,7 @@ class SimulatorRunCreateRequest(BaseModel):
 
 class LegacyImportSourceUpsertRequest(BaseModel):
     project_id: str
-    source_type: str = Field(pattern="^(local_dir|notion_root_page|notion_database|postgres_sql)$")
+    source_type: str = Field(pattern="^(local_dir|notion_root_page|notion_database|postgres_sql|memory_api)$")
     source_ref: str = Field(min_length=1, max_length=2000)
     enabled: bool = True
     sync_interval_minutes: int = Field(default=1440, ge=1, le=10080)
@@ -883,6 +883,13 @@ class WikiPageCreateRequest(BaseModel):
     initial_markdown: str | None = Field(default=None, min_length=1, max_length=100000)
     change_summary: str | None = Field(default=None, max_length=4000)
     allow_existing: bool = False
+
+
+class AdoptionFirstRunBootstrapRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(default="bootstrap_wizard", min_length=1, max_length=256)
+    profile: str = Field(default="standard", pattern="^(standard|support_ops)$")
+    publish: bool = True
 
 
 class WikiPageUpdateRequest(BaseModel):
@@ -24620,14 +24627,28 @@ def _normalize_connector_overrides(value: Any) -> dict[str, Any]:
 def _build_connector_validation_hints(*, connector_id: str, source_type: str, sync_mode: str, config_patch: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     errors: list[str] = []
-    required_fields: list[str] = ["sql_dsn or sql_dsn_env"]
-    if sync_mode == "wal_cdc":
-        required_fields.append("wal_slot")
+    if source_type == "memory_api":
+        required_fields = ["api_url", "api_mapping.content"]
+    else:
+        required_fields = ["sql_dsn or sql_dsn_env"]
+        if sync_mode == "wal_cdc":
+            required_fields.append("wal_slot")
 
-    dsn = str(config_patch.get("sql_dsn") or "").strip()
-    dsn_env = str(config_patch.get("sql_dsn_env") or "").strip()
-    if not dsn and not dsn_env:
-        errors.append("Set `sql_dsn` or `sql_dsn_env` before first sync.")
+    if source_type == "memory_api":
+        api_url = str(config_patch.get("api_url") or "").strip()
+        if not api_url:
+            errors.append("Set `api_url` before first sync.")
+        api_method = str(config_patch.get("api_method") or "GET").strip().upper()
+        if api_method not in {"GET", "POST"}:
+            errors.append("`api_method` must be GET or POST.")
+        api_mapping = config_patch.get("api_mapping") if isinstance(config_patch.get("api_mapping"), dict) else {}
+        if not str(api_mapping.get("content") or "").strip():
+            errors.append("Set `api_mapping.content` to map text payload into wiki candidates.")
+    else:
+        dsn = str(config_patch.get("sql_dsn") or "").strip()
+        dsn_env = str(config_patch.get("sql_dsn_env") or "").strip()
+        if not dsn and not dsn_env:
+            errors.append("Set `sql_dsn` or `sql_dsn_env` before first sync.")
 
     chunk_size = _coerce_int(config_patch.get("chunk_size"), 100)
     max_records = _coerce_int(config_patch.get("max_records"), 5000)
@@ -24666,6 +24687,61 @@ def _build_connector_validation_hints(*, connector_id: str, source_type: str, sy
 
 def _build_adoption_import_connectors(*, source_type: str, profile: str | None) -> list[dict[str, Any]]:
     normalized_source_type = str(source_type or "").strip().lower()
+    if normalized_source_type == "memory_api":
+        default_config_patch: dict[str, Any] = {
+            "api_url": "",
+            "api_method": "GET",
+            "api_timeout_sec": 20,
+            "api_headers": {},
+            "api_records_path": "items",
+            "api_pagination_cursor_path": "next_cursor",
+            "api_cursor_param": "cursor",
+            "api_limit_param": "limit",
+            "api_limit": 1000,
+            "api_mapping": {
+                "source_id": "id",
+                "content": "content",
+                "observed_at": "updated_at",
+                "entity_key": "entity_key",
+                "category": "category",
+                "metadata": "metadata",
+            },
+            "source_system": "memory_api",
+            "chunk_size": 200,
+            "max_records": 5000,
+            "curated_import": {
+                "enabled": True,
+                "noise_preset": "balanced",
+                "drop_event_like": True,
+            },
+        }
+        connector_id = "memory_api:generic:polling"
+        return [
+            {
+                "id": connector_id,
+                "source_type": "memory_api",
+                "profile": "generic",
+                "sync_mode": "polling",
+                "label": "Memory API (Polling)",
+                "description": "Import records from an existing memory REST API without custom importer scripts.",
+                "config_patch": default_config_patch,
+                "runner_contract": {
+                    "runner": "legacy_sync",
+                    "trigger_mode": "polling",
+                    "cursor_support": True,
+                    "notes": "Set api_url + api_mapping paths; optional cursor pagination supported.",
+                },
+                "template_key": "memory_api:generic",
+                "runner_contract_key": "memory_api:polling",
+                "validation_hints": _build_connector_validation_hints(
+                    connector_id=connector_id,
+                    source_type="memory_api",
+                    sync_mode="polling",
+                    config_patch=default_config_patch,
+                ),
+            }
+        ]
+
     if normalized_source_type != "postgres_sql":
         return []
     normalized_profile = normalize_postgres_sql_profile(profile)
@@ -24779,6 +24855,276 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
         "project_id": payload.project_id,
         "connector": selected,
         "field_overrides": overrides,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _build_first_run_starter_pages(profile: str) -> list[dict[str, str]]:
+    common = [
+        {
+            "title": "Agent Profile",
+            "slug": "agents/agent-profile",
+            "page_type": "agent_profile",
+            "markdown": (
+                "# Agent Profile\n\n"
+                "## Mission\n"
+                "- What this agent is responsible for.\n\n"
+                "## Inputs\n"
+                "- Systems, queues, or channels the agent reads.\n\n"
+                "## Tools\n"
+                "- Tools/API integrations used in execution.\n\n"
+                "## Escalation\n"
+                "- Conditions that require human review.\n"
+            ),
+        },
+        {
+            "title": "Data Map",
+            "slug": "operations/data-map",
+            "page_type": "data_map",
+            "markdown": (
+                "# Data Map\n\n"
+                "## Sources of Truth\n"
+                "- Core systems and ownership.\n\n"
+                "## Operational Signals\n"
+                "- Which signals are durable knowledge vs runtime noise.\n\n"
+                "## Sync Contracts\n"
+                "- Connector cadence, cursor strategy, and replay guarantees.\n"
+            ),
+        },
+        {
+            "title": "Operational Runbook",
+            "slug": "runbooks/operational-runbook",
+            "page_type": "runbook",
+            "markdown": (
+                "# Operational Runbook\n\n"
+                "## If/Then Procedures\n"
+                "- If condition X happens, do action Y.\n\n"
+                "## Incident Escalation\n"
+                "- Owner, SLA, and communication channel.\n\n"
+                "## Known Exceptions\n"
+                "- Approved exceptions and expiration dates.\n"
+            ),
+        },
+    ]
+    if profile == "support_ops":
+        common.append(
+            {
+                "title": "Support Escalation Matrix",
+                "slug": "runbooks/support-escalation-matrix",
+                "page_type": "runbook",
+                "markdown": (
+                    "# Support Escalation Matrix\n\n"
+                    "## Triage Levels\n"
+                    "- P1/P2/P3 definitions and handling windows.\n\n"
+                    "## Routing Rules\n"
+                    "- Which queue and owner for each issue type.\n\n"
+                    "## Customer Communication\n"
+                    "- Message templates and update cadence.\n"
+                ),
+            }
+        )
+    return common
+
+
+@app.post("/v1/adoption/first-run/bootstrap")
+def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) -> dict[str, Any]:
+    pages = _build_first_run_starter_pages(payload.profile)
+    requested_status = "published" if payload.publish else "reviewed"
+    created: list[dict[str, Any]] = []
+    existing: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    downgraded_to_reviewed = 0
+    snapshot_id_text: str | None = None
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            created_page_ids: list[str] = []
+            for spec in pages:
+                title = str(spec.get("title") or "").strip()
+                slug = _normalize_wiki_slug(str(spec.get("slug") or title), title)
+                page_type = str(spec.get("page_type") or "operations").strip().lower() or "operations"
+                markdown = str(spec.get("markdown") or f"# {title}\n").rstrip() + "\n"
+                space_key = _wiki_space_key_from_slug(slug)
+                entity_key = slug
+
+                cur.execute(
+                    """
+                    SELECT id::text, status, current_version
+                    FROM wiki_pages
+                    WHERE project_id = %s
+                      AND slug = %s
+                    LIMIT 1
+                    """,
+                    (payload.project_id, slug),
+                )
+                current = cur.fetchone()
+                if current is not None:
+                    existing.append(
+                        {
+                            "id": current[0],
+                            "slug": slug,
+                            "title": title,
+                            "status": str(current[1] or ""),
+                            "version": int(current[2] or 1),
+                        }
+                    )
+                    continue
+
+                policy_check = _check_wiki_policy_access(
+                    cur,
+                    project_id=payload.project_id,
+                    space_key=space_key,
+                    actor=payload.created_by,
+                    action="write",
+                    page_id=None,
+                )
+                if not policy_check["allowed"]:
+                    skipped.append(
+                        {
+                            "slug": slug,
+                            "title": title,
+                            "reason": "wiki_policy_denied",
+                            "detail": str(policy_check.get("reason") or "not_allowed"),
+                        }
+                    )
+                    continue
+
+                status = requested_status
+                if status == "published":
+                    guard = _resolve_agent_publish_mode(
+                        cur,
+                        project_id=payload.project_id,
+                        actor=payload.created_by,
+                        page_type=page_type,
+                    )
+                    if str(guard.get("mode") or "") == "human_required":
+                        status = "reviewed"
+                        downgraded_to_reviewed += 1
+
+                page_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO wiki_pages (
+                      id, project_id, page_type, title, slug, entity_key, status, current_version, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s)
+                    """,
+                    (
+                        page_id,
+                        payload.project_id,
+                        page_type,
+                        title,
+                        slug,
+                        entity_key,
+                        status,
+                        Jsonb({"source": "first_run_bootstrap", "created_by": payload.created_by, "profile": payload.profile}),
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO wiki_page_versions (
+                      id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                    )
+                    VALUES (%s, %s, 1, %s, %s, 'human', %s, %s)
+                    """,
+                    (uuid4(), page_id, markdown, Jsonb([]), payload.created_by, "Created by first-run bootstrap"),
+                )
+
+                sections = _extract_sections_from_markdown(markdown)
+                statements_count = 0
+                for index, section in enumerate(sections):
+                    section_key = str(section.get("section_key") or f"section_{index + 1}")
+                    heading = str(section.get("heading") or _section_heading_from_key(section_key))
+                    statements = section.get("statements") or []
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (page_id, section_key) DO UPDATE
+                        SET heading = EXCLUDED.heading,
+                            order_index = EXCLUDED.order_index,
+                            statement_count = EXCLUDED.statement_count
+                        """,
+                        (page_id, section_key, heading, index, len(statements)),
+                    )
+                    for statement_text in statements:
+                        statement = str(statement_text).strip()
+                        if not statement:
+                            continue
+                        statements_count += 1
+                        statement_id = uuid4()
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_statements (
+                              id, project_id, page_id, section_key, statement_text, normalized_text,
+                              claim_fingerprint, status, metadata, valid_from
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                            """,
+                            (
+                                statement_id,
+                                payload.project_id,
+                                page_id,
+                                section_key,
+                                statement,
+                                _normalize_statement_text(statement),
+                                _compute_claim_fingerprint(payload.project_id, entity_key, page_type, statement),
+                                Jsonb({"source": "first_run_bootstrap", "created_by": payload.created_by}),
+                            ),
+                        )
+
+                created.append(
+                    {
+                        "id": str(page_id),
+                        "slug": slug,
+                        "title": title,
+                        "status": status,
+                        "version": 1,
+                        "sections": len(sections),
+                        "statements": statements_count,
+                    }
+                )
+                created_page_ids.append(str(page_id))
+
+            if created_page_ids:
+                snapshot_id = uuid4()
+                snapshot_id_text = str(snapshot_id)
+                cur.execute(
+                    """
+                    INSERT INTO knowledge_snapshots (id, project_id, created_by, note)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        snapshot_id,
+                        payload.project_id,
+                        payload.created_by,
+                        f"First-run bootstrap ({payload.profile}) created {len(created_page_ids)} page(s)",
+                    ),
+                )
+                for page_id_text in created_page_ids:
+                    cur.execute(
+                        """
+                        INSERT INTO knowledge_snapshot_pages (snapshot_id, page_id, page_version)
+                        VALUES (%s, %s::uuid, 1)
+                        """,
+                        (snapshot_id, page_id_text),
+                    )
+
+    return {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "profile": payload.profile,
+        "requested_status": requested_status,
+        "created": created,
+        "existing": existing,
+        "skipped": skipped,
+        "summary": {
+            "created": len(created),
+            "existing": len(existing),
+            "skipped": len(skipped),
+            "published_downgraded_to_reviewed": downgraded_to_reviewed,
+        },
+        "snapshot_id": snapshot_id_text,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -33753,6 +34099,30 @@ def _normalize_legacy_import_source_config(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     normalized = dict(config or {})
     metadata: dict[str, Any] = {}
+    if source_type == "memory_api":
+        api_url = str(normalized.get("api_url") or "").strip()
+        if not api_url:
+            source_ref_text = str(source_ref or "").strip()
+            if source_ref_text.startswith("http://") or source_ref_text.startswith("https://"):
+                api_url = source_ref_text
+                normalized["api_url"] = api_url
+        if not api_url:
+            raise HTTPException(
+                status_code=422,
+                detail="missing memory_api url: set config.api_url (or use source_ref as full URL)",
+            )
+        api_method = str(normalized.get("api_method") or "GET").strip().upper()
+        if api_method not in {"GET", "POST"}:
+            raise HTTPException(status_code=422, detail="memory_api api_method must be GET or POST")
+        normalized["api_method"] = api_method
+        timeout = _coerce_int(normalized.get("api_timeout_sec"), 20)
+        normalized["api_timeout_sec"] = max(1, min(120, timeout))
+        mapping = normalized.get("api_mapping") if isinstance(normalized.get("api_mapping"), dict) else {}
+        if not str(mapping.get("content") or "").strip():
+            mapping["content"] = "content"
+        normalized["api_mapping"] = mapping
+        metadata["profile"] = "memory_api"
+        return normalized, metadata
     if source_type != "postgres_sql":
         return normalized, metadata
 
@@ -33777,6 +34147,16 @@ def _normalize_legacy_import_source_config(
 @app.get("/v1/legacy-import/profiles")
 def list_legacy_import_profiles(source_type: str = Query(default="postgres_sql")) -> dict[str, Any]:
     normalized = str(source_type or "").strip().lower()
+    if normalized == "memory_api":
+        return {
+            "profiles": [
+                {
+                    "profile": "generic",
+                    "label": "Memory API (Generic)",
+                    "description": "REST memory endpoint with path-based field mapping and cursor polling.",
+                }
+            ]
+        }
     if normalized != "postgres_sql":
         return {"profiles": []}
     return {"profiles": list_postgres_sql_profiles()}

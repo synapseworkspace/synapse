@@ -65,10 +65,13 @@ Open the bundled web service and validate the route split:
    - `http://localhost:4173/wiki?project=omega_demo&core_tab=drafts`
 3. Operations route (migration/gatekeeper tools):
    - `http://localhost:4173/operations?project=omega_demo&core_tab=drafts`
+4. BasePath-safe route (reverse-proxy friendly):
+   - `http://localhost:4173/synapse/wiki?project=omega_demo`
 
 Expected behavior:
 - `Drafts` under `/wiki` stays inbox/detail focused.
 - Migration and bootstrap controls appear on `/operations`.
+- `/synapse/...` path works without rebuilding frontend assets.
 - Reviewer/notifications controls are in `Settings` drawer (not in the core first viewport).
 
 ## 6. Core Loop Smoke Test

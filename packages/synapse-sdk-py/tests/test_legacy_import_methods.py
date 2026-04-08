@@ -155,6 +155,17 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("project_id"), "omega_demo")
         self.assertEqual(call["params"].get("days"), 21)
 
+    def test_run_adoption_first_run_bootstrap_posts_expected_payload(self) -> None:
+        self.client.run_adoption_first_run_bootstrap(created_by="ops_admin", profile="support_ops", publish=True)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/first-run/bootstrap")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("created_by"), "ops_admin")
+        self.assertEqual(payload.get("profile"), "support_ops")
+        self.assertTrue(payload.get("publish"))
+
 
 if __name__ == "__main__":
     unittest.main()

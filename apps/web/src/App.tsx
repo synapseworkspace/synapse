@@ -919,6 +919,20 @@ type SelfhostConsistencyPayload = {
   warnings_total?: number;
 };
 
+type AdoptionFirstRunBootstrapPayload = {
+  status: string;
+  project_id: string;
+  profile: string;
+  requested_status: string;
+  summary?: {
+    created?: number;
+    existing?: number;
+    skipped?: number;
+    published_downgraded_to_reviewed?: number;
+  };
+  snapshot_id?: string | null;
+};
+
 type LegacyImportSource = {
   id: string;
   project_id: string;
@@ -1966,6 +1980,7 @@ export default function App() {
   const [legacySourceRef, setLegacySourceRef] = useState("existing_memory");
   const [legacySqlProfile, setLegacySqlProfile] = useState("ops_kb_items");
   const [legacySqlDsnEnv, setLegacySqlDsnEnv] = useState("LEGACY_SQL_DSN");
+  const [legacyMemoryApiUrl, setLegacyMemoryApiUrl] = useState("");
   const [legacySyncIntervalMinutes, setLegacySyncIntervalMinutes] = useState("5");
   const [legacyMaxRecords] = useState("5000");
   const [legacyChunkSize] = useState("100");
@@ -1976,6 +1991,9 @@ export default function App() {
   const [legacyWizardStep2Done, setLegacyWizardStep2Done] = useState(false);
   const [legacyWizardStep3Done, setLegacyWizardStep3Done] = useState(false);
   const [legacyWizardStep4Done, setLegacyWizardStep4Done] = useState(false);
+  const [legacySeedStarterPages, setLegacySeedStarterPages] = useState(true);
+  const [legacyStarterProfile, setLegacyStarterProfile] = useState<"standard" | "support_ops">("standard");
+  const [runningStarterBootstrap, setRunningStarterBootstrap] = useState(false);
   const [draftDetail, setDraftDetail] = useState<DraftDetailPayload | null>(null);
   const [selectedPageDetail, setSelectedPageDetail] = useState<WikiPageDetailPayload | null>(null);
   const [pageHistory, setPageHistory] = useState<WikiPageHistoryPayload | null>(null);
@@ -3714,11 +3732,14 @@ export default function App() {
 
   const loadAdoptionImportConnectors = useCallback(async () => {
     try {
-      const payload = await apiFetch<AdoptionImportConnectorsPayload>(
-        apiUrl,
-        "/v1/adoption/import-connectors?source_type=postgres_sql",
-      );
-      const connectors = Array.isArray(payload.connectors) ? payload.connectors : [];
+      const [postgresPayload, memoryApiPayload] = await Promise.all([
+        apiFetch<AdoptionImportConnectorsPayload>(apiUrl, "/v1/adoption/import-connectors?source_type=postgres_sql"),
+        apiFetch<AdoptionImportConnectorsPayload>(apiUrl, "/v1/adoption/import-connectors?source_type=memory_api"),
+      ]);
+      const connectors = [
+        ...(Array.isArray(postgresPayload.connectors) ? postgresPayload.connectors : []),
+        ...(Array.isArray(memoryApiPayload.connectors) ? memoryApiPayload.connectors : []),
+      ];
       setAdoptionImportConnectors(connectors);
       if (connectors.length > 0 && !selectedConnectorId) {
         const preferred = connectors.find((item) => item.profile === legacySqlProfile && item.sync_mode === "polling");
@@ -3737,6 +3758,10 @@ export default function App() {
         setResolvedConnector(null);
         return;
       }
+      const sourceTypeFromId = (() => {
+        const parts = connectorId.split(":");
+        return String(parts[0] || "").trim().toLowerCase() || "postgres_sql";
+      })();
       setLoadingConnectorResolve(true);
       try {
         const payload = await apiFetch<AdoptionImportConnectorResolvePayload>(
@@ -3745,7 +3770,7 @@ export default function App() {
           {
             method: "POST",
             body: {
-              source_type: "postgres_sql",
+              source_type: sourceTypeFromId,
               connector_id: connectorId,
               project_id: projectId.trim() || undefined,
               field_overrides: fieldOverrides || {},
@@ -3993,12 +4018,16 @@ export default function App() {
     const sourceRef = legacySourceRef.trim();
     const selectedConnector =
       adoptionImportConnectors.find((item) => item.id === selectedConnectorId) || resolvedConnector || null;
+    const connectorSourceType = String(selectedConnector?.source_type || "postgres_sql")
+      .trim()
+      .toLowerCase();
     const profile = String(
       selectedConnector?.profile || resolvedConnector?.profile || legacySqlProfile || "",
     )
       .trim()
       .toLowerCase();
     const dsnEnv = legacySqlDsnEnv.trim();
+    const memoryApiUrl = legacyMemoryApiUrl.trim();
     if (!project) {
       notifications.show({
         color: "red",
@@ -4023,13 +4052,25 @@ export default function App() {
       });
       return false;
     }
-    if (!dsnEnv) {
+    if (connectorSourceType === "postgres_sql" && !dsnEnv) {
       notifications.show({
         color: "red",
         title: "DSN env var required",
         message: "Set environment variable name for PostgreSQL DSN.",
       });
       return false;
+    }
+    if (connectorSourceType === "memory_api") {
+      const effectiveMemoryApiUrl =
+        memoryApiUrl || (sourceRef.startsWith("http://") || sourceRef.startsWith("https://") ? sourceRef : "");
+      if (!effectiveMemoryApiUrl) {
+        notifications.show({
+          color: "red",
+          title: "Memory API URL required",
+          message: "Set Memory API URL (or use URL directly as source ref).",
+        });
+        return false;
+      }
     }
     const intervalDefault =
       String(selectedConnector?.sync_mode || "").trim().toLowerCase() === "wal_cdc" ? 1 : Number(legacySyncIntervalMinutes || "5") || 5;
@@ -4041,8 +4082,14 @@ export default function App() {
     if (connectorSyncMode) {
       baseConfig["sql_sync_mode"] = connectorSyncMode;
     }
-    baseConfig["sql_profile"] = profile;
-    baseConfig["sql_dsn_env"] = dsnEnv;
+    if (connectorSourceType === "postgres_sql") {
+      baseConfig["sql_profile"] = profile;
+      baseConfig["sql_dsn_env"] = dsnEnv;
+    } else if (connectorSourceType === "memory_api") {
+      baseConfig["api_url"] =
+        memoryApiUrl || (sourceRef.startsWith("http://") || sourceRef.startsWith("https://") ? sourceRef : "");
+      baseConfig["api_method"] = String(baseConfig["api_method"] || "GET").toUpperCase();
+    }
     baseConfig["max_records"] = maxRecords;
     baseConfig["chunk_size"] = chunkSize;
 
@@ -4053,7 +4100,7 @@ export default function App() {
         method: "PUT",
         body: {
           project_id: project,
-          source_type: "postgres_sql",
+          source_type: connectorSourceType || "postgres_sql",
           source_ref: sourceRef,
           enabled: true,
           sync_interval_minutes: interval,
@@ -4076,7 +4123,7 @@ export default function App() {
       notifications.show({
         color: "teal",
         title: "Existing memory connected",
-        message: `Profile ${profile} is connected. Initial sync queued.`,
+        message: `${selectedConnector?.label || profile || connectorSourceType} connected. Initial sync queued.`,
       });
       connected = true;
     } catch (error) {
@@ -4099,6 +4146,7 @@ export default function App() {
     apiUrl,
     legacyAutoOpenMigrationMode,
     legacyChunkSize,
+    legacyMemoryApiUrl,
     legacyMaxRecords,
     legacySourceRef,
     legacySqlDsnEnv,
@@ -4132,6 +4180,8 @@ export default function App() {
     setLegacyWizardStep2Done(false);
     setLegacyWizardStep3Done(false);
     setLegacyWizardStep4Done(false);
+    setLegacySeedStarterPages(true);
+    setLegacyStarterProfile("standard");
     setShowLegacySetupModal(true);
   }, []);
 
@@ -4627,15 +4677,23 @@ export default function App() {
       setResolvedConnector(null);
       return;
     }
-    void resolveConnectorConfig(connectorId, {
-      sql_dsn_env: legacySqlDsnEnv.trim() || undefined,
+    const connectorSourceType = String(connectorId.split(":")[0] || "").trim().toLowerCase() || "postgres_sql";
+    const overrides: Record<string, unknown> = {
       max_records: Number(legacyMaxRecords || "5000") || 5000,
       chunk_size: Number(legacyChunkSize || "100") || 100,
       "curated_import.noise_preset": "balanced",
       "curated_import.drop_event_like": true,
       "curated_import.enabled": true,
+    };
+    if (connectorSourceType === "memory_api") {
+      overrides.api_url = legacyMemoryApiUrl.trim() || undefined;
+    } else {
+      overrides.sql_dsn_env = legacySqlDsnEnv.trim() || undefined;
+    }
+    void resolveConnectorConfig(connectorId, {
+      ...overrides,
     });
-  }, [legacyChunkSize, legacyMaxRecords, legacySqlDsnEnv, resolveConnectorConfig, selectedConnectorId]);
+  }, [legacyChunkSize, legacyMaxRecords, legacyMemoryApiUrl, legacySqlDsnEnv, resolveConnectorConfig, selectedConnectorId]);
 
   useEffect(() => {
     void loadNotificationsInbox();
@@ -5281,6 +5339,42 @@ export default function App() {
     }
     await runBootstrapApprove(false, preset);
   }, [applyRecommendedBootstrapPreset, bootstrapResult, projectId, runBootstrapApprove]);
+
+  const runFirstRunStarterBootstrap = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) return null;
+    setRunningStarterBootstrap(true);
+    try {
+      const payload = await apiFetch<AdoptionFirstRunBootstrapPayload>(apiUrl, "/v1/adoption/first-run/bootstrap", {
+        method: "POST",
+        body: {
+          project_id: project,
+          created_by: reviewer.trim() || "web_ui",
+          profile: legacyStarterProfile,
+          publish: true,
+        },
+        idempotencyKey: randomKey(),
+      });
+      const createdCount = Number(payload.summary?.created || 0);
+      const existingCount = Number(payload.summary?.existing || 0);
+      notifications.show({
+        color: "teal",
+        title: "Starter wiki pages ready",
+        message: `Created ${createdCount}, existing ${existingCount}.`,
+      });
+      await loadWikiPages();
+      return payload;
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Starter pages failed",
+        message: String(error),
+      });
+      return null;
+    } finally {
+      setRunningStarterBootstrap(false);
+    }
+  }, [apiUrl, legacyStarterProfile, loadWikiPages, projectId, reviewer]);
 
   const saveWikiPageEdit = useCallback(async () => {
     if (!selectedPageSlug) {
@@ -9919,6 +10013,7 @@ export default function App() {
                     : [
                         {
                           id: "postgres_sql:ops_kb_items:polling",
+                          source_type: "postgres_sql",
                           profile: "ops_kb_items",
                           sync_mode: "polling",
                           label: "Ops KB Items (Polling)",
@@ -9927,10 +10022,20 @@ export default function App() {
                         },
                         {
                           id: "postgres_sql:memory_items:polling",
+                          source_type: "postgres_sql",
                           profile: "memory_items",
                           sync_mode: "polling",
                           label: "Memory Items (Polling)",
                           description: "Runtime memory table via incremental polling.",
+                          validation_hints: { warnings: [] },
+                        },
+                        {
+                          id: "memory_api:generic:polling",
+                          source_type: "memory_api",
+                          profile: "generic",
+                          sync_mode: "polling",
+                          label: "Memory API (Polling)",
+                          description: "REST memory endpoint with path mapping and cursor polling.",
                           validation_hints: { warnings: [] },
                         },
                       ]
@@ -9990,12 +10095,21 @@ export default function App() {
                   onChange={(event) => setLegacySourceRef(event.currentTarget.value)}
                   placeholder="existing_memory"
                 />
-                <TextInput
-                  label="Postgres DSN env var"
-                  value={legacySqlDsnEnv}
-                  onChange={(event) => setLegacySqlDsnEnv(event.currentTarget.value)}
-                  placeholder="HW_MEMORY_DSN"
-                />
+                {String(selectedAdoptionConnector?.source_type || "postgres_sql") === "memory_api" ? (
+                  <TextInput
+                    label="Memory API URL"
+                    value={legacyMemoryApiUrl}
+                    onChange={(event) => setLegacyMemoryApiUrl(event.currentTarget.value)}
+                    placeholder="https://memory.company/v1/items"
+                  />
+                ) : (
+                  <TextInput
+                    label="Postgres DSN env var"
+                    value={legacySqlDsnEnv}
+                    onChange={(event) => setLegacySqlDsnEnv(event.currentTarget.value)}
+                    placeholder="HW_MEMORY_DSN"
+                  />
+                )}
                 <Select
                   label="Noise preset"
                   value="balanced"
@@ -10081,12 +10195,25 @@ export default function App() {
                     <Text size="sm" fw={700}>
                       {legacySourceRef || "—"}
                     </Text>
-                    <Text size="xs" c="dimmed">
-                      DSN env
-                    </Text>
-                    <Text size="sm" fw={700}>
-                      {legacySqlDsnEnv || "—"}
-                    </Text>
+                    {String(selectedAdoptionConnector?.source_type || "postgres_sql") === "memory_api" ? (
+                      <>
+                        <Text size="xs" c="dimmed">
+                          Memory API URL
+                        </Text>
+                        <Text size="sm" fw={700}>
+                          {legacyMemoryApiUrl || legacySourceRef || "—"}
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text size="xs" c="dimmed">
+                          DSN env
+                        </Text>
+                        <Text size="sm" fw={700}>
+                          {legacySqlDsnEnv || "—"}
+                        </Text>
+                      </>
+                    )}
                     <Text size="xs" c="dimmed">
                       Interval
                     </Text>
@@ -10162,6 +10289,23 @@ export default function App() {
                     </Text>
                   </Stack>
                 </Paper>
+                <Checkbox
+                  label="Create starter wiki pages automatically (Agent Profile, Data Map, Runbook)"
+                  checked={legacySeedStarterPages}
+                  onChange={(event) => setLegacySeedStarterPages(event.currentTarget.checked)}
+                />
+                {legacySeedStarterPages ? (
+                  <Select
+                    label="Starter profile"
+                    value={legacyStarterProfile}
+                    onChange={(value) => setLegacyStarterProfile(value === "support_ops" ? "support_ops" : "standard")}
+                    data={[
+                      { value: "standard", label: "standard" },
+                      { value: "support_ops", label: "support_ops" },
+                    ]}
+                    allowDeselect={false}
+                  />
+                ) : null}
               </Stack>
             )}
             <Group justify="space-between">
@@ -10219,9 +10363,12 @@ export default function App() {
                   <Button
                     size="compact-sm"
                     color="teal"
-                    loading={bootstrapLoading}
+                    loading={bootstrapLoading || runningStarterBootstrap}
                     onClick={async () => {
                       await runRecommendedBootstrapApply();
+                      if (legacySeedStarterPages) {
+                        await runFirstRunStarterBootstrap();
+                      }
                       setCoreWorkspaceRoute("wiki");
                       setCoreWorkspaceTab("drafts");
                       setShowLegacySetupModal(false);

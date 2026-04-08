@@ -69,3 +69,42 @@ Then submit the same curated profile to `/v1/backfill/knowledge`.
 5. `GET /v1/adoption/kpi`
 
 This sequence gives deterministic onboarding quality without DB forensics.
+
+## 6) Memory API connector (no custom importer)
+
+Use built-in connector `memory_api:generic:polling`:
+
+```bash
+curl -X POST "http://localhost:8080/v1/adoption/import-connectors/resolve" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_type": "memory_api",
+    "connector_id": "memory_api:generic:polling",
+    "project_id": "omega_demo",
+    "field_overrides": {
+      "api_url": "https://memory.company/v1/items",
+      "api_headers.Authorization": "env:MEMORY_API_TOKEN",
+      "api_mapping.content": "text",
+      "api_mapping.entity_key": "entity.id"
+    }
+  }'
+```
+
+Then upsert source with `source_type=memory_api` and queue sync.
+
+## 7) First-run wiki bootstrap
+
+After first curated batch, create starter pages in one call:
+
+```bash
+curl -X POST "http://localhost:8080/v1/adoption/first-run/bootstrap" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_id": "omega_demo",
+    "created_by": "ops_manager",
+    "profile": "support_ops",
+    "publish": true
+  }'
+```
+
+Default pages: `Agent Profile`, `Data Map`, `Operational Runbook` (+ support escalation page for `support_ops`).

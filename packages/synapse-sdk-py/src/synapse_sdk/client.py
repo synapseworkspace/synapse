@@ -674,6 +674,31 @@ class SynapseClient:
             params=params,
         )
 
+    def run_adoption_first_run_bootstrap(
+        self,
+        *,
+        created_by: str,
+        profile: str = "standard",
+        publish: bool = True,
+    ) -> dict[str, Any]:
+        actor = str(created_by or "").strip()
+        if not actor:
+            raise ValueError("created_by is required")
+        normalized_profile = str(profile or "standard").strip().lower() or "standard"
+        if normalized_profile not in {"standard", "support_ops"}:
+            raise ValueError("profile must be one of: standard, support_ops")
+        return self._request_json(
+            "/v1/adoption/first-run/bootstrap",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "created_by": actor,
+                "profile": normalized_profile,
+                "publish": bool(publish),
+            },
+            idempotency_key=str(uuid4()),
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",
