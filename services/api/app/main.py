@@ -341,6 +341,15 @@ class AdoptionProjectResetRequest(BaseModel):
     confirm_project_id: str | None = None
 
 
+class AdoptionBootstrapProfileApplyRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    profile: str = Field(default="initial_import", pattern="^(initial_import)$")
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
 class GatekeeperConfigSnapshotCreateRequest(BaseModel):
     project_id: str
     approved_by: str = Field(min_length=1, max_length=256)
@@ -3132,6 +3141,30 @@ _ADOPTION_PROJECT_RESET_SCOPE_ORDER = ["drafts", "wiki", "claims", "events", "ba
 _ADOPTION_PROJECT_RESET_SCOPE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "claims": ("drafts",),
 }
+_ADOPTION_BOOTSTRAP_PROFILE_ORDER = ["initial_import"]
+_ADOPTION_BOOTSTRAP_PROFILE_ROUTING_OVERRIDES: dict[str, dict[str, Any]] = {
+    "initial_import": {
+        "require_multi_source_for_wiki": False,
+        "min_sources_for_wiki_candidate": 1,
+        "min_evidence_for_wiki_candidate": 1,
+        "min_durable_signal_hits": 0,
+        "min_durable_signal_hits_for_backfill": 0,
+        "backfill_requires_policy_signal": False,
+        "allow_policy_or_incident_override": True,
+    }
+}
+_ADOPTION_BOOTSTRAP_PROFILE_CONFIG_OVERRIDES: dict[str, dict[str, Any]] = {
+    "initial_import": {
+        "min_sources_for_golden": 2,
+        "conflict_free_days": 3,
+        "min_score_for_golden": 0.64,
+        "publish_mode_default": "conditional",
+        "auto_publish_min_score": 0.86,
+        "auto_publish_min_sources": 2,
+        "auto_publish_require_golden": True,
+        "auto_publish_allow_conflicts": False,
+    }
+}
 
 _DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS = [
     "order",
@@ -4416,6 +4449,104 @@ def _insert_adoption_project_reset_audit(
                 error_message,
             ),
         )
+
+
+def _normalize_adoption_bootstrap_profile(value: Any) -> str:
+    profile = str(value or "").strip().lower()
+    if profile in _ADOPTION_BOOTSTRAP_PROFILE_ORDER:
+        return profile
+    return _ADOPTION_BOOTSTRAP_PROFILE_ORDER[0]
+
+
+def _build_adoption_bootstrap_profile_target_config(
+    *,
+    profile: str,
+    current_config: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_profile = _normalize_adoption_bootstrap_profile(profile)
+    current = current_config if isinstance(current_config, dict) else {}
+    target = dict(current)
+    routing_current = _normalize_gatekeeper_routing_policy(current.get("routing_policy"))
+    routing_target = dict(routing_current)
+    routing_target.update(_ADOPTION_BOOTSTRAP_PROFILE_ROUTING_OVERRIDES.get(normalized_profile, {}))
+    target.update(_ADOPTION_BOOTSTRAP_PROFILE_CONFIG_OVERRIDES.get(normalized_profile, {}))
+    target["routing_policy"] = routing_target
+    return target
+
+
+def _build_adoption_bootstrap_profile_diff(
+    *,
+    current_config: dict[str, Any],
+    target_config: dict[str, Any],
+) -> dict[str, Any]:
+    current = current_config if isinstance(current_config, dict) else {}
+    target = target_config if isinstance(target_config, dict) else {}
+    top_level_keys = [
+        "min_sources_for_golden",
+        "conflict_free_days",
+        "min_score_for_golden",
+        "publish_mode_default",
+        "auto_publish_min_score",
+        "auto_publish_min_sources",
+        "auto_publish_require_golden",
+        "auto_publish_allow_conflicts",
+    ]
+    top_level: dict[str, dict[str, Any]] = {}
+    for key in top_level_keys:
+        old = current.get(key)
+        new = target.get(key)
+        if old != new:
+            top_level[key] = {"current": old, "target": new}
+
+    routing_current = _normalize_gatekeeper_routing_policy(current.get("routing_policy"))
+    routing_target = _normalize_gatekeeper_routing_policy(target.get("routing_policy"))
+    routing_keys = [
+        "require_multi_source_for_wiki",
+        "min_sources_for_wiki_candidate",
+        "min_evidence_for_wiki_candidate",
+        "min_durable_signal_hits",
+        "min_durable_signal_hits_for_backfill",
+        "backfill_requires_policy_signal",
+        "allow_policy_or_incident_override",
+    ]
+    routing: dict[str, dict[str, Any]] = {}
+    for key in routing_keys:
+        old = routing_current.get(key)
+        new = routing_target.get(key)
+        if old != new:
+            routing[key] = {"current": old, "target": new}
+
+    return {
+        "top_level": top_level,
+        "routing_policy": routing,
+        "changed_keys": {
+            "top_level": sorted(top_level.keys()),
+            "routing_policy": sorted(routing.keys()),
+        },
+    }
+
+
+def _adoption_bootstrap_profile_gatekeeper_excerpt(config: dict[str, Any]) -> dict[str, Any]:
+    routing = _normalize_gatekeeper_routing_policy(config.get("routing_policy"))
+    return {
+        "min_sources_for_golden": config.get("min_sources_for_golden"),
+        "conflict_free_days": config.get("conflict_free_days"),
+        "min_score_for_golden": config.get("min_score_for_golden"),
+        "publish_mode_default": config.get("publish_mode_default"),
+        "auto_publish_min_score": config.get("auto_publish_min_score"),
+        "auto_publish_min_sources": config.get("auto_publish_min_sources"),
+        "auto_publish_require_golden": config.get("auto_publish_require_golden"),
+        "auto_publish_allow_conflicts": config.get("auto_publish_allow_conflicts"),
+        "routing_policy": {
+            "require_multi_source_for_wiki": routing.get("require_multi_source_for_wiki"),
+            "min_sources_for_wiki_candidate": routing.get("min_sources_for_wiki_candidate"),
+            "min_evidence_for_wiki_candidate": routing.get("min_evidence_for_wiki_candidate"),
+            "min_durable_signal_hits": routing.get("min_durable_signal_hits"),
+            "min_durable_signal_hits_for_backfill": routing.get("min_durable_signal_hits_for_backfill"),
+            "backfill_requires_policy_signal": routing.get("backfill_requires_policy_signal"),
+            "allow_policy_or_incident_override": routing.get("allow_policy_or_incident_override"),
+        },
+    }
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -24118,6 +24249,181 @@ def run_adoption_project_reset(
             mark_request_failed(
                 conn,
                 endpoint="/v1/adoption/project-reset",
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
+
+
+@app.post("/v1/adoption/bootstrap-profile/apply", response_model=None)
+def apply_adoption_bootstrap_profile(
+    payload: AdoptionBootstrapProfileApplyRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+
+    profile = _normalize_adoption_bootstrap_profile(payload.profile)
+    updated_by = str(payload.updated_by or "").strip() or "ops_admin"
+    note = str(payload.note or "").strip() or None
+    dry_run = bool(payload.dry_run)
+
+    if not dry_run:
+        confirm_value = str(payload.confirm_project_id or "").strip()
+        if not confirm_value or confirm_value != project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "bootstrap_profile_confirmation_required",
+                    "message": "For non-dry-run apply, `confirm_project_id` must exactly match `project_id`.",
+                    "project_id": project_id,
+                },
+            )
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/adoption/bootstrap-profile/apply",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        try:
+            current_payload = get_gatekeeper_config(project_id=project_id)
+            current_config = current_payload.get("config") if isinstance(current_payload, dict) else {}
+            if not isinstance(current_config, dict):
+                current_config = {}
+            recommendation_payload = get_wiki_bootstrap_approve_recommendation(project_id=project_id)
+            recommendation = (
+                recommendation_payload.get("recommended") if isinstance(recommendation_payload, dict) else {}
+            )
+            recommendation_diagnostics = (
+                recommendation_payload.get("diagnostics") if isinstance(recommendation_payload, dict) else {}
+            )
+            if not isinstance(recommendation, dict):
+                recommendation = {}
+            if not isinstance(recommendation_diagnostics, dict):
+                recommendation_diagnostics = {}
+
+            target_config = _build_adoption_bootstrap_profile_target_config(
+                profile=profile,
+                current_config=current_config,
+            )
+            config_diff = _build_adoption_bootstrap_profile_diff(
+                current_config=current_config,
+                target_config=target_config,
+            )
+            response_base: dict[str, Any] = {
+                "project_id": project_id,
+                "profile": profile,
+                "updated_by": updated_by,
+                "dry_run": dry_run,
+                "gatekeeper": {
+                    "current": _adoption_bootstrap_profile_gatekeeper_excerpt(current_config),
+                    "target": _adoption_bootstrap_profile_gatekeeper_excerpt(target_config),
+                    "diff": config_diff,
+                },
+                "bootstrap_recommendation": recommendation,
+                "diagnostics": recommendation_diagnostics,
+                "safety": {
+                    "confirm_required_for_apply": True,
+                    "rollback_hint": {
+                        "gatekeeper_snapshots_endpoint": (
+                            f"/v1/gatekeeper/config/snapshots?project_id={quote(project_id)}&source=manual"
+                        ),
+                        "rollback_preview_endpoint": "/v1/gatekeeper/config/rollback/preview",
+                        "bootstrap_approve_endpoint": "/v1/wiki/drafts/bootstrap-approve/run",
+                    },
+                },
+                "generated_at": datetime.now(UTC).isoformat(),
+            }
+
+            if dry_run:
+                response = {
+                    "status": "dry_run",
+                    **response_base,
+                    "next_action": "rerun_with_dry_run=false_and_confirm_project_id",
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint="/v1/adoption/bootstrap-profile/apply",
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+
+            upsert_payload = _normalize_gatekeeper_config_for_apply(
+                project_id=project_id,
+                config=target_config,
+                updated_by=updated_by,
+            )
+            upsert_result = upsert_gatekeeper_config(upsert_payload)
+            applied_config = upsert_result.get("config") if isinstance(upsert_result, dict) else {}
+            if not isinstance(applied_config, dict):
+                applied_config = target_config
+
+            snapshot_id: str | None = None
+            snapshot_warning: str | None = None
+            if _public_table_exists(conn, "gatekeeper_config_snapshots"):
+                try:
+                    snapshot_result = create_gatekeeper_config_snapshot(
+                        GatekeeperConfigSnapshotCreateRequest(
+                            project_id=project_id,
+                            approved_by=updated_by,
+                            source="manual",
+                            note=note or f"Adoption bootstrap profile '{profile}' applied.",
+                            config=applied_config,
+                            artifact_refs={
+                                "adoption": {
+                                    "profile": profile,
+                                    "recommended_bootstrap": recommendation,
+                                }
+                            },
+                        )
+                    )
+                    snapshot_id = (
+                        snapshot_result.get("snapshot", {}).get("id")
+                        if isinstance(snapshot_result, dict)
+                        else None
+                    )
+                except Exception as exc:  # pragma: no cover
+                    snapshot_warning = str(exc)
+            else:
+                snapshot_warning = "gatekeeper_config_snapshots table is unavailable; snapshot skipped."
+
+            response = {
+                "status": "applied",
+                **response_base,
+                "dry_run": False,
+                "gatekeeper": {
+                    **response_base["gatekeeper"],
+                    "applied": _adoption_bootstrap_profile_gatekeeper_excerpt(applied_config),
+                },
+                "snapshot_id": snapshot_id,
+            }
+            if snapshot_warning:
+                response["warning"] = snapshot_warning
+
+            mark_request_completed(
+                conn,
+                endpoint="/v1/adoption/bootstrap-profile/apply",
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint="/v1/adoption/bootstrap-profile/apply",
                 idempotency_key=idempotency_key,
                 error_message=str(exc),
             )

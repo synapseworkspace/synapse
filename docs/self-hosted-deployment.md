@@ -1,12 +1,13 @@
-# Self-Hosted Deployment Guide (API + Worker + MCP)
+# Self-Hosted Deployment Guide (API + Worker + MCP + Web)
 
-Last updated: 2026-04-05
+Last updated: 2026-04-08
 
 This guide runs Synapse core services in Docker Compose with production-like defaults:
 - PostgreSQL (`pgvector`)
 - API (`services/api`)
 - Worker loop (`services/worker`)
 - MCP runtime (`services/mcp`)
+- Web UI (`apps/web`, default wiki-first route)
 
 Networking default:
 - Compose binds API/MCP/Postgres ports to `127.0.0.1` by default via `SYNAPSE_BIND_HOST`.
@@ -52,18 +53,18 @@ curl -fsS http://localhost:8080/health
 
 Expected:
 - API responds with `{"status":"ok"}`.
-- Services `api`, `worker`, `mcp`, `postgres` are `Up`.
+- Services `api`, `worker`, `web`, `mcp`, `postgres` are `Up`.
 
 ## 5. Verify UI Routes (Wiki vs Operations)
 
-After `apps/web` is running, validate the route split:
+Open the bundled web service and validate the route split:
 
 1. Wiki-first workspace:
-   - `http://localhost:5173/wiki?project=omega_demo`
+   - `http://localhost:4173/wiki?project=omega_demo`
 2. Draft inbox (clean mode):
-   - `http://localhost:5173/wiki?project=omega_demo&core_tab=drafts`
+   - `http://localhost:4173/wiki?project=omega_demo&core_tab=drafts`
 3. Operations route (migration/gatekeeper tools):
-   - `http://localhost:5173/operations?project=omega_demo&core_tab=drafts`
+   - `http://localhost:4173/operations?project=omega_demo&core_tab=drafts`
 
 Expected behavior:
 - `Drafts` under `/wiki` stays inbox/detail focused.
@@ -102,7 +103,7 @@ CI opt-in path:
 Restart services:
 
 ```bash
-docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml restart api worker mcp
+docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml restart api worker web mcp
 ```
 
 View logs:

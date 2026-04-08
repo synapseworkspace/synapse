@@ -771,6 +771,27 @@ type BootstrapApproveRecommendationPayload = {
   generated_at?: string;
 };
 
+type AdoptionBootstrapProfileApplyPayload = {
+  status: string;
+  dry_run: boolean;
+  project_id: string;
+  profile: string;
+  updated_by: string;
+  gatekeeper?: {
+    diff?: {
+      changed_keys?: {
+        top_level?: string[];
+        routing_policy?: string[];
+      };
+    };
+  };
+  bootstrap_recommendation?: BootstrapApproveRecommendationPayload["recommended"];
+  diagnostics?: BootstrapApproveRecommendationPayload["diagnostics"];
+  warning?: string;
+  snapshot_id?: string | null;
+  generated_at?: string;
+};
+
 type LegacyImportProfile = {
   profile: string;
   label: string;
@@ -1803,8 +1824,10 @@ export default function App() {
   const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
   const [showCoreLifecycleDetails, setShowCoreLifecycleDetails] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const [bootstrapProfileLoading, setBootstrapProfileLoading] = useState(false);
   const [bootstrapResult, setBootstrapResult] = useState<BootstrapApproveRunPayload | null>(null);
   const [bootstrapRecommendation, setBootstrapRecommendation] = useState<BootstrapApproveRecommendationPayload | null>(null);
+  const [bootstrapProfileResult, setBootstrapProfileResult] = useState<AdoptionBootstrapProfileApplyPayload | null>(null);
   const [, setLoadingBootstrapRecommendation] = useState(false);
   const [legacyProfiles, setLegacyProfiles] = useState<LegacyImportProfile[]>([]);
   const [legacySources, setLegacySources] = useState<LegacyImportSource[]>([]);
@@ -4743,6 +4766,88 @@ export default function App() {
     [effectiveUiMode, resolveRecommendedBootstrapPreset],
   );
 
+  const applyAdoptionBootstrapProfile = useCallback(
+    async (dryRun: boolean) => {
+      const project = projectId.trim();
+      const reviewedBy = reviewer.trim();
+      if (!project || !reviewedBy) {
+        notifications.show({
+          color: "red",
+          title: "Missing reviewer or project",
+          message: "Set Project ID and Reviewer before applying bootstrap profile.",
+        });
+        return;
+      }
+      setBootstrapProfileLoading(true);
+      try {
+        const payload = await apiFetch<AdoptionBootstrapProfileApplyPayload>(
+          apiUrl,
+          "/v1/adoption/bootstrap-profile/apply",
+          {
+            method: "POST",
+            body: {
+              project_id: project,
+              updated_by: reviewedBy,
+              profile: "initial_import",
+              dry_run: dryRun,
+              confirm_project_id: dryRun ? null : project,
+              note: dryRun ? "Bootstrap profile dry-run from web ui." : "Bootstrap profile applied from web ui.",
+            },
+            idempotencyKey: randomKey(),
+          },
+        );
+        setBootstrapProfileResult(payload);
+        if (payload.bootstrap_recommendation) {
+          setBootstrapRecommendation({
+            status: "ok",
+            project_id: project,
+            recommended: payload.bootstrap_recommendation,
+            diagnostics: payload.diagnostics,
+            generated_at: payload.generated_at,
+          });
+          if (!dryRun) {
+            applyRecommendedBootstrapPreset({
+              trustedSourceSystems: [...new Set(
+                (payload.bootstrap_recommendation.trusted_source_systems ?? [])
+                  .map((item) => String(item || "").trim().toLowerCase())
+                  .filter(Boolean),
+              )].sort(),
+              minConfidence: Math.max(0, Math.min(1, Number(payload.bootstrap_recommendation.min_confidence || 0.9))),
+              limit: Math.max(1, Math.min(2000, Number(payload.bootstrap_recommendation.limit || 50))),
+              sampleSize: Math.max(1, Math.min(200, Number(payload.bootstrap_recommendation.sample_size || 15))),
+              requireConflictFree: Boolean(payload.bootstrap_recommendation.require_conflict_free),
+            });
+          }
+        }
+        if (dryRun) {
+          notifications.show({
+            color: "indigo",
+            title: "Bootstrap profile preview ready",
+            message: "Profile diff is ready. Apply profile to switch project into initial-import mode.",
+          });
+          return;
+        }
+        notifications.show({
+          color: "teal",
+          title: "Bootstrap profile applied",
+          message: payload.snapshot_id
+            ? `Gatekeeper snapshot ${String(payload.snapshot_id).slice(0, 8)} created.`
+            : "Gatekeeper profile switched to initial-import mode.",
+        });
+        await loadBootstrapRecommendation();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Bootstrap profile failed",
+          message: String(error),
+        });
+      } finally {
+        setBootstrapProfileLoading(false);
+      }
+    },
+    [apiUrl, applyRecommendedBootstrapPreset, loadBootstrapRecommendation, projectId, reviewer],
+  );
+
   const runRecommendedBootstrapPreview = useCallback(async () => {
     const preset = applyRecommendedBootstrapPreset();
     await runBootstrapApprove(true, preset);
@@ -7508,13 +7613,35 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="violet"
+                              loading={bootstrapProfileLoading}
+                              onClick={() => void applyAdoptionBootstrapProfile(true)}
+                            >
+                              Preview import profile
+                            </Button>
+                            <Button
+                              size="xs"
+                              color="violet"
+                              loading={bootstrapProfileLoading}
+                              onClick={() => void applyAdoptionBootstrapProfile(false)}
+                            >
+                              Apply import profile
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="indigo"
-                              loading={bootstrapLoading}
+                              loading={bootstrapLoading || bootstrapProfileLoading}
                               onClick={() => void runRecommendedBootstrapPreview()}
                             >
                               Preview recommended
                             </Button>
-                            <Button size="xs" color="teal" loading={bootstrapLoading} onClick={() => void runRecommendedBootstrapApply()}>
+                            <Button
+                              size="xs"
+                              color="teal"
+                              loading={bootstrapLoading || bootstrapProfileLoading}
+                              onClick={() => void runRecommendedBootstrapApply()}
+                            >
                               Apply recommended
                             </Button>
                             <Button
@@ -7528,6 +7655,18 @@ export default function App() {
                               {showBootstrapTools ? "Hide bootstrap settings" : "Open bootstrap settings"}
                             </Button>
                           </Group>
+                          {bootstrapProfileResult ? (
+                            <Text size="xs" c="dimmed">
+                              Profile `{bootstrapProfileResult.profile}` {bootstrapProfileResult.status}. Changed gatekeeper keys:{" "}
+                              {[
+                                ...(bootstrapProfileResult.gatekeeper?.diff?.changed_keys?.top_level ?? []),
+                                ...(bootstrapProfileResult.gatekeeper?.diff?.changed_keys?.routing_policy ?? []),
+                              ]
+                                .slice(0, 6)
+                                .join(", ") || "none"}
+                              .
+                            </Text>
+                          ) : null}
                           <Paper withBorder p="xs" radius="md">
                             <Stack gap={6}>
                               <Text size="sm" fw={700}>

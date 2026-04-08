@@ -61,6 +61,7 @@ Environment:
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
+- `POST /v1/adoption/bootstrap-profile/apply` (one-click adoption profile for first wiki import; `dry_run=true` preview by default, applies gatekeeper soft-threshold profile + bootstrap recommendation bundle)
 - `POST /v1/adoption/project-reset` (project-scope reset with `dry_run=true` default, scoped deletes, and audit trail)
 - `GET /v1/adoption/source-ownership?project_id=...`
 - `PUT /v1/adoption/source-ownership`

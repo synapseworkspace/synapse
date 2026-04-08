@@ -47,14 +47,24 @@ def main() -> int:
         errors,
     )
     _assert(
+        "SYNAPSE_WEB_PORT=4173" in env_example_text and "SYNAPSE_WEB_API_URL=http://localhost:8080" in env_example_text,
+        ".env.selfhost.example: web defaults (port/api url) must be present",
+        errors,
+    )
+    _assert(
         "container_name:" not in compose_text,
         "infra/docker-compose.selfhost.yml: avoid fixed container_name for multi-instance safety",
         errors,
     )
+    _assert(
+        "\n  web:\n" in compose_text and "SYNAPSE_WEB_PORT:-4173" in compose_text,
+        "infra/docker-compose.selfhost.yml: expected bundled web service with loopback port default",
+        errors,
+    )
     bind_hits = len(re.findall(r'\$\{SYNAPSE_BIND_HOST:-127\.0\.0\.1\}:\$\{[^}]+\}', compose_text))
     _assert(
-        bind_hits >= 3,
-        "infra/docker-compose.selfhost.yml: expected loopback bind defaults for postgres/api/mcp ports",
+        bind_hits >= 4,
+        "infra/docker-compose.selfhost.yml: expected loopback bind defaults for postgres/api/web/mcp ports",
         errors,
     )
     _assert(
@@ -80,6 +90,11 @@ def main() -> int:
     _assert(
         "docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml up -d --build" in selfhost_doc_text,
         "docs/self-hosted-deployment.md: missing canonical compose up command",
+        errors,
+    )
+    _assert(
+        "http://localhost:4173/wiki?project=omega_demo" in selfhost_doc_text,
+        "docs/self-hosted-deployment.md: missing canonical web wiki route check",
         errors,
     )
 

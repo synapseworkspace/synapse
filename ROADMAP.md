@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-06
+Last updated: 2026-04-08
 Owner: Core team
 
 ## Правило актуальности
@@ -59,13 +59,13 @@ Context from live integrations:
 1. `done` Split ingestion lanes (`knowledge` vs `event`):
    - add dedicated corporate-memory ingest path (`knowledge_ingest`) that does not inherit event-stream deny defaults;
    - preserve strict event filtering on runtime/event lane.
-2. `planned` Bootstrap profile for first wiki import:
+2. `done` Bootstrap profile for first wiki import:
    - one-click API/UI preset with soft thresholds, safe noise filters, and sample-based auto-approve defaults.
 3. `done` Rejection diagnostics endpoint:
    - project-level aggregated visibility: top reject reasons, blocked patterns, representative examples, and suggested policy knobs.
 4. `done` Admin project reset API:
    - scoped reset (`wiki/events/claims/drafts`) with dry-run preview and audit trail; no Docker volume wipe required.
-5. `planned` Self-host one-command “core wiki” default:
+5. `done` Self-host one-command “core wiki” default:
    - backend + worker + web with default `core` profile and `/wiki` route;
    - eliminate advanced/localStorage trap on first run.
 
@@ -1118,3 +1118,5 @@ Checklist:
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.1` ingestion lane split: added dedicated API lane `POST /v1/backfill/knowledge` (source-ownership domain `synapse_wiki`) while keeping `/v1/backfill/memory` as event lane, tagged backfill events/evidence with `ingest_lane`, made worker suppression + gatekeeper lane-aware (knowledge lane no longer inherits source transport hard-block defaults), and shipped SDK fallback-aware knowledge-lane transport support (Python/TypeScript) with regression tests.
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.3` reject diagnostics: added `GET /v1/adoption/rejections/diagnostics` with project/window aggregates (top reject reasons, blocked source patterns, sample rejects, and policy-tuning hints) to remove DB-forensics dependency during field onboarding.
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.4` admin project reset: added migration-backed audit table (`056_adoption_project_resets.sql`) and safe API `POST /v1/adoption/project-reset` with scope normalization, `dry_run=true` preview default, explicit `confirm_project_id` guard for destructive mode, idempotency support, and per-table deleted-row counters.
+- 2026-04-08: Completed Real-World Adoption Backlog `P0.2` bootstrap profile: added one-click API `POST /v1/adoption/bootstrap-profile/apply` (`dry_run` preview + explicit confirm guard + idempotency) that applies initial-import gatekeeper soft-threshold profile, preserves noise filters, returns config diff/excerpts, and bundles trusted-source bootstrap recommendation diagnostics for immediate `preview -> approve` migration flow.
+- 2026-04-08: Completed Real-World Adoption Backlog `P0.5` self-host core defaults: bundled `web` service into `infra/docker-compose.selfhost.yml` (loopback default port `4173`), added SPA-safe `apps/web/Dockerfile` + `nginx` fallback for `/wiki` routes, updated `.env.selfhost.example` + self-host runbook, and extended `scripts/check_selfhost_stack_defaults.py` to fail CI when web/core-route defaults regress.
