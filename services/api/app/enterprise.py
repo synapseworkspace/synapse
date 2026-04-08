@@ -98,6 +98,7 @@ _ROUTE_POLICIES: list[RoutePolicy] = [
         _ROLE_OPERATOR,
         "adoption_source_ownership",
     ),
+    RoutePolicy({"POST"}, re.compile(r"^/v1/adoption/project-reset$"), _ROLE_OPERATOR, "adoption_project_reset"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/pages$"), _ROLE_APPROVER, "wiki_page_write"),
     RoutePolicy({"PUT", "POST", "DELETE"}, re.compile(r"^/v1/wiki/pages/"), _ROLE_APPROVER, "wiki_page_mutation"),
     RoutePolicy({"POST"}, re.compile(r"^/v1/wiki/process/simulate$"), _ROLE_OPERATOR | _ROLE_APPROVER, "wiki_process_simulation"),

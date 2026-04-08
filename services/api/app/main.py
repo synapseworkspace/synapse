@@ -332,6 +332,15 @@ class SourceOwnershipPolicyUpsertRequest(BaseModel):
     updated_by: str | None = None
 
 
+class AdoptionProjectResetRequest(BaseModel):
+    project_id: str
+    requested_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    reason: str | None = Field(default=None, max_length=2000)
+    scopes: list[str] | None = Field(default=None, max_length=16)
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+
+
 class GatekeeperConfigSnapshotCreateRequest(BaseModel):
     project_id: str
     approved_by: str = Field(min_length=1, max_length=256)
@@ -3109,13 +3118,20 @@ _BACKFILL_BATCH_HAS_DECISION_COUNTERS: bool | None = None
 _LEGACY_IMPORT_SOURCES_TABLE_EXISTS: bool | None = None
 _MEMORY_BACKFILL_BATCHES_TABLE_EXISTS: bool | None = None
 _ACCESS_POLICY_DECISIONS_TABLE_EXISTS: bool | None = None
+_ADOPTION_PROJECT_RESETS_TABLE_EXISTS: bool | None = None
 _ENTERPRISE_IDP_CONNECTIONS_TABLE_EXISTS: bool | None = None
 _SCIM_API_TOKENS_TABLE_EXISTS: bool | None = None
 _SCIM_DIRECTORY_USERS_TABLE_EXISTS: bool | None = None
 _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
 _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
+_PUBLIC_TABLE_EXISTS_CACHE: dict[str, bool] = {}
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
+_ADOPTION_PROJECT_RESET_DEFAULT_SCOPES = ["events", "claims", "drafts", "wiki", "backfill"]
+_ADOPTION_PROJECT_RESET_SCOPE_ORDER = ["drafts", "wiki", "claims", "events", "backfill", "tasks", "agents"]
+_ADOPTION_PROJECT_RESET_SCOPE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "claims": ("drafts",),
+}
 
 _DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS = [
     "order",
@@ -4105,6 +4121,301 @@ def _enforce_source_ownership_write(
             "endpoint": endpoint,
         },
     )
+
+
+def _public_table_exists(conn, table_name: str) -> bool:
+    global _PUBLIC_TABLE_EXISTS_CACHE
+    normalized = str(table_name or "").strip().lower()
+    if not normalized:
+        return False
+    cached = _PUBLIC_TABLE_EXISTS_CACHE.get(normalized)
+    if cached is not None:
+        return cached
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s)", (f"public.{normalized}",))
+        row = cur.fetchone()
+        exists = bool(row and row[0] is not None)
+    _PUBLIC_TABLE_EXISTS_CACHE[normalized] = exists
+    return exists
+
+
+def _adoption_project_resets_table_exists(conn) -> bool:
+    global _ADOPTION_PROJECT_RESETS_TABLE_EXISTS
+    if _ADOPTION_PROJECT_RESETS_TABLE_EXISTS is True:
+        return True
+    exists = _public_table_exists(conn, "adoption_project_resets")
+    if exists:
+        _ADOPTION_PROJECT_RESETS_TABLE_EXISTS = True
+    return exists
+
+
+def _adoption_project_reset_scope_plan() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "drafts": [
+            {
+                "table_key": "wiki_draft_changes",
+                "required_tables": ["wiki_draft_changes"],
+                "count_sql": "SELECT COUNT(*) FROM wiki_draft_changes WHERE project_id = %s",
+                "delete_sql": "DELETE FROM wiki_draft_changes WHERE project_id = %s",
+            },
+            {
+                "table_key": "wiki_conflicts",
+                "required_tables": ["wiki_conflicts"],
+                "count_sql": "SELECT COUNT(*) FROM wiki_conflicts WHERE project_id = %s",
+                "delete_sql": "DELETE FROM wiki_conflicts WHERE project_id = %s",
+            },
+            {
+                "table_key": "wiki_claim_links",
+                "required_tables": ["wiki_claim_links", "wiki_pages"],
+                "count_sql": """
+                    SELECT COUNT(*)
+                    FROM wiki_claim_links l
+                    JOIN wiki_pages p ON p.id = l.page_id
+                    WHERE p.project_id = %s
+                """,
+                "delete_sql": """
+                    DELETE FROM wiki_claim_links l
+                    USING wiki_pages p
+                    WHERE l.page_id = p.id
+                      AND p.project_id = %s
+                """,
+            },
+        ],
+        "wiki": [
+            {
+                "table_key": "wiki_uploads",
+                "required_tables": ["wiki_uploads"],
+                "count_sql": "SELECT COUNT(*) FROM wiki_uploads WHERE project_id = %s",
+                "delete_sql": "DELETE FROM wiki_uploads WHERE project_id = %s",
+            },
+            {
+                "table_key": "wiki_page_comments",
+                "required_tables": ["wiki_page_comments"],
+                "count_sql": "SELECT COUNT(*) FROM wiki_page_comments WHERE project_id = %s",
+                "delete_sql": "DELETE FROM wiki_page_comments WHERE project_id = %s",
+            },
+            {
+                "table_key": "wiki_page_watchers",
+                "required_tables": ["wiki_page_watchers"],
+                "count_sql": "SELECT COUNT(*) FROM wiki_page_watchers WHERE project_id = %s",
+                "delete_sql": "DELETE FROM wiki_page_watchers WHERE project_id = %s",
+            },
+            {
+                "table_key": "knowledge_snapshots",
+                "required_tables": ["knowledge_snapshots"],
+                "count_sql": "SELECT COUNT(*) FROM knowledge_snapshots WHERE project_id = %s",
+                "delete_sql": "DELETE FROM knowledge_snapshots WHERE project_id = %s",
+            },
+            {
+                "table_key": "wiki_pages",
+                "required_tables": ["wiki_pages"],
+                "count_sql": "SELECT COUNT(*) FROM wiki_pages WHERE project_id = %s",
+                "delete_sql": "DELETE FROM wiki_pages WHERE project_id = %s",
+            },
+        ],
+        "claims": [
+            {
+                "table_key": "claim_proposals",
+                "required_tables": ["claim_proposals"],
+                "count_sql": "SELECT COUNT(*) FROM claim_proposals WHERE project_id = %s",
+                "delete_sql": "DELETE FROM claim_proposals WHERE project_id = %s",
+            },
+            {
+                "table_key": "gatekeeper_decisions",
+                "required_tables": ["gatekeeper_decisions"],
+                "count_sql": "SELECT COUNT(*) FROM gatekeeper_decisions WHERE project_id = %s",
+                "delete_sql": "DELETE FROM gatekeeper_decisions WHERE project_id = %s",
+            },
+            {
+                "table_key": "claims",
+                "required_tables": ["claims"],
+                "count_sql": "SELECT COUNT(*) FROM claims WHERE project_id = %s",
+                "delete_sql": "DELETE FROM claims WHERE project_id = %s",
+            },
+        ],
+        "events": [
+            {
+                "table_key": "event_pipeline_state",
+                "required_tables": ["event_pipeline_state", "events"],
+                "count_sql": """
+                    SELECT COUNT(*)
+                    FROM event_pipeline_state s
+                    JOIN events e ON e.id = s.event_id
+                    WHERE e.project_id = %s
+                """,
+                "delete_sql": """
+                    DELETE FROM event_pipeline_state s
+                    USING events e
+                    WHERE s.event_id = e.id
+                      AND e.project_id = %s
+                """,
+            },
+            {
+                "table_key": "events",
+                "required_tables": ["events"],
+                "count_sql": "SELECT COUNT(*) FROM events WHERE project_id = %s",
+                "delete_sql": "DELETE FROM events WHERE project_id = %s",
+            },
+        ],
+        "backfill": [
+            {
+                "table_key": "memory_backfill_batches",
+                "required_tables": ["memory_backfill_batches"],
+                "count_sql": "SELECT COUNT(*) FROM memory_backfill_batches WHERE project_id = %s",
+                "delete_sql": "DELETE FROM memory_backfill_batches WHERE project_id = %s",
+            },
+        ],
+        "tasks": [
+            {
+                "table_key": "synapse_tasks",
+                "required_tables": ["synapse_tasks"],
+                "count_sql": "SELECT COUNT(*) FROM synapse_tasks WHERE project_id = %s",
+                "delete_sql": "DELETE FROM synapse_tasks WHERE project_id = %s",
+            },
+        ],
+        "agents": [
+            {
+                "table_key": "agent_daily_worklogs",
+                "required_tables": ["agent_daily_worklogs"],
+                "count_sql": "SELECT COUNT(*) FROM agent_daily_worklogs WHERE project_id = %s",
+                "delete_sql": "DELETE FROM agent_daily_worklogs WHERE project_id = %s",
+            },
+            {
+                "table_key": "agent_directory_profiles",
+                "required_tables": ["agent_directory_profiles"],
+                "count_sql": "SELECT COUNT(*) FROM agent_directory_profiles WHERE project_id = %s",
+                "delete_sql": "DELETE FROM agent_directory_profiles WHERE project_id = %s",
+            },
+        ],
+    }
+
+
+def _normalize_adoption_project_reset_scopes(value: Any) -> list[str]:
+    requested = value if isinstance(value, list) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    valid_scopes = set(_ADOPTION_PROJECT_RESET_SCOPE_ORDER)
+    for item in requested:
+        scope = str(item or "").strip().lower()
+        if not scope or scope not in valid_scopes or scope in seen:
+            continue
+        out.append(scope)
+        seen.add(scope)
+    if not out:
+        out = list(_ADOPTION_PROJECT_RESET_DEFAULT_SCOPES)
+        seen = set(out)
+    changed = True
+    while changed:
+        changed = False
+        for scope in list(out):
+            for dependency in _ADOPTION_PROJECT_RESET_SCOPE_DEPENDENCIES.get(scope, ()):
+                if dependency in valid_scopes and dependency not in seen:
+                    out.append(dependency)
+                    seen.add(dependency)
+                    changed = True
+    order = {scope: idx for idx, scope in enumerate(_ADOPTION_PROJECT_RESET_SCOPE_ORDER)}
+    out.sort(key=lambda scope: order.get(scope, 999))
+    return out
+
+
+def _collect_adoption_project_reset_preview(conn, *, project_id: str, scopes: list[str]) -> dict[str, Any]:
+    plan_by_scope = _adoption_project_reset_scope_plan()
+    preview_scopes: list[dict[str, Any]] = []
+    totals: dict[str, int] = {}
+    with conn.cursor() as cur:
+        for scope in scopes:
+            operations = plan_by_scope.get(scope, [])
+            scope_total = 0
+            rows: list[dict[str, Any]] = []
+            for operation in operations:
+                table_key = str(operation.get("table_key") or "unknown")
+                required_tables = [str(item) for item in (operation.get("required_tables") or []) if str(item).strip()]
+                available = bool(required_tables) and all(_public_table_exists(conn, name) for name in required_tables)
+                count_value = 0
+                if available:
+                    cur.execute(str(operation["count_sql"]), (project_id,))
+                    count_row = cur.fetchone()
+                    count_value = int((count_row[0] if count_row else 0) or 0)
+                rows.append(
+                    {
+                        "table": table_key,
+                        "available": available,
+                        "rows": count_value,
+                    }
+                )
+                scope_total += count_value
+                totals[table_key] = int(totals.get(table_key, 0)) + count_value
+            preview_scopes.append({"scope": scope, "rows_total": scope_total, "tables": rows})
+    return {
+        "scopes": preview_scopes,
+        "totals": {
+            "rows_total": int(sum(item["rows_total"] for item in preview_scopes)),
+            "tables": totals,
+        },
+    }
+
+
+def _apply_adoption_project_reset(conn, *, project_id: str, scopes: list[str]) -> dict[str, int]:
+    plan_by_scope = _adoption_project_reset_scope_plan()
+    deleted: dict[str, int] = {}
+    with conn.cursor() as cur:
+        for scope in scopes:
+            for operation in plan_by_scope.get(scope, []):
+                table_key = str(operation.get("table_key") or "unknown")
+                required_tables = [str(item) for item in (operation.get("required_tables") or []) if str(item).strip()]
+                available = bool(required_tables) and all(_public_table_exists(conn, name) for name in required_tables)
+                if not available:
+                    continue
+                cur.execute(str(operation["delete_sql"]), (project_id,))
+                deleted[table_key] = int(deleted.get(table_key, 0)) + int(cur.rowcount or 0)
+    return deleted
+
+
+def _insert_adoption_project_reset_audit(
+    conn,
+    *,
+    reset_id: UUID,
+    project_id: str,
+    requested_by: str,
+    reason: str | None,
+    scopes: list[str],
+    dry_run: bool,
+    status: str,
+    rows_preview: dict[str, Any],
+    rows_deleted: dict[str, Any],
+    error_message: str | None = None,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO adoption_project_resets (
+              id,
+              project_id,
+              requested_by,
+              reason,
+              scopes,
+              dry_run,
+              status,
+              rows_preview,
+              rows_deleted,
+              error_message,
+              created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """,
+            (
+                reset_id,
+                project_id,
+                requested_by,
+                reason,
+                Jsonb(scopes),
+                bool(dry_run),
+                status,
+                Jsonb(rows_preview),
+                Jsonb(rows_deleted),
+                error_message,
+            ),
+        )
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -23674,6 +23985,143 @@ def get_adoption_rejection_diagnostics(
         "examples": examples,
         "suggested_policy_knobs": suggestions,
     }
+
+
+@app.post("/v1/adoption/project-reset", response_model=None)
+def run_adoption_project_reset(
+    payload: AdoptionProjectResetRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    scopes = _normalize_adoption_project_reset_scopes(payload.scopes)
+    requested_by = _normalize_source_system(payload.requested_by, default="ops_admin")
+    reason = str(payload.reason or "").strip() or None
+    reset_id = uuid4()
+
+    if not payload.dry_run:
+        confirm_value = str(payload.confirm_project_id or "").strip()
+        if not confirm_value or confirm_value != payload.project_id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "project_reset_confirmation_required",
+                    "message": "For non-dry-run reset, `confirm_project_id` must exactly match `project_id`.",
+                    "project_id": payload.project_id,
+                },
+            )
+
+    with get_conn() as conn:
+        if not _adoption_project_resets_table_exists(conn):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "adoption_project_reset_unavailable",
+                    "message": "adoption_project_resets table is not available. Apply migration 056_adoption_project_resets.sql.",
+                },
+            )
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/adoption/project-reset",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+
+        preview: dict[str, Any] = {}
+        deleted_tables: dict[str, int] = {}
+        try:
+            preview = _collect_adoption_project_reset_preview(conn, project_id=payload.project_id, scopes=scopes)
+            if payload.dry_run:
+                _insert_adoption_project_reset_audit(
+                    conn,
+                    reset_id=reset_id,
+                    project_id=payload.project_id,
+                    requested_by=requested_by,
+                    reason=reason,
+                    scopes=scopes,
+                    dry_run=True,
+                    status="dry_run",
+                    rows_preview=preview,
+                    rows_deleted={},
+                )
+                response = {
+                    "status": "dry_run",
+                    "reset_id": str(reset_id),
+                    "project_id": payload.project_id,
+                    "requested_by": requested_by,
+                    "scopes": scopes,
+                    "preview": preview,
+                    "next_action": "rerun_with_dry_run=false_and_confirm_project_id",
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint="/v1/adoption/project-reset",
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+
+            deleted_tables = _apply_adoption_project_reset(conn, project_id=payload.project_id, scopes=scopes)
+            deleted_total = int(sum(int(value) for value in deleted_tables.values()))
+            _insert_adoption_project_reset_audit(
+                conn,
+                reset_id=reset_id,
+                project_id=payload.project_id,
+                requested_by=requested_by,
+                reason=reason,
+                scopes=scopes,
+                dry_run=False,
+                status="completed",
+                rows_preview=preview,
+                rows_deleted={"rows_total": deleted_total, "tables": deleted_tables},
+            )
+            response = {
+                "status": "completed",
+                "reset_id": str(reset_id),
+                "project_id": payload.project_id,
+                "requested_by": requested_by,
+                "scopes": scopes,
+                "preview": preview,
+                "deleted": {"rows_total": deleted_total, "tables": deleted_tables},
+            }
+            mark_request_completed(
+                conn,
+                endpoint="/v1/adoption/project-reset",
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            try:
+                _insert_adoption_project_reset_audit(
+                    conn,
+                    reset_id=reset_id,
+                    project_id=payload.project_id,
+                    requested_by=requested_by,
+                    reason=reason,
+                    scopes=scopes,
+                    dry_run=bool(payload.dry_run),
+                    status="failed",
+                    rows_preview=preview,
+                    rows_deleted={"tables": deleted_tables},
+                    error_message=str(exc)[:2000],
+                )
+            except Exception:
+                pass
+            mark_request_failed(
+                conn,
+                endpoint="/v1/adoption/project-reset",
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
 
 
 @app.get("/v1/gatekeeper/config")

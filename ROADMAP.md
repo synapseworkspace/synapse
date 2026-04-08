@@ -63,7 +63,7 @@ Context from live integrations:
    - one-click API/UI preset with soft thresholds, safe noise filters, and sample-based auto-approve defaults.
 3. `done` Rejection diagnostics endpoint:
    - project-level aggregated visibility: top reject reasons, blocked patterns, representative examples, and suggested policy knobs.
-4. `planned` Admin project reset API:
+4. `done` Admin project reset API:
    - scoped reset (`wiki/events/claims/drafts`) with dry-run preview and audit trail; no Docker volume wipe required.
 5. `planned` Self-host one-command “core wiki” default:
    - backend + worker + web with default `core` profile and `/wiki` route;
@@ -1117,3 +1117,4 @@ Checklist:
 - 2026-03-31: Completed rollback safety policy: dry-run impact preview endpoint (`POST /v1/gatekeeper/config/rollback/preview`) with tier-shift estimation from recent `gatekeeper_decisions`, plus dual-approval workflow (`/v1/gatekeeper/config/rollback/requests*`) backed by migration `020_gatekeeper_rollback_requests.sql`; integration scenario now validates preview + two-step approval-to-apply flow.
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.1` ingestion lane split: added dedicated API lane `POST /v1/backfill/knowledge` (source-ownership domain `synapse_wiki`) while keeping `/v1/backfill/memory` as event lane, tagged backfill events/evidence with `ingest_lane`, made worker suppression + gatekeeper lane-aware (knowledge lane no longer inherits source transport hard-block defaults), and shipped SDK fallback-aware knowledge-lane transport support (Python/TypeScript) with regression tests.
 - 2026-04-08: Completed Real-World Adoption Backlog `P0.3` reject diagnostics: added `GET /v1/adoption/rejections/diagnostics` with project/window aggregates (top reject reasons, blocked source patterns, sample rejects, and policy-tuning hints) to remove DB-forensics dependency during field onboarding.
+- 2026-04-08: Completed Real-World Adoption Backlog `P0.4` admin project reset: added migration-backed audit table (`056_adoption_project_resets.sql`) and safe API `POST /v1/adoption/project-reset` with scope normalization, `dry_run=true` preview default, explicit `confirm_project_id` guard for destructive mode, idempotency support, and per-table deleted-row counters.

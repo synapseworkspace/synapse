@@ -61,6 +61,7 @@ Environment:
 - `GET /v1/backfill/batches/{batch_id}?project_id=...`
   - includes adoption-quality counters: `dropped_event_like`, `kept_durable`, `trusted_bypass` (for backfill explainability)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
+- `POST /v1/adoption/project-reset` (project-scope reset with `dry_run=true` default, scoped deletes, and audit trail)
 - `GET /v1/adoption/source-ownership?project_id=...`
 - `PUT /v1/adoption/source-ownership`
 - `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
@@ -361,6 +362,7 @@ Run full integration scenario for backfill lifecycle + moderation idempotency + 
 - Incident sync schedule persistence and due-run execution depend on migration `035_gatekeeper_calibration_queue_incident_sync_schedules.sql`.
 - Enterprise tenancy/auth/session baseline depends on migration `037_enterprise_tenancy_auth_rbac.sql`.
 - Source-ownership registry/enforcement endpoints depend on migration `039_source_ownership_policy.sql`.
+- Adoption project-reset endpoint/audit trail depends on migration `056_adoption_project_resets.sql`.
 - Backfill dedup uses deterministic event id per `batch_id + source_id`; keep `source_id` stable and unique inside a batch.
 - `/v1/events` accepts optional tracing fields (`trace_id`, `span_id`, `parent_span_id`) and stores them in payload metadata (`_synapse.*`).
 - `GET /v1/wiki/pages/{slug}` returns only currently valid active statements (`valid_from <= now <= valid_to`, with open bounds support).
