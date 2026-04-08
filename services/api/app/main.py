@@ -21755,6 +21755,65 @@ def upsert_wiki_page_owner(slug: str, payload: WikiPageOwnerUpsertRequest) -> An
     }
 
 
+@app.get("/v1/wiki/pages/{slug:path}/history")
+def get_wiki_page_history_path(
+    slug: str,
+    project_id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    include_markdown: bool = Query(default=True),
+) -> Any:
+    return get_wiki_page_history(
+        slug=slug,
+        project_id=project_id,
+        limit=limit,
+        include_markdown=include_markdown,
+    )
+
+
+@app.get("/v1/wiki/pages/{slug:path}/aliases")
+def list_wiki_page_aliases_path(slug: str, project_id: str) -> Any:
+    return list_wiki_page_aliases(slug=slug, project_id=project_id)
+
+
+@app.get("/v1/wiki/pages/{slug:path}/comments")
+def list_wiki_page_comments_path(
+    slug: str,
+    project_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    return list_wiki_page_comments(slug=slug, project_id=project_id, limit=limit)
+
+
+@app.get("/v1/wiki/pages/{slug:path}/watchers")
+def list_wiki_page_watchers_path(slug: str, project_id: str) -> Any:
+    return list_wiki_page_watchers(slug=slug, project_id=project_id)
+
+
+@app.get("/v1/wiki/pages/{slug:path}/review-assignments")
+def list_wiki_page_review_assignments_path(
+    slug: str,
+    project_id: str,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> Any:
+    return list_wiki_page_review_assignments(
+        slug=slug,
+        project_id=project_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.get("/v1/wiki/pages/{slug:path}/owners")
+def list_wiki_page_owners_path(slug: str, project_id: str) -> Any:
+    return list_wiki_page_owners(slug=slug, project_id=project_id)
+
+
+@app.get("/v1/wiki/pages/{slug:path}")
+def get_wiki_page_path(slug: str, project_id: str) -> Any:
+    return get_wiki_page(slug=slug, project_id=project_id)
+
+
 @app.get("/v1/wiki/notifications")
 def list_wiki_notifications(
     project_id: str,
@@ -26714,6 +26773,7 @@ def get_adoption_pipeline_visibility(
                 draft_row = cur.fetchone()
                 drafts_total = int((draft_row[0] if draft_row else 0) or 0)
 
+            pages_from_moderation = 0
             if _public_table_exists(conn, "moderation_actions") and _public_table_exists(conn, "wiki_draft_changes"):
                 page_filters = [
                     "ma.project_id = %s",
@@ -26769,7 +26829,28 @@ def get_adoption_pipeline_visibility(
                     tuple(page_params),
                 )
                 page_row = cur.fetchone()
-                pages_total = int((page_row[0] if page_row else 0) or 0)
+                pages_from_moderation = int((page_row[0] if page_row else 0) or 0)
+
+            pages_from_published = 0
+            if _public_table_exists(conn, "wiki_pages"):
+                if source_filters or namespace_filters:
+                    # Source/namespace scoped visibility relies on evidence-linked moderation flow.
+                    pages_from_published = 0
+                else:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)::bigint
+                        FROM wiki_pages
+                        WHERE project_id = %s
+                          AND status = 'published'
+                          AND COALESCE(updated_at, created_at) >= %s
+                        """,
+                        (project_id, cutoff),
+                    )
+                    published_row = cur.fetchone()
+                    pages_from_published = int((published_row[0] if published_row else 0) or 0)
+
+            pages_total = max(int(pages_from_moderation), int(pages_from_published))
 
             if _public_table_exists(conn, "wiki_draft_changes"):
                 queue_filters = ["project_id = %s", "status IN ('pending_review', 'blocked_conflict')"]
