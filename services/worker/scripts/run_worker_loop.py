@@ -82,6 +82,12 @@ def parse_args() -> argparse.Namespace:
         help="Run all enabled jobs once and exit.",
     )
     parser.add_argument(
+        "--enable-wiki-synthesis",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_ENABLE_WIKI_SYNTHESIS", True),
+        help="Enable periodic wiki synthesis job.",
+    )
+    parser.add_argument(
         "--synthesis-interval-sec",
         type=int,
         default=_env_int("SYNAPSE_WORKER_SYNTHESIS_INTERVAL_SEC", 15),
@@ -277,14 +283,16 @@ def build_jobs(args: argparse.Namespace) -> list[JobSpec]:
         "--cycles",
         "1",
     ]
-    jobs: list[JobSpec] = [
-        JobSpec(
-            name="wiki_synthesis",
-            argv=synthesis_cmd,
-            interval_sec=max(1, args.synthesis_interval_sec),
-            enabled=True,
+    jobs: list[JobSpec] = []
+    if bool(args.enable_wiki_synthesis):
+        jobs.append(
+            JobSpec(
+                name="wiki_synthesis",
+                argv=synthesis_cmd,
+                interval_sec=max(1, args.synthesis_interval_sec),
+                enabled=True,
+            )
         )
-    ]
     if args.enable_legacy_sync:
         legacy_sync_cmd = [
             python_bin,

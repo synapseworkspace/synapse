@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover - optional API dependency path in test env
     "api curated-backfill helpers unavailable",
 )
 class BackfillCuratedFilterTests(unittest.TestCase):
-    def test_default_knowledge_lane_balanced_drops_snapshot_payload(self) -> None:
+    def test_default_knowledge_lane_enterprise_preset_drops_snapshot_payload(self) -> None:
         records = [
             MemoryBackfillRecordIn(
                 source_id="order_snapshot_2026_04_08_01",
@@ -53,7 +53,11 @@ class BackfillCuratedFilterTests(unittest.TestCase):
         )
         options = _resolve_backfill_curated_options(batch, ingest_lane="knowledge")
         self.assertTrue(bool(options["enabled"]))
-        self.assertEqual(options["noise_preset"], "balanced")
+        self.assertEqual(options["noise_preset"], "enterprise_wiki_bootstrap")
+        self.assertEqual(
+            sorted(options["drop_ingestion_classes"]),
+            ["operational_stream", "pii_sensitive_stream"],
+        )
 
         kept, summary = _apply_backfill_curated_filters(
             records,
@@ -63,7 +67,9 @@ class BackfillCuratedFilterTests(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertEqual(kept[0].source_id, "dispatch_escalation_policy_v2")
         self.assertEqual(summary["dropped_records"], 1)
-        self.assertEqual(int(summary["drop_reasons"].get("noise_preset", 0)), 1)
+        dropped_noise = int(summary["drop_reasons"].get("noise_preset", 0))
+        dropped_class = int(summary["drop_reasons"].get("ingestion_classification:operational_stream", 0))
+        self.assertEqual(dropped_noise + dropped_class, 1)
 
     def test_curated_filters_apply_source_and_namespace_constraints(self) -> None:
         records = [
@@ -148,7 +154,7 @@ class BackfillCuratedFilterTests(unittest.TestCase):
         config_patch = ops_polling.get("config_patch") if isinstance(ops_polling, dict) else {}
         curated = config_patch.get("curated_import") if isinstance(config_patch, dict) else {}
         self.assertEqual(bool(curated.get("enabled")), True)
-        self.assertEqual(str(curated.get("noise_preset")), "balanced")
+        self.assertEqual(str(curated.get("noise_preset")), "enterprise_wiki_bootstrap")
 
 
 if __name__ == "__main__":

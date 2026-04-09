@@ -940,10 +940,12 @@ class LegacySyncEngine:
             cursor_cast = self._cursor_param_cast(cursor_dtype)
             if cursor_cast:
                 where_clause = (
-                    f"WHERE (%({cursor_param})s IS NULL OR {cursor_expr} > %({cursor_param})s{cursor_cast})"
+                    f"WHERE (%({cursor_param})s{cursor_cast} IS NULL OR {cursor_expr} > %({cursor_param})s{cursor_cast})"
                 )
             else:
-                where_clause = f"WHERE (%({cursor_param})s IS NULL OR {cursor_expr}::text > %({cursor_param})s)"
+                where_clause = (
+                    f"WHERE (%({cursor_param})s::text IS NULL OR {cursor_expr}::text > %({cursor_param})s::text)"
+                )
 
         query = f"SELECT * FROM {table_expr} {where_clause} ORDER BY {order_expr} ASC LIMIT {limit_value}"
         state_patch: dict[str, Any] = {

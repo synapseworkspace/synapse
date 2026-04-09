@@ -68,6 +68,12 @@ Production-like loop runner (used by self-hosted Docker stack):
 PYTHONPATH=services/worker python services/worker/scripts/run_worker_loop.py
 ```
 
+Runtime flags are env-driven. For example, disable synthesis while keeping other jobs running:
+
+```bash
+SYNAPSE_WORKER_ENABLE_WIKI_SYNTHESIS=0 PYTHONPATH=services/worker python services/worker/scripts/run_worker_loop.py
+```
+
 ## Knowledge Intelligence job
 
 Daily digest + metrics generator:

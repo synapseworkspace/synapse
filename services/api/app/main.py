@@ -217,6 +217,7 @@ class MemoryBackfillCuratedFilterIn(BaseModel):
     source_systems: list[str] | None = Field(default=None, max_length=64)
     namespaces: list[str] | None = Field(default=None, max_length=64)
     noise_preset: str | None = Field(default=None, max_length=64)
+    drop_ingestion_classes: list[str] | None = Field(default=None, max_length=8)
     drop_event_like: bool | None = None
 
 
@@ -337,6 +338,42 @@ class DraftRejectRequest(BaseModel):
     dismiss_conflicts: bool = True
 
 
+class DraftBulkReviewFilter(BaseModel):
+    statuses: list[str] | None = Field(default=None, max_length=8)
+    category: str | None = Field(default=None, max_length=256)
+    category_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    source_system: str | None = Field(default=None, max_length=256)
+    source_system_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    connector: str | None = Field(default=None, max_length=256)
+    connector_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    page_type: str | None = Field(default=None, max_length=128)
+    page_type_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    assertion_class: str | None = Field(default=None, max_length=64)
+    assertion_class_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    tier: str | None = Field(default=None, max_length=64)
+    tier_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_risk_level: str | None = Field(default=None, pattern="^(low|medium|high)$")
+    max_risk_level: str | None = Field(default=None, pattern="^(low|medium|high)$")
+    include_open_conflicts: bool = False
+    include_archived_pages: bool = False
+    include_published_pages: bool = True
+
+
+class DraftBulkReviewRequest(BaseModel):
+    project_id: str
+    reviewed_by: str = Field(min_length=1, max_length=256)
+    action: str = Field(pattern="^(approve|reject)$")
+    dry_run: bool = True
+    limit: int = Field(default=200, ge=1, le=2000)
+    note: str | None = Field(default=None, max_length=4000)
+    reason: str | None = Field(default=None, max_length=4000)
+    force: bool = False
+    dismiss_conflicts: bool = True
+    filter: DraftBulkReviewFilter = Field(default_factory=DraftBulkReviewFilter)
+
+
 class GatekeeperConfigUpsertRequest(BaseModel):
     project_id: str
     updated_by: str = Field(min_length=1, max_length=256)
@@ -422,6 +459,7 @@ class AdoptionProjectResetRequest(BaseModel):
     requested_by: str = Field(default="ops_admin", min_length=1, max_length=256)
     reason: str | None = Field(default=None, max_length=2000)
     scopes: list[str] | None = Field(default=None, max_length=16)
+    cascade_cleanup_orphan_draft_pages: bool = False
     dry_run: bool = True
     confirm_project_id: str | None = None
 
@@ -3413,6 +3451,30 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "обход",
         "инцидент",
     ],
+    "ingestion_classification_default_deny_classes": [
+        "operational_stream",
+        "pii_sensitive_stream",
+    ],
+    "operational_stream_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
+        "telemetry",
+        "runtime_event",
+        "event_stream",
+        "payload_dump",
+    ],
+    "pii_sensitive_keywords": [
+        "passport",
+        "ssn",
+        "credit card",
+        "card_number",
+        "personal_data",
+        "персональ",
+        "паспорт",
+    ],
     "event_stream_min_numeric_token_ratio": 0.45,
     "event_stream_min_token_hits": 2,
     "event_stream_min_kv_hits": 2,
@@ -4256,6 +4318,9 @@ _BACKFILL_NOISE_PRESET_DEFS: dict[str, dict[str, Any]] = {
         "source_id_patterns": [
             r"order[_-]?(snapshot|event|stream)",
             r"invoice[_-]?(snapshot|event|stream)",
+            r"wand[_-]?employee",
+            r"wand[_-]?transport[_-]?vehicle",
+            r"[_-]?sheet[_-]?",
             r"telemetry",
             r"metric",
             r"trace",
@@ -4267,6 +4332,9 @@ _BACKFILL_NOISE_PRESET_DEFS: dict[str, dict[str, Any]] = {
         "category_patterns": [
             r"order[_-]?event",
             r"invoice[_-]?event",
+            r"employee",
+            r"vehicle",
+            r"sheet",
             r"telemetry",
             r"metrics?",
             r"events?",
@@ -4276,10 +4344,39 @@ _BACKFILL_NOISE_PRESET_DEFS: dict[str, dict[str, Any]] = {
         "content_patterns": [
             r"\border(_id|\s*id|\s*#)\b",
             r"\binvoice(_id|\s*id|\s*#)\b",
+            r"\b(employee_id|vehicle_id|sheet_id)\b",
             r"\b(status|updated_at|created_at|event_type|payload)\b",
         ],
         "drop_json_payload": True,
         "min_json_keys": 4,
+    },
+    "enterprise_wiki_bootstrap": {
+        "label": "Enterprise Wiki Bootstrap",
+        "description": "Safe bootstrap profile: deny employee/vehicle/sheet streams and technical snapshots.",
+        "source_id_patterns": [
+            r"wand[_-]?employee",
+            r"wand[_-]?transport[_-]?vehicle",
+            r"[_-]?sheet[_-]?",
+            r"order[_-]?(snapshot|event|stream)",
+            r"invoice[_-]?(snapshot|event|stream)",
+            r"telemetry",
+            r"trace",
+            r"payload",
+        ],
+        "category_patterns": [
+            r"employee",
+            r"vehicle",
+            r"sheet",
+            r"snapshot",
+            r"telemetry",
+            r"event",
+        ],
+        "content_patterns": [
+            r"\b(employee_id|vehicle_id|sheet_id)\b",
+            r"\b(order_id|invoice_id|event_id|payload|status|updated_at)\b",
+        ],
+        "drop_json_payload": True,
+        "min_json_keys": 3,
     },
     "order_snapshots": {
         "label": "Order Snapshots",
@@ -4341,6 +4438,65 @@ def _extract_backfill_record_namespace(record: MemoryBackfillRecordIn) -> str:
     return ""
 
 
+def _normalize_backfill_drop_ingestion_classes(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    allowed = {"evergreen_knowledge", "operational_stream", "pii_sensitive_stream"}
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        token = str(item or "").strip().lower()
+        if not token or token not in allowed or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _classify_backfill_record_ingestion_class(record: MemoryBackfillRecordIn, *, batch_source_system: str) -> str:
+    source_id = str(record.source_id or "").strip().lower()
+    category = str(record.category or "").strip().lower()
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    source_system = _extract_backfill_record_source_system(record, fallback=batch_source_system)
+    content = str(record.content or "").strip().lower()
+    haystack = " ".join(item for item in (source_id, category, source_system, content) if item)
+
+    pii_keywords = (
+        "passport",
+        "ssn",
+        "credit card",
+        "card_number",
+        "personal_data",
+        "персональ",
+        "паспорт",
+    )
+    if any(keyword in haystack for keyword in pii_keywords):
+        return "pii_sensitive_stream"
+    if re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", str(record.content or "")):
+        return "pii_sensitive_stream"
+    if re.search(r"(?<!\d)(?:\+\d{7,15}|\d{10,15}|\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4})(?!\d)", str(record.content or "")):
+        return "pii_sensitive_stream"
+
+    operational_keywords = (
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
+        "order_snapshot",
+        "invoice_snapshot",
+        "telemetry",
+        "runtime_event",
+        "event_stream",
+        "payload",
+        "status",
+        "updated_at",
+    )
+    if any(keyword in haystack for keyword in operational_keywords):
+        return "operational_stream"
+    if bool(metadata.get("event_like")) or bool(metadata.get("runtime_event")):
+        return "operational_stream"
+    return "evergreen_knowledge"
+
+
 def _record_matches_noise_preset(record: MemoryBackfillRecordIn, *, preset_key: str, drop_event_like: bool) -> bool:
     preset = _BACKFILL_NOISE_PRESET_DEFS.get(preset_key) or _BACKFILL_NOISE_PRESET_DEFS["off"]
     source_id = str(record.source_id or "").strip().lower()
@@ -4378,6 +4534,7 @@ def _classify_backfill_record_drop_reason(
     allowed_sources: set[str],
     allowed_namespaces: set[str],
     noise_preset: str,
+    drop_ingestion_classes: set[str],
     drop_event_like: bool,
 ) -> str | None:
     source_system = _extract_backfill_record_source_system(
@@ -4389,6 +4546,9 @@ def _classify_backfill_record_drop_reason(
     namespace = _extract_backfill_record_namespace(record)
     if allowed_namespaces and namespace not in allowed_namespaces:
         return "namespace"
+    ingestion_class = _classify_backfill_record_ingestion_class(record, batch_source_system=batch_source_system)
+    if drop_ingestion_classes and ingestion_class in drop_ingestion_classes:
+        return f"ingestion_classification:{ingestion_class}"
     if _record_matches_noise_preset(record, preset_key=noise_preset, drop_event_like=drop_event_like):
         return "noise_preset"
     return None
@@ -4411,7 +4571,14 @@ def _resolve_backfill_curated_options(batch: MemoryBackfillBatchIn, *, ingest_la
     drop_event_like = True
     if isinstance(curated, MemoryBackfillCuratedFilterIn) and curated.drop_event_like is not None:
         drop_event_like = bool(curated.drop_event_like)
-    default_noise = "knowledge_v2" if enabled and ingest_lane == "knowledge" else "off"
+    default_noise = "enterprise_wiki_bootstrap" if enabled and ingest_lane == "knowledge" else "off"
+    drop_ingestion_classes = (
+        _normalize_backfill_drop_ingestion_classes(curated.drop_ingestion_classes)
+        if isinstance(curated, MemoryBackfillCuratedFilterIn)
+        else []
+    )
+    if enabled and ingest_lane == "knowledge" and not drop_ingestion_classes:
+        drop_ingestion_classes = ["operational_stream", "pii_sensitive_stream"]
     noise_preset = _normalize_backfill_noise_preset(
         curated.noise_preset if isinstance(curated, MemoryBackfillCuratedFilterIn) else None,
         default=default_noise,
@@ -4420,6 +4587,7 @@ def _resolve_backfill_curated_options(batch: MemoryBackfillBatchIn, *, ingest_la
         "enabled": enabled,
         "source_systems": source_filters,
         "namespaces": namespace_filters,
+        "drop_ingestion_classes": drop_ingestion_classes,
         "noise_preset": noise_preset,
         "drop_event_like": bool(drop_event_like),
         "ingest_lane": ingest_lane,
@@ -4436,6 +4604,7 @@ def _apply_backfill_curated_filters(
     enabled = bool(options.get("enabled"))
     allowed_sources = set(_normalize_source_system_list(options.get("source_systems")))
     allowed_namespaces = set(_normalize_namespace_list(options.get("namespaces")))
+    drop_ingestion_classes = set(_normalize_backfill_drop_ingestion_classes(options.get("drop_ingestion_classes")))
     noise_preset = _normalize_backfill_noise_preset(options.get("noise_preset"), default="off")
     drop_event_like = bool(options.get("drop_event_like", True))
 
@@ -4446,6 +4615,7 @@ def _apply_backfill_curated_filters(
             "drop_event_like": False,
             "source_systems": [],
             "namespaces": [],
+            "drop_ingestion_classes": [],
             "input_records": input_total,
             "kept_records": input_total,
             "dropped_records": 0,
@@ -4464,6 +4634,7 @@ def _apply_backfill_curated_filters(
             allowed_sources=allowed_sources,
             allowed_namespaces=allowed_namespaces,
             noise_preset=noise_preset,
+            drop_ingestion_classes=drop_ingestion_classes,
             drop_event_like=drop_event_like,
         )
         if reason == "source_system":
@@ -4491,6 +4662,7 @@ def _apply_backfill_curated_filters(
         "drop_event_like": bool(drop_event_like),
         "source_systems": sorted(allowed_sources),
         "namespaces": sorted(allowed_namespaces),
+        "drop_ingestion_classes": sorted(drop_ingestion_classes),
         "input_records": input_total,
         "kept_records": len(kept),
         "dropped_records": dropped_total,
@@ -4831,7 +5003,69 @@ def _normalize_adoption_project_reset_scopes(value: Any) -> list[str]:
     return out
 
 
-def _collect_adoption_project_reset_preview(conn, *, project_id: str, scopes: list[str]) -> dict[str, Any]:
+def _count_orphan_draft_pages(conn, *, project_id: str) -> int:
+    required = ("wiki_pages", "wiki_draft_changes", "wiki_statements")
+    if not all(_public_table_exists(conn, table_name) for table_name in required):
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*)::bigint
+            FROM wiki_pages p
+            WHERE p.project_id = %s
+              AND p.status = 'draft'
+              AND COALESCE(p.metadata->>'mode', '') = 'draft_generation'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM wiki_draft_changes d
+                WHERE d.page_id = p.id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM wiki_statements s
+                WHERE s.page_id = p.id
+              )
+            """,
+            (project_id,),
+        )
+        row = cur.fetchone()
+    return int((row[0] if row else 0) or 0)
+
+
+def _cleanup_orphan_draft_pages(conn, *, project_id: str) -> int:
+    required = ("wiki_pages", "wiki_draft_changes", "wiki_statements")
+    if not all(_public_table_exists(conn, table_name) for table_name in required):
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM wiki_pages p
+            WHERE p.project_id = %s
+              AND p.status = 'draft'
+              AND COALESCE(p.metadata->>'mode', '') = 'draft_generation'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM wiki_draft_changes d
+                WHERE d.page_id = p.id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM wiki_statements s
+                WHERE s.page_id = p.id
+              )
+            """,
+            (project_id,),
+        )
+        return int(cur.rowcount or 0)
+
+
+def _collect_adoption_project_reset_preview(
+    conn,
+    *,
+    project_id: str,
+    scopes: list[str],
+    cascade_cleanup_orphan_draft_pages: bool = False,
+) -> dict[str, Any]:
     plan_by_scope = _adoption_project_reset_scope_plan()
     preview_scopes: list[dict[str, Any]] = []
     totals: dict[str, int] = {}
@@ -4859,16 +5093,29 @@ def _collect_adoption_project_reset_preview(conn, *, project_id: str, scopes: li
                 scope_total += count_value
                 totals[table_key] = int(totals.get(table_key, 0)) + count_value
             preview_scopes.append({"scope": scope, "rows_total": scope_total, "tables": rows})
-    return {
+    response = {
         "scopes": preview_scopes,
         "totals": {
             "rows_total": int(sum(item["rows_total"] for item in preview_scopes)),
             "tables": totals,
         },
     }
+    if bool(cascade_cleanup_orphan_draft_pages):
+        orphan_rows = _count_orphan_draft_pages(conn, project_id=project_id)
+        response["cascade_cleanup"] = {
+            "orphan_draft_pages": orphan_rows,
+            "enabled": True,
+        }
+    return response
 
 
-def _apply_adoption_project_reset(conn, *, project_id: str, scopes: list[str]) -> dict[str, int]:
+def _apply_adoption_project_reset(
+    conn,
+    *,
+    project_id: str,
+    scopes: list[str],
+    cascade_cleanup_orphan_draft_pages: bool = False,
+) -> dict[str, int]:
     plan_by_scope = _adoption_project_reset_scope_plan()
     deleted: dict[str, int] = {}
     with conn.cursor() as cur:
@@ -4881,6 +5128,10 @@ def _apply_adoption_project_reset(conn, *, project_id: str, scopes: list[str]) -
                     continue
                 cur.execute(str(operation["delete_sql"]), (project_id,))
                 deleted[table_key] = int(deleted.get(table_key, 0)) + int(cur.rowcount or 0)
+    if bool(cascade_cleanup_orphan_draft_pages):
+        removed = _cleanup_orphan_draft_pages(conn, project_id=project_id)
+        if removed > 0:
+            deleted["wiki_pages_orphan_draft_cleanup"] = int(deleted.get("wiki_pages_orphan_draft_cleanup", 0)) + removed
     return deleted
 
 
@@ -5160,6 +5411,21 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     normalized["durable_signal_keywords"] = _normalize_policy_keyword_list(
         value.get("durable_signal_keywords"),
         fallback=list(base["durable_signal_keywords"]),
+    )
+    normalized["ingestion_classification_default_deny_classes"] = _normalize_policy_keyword_list(
+        value.get("ingestion_classification_default_deny_classes"),
+        fallback=list(base["ingestion_classification_default_deny_classes"]),
+        limit=5,
+    )
+    normalized["operational_stream_keywords"] = _normalize_policy_keyword_list(
+        value.get("operational_stream_keywords"),
+        fallback=list(base["operational_stream_keywords"]),
+        limit=128,
+    )
+    normalized["pii_sensitive_keywords"] = _normalize_policy_keyword_list(
+        value.get("pii_sensitive_keywords"),
+        fallback=list(base["pii_sensitive_keywords"]),
+        limit=128,
     )
     normalized["auto_publish_risk_keywords_high"] = _normalize_policy_keyword_list(
         value.get("auto_publish_risk_keywords_high"),
@@ -22295,72 +22561,382 @@ def list_wiki_drafts(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
+    statuses = [status] if status else None
+    drafts = _list_wiki_drafts_with_metadata(project_id=project_id, statuses=statuses, limit=limit)
+    return {
+        "drafts": drafts,
+        "filters": {
+            "project_id": project_id,
+            "status": status,
+            "limit": int(limit),
+        },
+    }
+
+
+_DRAFT_STATUSES = {"pending_review", "blocked_conflict", "approved", "rejected"}
+_RISK_LEVEL_TO_INT = {"low": 0, "medium": 1, "high": 2}
+
+
+def _normalize_draft_statuses(value: Any, *, default: list[str] | None = None) -> list[str]:
+    raw = value if isinstance(value, list) else []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        token = str(item or "").strip().lower()
+        if not token or token not in _DRAFT_STATUSES or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    if not out and isinstance(default, list):
+        return list(default)
+    return out
+
+
+def _match_text_filter(value: str, expected: str, mode: str) -> bool:
+    haystack = str(value or "").strip().lower()
+    needle = str(expected or "").strip().lower()
+    if not needle:
+        return True
+    resolved_mode = str(mode or "exact").strip().lower()
+    if resolved_mode == "prefix":
+        return haystack.startswith(needle)
+    if resolved_mode == "contains":
+        return needle in haystack
+    if resolved_mode == "regex":
+        try:
+            return re.search(expected, value or "", flags=re.IGNORECASE) is not None
+        except re.error:
+            return False
+    return haystack == needle
+
+
+def _list_wiki_drafts_with_metadata(
+    *,
+    project_id: str,
+    statuses: list[str] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows: list[tuple[Any, ...]] = []
     with get_conn() as conn:
+        routing_policy = _load_project_routing_policy(conn, project_id=project_id)
+        where_parts = ["d.project_id = %s"]
+        params: list[Any] = [project_id]
+        normalized_statuses = _normalize_draft_statuses(statuses or [])
+        if normalized_statuses:
+            where_parts.append("d.status = ANY(%s::text[])")
+            params.append(normalized_statuses)
         with conn.cursor() as cur:
-            if status is None:
-                cur.execute(
-                    """
-                    SELECT
-                      d.id::text,
-                      d.claim_id::text,
-                      d.page_id::text,
-                      d.section_key,
-                      d.decision,
-                      d.confidence,
-                      d.rationale,
-                      d.status,
-                      d.created_at,
-                      p.title,
-                      p.slug
-                    FROM wiki_draft_changes d
-                    LEFT JOIN wiki_pages p ON p.id = d.page_id
-                    WHERE d.project_id = %s
-                    ORDER BY d.created_at DESC
-                    LIMIT %s
-                    """,
-                    (project_id, limit),
+            cur.execute(
+                f"""
+                SELECT
+                  d.id::text,
+                  d.claim_id::text,
+                  d.page_id::text,
+                  d.section_key,
+                  d.decision,
+                  d.confidence,
+                  d.rationale,
+                  d.status,
+                  d.created_at,
+                  d.updated_at,
+                  p.title,
+                  p.slug,
+                  p.page_type,
+                  p.status,
+                  c.category,
+                  c.entity_key,
+                  c.claim_text,
+                  g.tier,
+                  g.features,
+                  COALESCE(evs.source_systems, ARRAY[]::text[]),
+                  COALESCE(evs.connectors, ARRAY[]::text[]),
+                  COALESCE(evs.source_types, ARRAY[]::text[]),
+                  EXISTS (
+                    SELECT 1
+                    FROM wiki_conflicts wc
+                    WHERE wc.claim_id = d.claim_id
+                      AND wc.resolution_status = 'open'
+                  ) AS has_open_conflict
+                FROM wiki_draft_changes d
+                LEFT JOIN wiki_pages p ON p.id = d.page_id
+                LEFT JOIN claims c ON c.id = d.claim_id
+                LEFT JOIN gatekeeper_decisions g ON g.claim_id = d.claim_id
+                LEFT JOIN LATERAL (
+                  SELECT
+                    ARRAY_REMOVE(
+                      ARRAY_AGG(DISTINCT NULLIF(
+                        lower(
+                          COALESCE(
+                            ev->>'source_system',
+                            ev->'metadata'->>'source_system',
+                            ev->'metadata'->>'source',
+                            ''
+                          )
+                        ),
+                        ''
+                      )),
+                      NULL
+                    ) AS source_systems,
+                    ARRAY_REMOVE(
+                      ARRAY_AGG(DISTINCT NULLIF(
+                        lower(
+                          COALESCE(
+                            ev->'metadata'->>'source_connector',
+                            ev->'metadata'->>'connector',
+                            ''
+                          )
+                        ),
+                        ''
+                      )),
+                      NULL
+                    ) AS connectors,
+                    ARRAY_REMOVE(
+                      ARRAY_AGG(DISTINCT NULLIF(
+                        lower(
+                          COALESCE(
+                            ev->>'source_type',
+                            ev->'metadata'->>'source_type',
+                            ''
+                          )
+                        ),
+                        ''
+                      )),
+                      NULL
+                    ) AS source_types
+                  FROM jsonb_array_elements(COALESCE(d.evidence, '[]'::jsonb)) ev
+                ) evs ON TRUE
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY d.created_at DESC
+                LIMIT %s
+                """,
+                tuple([*params, int(limit)]),
+            )
+            rows = cur.fetchall() or []
+
+    drafts: list[dict[str, Any]] = []
+    for row in rows:
+        features = row[18] if isinstance(row[18], dict) else {}
+        claim_category = str(row[14] or "")
+        page_type = str(row[12] or "")
+        claim_text = str(row[16] or "")
+        assertion_class = _extract_assertion_class(features, category=claim_category, page_type=page_type)
+        risk = _classify_auto_publish_risk(
+            assertion_class=assertion_class,
+            category=claim_category,
+            page_type=page_type,
+            claim_text=claim_text,
+            routing_policy=routing_policy,
+        )
+        drafts.append(
+            {
+                "id": row[0],
+                "claim_id": row[1],
+                "page_id": row[2],
+                "section_key": row[3],
+                "decision": row[4],
+                "confidence": float(row[5] or 0.0),
+                "rationale": row[6],
+                "status": row[7],
+                "created_at": row[8].isoformat() if row[8] is not None else None,
+                "updated_at": row[9].isoformat() if row[9] is not None else None,
+                "page": {
+                    "title": row[10],
+                    "slug": row[11],
+                    "page_type": row[12],
+                    "status": row[13],
+                },
+                "claim": {
+                    "category": claim_category or None,
+                    "entity_key": str(row[15] or "") or None,
+                    "text": claim_text or None,
+                },
+                "gatekeeper": {
+                    "tier": str(row[17] or "") or None,
+                    "assertion_class": assertion_class,
+                    "ingestion_classification": str(features.get("ingestion_classification") or "") or None,
+                },
+                "evidence": {
+                    "source_systems": [str(item) for item in (row[19] or []) if str(item).strip()],
+                    "connectors": [str(item) for item in (row[20] or []) if str(item).strip()],
+                    "source_types": [str(item) for item in (row[21] or []) if str(item).strip()],
+                },
+                "has_open_conflict": bool(row[22]),
+                "risk": risk,
+            }
+        )
+    return drafts
+
+
+def _draft_matches_bulk_filter(draft: dict[str, Any], filter_config: DraftBulkReviewFilter) -> bool:
+    confidence = float(draft.get("confidence") or 0.0)
+    if filter_config.min_confidence is not None and confidence < float(filter_config.min_confidence):
+        return False
+    if filter_config.max_confidence is not None and confidence > float(filter_config.max_confidence):
+        return False
+
+    if not bool(filter_config.include_open_conflicts) and bool(draft.get("has_open_conflict")):
+        return False
+
+    page = draft.get("page") if isinstance(draft.get("page"), dict) else {}
+    page_status = str(page.get("status") or "").strip().lower()
+    if page_status == "archived" and not bool(filter_config.include_archived_pages):
+        return False
+    if page_status == "published" and not bool(filter_config.include_published_pages):
+        return False
+
+    claim = draft.get("claim") if isinstance(draft.get("claim"), dict) else {}
+    if filter_config.category and not _match_text_filter(
+        str(claim.get("category") or ""),
+        str(filter_config.category),
+        str(filter_config.category_mode),
+    ):
+        return False
+
+    page_type_value = str(page.get("page_type") or "")
+    if filter_config.page_type and not _match_text_filter(
+        page_type_value,
+        str(filter_config.page_type),
+        str(filter_config.page_type_mode),
+    ):
+        return False
+
+    gatekeeper = draft.get("gatekeeper") if isinstance(draft.get("gatekeeper"), dict) else {}
+    if filter_config.assertion_class and not _match_text_filter(
+        str(gatekeeper.get("assertion_class") or ""),
+        str(filter_config.assertion_class),
+        str(filter_config.assertion_class_mode),
+    ):
+        return False
+    if filter_config.tier and not _match_text_filter(
+        str(gatekeeper.get("tier") or ""),
+        str(filter_config.tier),
+        str(filter_config.tier_mode),
+    ):
+        return False
+
+    evidence = draft.get("evidence") if isinstance(draft.get("evidence"), dict) else {}
+    source_system_values = [str(item) for item in (evidence.get("source_systems") or []) if str(item).strip()]
+    connector_values = [str(item) for item in (evidence.get("connectors") or []) if str(item).strip()]
+    if filter_config.source_system:
+        if not any(
+            _match_text_filter(value, str(filter_config.source_system), str(filter_config.source_system_mode))
+            for value in source_system_values
+        ):
+            return False
+    if filter_config.connector:
+        if not any(
+            _match_text_filter(value, str(filter_config.connector), str(filter_config.connector_mode))
+            for value in connector_values
+        ):
+            return False
+
+    risk = draft.get("risk") if isinstance(draft.get("risk"), dict) else {}
+    risk_level = str(risk.get("level") or "").strip().lower()
+    if filter_config.min_risk_level:
+        if _RISK_LEVEL_TO_INT.get(risk_level, -1) < _RISK_LEVEL_TO_INT[str(filter_config.min_risk_level)]:
+            return False
+    if filter_config.max_risk_level:
+        if _RISK_LEVEL_TO_INT.get(risk_level, 99) > _RISK_LEVEL_TO_INT[str(filter_config.max_risk_level)]:
+            return False
+    return True
+
+
+@app.post("/v1/wiki/drafts/bulk-review", response_model=None)
+def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
+    filter_config = payload.filter if isinstance(payload.filter, DraftBulkReviewFilter) else DraftBulkReviewFilter()
+    status_filters = _normalize_draft_statuses(filter_config.statuses, default=["pending_review"])
+    if payload.action == "approve" and not bool(payload.force):
+        # Approve without force should generally avoid conflicted drafts unless explicitly requested.
+        if "blocked_conflict" in status_filters and not bool(filter_config.include_open_conflicts):
+            status_filters = [item for item in status_filters if item != "blocked_conflict"]
+            if not status_filters:
+                status_filters = ["pending_review"]
+
+    scan_limit = min(5000, max(int(payload.limit), 200))
+    drafts = _list_wiki_drafts_with_metadata(
+        project_id=payload.project_id,
+        statuses=status_filters,
+        limit=scan_limit,
+    )
+
+    matched: list[dict[str, Any]] = []
+    for item in drafts:
+        if _draft_matches_bulk_filter(item, filter_config):
+            matched.append(item)
+        if len(matched) >= int(payload.limit):
+            break
+
+    if payload.dry_run:
+        return {
+            "status": "dry_run",
+            "project_id": payload.project_id,
+            "action": payload.action,
+            "summary": {
+                "scanned": len(drafts),
+                "matched": len(matched),
+                "limit": int(payload.limit),
+            },
+            "filters": payload.filter.model_dump(mode="json"),
+            "items": matched,
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+
+    applied = 0
+    failed = 0
+    results: list[dict[str, Any]] = []
+    for item in matched:
+        draft_id_text = str(item.get("id") or "").strip()
+        if not draft_id_text:
+            continue
+        try:
+            if payload.action == "approve":
+                approve_wiki_draft(
+                    UUID(draft_id_text),
+                    DraftApproveRequest(
+                        project_id=payload.project_id,
+                        reviewed_by=payload.reviewed_by,
+                        edited_statement_text=None,
+                        section_edits=None,
+                        note=payload.note,
+                        force=bool(payload.force),
+                    ),
+                    idempotency_key=f"bulk-approve:{payload.project_id}:{draft_id_text}",
                 )
             else:
-                cur.execute(
-                    """
-                    SELECT
-                      d.id::text,
-                      d.claim_id::text,
-                      d.page_id::text,
-                      d.section_key,
-                      d.decision,
-                      d.confidence,
-                      d.rationale,
-                      d.status,
-                      d.created_at,
-                      p.title,
-                      p.slug
-                    FROM wiki_draft_changes d
-                    LEFT JOIN wiki_pages p ON p.id = d.page_id
-                    WHERE d.project_id = %s
-                      AND d.status = %s
-                    ORDER BY d.created_at DESC
-                    LIMIT %s
-                    """,
-                    (project_id, status, limit),
+                reject_wiki_draft(
+                    UUID(draft_id_text),
+                    DraftRejectRequest(
+                        project_id=payload.project_id,
+                        reviewed_by=payload.reviewed_by,
+                        reason=payload.reason or payload.note,
+                        dismiss_conflicts=bool(payload.dismiss_conflicts),
+                    ),
+                    idempotency_key=f"bulk-reject:{payload.project_id}:{draft_id_text}",
                 )
-            rows = cur.fetchall()
-    drafts = [
-        {
-            "id": row[0],
-            "claim_id": row[1],
-            "page_id": row[2],
-            "section_key": row[3],
-            "decision": row[4],
-            "confidence": float(row[5]),
-            "rationale": row[6],
-            "status": row[7],
-            "created_at": row[8].isoformat(),
-            "page": {"title": row[9], "slug": row[10]},
-        }
-        for row in rows
-    ]
-    return {"drafts": drafts}
+            applied += 1
+            results.append({"draft_id": draft_id_text, "status": "ok"})
+        except HTTPException as exc:
+            failed += 1
+            results.append({"draft_id": draft_id_text, "status": "failed", "error": str(exc.detail)})
+        except Exception as exc:  # pragma: no cover
+            failed += 1
+            results.append({"draft_id": draft_id_text, "status": "failed", "error": str(exc)})
+
+    return {
+        "status": "ok",
+        "project_id": payload.project_id,
+        "action": payload.action,
+        "summary": {
+            "scanned": len(drafts),
+            "matched": len(matched),
+            "applied": applied,
+            "failed": failed,
+            "limit": int(payload.limit),
+        },
+        "filters": payload.filter.model_dump(mode="json"),
+        "results": results,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 def _derive_gatekeeper_llm_reason_code(features: dict[str, Any], *, tier: str | None) -> str | None:
@@ -24850,7 +25426,8 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
             "max_records": 5000,
             "curated_import": {
                 "enabled": True,
-                "noise_preset": "knowledge_v2",
+                "noise_preset": "enterprise_wiki_bootstrap",
+                "drop_ingestion_classes": ["operational_stream", "pii_sensitive_stream"],
                 "drop_event_like": True,
             },
         }
@@ -24929,8 +25506,9 @@ def _build_adoption_import_connectors(*, source_type: str, profile: str | None) 
                 if isinstance(template_config_patch.get("curated_import"), dict)
                 else {}
             )
-            if "noise_preset" not in curated_import:
-                curated_import["noise_preset"] = "knowledge_v2"
+            curated_import["noise_preset"] = "enterprise_wiki_bootstrap"
+            if "drop_ingestion_classes" not in curated_import:
+                curated_import["drop_ingestion_classes"] = ["operational_stream", "pii_sensitive_stream"]
             if "drop_event_like" not in curated_import:
                 curated_import["drop_event_like"] = True
             if "enabled" not in curated_import:
@@ -26225,6 +26803,25 @@ def execute_adoption_sync_preset(
         try:
             recommendation = get_wiki_bootstrap_approve_recommendation(project_id=project_id)
             response["recommendation"] = recommendation
+            quick_preset_key = "noise_guarded" if str(payload.preset_key).strip().lower() == "enterprise_curated_safe" else None
+            response["quality_preset"] = {
+                "requested": payload.preset_key,
+                "resolved_policy_quick_preset": quick_preset_key,
+                "recommended_noise_preset": "enterprise_wiki_bootstrap",
+                "drop_ingestion_classes": ["operational_stream", "pii_sensitive_stream"],
+            }
+
+            if quick_preset_key:
+                response["policy_quick_apply"] = apply_adoption_policy_calibration_quick_loop(
+                    AdoptionPolicyCalibrationQuickApplyRequest(
+                        project_id=project_id,
+                        updated_by=updated_by,
+                        preset_key=quick_preset_key,
+                        dry_run=bool(payload.dry_run),
+                        confirm_project_id=project_id if not payload.dry_run else None,
+                        note="Applied from adoption sync preset.",
+                    )
+                )
 
             if payload.apply_bootstrap_profile:
                 response["bootstrap_profile"] = apply_adoption_bootstrap_profile(
@@ -26424,7 +27021,7 @@ def run_adoption_agent_wiki_bootstrap(
                 },
                 "quality_routing": {
                     "event_lane_recommended_noise_preset": "off",
-                    "knowledge_lane_recommended_noise_preset": "knowledge_v2",
+                    "knowledge_lane_recommended_noise_preset": "enterprise_wiki_bootstrap",
                     "note": "Operational/event stream stays out of wiki pages; reusable process knowledge is promoted.",
                 },
                 "definition_of_done": _agent_wiki_bootstrap_dod(pages=plan_pages),
@@ -26493,9 +27090,9 @@ def list_adoption_noise_presets(
     lane: str | None = Query(default=None, pattern="^(event|knowledge)$"),
 ) -> dict[str, Any]:
     if lane is None:
-        recommended = {"event": "off", "knowledge": "knowledge_v2"}
+        recommended = {"event": "off", "knowledge": "enterprise_wiki_bootstrap"}
     else:
-        recommended = {lane: "off" if lane == "event" else "knowledge_v2"}
+        recommended = {lane: "off" if lane == "event" else "enterprise_wiki_bootstrap"}
     presets = [
         {
             "key": key,
@@ -26570,6 +27167,11 @@ def get_adoption_rejection_diagnostics(
 
     def _reason_tags(features: dict[str, Any], rationale: str) -> list[str]:
         tags: list[str] = []
+        classification = str(features.get("ingestion_classification") or "").strip().lower()
+        if classification:
+            tags.append(f"classification:{classification}")
+        if bool(features.get("ingestion_default_deny_block")):
+            tags.append("ingestion_default_deny")
         if bool(features.get("blocked_by_source_id")):
             tags.append("blocked_source_id")
         if bool(features.get("blocked_by_source_type")):
@@ -26691,6 +27293,21 @@ def get_adoption_rejection_diagnostics(
         "examples": examples,
         "suggested_policy_knobs": suggestions,
     }
+
+
+@app.get("/v1/adoption/rejections/why")
+def get_adoption_rejection_why(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    sample_limit: int = Query(default=5, ge=1, le=25),
+) -> dict[str, Any]:
+    response = get_adoption_rejection_diagnostics(
+        project_id=project_id,
+        days=days,
+        sample_limit=sample_limit,
+    )
+    response["alias"] = "/v1/adoption/rejections/diagnostics"
+    return response
 
 
 @app.get("/v1/adoption/pipeline/visibility")
@@ -26971,9 +27588,8 @@ def get_adoption_pipeline_visibility(
                         FROM wiki_pages
                         WHERE project_id = %s
                           AND status = 'published'
-                          AND COALESCE(updated_at, created_at) >= %s
                         """,
-                        (project_id, cutoff),
+                        (project_id,),
                     )
                     published_row = cur.fetchone()
                     pages_from_published = int((published_row[0] if published_row else 0) or 0)
@@ -27342,6 +27958,22 @@ def _build_adoption_policy_calibration_quick_recommendation(
                 min(10, int(current_routing.get("min_durable_signal_hits_for_backfill") or 1)),
             ),
             "backfill_requires_policy_signal": True,
+            "ingestion_classification_default_deny_classes": ["operational_stream", "pii_sensitive_stream"],
+            "operational_stream_keywords": [
+                "wand_employee",
+                "wand_transport_vehicle",
+                "_sheet_",
+                "order_snapshot",
+                "invoice_snapshot",
+                "telemetry",
+                "event_stream",
+            ],
+            "durable_signal_keywords": [
+                "business_rule",
+                "company_operating_model",
+                "logistics_kpi_framework",
+                *list(current_routing.get("durable_signal_keywords") or []),
+            ],
         },
     }
     presets["bootstrap_relaxed"] = {
@@ -27599,7 +28231,12 @@ def run_adoption_project_reset(
         preview: dict[str, Any] = {}
         deleted_tables: dict[str, int] = {}
         try:
-            preview = _collect_adoption_project_reset_preview(conn, project_id=payload.project_id, scopes=scopes)
+            preview = _collect_adoption_project_reset_preview(
+                conn,
+                project_id=payload.project_id,
+                scopes=scopes,
+                cascade_cleanup_orphan_draft_pages=bool(payload.cascade_cleanup_orphan_draft_pages),
+            )
             if payload.dry_run:
                 _insert_adoption_project_reset_audit(
                     conn,
@@ -27619,6 +28256,7 @@ def run_adoption_project_reset(
                     "project_id": payload.project_id,
                     "requested_by": requested_by,
                     "scopes": scopes,
+                    "cascade_cleanup_orphan_draft_pages": bool(payload.cascade_cleanup_orphan_draft_pages),
                     "preview": preview,
                     "next_action": "rerun_with_dry_run=false_and_confirm_project_id",
                 }
@@ -27631,7 +28269,12 @@ def run_adoption_project_reset(
                 )
                 return response
 
-            deleted_tables = _apply_adoption_project_reset(conn, project_id=payload.project_id, scopes=scopes)
+            deleted_tables = _apply_adoption_project_reset(
+                conn,
+                project_id=payload.project_id,
+                scopes=scopes,
+                cascade_cleanup_orphan_draft_pages=bool(payload.cascade_cleanup_orphan_draft_pages),
+            )
             deleted_total = int(sum(int(value) for value in deleted_tables.values()))
             _insert_adoption_project_reset_audit(
                 conn,
@@ -27651,6 +28294,7 @@ def run_adoption_project_reset(
                 "project_id": payload.project_id,
                 "requested_by": requested_by,
                 "scopes": scopes,
+                "cascade_cleanup_orphan_draft_pages": bool(payload.cascade_cleanup_orphan_draft_pages),
                 "preview": preview,
                 "deleted": {"rows_total": deleted_total, "tables": deleted_tables},
             }

@@ -218,6 +218,30 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "обход",
         "инцидент",
     ],
+    "ingestion_classification_default_deny_classes": [
+        "operational_stream",
+        "pii_sensitive_stream",
+    ],
+    "operational_stream_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
+        "telemetry",
+        "runtime_event",
+        "event_stream",
+        "payload_dump",
+    ],
+    "pii_sensitive_keywords": [
+        "passport",
+        "ssn",
+        "credit card",
+        "card_number",
+        "personal_data",
+        "персональ",
+        "паспорт",
+    ],
     "event_stream_min_numeric_token_ratio": 0.45,
     "event_stream_min_token_hits": 2,
     "event_stream_min_kv_hits": 2,
@@ -1854,6 +1878,13 @@ class WikiSynthesisEngine:
         blocked_entity_keywords = list(routing_policy.get("blocked_entity_keywords", []))
         blocked_source_id_keywords = list(routing_policy.get("blocked_source_id_keywords", []))
         durable_signal_keywords = list(routing_policy.get("durable_signal_keywords", []))
+        operational_stream_keywords = list(routing_policy.get("operational_stream_keywords", []))
+        pii_sensitive_keywords = list(routing_policy.get("pii_sensitive_keywords", []))
+        ingestion_default_deny_classes = {
+            str(item).strip().lower()
+            for item in (routing_policy.get("ingestion_classification_default_deny_classes") or [])
+            if str(item).strip()
+        }
         event_stream_min_numeric_token_ratio = float(routing_policy.get("event_stream_min_numeric_token_ratio", 0.45))
         event_stream_min_token_hits = int(routing_policy.get("event_stream_min_token_hits", 2))
         event_stream_min_kv_hits = int(routing_policy.get("event_stream_min_kv_hits", 2))
@@ -2064,6 +2095,56 @@ class WikiSynthesisEngine:
             and not has_durable_signal
             and (is_short or has_operational_pattern or category_hint == "general")
         )
+        classification_haystack = " ".join(
+            item
+            for item in (
+                text,
+                normalized_category,
+                normalized_entity_key,
+                " ".join(incoming_source_systems),
+                " ".join(incoming_source_types),
+                " ".join(incoming_source_ids),
+            )
+            if item
+        )
+        operational_keyword_hits = [
+            keyword
+            for keyword in operational_stream_keywords
+            if keyword and keyword in classification_haystack
+        ][:20]
+        pii_keyword_hits = [
+            keyword
+            for keyword in pii_sensitive_keywords
+            if keyword and keyword in classification_haystack
+        ][:20]
+        pii_regex_hits = bool(
+            re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", claim.claim_text or "")
+            or re.search(
+                r"(?<!\d)(?:\+\d{7,15}|\d{10,15}|\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4})(?!\d)",
+                claim.claim_text or "",
+            )
+        )
+        ingestion_classification = "evergreen_knowledge"
+        if pii_keyword_hits or pii_regex_hits:
+            ingestion_classification = "pii_sensitive_stream"
+        elif (
+            looks_like_runtime_noise
+            or has_event_stream_shape
+            or blocked_by_source_system
+            or blocked_by_source_type
+            or blocked_by_source_id
+            or blocked_by_entity
+            or blocked_by_category
+            or bool(operational_keyword_hits)
+        ):
+            ingestion_classification = "operational_stream"
+        ingestion_default_deny_block = (
+            ingestion_classification in ingestion_default_deny_classes
+            and not has_override_signal
+            and not is_knowledge_ingest
+        )
+        if ingestion_default_deny_block:
+            routing_hard_block = True
         is_single_source_one_off = (
             not has_durable_signal
             and repeated_count == 0
@@ -2219,6 +2300,12 @@ class WikiSynthesisEngine:
             "is_knowledge_ingest": is_knowledge_ingest,
             "all_runtime_sources": all_runtime_sources,
             "looks_like_runtime_noise": looks_like_runtime_noise,
+            "ingestion_classification": ingestion_classification,
+            "ingestion_classification_default_deny_classes": sorted(ingestion_default_deny_classes),
+            "ingestion_default_deny_block": ingestion_default_deny_block,
+            "ingestion_operational_keyword_hits": operational_keyword_hits,
+            "ingestion_pii_keyword_hits": pii_keyword_hits,
+            "ingestion_pii_regex_hits": pii_regex_hits,
             "routing_policy": routing_policy,
             "routing_hard_block": routing_hard_block,
             "blocked_by_category": blocked_by_category,
@@ -2449,6 +2536,21 @@ class WikiSynthesisEngine:
         normalized["durable_signal_keywords"] = self._normalize_policy_keyword_list(
             value.get("durable_signal_keywords"),
             fallback=list(base["durable_signal_keywords"]),
+        )
+        normalized["ingestion_classification_default_deny_classes"] = self._normalize_policy_keyword_list(
+            value.get("ingestion_classification_default_deny_classes"),
+            fallback=list(base["ingestion_classification_default_deny_classes"]),
+            limit=5,
+        )
+        normalized["operational_stream_keywords"] = self._normalize_policy_keyword_list(
+            value.get("operational_stream_keywords"),
+            fallback=list(base["operational_stream_keywords"]),
+            limit=128,
+        )
+        normalized["pii_sensitive_keywords"] = self._normalize_policy_keyword_list(
+            value.get("pii_sensitive_keywords"),
+            fallback=list(base["pii_sensitive_keywords"]),
+            limit=128,
         )
         normalized["auto_publish_risk_keywords_high"] = self._normalize_policy_keyword_list(
             value.get("auto_publish_risk_keywords_high"),

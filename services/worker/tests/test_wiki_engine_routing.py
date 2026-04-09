@@ -494,6 +494,64 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertEqual(policy["auto_publish_risk_keywords_medium"][:2], ["sla", "finance"])
         self.assertEqual(policy["auto_publish_force_human_required_levels"][:2], ["high", "medium"])
 
+    def test_ingestion_classification_defaults_to_operational_stream_for_snapshot_noise(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="order_snapshot_123",
+            category="operations",
+            claim_text='{"order_id":"123","status":"processing","updated_at":"2026-04-09T10:00:00Z"}',
+            evidence=[
+                {
+                    "source_type": "external_event",
+                    "source_id": "wand_employee_snapshot_77",
+                    "tool_name": "memory_backfill",
+                    "source_system": "wand_employee_stream",
+                }
+            ],
+            metadata={},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["wand_employee_snapshot_77"],
+            has_recent_open_conflict=False,
+        )
+        self.assertEqual(str(decision.features.get("ingestion_classification")), "operational_stream")
+        self.assertTrue(bool(decision.features.get("ingestion_default_deny_block")))
+        self.assertEqual(decision.tier, "operational_memory")
+
+    def test_ingestion_classification_marks_pii_stream(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="customer_ops",
+            category="operations",
+            claim_text="Customer phone +1 (415) 555-1212 and email alice@example.com updated in ticket.",
+            evidence=[
+                {
+                    "source_type": "tool_result",
+                    "source_id": "support_note_11",
+                    "tool_name": "chat_runtime",
+                    "source_system": "runtime_memory",
+                }
+            ],
+            metadata={},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["support_note_11"],
+            has_recent_open_conflict=False,
+        )
+        self.assertEqual(str(decision.features.get("ingestion_classification")), "pii_sensitive_stream")
+        self.assertTrue(bool(decision.features.get("ingestion_default_deny_block")))
+        self.assertEqual(decision.tier, "operational_memory")
+
 
 if __name__ == "__main__":
     unittest.main()
