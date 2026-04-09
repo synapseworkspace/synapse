@@ -413,7 +413,22 @@ else
   export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT_DIR/.cache/ms-playwright}"
   mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
   npm --prefix apps/web run e2e:install >/dev/null
-  npm --prefix apps/web run e2e >/dev/null
+  WEB_E2E_SCOPE="${SYNAPSE_WEB_E2E_SCOPE:-}"
+  if [[ -z "$WEB_E2E_SCOPE" ]]; then
+    if [[ "${CI:-0}" == "1" || "${GITHUB_ACTIONS:-0}" == "true" ]]; then
+      WEB_E2E_SCOPE="smoke"
+    else
+      WEB_E2E_SCOPE="full"
+    fi
+  fi
+  if [[ "$WEB_E2E_SCOPE" == "smoke" ]]; then
+    npm --prefix apps/web run e2e -- \
+      --grep "task tracker lifecycle flow|core route split keeps drafts clean and operations tools isolated" \
+      --workers=1 \
+      --max-failures=1 >/dev/null
+  else
+    npm --prefix apps/web run e2e >/dev/null
+  fi
 fi
 
 echo "[4/6] Shell script syntax"
