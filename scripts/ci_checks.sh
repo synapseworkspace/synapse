@@ -416,12 +416,14 @@ else
   WEB_E2E_SCOPE="${SYNAPSE_WEB_E2E_SCOPE:-}"
   if [[ -z "$WEB_E2E_SCOPE" ]]; then
     if [[ "${CI:-0}" == "1" || "${GITHUB_ACTIONS:-0}" == "true" ]]; then
-      WEB_E2E_SCOPE="smoke"
+      WEB_E2E_SCOPE="skip"
     else
       WEB_E2E_SCOPE="full"
     fi
   fi
-  if [[ "$WEB_E2E_SCOPE" == "smoke" ]]; then
+  if [[ "$WEB_E2E_SCOPE" == "skip" ]]; then
+    echo "web e2e skipped (WEB_E2E_SCOPE=skip; dedicated web-visual-snapshots job covers visual smoke)"
+  elif [[ "$WEB_E2E_SCOPE" == "smoke" ]]; then
     npm --prefix apps/web run e2e -- \
       --grep "visual snapshot: wiki route|visual snapshot: operations route" \
       --workers=1 \
