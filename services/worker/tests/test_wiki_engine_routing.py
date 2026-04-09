@@ -114,6 +114,30 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertFalse(bool(evaluation.get("skip")))
         self.assertTrue(bool(evaluation.get("trusted_hint")))
 
+    def test_backfill_suppression_hard_blocks_operational_ingestion_class(self) -> None:
+        evaluation = self.engine._evaluate_backfill_suppression(
+            source_id="memory_items_101",
+            content="Daily order snapshot payload updated for queue state.",
+            category="operations",
+            payload={"backfill": {"ingestion_classification": "operational_stream"}},
+            metadata={},
+        )
+        self.assertTrue(bool(evaluation.get("skip")))
+        self.assertEqual(str(evaluation.get("ingestion_classification")), "operational_stream")
+        self.assertEqual(str(evaluation.get("reason")), "ingestion_classification:operational_stream")
+
+    def test_backfill_suppression_hard_blocks_pii_ingestion_class(self) -> None:
+        evaluation = self.engine._evaluate_backfill_suppression(
+            source_id="customer_profile_42",
+            content="Contact john.doe@example.com and +1-202-555-0147 for escalation details.",
+            category="customer",
+            payload={},
+            metadata={"ingestion_classification": "pii_sensitive_stream"},
+        )
+        self.assertTrue(bool(evaluation.get("skip")))
+        self.assertEqual(str(evaluation.get("ingestion_classification")), "pii_sensitive_stream")
+        self.assertEqual(str(evaluation.get("reason")), "ingestion_classification:pii_sensitive_stream")
+
     def test_backfill_suppression_knowledge_lane_ignores_source_transport_block(self) -> None:
         event_lane = self.engine._evaluate_backfill_suppression(
             source_id="legacy_memory_42",

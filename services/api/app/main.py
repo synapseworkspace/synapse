@@ -1179,8 +1179,42 @@ class OpenClawProvenanceVerifyRequest(BaseModel):
     payload: dict[str, Any]
 
 
-def _backfill_event_id(batch_id: UUID, source_id: str) -> UUID:
-    material = f"synapse:backfill:{batch_id}:{source_id}"
+def _normalize_backfill_record_fingerprint(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"[^a-f0-9]", "", text)
+    if len(text) < 8:
+        return ""
+    return text[:64]
+
+
+def _compute_backfill_record_fingerprint(record: "MemoryBackfillRecordIn") -> str:
+    metadata = record.metadata if isinstance(record.metadata, dict) else {}
+    metadata_fingerprint = _normalize_backfill_record_fingerprint(
+        metadata.get("record_fingerprint") or metadata.get("content_fingerprint")
+    )
+    if metadata_fingerprint:
+        return metadata_fingerprint
+    material = "|".join(
+        [
+            str(record.source_id or "").strip().lower(),
+            str(record.entity_key or "").strip().lower(),
+            str(record.category or "").strip().lower(),
+            str(record.valid_from.isoformat() if record.valid_from else ""),
+            str(record.valid_to.isoformat() if record.valid_to else ""),
+            str(record.content or "").strip().lower(),
+        ]
+    )
+    return sha256(material.encode("utf-8")).hexdigest()
+
+
+def _backfill_event_id(*, project_id: str, batch_id: UUID, source_id: str, record_fingerprint: str | None = None) -> UUID:
+    fingerprint = _normalize_backfill_record_fingerprint(record_fingerprint)
+    if fingerprint:
+        material = f"synapse:backfill:{str(project_id or '').strip().lower()}:{source_id}:{fingerprint}"
+    else:
+        material = f"synapse:backfill:{batch_id}:{source_id}"
     return uuid5(NAMESPACE_URL, material)
 
 
@@ -16475,8 +16509,19 @@ def _ingest_memory_backfill(
         options=curated_options,
     )
     inserted = 0
+    dropped_duplicate_pairs = 0
     accepted_input = len(batch.records)
-    accepted = len(filtered_records)
+    deduplicated_records: list[tuple[MemoryBackfillRecordIn, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for record in filtered_records:
+        fingerprint = _compute_backfill_record_fingerprint(record)
+        pair = (str(record.source_id or "").strip().lower(), fingerprint)
+        if pair in seen_pairs:
+            dropped_duplicate_pairs += 1
+            continue
+        seen_pairs.add(pair)
+        deduplicated_records.append((record, fingerprint))
+    accepted = len(deduplicated_records)
     source_ownership_advisories = 0
 
     with get_conn() as conn:
@@ -16556,6 +16601,7 @@ def _ingest_memory_backfill(
                         "accepted": accepted,
                         "inserted": 0,
                         "deduplicated": accepted,
+                        "dropped_duplicate_pairs": dropped_duplicate_pairs,
                         "filtered_out": accepted_input - accepted,
                         "curated_filters": filter_summary,
                     }
@@ -16570,7 +16616,15 @@ def _ingest_memory_backfill(
                     )
                     return response
 
-                for record in filtered_records:
+                for record, record_fingerprint in deduplicated_records:
+                    metadata_dict = dict(record.metadata or {})
+                    ingestion_class = _classify_backfill_record_ingestion_class(
+                        record,
+                        batch_source_system=batch.source_system,
+                    )
+                    metadata_dict.setdefault("content_fingerprint", record_fingerprint[:16])
+                    metadata_dict.setdefault("record_fingerprint", record_fingerprint)
+                    metadata_dict.setdefault("ingestion_classification", ingestion_class)
                     event_payload = {
                         "source_id": record.source_id,
                         "content": record.content,
@@ -16578,12 +16632,14 @@ def _ingest_memory_backfill(
                         "valid_to": record.valid_to.isoformat() if record.valid_to else None,
                         "entity_key": record.entity_key,
                         "category": record.category,
-                        "metadata": record.metadata or {},
+                        "metadata": metadata_dict,
                         "_tags": record.tags or [],
                         "backfill": {
                             "batch_id": str(batch_id),
                             "source_system": batch.source_system,
                             "ingest_lane": ingest_lane,
+                            "record_fingerprint": record_fingerprint,
+                            "ingestion_classification": ingestion_class,
                             "cursor": batch.cursor,
                             "ingested_at": datetime.now(UTC).isoformat(),
                         },
@@ -16600,7 +16656,12 @@ def _ingest_memory_backfill(
                         ON CONFLICT (id) DO NOTHING
                         """,
                         (
-                            _backfill_event_id(batch_id, record.source_id),
+                            _backfill_event_id(
+                                project_id=batch.project_id,
+                                batch_id=batch_id,
+                                source_id=record.source_id,
+                                record_fingerprint=record_fingerprint,
+                            ),
                             batch.project_id,
                             batch.agent_id,
                             batch.session_id,
@@ -16618,6 +16679,7 @@ def _ingest_memory_backfill(
                         inserted_events = inserted_events + %s,
                         status = CASE
                           WHEN status = 'completed' THEN status
+                          WHEN %s AND (inserted_events + %s) = 0 THEN 'completed'
                           WHEN %s THEN 'ready'
                           ELSE 'collecting'
                         END,
@@ -16626,7 +16688,15 @@ def _ingest_memory_backfill(
                     WHERE id = %s
                     RETURNING total_items, inserted_events, status
                     """,
-                    (inserted, inserted, batch.finalize, batch.cursor, batch_id),
+                    (
+                        inserted,
+                        inserted,
+                        batch.finalize,
+                        inserted,
+                        batch.finalize,
+                        batch.cursor,
+                        batch_id,
+                    ),
                 )
                 total_items, inserted_events, saved_status = cur.fetchone()
                 response = {
@@ -16637,6 +16707,7 @@ def _ingest_memory_backfill(
                     "accepted": accepted,
                     "inserted": inserted,
                     "deduplicated": accepted - inserted,
+                    "dropped_duplicate_pairs": dropped_duplicate_pairs,
                     "filtered_out": accepted_input - accepted,
                     "curated_filters": filter_summary,
                     "total_items": int(total_items),
@@ -25739,10 +25810,60 @@ def _insert_bootstrap_pages(
     profile: str,
     pages: list[dict[str, str]],
     requested_status: str,
+    policy_space_fallback_enabled: bool = False,
+    policy_space_fallback_candidates: list[str] | None = None,
 ) -> dict[str, Any]:
+    def _rewrite_slug_space(slug_value: str, *, target_space_key: str) -> str:
+        normalized_slug = _normalize_wiki_slug(slug_value, slug_value)
+        if "/" in normalized_slug:
+            _, leaf = normalized_slug.split("/", 1)
+        else:
+            leaf = normalized_slug
+        return _space_slug(target_space_key, leaf or "page")
+
+    def _resolve_writable_space(
+        cur: Any,
+        *,
+        actor: str,
+        requested_space_key: str,
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        candidates_raw = [requested_space_key, *(policy_space_fallback_candidates or []), "logistics", "general", "operations"]
+        candidates: list[str] = []
+        seen_candidates: set[str] = set()
+        for item in candidates_raw:
+            normalized = _normalize_space_key(item, default="")
+            if not normalized:
+                continue
+            if normalized in seen_candidates:
+                continue
+            seen_candidates.add(normalized)
+            candidates.append(normalized)
+        diagnostics: list[dict[str, Any]] = []
+        for candidate in candidates:
+            check = _check_wiki_policy_access(
+                cur,
+                project_id=project_id,
+                space_key=candidate,
+                actor=actor,
+                action="write",
+                page_id=None,
+            )
+            diagnostics.append(
+                {
+                    "space_key": candidate,
+                    "allowed": bool(check["allowed"]),
+                    "reason": str(check.get("reason") or ""),
+                    "policy": check.get("policy") if isinstance(check.get("policy"), dict) else {},
+                }
+            )
+            if bool(check["allowed"]):
+                return candidate, diagnostics
+        return None, diagnostics
+
     created: list[dict[str, Any]] = []
     existing: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    policy_space_fallback: list[dict[str, Any]] = []
     downgraded_to_reviewed = 0
     created_page_ids: list[str] = []
     snapshot_id_text: str | None = None
@@ -25755,6 +25876,40 @@ def _insert_bootstrap_pages(
             markdown = str(spec.get("markdown") or f"# {title}\n").rstrip() + "\n"
             space_key = _wiki_space_key_from_slug(slug)
             entity_key = slug
+            fallback_applied_for_page = False
+
+            if policy_space_fallback_enabled:
+                resolved_space_key, diagnostics = _resolve_writable_space(
+                    cur,
+                    actor=created_by,
+                    requested_space_key=space_key,
+                )
+                if not resolved_space_key:
+                    skipped.append(
+                        {
+                            "slug": slug,
+                            "title": title,
+                            "reason": "wiki_policy_denied_no_writable_space",
+                            "detail": "No writable wiki space found for bootstrap actor.",
+                            "policy_candidates": diagnostics,
+                        }
+                    )
+                    continue
+                if resolved_space_key != space_key:
+                    previous_slug = slug
+                    slug = _rewrite_slug_space(slug, target_space_key=resolved_space_key)
+                    space_key = resolved_space_key
+                    entity_key = slug
+                    fallback_applied_for_page = True
+                    policy_space_fallback.append(
+                        {
+                            "title": title,
+                            "from_slug": previous_slug,
+                            "to_slug": slug,
+                            "space_key": space_key,
+                            "policy_candidates": diagnostics,
+                        }
+                    )
 
             cur.execute(
                 """
@@ -25826,7 +25981,14 @@ def _insert_bootstrap_pages(
                     slug,
                     entity_key,
                     status,
-                    Jsonb({"source": "first_run_bootstrap", "created_by": created_by, "profile": profile}),
+                    Jsonb(
+                        {
+                            "source": "first_run_bootstrap",
+                            "created_by": created_by,
+                            "profile": profile,
+                            "policy_space_fallback": bool(fallback_applied_for_page),
+                        }
+                    ),
                 ),
             )
             cur.execute(
@@ -25923,6 +26085,11 @@ def _insert_bootstrap_pages(
         "created": created,
         "existing": existing,
         "skipped": skipped,
+        "policy_space_fallback": {
+            "enabled": bool(policy_space_fallback_enabled),
+            "applied": policy_space_fallback,
+            "applied_count": len(policy_space_fallback),
+        },
         "summary": {
             "created": len(created),
             "existing": len(existing),
@@ -26207,6 +26374,110 @@ def _legacy_sync_processor_health(
     }
 
 
+def _legacy_sync_cursor_health(conn, *, project_id: str, stale_after_hours: int = 24) -> dict[str, Any]:
+    if not _legacy_import_sources_table_exists(conn):
+        return {
+            "status": "unavailable",
+            "reason_code": "legacy_sync_sources_unavailable",
+            "sources_total": 0,
+            "polling_sources": 0,
+            "cursor_missing": 0,
+            "cursor_stale": 0,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "sources": [],
+        }
+    stale_after = max(1, int(stale_after_hours))
+    now = datetime.now(UTC)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text, source_type, source_ref, enabled, last_success_at, last_run_at, config
+            FROM legacy_import_sources
+            WHERE project_id = %s
+              AND enabled = TRUE
+            ORDER BY updated_at DESC
+            LIMIT 500
+            """,
+            (project_id,),
+        )
+        rows = cur.fetchall() or []
+    sources: list[dict[str, Any]] = []
+    polling_sources = 0
+    cursor_missing = 0
+    cursor_stale = 0
+    for row in rows:
+        source_id = str(row[0] or "").strip()
+        source_type = str(row[1] or "").strip().lower()
+        source_ref = str(row[2] or "").strip()
+        last_success_at = row[4] if isinstance(row[4], datetime) else None
+        last_run_at = row[5] if isinstance(row[5], datetime) else None
+        config = row[6] if isinstance(row[6], dict) else {}
+        sync_mode = str(config.get("sql_sync_mode") or "polling").strip().lower() or "polling"
+        cursor_key = str(config.get("sql_cursor_state_key") or "sql_last_cursor").strip() or "sql_last_cursor"
+        cursor_value = str(config.get(cursor_key) or "").strip()
+        last_synced_raw = str(config.get("sql_last_synced_at") or "").strip()
+        last_synced_at: datetime | None = None
+        if last_synced_raw:
+            try:
+                parsed = datetime.fromisoformat(last_synced_raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                last_synced_at = parsed.astimezone(UTC)
+            except Exception:
+                last_synced_at = None
+
+        is_polling = source_type == "postgres_sql" and sync_mode in {"polling", "query"}
+        status = "ok"
+        reason_code = "cursor_progressing"
+        if is_polling:
+            polling_sources += 1
+            if not cursor_value:
+                status = "warn"
+                reason_code = "cursor_missing"
+                cursor_missing += 1
+            reference_ts = last_synced_at or last_success_at or last_run_at
+            if reference_ts is not None:
+                age_hours = (now - reference_ts).total_seconds() / 3600.0
+                if age_hours >= float(stale_after):
+                    status = "warn"
+                    reason_code = "cursor_stale"
+                    cursor_stale += 1
+
+        sources.append(
+            {
+                "source_id": source_id,
+                "source_type": source_type,
+                "source_ref": source_ref[:200],
+                "sync_mode": sync_mode,
+                "cursor_key": cursor_key if is_polling else None,
+                "cursor_present": bool(cursor_value) if is_polling else None,
+                "last_success_at": last_success_at.isoformat() if isinstance(last_success_at, datetime) else None,
+                "last_run_at": last_run_at.isoformat() if isinstance(last_run_at, datetime) else None,
+                "last_synced_at": last_synced_at.isoformat() if isinstance(last_synced_at, datetime) else None,
+                "status": status,
+                "reason_code": reason_code,
+            }
+        )
+
+    health_status = "healthy"
+    if cursor_missing > 0 or cursor_stale > 0:
+        health_status = "watch"
+    if polling_sources > 0 and (cursor_missing >= polling_sources or cursor_stale >= polling_sources):
+        health_status = "critical"
+
+    return {
+        "status": health_status,
+        "reason_code": "cursor_health_summary",
+        "sources_total": len(rows),
+        "polling_sources": polling_sources,
+        "cursor_missing": cursor_missing,
+        "cursor_stale": cursor_stale,
+        "stale_after_hours": stale_after,
+        "generated_at": now.isoformat(),
+        "sources": sources,
+    }
+
+
 def _source_ref_slug(source_type: str, source_ref: str) -> str:
     source_bits = [bit for bit in re.split(r"[^a-zA-Z0-9]+", str(source_ref or "")) if bit]
     short_ref = "-".join(source_bits[:6]).lower() or "source"
@@ -26267,8 +26538,31 @@ def _extract_source_owner(config: dict[str, Any], fallback: str) -> str:
 def _extract_source_key_fields(source_type: str, config: dict[str, Any]) -> list[str]:
     raw: list[str] = []
     if source_type == "postgres_sql":
-        for key in ("sql_cursor_field", "sql_updated_field", "sql_entity_field", "sql_category_field"):
+        for key in (
+            "sql_cursor_field",
+            "sql_updated_field",
+            "sql_entity_field",
+            "sql_category_field",
+            "sql_cursor_column",
+            "sql_profile_resolved_table",
+        ):
             value = str(config.get(key) or "").strip()
+            if value:
+                raw.append(value)
+        sql_mapping = config.get("sql_mapping") if isinstance(config.get("sql_mapping"), dict) else {}
+        for key in (
+            "source_id_field",
+            "entity_key_field",
+            "category_field",
+            "observed_at_field",
+            "content_field",
+        ):
+            value = str(sql_mapping.get(key) or "").strip()
+            if value:
+                raw.append(value)
+        content_fields = sql_mapping.get("content_fields") if isinstance(sql_mapping.get("content_fields"), list) else []
+        for item in content_fields:
+            value = str(item or "").strip()
             if value:
                 raw.append(value)
     if source_type == "memory_api":
@@ -26292,6 +26586,31 @@ def _extract_source_key_fields(source_type: str, config: dict[str, Any]) -> list
         seen.add(key)
         deduped.append(value)
     return deduped[:8]
+
+
+def _extract_source_schema_sample(source_type: str, config: dict[str, Any]) -> list[str]:
+    sample: list[str] = []
+    if source_type == "postgres_sql":
+        sql_mapping = config.get("sql_mapping") if isinstance(config.get("sql_mapping"), dict) else {}
+        for key in ("source_id_field", "entity_key_field", "category_field", "observed_at_field"):
+            value = str(sql_mapping.get(key) or "").strip()
+            if value:
+                sample.append(f"{key}: {value}")
+        content_fields = sql_mapping.get("content_fields") if isinstance(sql_mapping.get("content_fields"), list) else []
+        if content_fields:
+            joined = ", ".join(str(item).strip() for item in content_fields if str(item).strip())
+            if joined:
+                sample.append(f"content_fields: {joined}")
+        table_name = str(config.get("sql_profile_resolved_table") or config.get("sql_profile_table") or config.get("sql_table") or "").strip()
+        if table_name:
+            sample.append(f"table: {table_name}")
+    elif source_type == "memory_api":
+        mapping = config.get("api_mapping") if isinstance(config.get("api_mapping"), dict) else {}
+        for key in ("id", "content", "observed_at", "entity_key", "category", "source_system", "namespace"):
+            value = str(mapping.get(key) or "").strip()
+            if value:
+                sample.append(f"{key}: {value}")
+    return sample[:12]
 
 
 def _collect_agent_source_usage(
@@ -26380,6 +26699,7 @@ def _build_data_sources_catalog_pages(
         owner = _extract_source_owner(config, updated_by)
         freshness = _format_freshness_label(last_success_at, last_run_at)
         key_fields = _extract_source_key_fields(source_type, config)
+        schema_sample = _extract_source_schema_sample(source_type, config)
         key_fields_label = ", ".join(key_fields[:5]) if key_fields else "n/a"
 
         usage_tokens = {
@@ -26411,6 +26731,8 @@ def _build_data_sources_catalog_pages(
                     f"- Freshness: `{freshness}`\n\n"
                     "## Key Fields\n"
                     + ("\n".join([f"- `{field}`" for field in key_fields]) if key_fields else "- n/a")
+                    + "\n\n## Schema Sample\n"
+                    + ("\n".join([f"- `{field}`" for field in schema_sample]) if schema_sample else "- n/a")
                     + "\n\n## Agent Usage\n"
                     + (f"- Used by: {used_by_agents}" if used_by else "- No explicit usage mapped yet.")
                     + "\n"
@@ -26527,6 +26849,44 @@ def _derive_escalation_rule(text: str, confidence: float, category: str) -> str:
     return "Escalate when SLA risk is detected or customer impact is explicit."
 
 
+def _is_high_signal_operational_logic_claim(
+    *,
+    claim_text: str,
+    category: str,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    text = str(claim_text or "").strip()
+    if len(text) < 24:
+        return False
+    normalized_text = _normalize_statement_text(text)
+    normalized_category = str(category or "").strip().lower()
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+    ingestion_classification = str(metadata_dict.get("ingestion_classification") or "").strip().lower()
+    if ingestion_classification in {"operational_stream", "pii_sensitive_stream"}:
+        return False
+    if (
+        (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]"))
+    ) and _count_json_like_keys(text) >= 3:
+        return False
+    noisy_keywords = (
+        "order_id",
+        "invoice_id",
+        "payload",
+        "event_stream",
+        "telemetry",
+        "runtime_event",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
+    )
+    if any(keyword in normalized_text for keyword in noisy_keywords):
+        return False
+    if normalized_category in {"policy", "process", "runbook", "incident", "access"}:
+        return True
+    procedural_keywords = ("if ", "when ", "then ", "must ", "required ", "escalat", "handoff", "runbook", "process")
+    return any(keyword in normalized_text for keyword in procedural_keywords)
+
+
 def _build_operational_logic_bootstrap_page(
     cur: Any,
     *,
@@ -26534,30 +26894,56 @@ def _build_operational_logic_bootstrap_page(
     space_key: str,
     max_signals: int,
 ) -> list[dict[str, str]]:
-    cur.execute(
-        """
-        SELECT claim_payload
-        FROM claim_proposals
-        WHERE project_id = %s
-        ORDER BY updated_at DESC
-        LIMIT %s
-        """,
-        (project_id, max(20, min(1000, int(max_signals) * 10))),
-    )
-    rows = cur.fetchall() or []
+    rows: list[tuple[Any, ...]] = []
+    query_limit = max(20, min(1000, int(max_signals) * 10))
+    if _wiki_feature_table_exists(cur, "public.claims"):
+        cur.execute(
+            """
+            SELECT claim_text, category, metadata
+            FROM claims
+            WHERE project_id = %s
+              AND status <> 'rejected'
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (project_id, query_limit),
+        )
+        rows = cur.fetchall() or []
+    if not rows:
+        cur.execute(
+            """
+            SELECT claim_payload
+            FROM claim_proposals
+            WHERE project_id = %s
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (project_id, query_limit),
+        )
+        rows = cur.fetchall() or []
+
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
-        payload = row[0] if isinstance(row[0], dict) else {}
-        claim_text = str(payload.get("claim_text") or "").strip()
+        if len(row) >= 3:
+            claim_text = str(row[0] or "").strip()
+            category = str(row[1] or "operations").strip() or "operations"
+            metadata = row[2] if isinstance(row[2], dict) else {}
+            confidence = float(metadata.get("llm_confidence") or metadata.get("confidence") or 0.0)
+        else:
+            payload = row[0] if isinstance(row[0], dict) else {}
+            claim_text = str(payload.get("claim_text") or "").strip()
+            category = str(payload.get("category") or "operations").strip() or "operations"
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            confidence = float(payload.get("confidence") or 0.0)
         if not claim_text:
+            continue
+        if not _is_high_signal_operational_logic_claim(claim_text=claim_text, category=category, metadata=metadata):
             continue
         normalized_key = _normalize_statement_text(claim_text)[:180]
         if not normalized_key or normalized_key in seen:
             continue
         seen.add(normalized_key)
-        category = str(payload.get("category") or "operations").strip() or "operations"
-        confidence = float(payload.get("confidence") or 0.0)
         entries.append(
             {
                 "comment": claim_text[:180],
@@ -26744,6 +27130,8 @@ def apply_adoption_wiki_space_template(payload: AdoptionWikiSpaceTemplateApplyRe
             profile=f"space_template:{payload.template_key}",
             pages=pages,
             requested_status=requested_status,
+            policy_space_fallback_enabled=True,
+            policy_space_fallback_candidates=[effective_space_key, "general", "operations"],
         )
 
     response: dict[str, Any] = {
@@ -26760,6 +27148,19 @@ def apply_adoption_wiki_space_template(payload: AdoptionWikiSpaceTemplateApplyRe
     if policy_warning:
         response["warning"] = policy_warning
     return response
+
+
+@app.get("/v1/adoption/sync/cursor-health")
+def get_adoption_sync_cursor_health(
+    project_id: str,
+    stale_after_hours: int = Query(default=24, ge=1, le=24 * 30),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        return _legacy_sync_cursor_health(
+            conn,
+            project_id=project_id,
+            stale_after_hours=stale_after_hours,
+        )
 
 
 @app.post("/v1/adoption/sync-presets/execute", response_model=None)
@@ -26848,6 +27249,11 @@ def execute_adoption_sync_preset(
                     lookback_minutes=int(payload.sync_processor_lookback_minutes),
                 )
                 response["sync_queue_processor"] = processor_health
+                response["sync_cursor_health"] = _legacy_sync_cursor_health(
+                    conn,
+                    project_id=project_id,
+                    stale_after_hours=24,
+                )
                 if (
                     int((response.get("sync_queue") or {}).get("queued") or 0) > 0
                     and str(processor_health.get("status") or "") == "unavailable"
@@ -26877,6 +27283,20 @@ def execute_adoption_sync_preset(
                             response_body=response,
                         )
                         return JSONResponse(status_code=503, content=response)
+                cursor_health = response.get("sync_cursor_health") if isinstance(response.get("sync_cursor_health"), dict) else {}
+                if str(cursor_health.get("status") or "").strip().lower() == "critical":
+                    warnings.append(
+                        {
+                            "code": "legacy_sync_cursor_health_critical",
+                            "severity": "critical",
+                            "message": (
+                                "Polling connectors are missing/stale cursor progression. "
+                                "Risk of repeated full scans and noisy ingestion batches."
+                            ),
+                            "next_action": "check /v1/adoption/sync/cursor-health and source sql_cursor_state_key settings",
+                            "cursor_health": cursor_health,
+                        }
+                    )
             else:
                 response["sync_queue"] = {
                     "available": _legacy_import_sources_table_exists(conn),
@@ -27035,7 +27455,29 @@ def run_adoption_agent_wiki_bootstrap(
                     profile="agent_wiki_bootstrap",
                     pages=plan_pages,
                     requested_status=requested_status,
+                    policy_space_fallback_enabled=True,
+                    policy_space_fallback_candidates=[space_key, "logistics", "general"],
                 )
+                if int((page_result.get("summary") or {}).get("created") or 0) <= 0 and int(
+                    (page_result.get("summary") or {}).get("skipped") or 0
+                ) > 0:
+                    response.update(
+                        {
+                            "status": "failed",
+                            "error": "bootstrap_policy_denied",
+                            "hint": "No writable wiki space was found for this actor. Add owner access or change target space.",
+                            "policy_space_fallback": page_result.get("policy_space_fallback"),
+                            "skipped": page_result.get("skipped"),
+                        }
+                    )
+                    mark_request_completed(
+                        conn,
+                        endpoint="/v1/adoption/agent-wiki-bootstrap",
+                        idempotency_key=idempotency_key,
+                        status_code=409,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=409, content=response)
                 created_slugs = [str(item.get("slug") or "") for item in (page_result.get("created") or [])]
                 response.update(page_result)
                 response["definition_of_done"] = _agent_wiki_bootstrap_dod(
@@ -27073,6 +27515,21 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
             profile=payload.profile,
             pages=pages,
             requested_status=requested_status,
+            policy_space_fallback_enabled=True,
+            policy_space_fallback_candidates=[payload.space_key or "", "logistics", "general"],
+        )
+    if int((page_result.get("summary") or {}).get("created") or 0) <= 0 and int(
+        (page_result.get("summary") or {}).get("skipped") or 0
+    ) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "bootstrap_policy_denied",
+                "project_id": payload.project_id,
+                "hint": "No writable wiki space was found for this actor. Add owner access or run bootstrap with another actor.",
+                "policy_space_fallback": page_result.get("policy_space_fallback"),
+                "skipped": page_result.get("skipped"),
+            },
         )
     return {
         "status": "ok",
@@ -27720,6 +28177,16 @@ def get_adoption_pipeline_visibility(
         },
         "accepted_source": accepted_source,
         "rejected_event_like": int(max(0, rejected_event_like)),
+        "signal_noise_ratio": {
+            "signal_claims_per_rejected_event": round(
+                float(max(0, claims_total)) / float(max(1, int(max(0, rejected_event_like)))),
+                4,
+            ),
+            "signal_claims_per_event": round(
+                float(max(0, claims_total)) / float(max(1, int(max(0, events_total)))),
+                4,
+            ),
+        },
         "conversions": {
             "accepted_to_events": _stage_ratio(int(stages[0]["count"]), int(stages[1]["count"])),
             "events_to_claims": _stage_ratio(int(stages[1]["count"]), int(stages[2]["count"])),

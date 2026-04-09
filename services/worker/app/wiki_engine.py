@@ -1094,7 +1094,22 @@ class WikiSynthesisEngine:
             token_set=expanded_token_set,
             keywords=durable_signal_keywords,
         )
-        has_durable_signal = durable_hits >= min_durable_signal_hits_for_backfill
+        policy_signal_tokens = {
+            "policy",
+            "rule",
+            "rules",
+            "must",
+            "required",
+            "forbidden",
+            "access",
+            "quarantine",
+            "runbook",
+            "process",
+            "procedure",
+            "escalation",
+        }
+        has_durable_keyword_signal = bool(expanded_token_set & policy_signal_tokens)
+        has_durable_signal = durable_hits >= min_durable_signal_hits_for_backfill or has_durable_keyword_signal
         event_hits = sum(1 for token in expanded_token_set if token in event_stream_token_keywords)
         kv_hits = len(
             re.findall(
@@ -1133,6 +1148,15 @@ class WikiSynthesisEngine:
                     source_type_values.add(value)
         blocked_source_system_keywords = list(policy.get("blocked_source_system_keywords", []))
         blocked_source_type_keywords = list(policy.get("blocked_source_type_keywords", []))
+        operational_stream_keywords = list(policy.get("operational_stream_keywords", []))
+        pii_sensitive_keywords = list(policy.get("pii_sensitive_keywords", []))
+        ingestion_default_deny_classes = {
+            str(item).strip().lower()
+            for item in (policy.get("ingestion_classification_default_deny_classes") or [])
+            if str(item).strip()
+        }
+        if not ingestion_default_deny_classes:
+            ingestion_default_deny_classes = {"operational_stream", "pii_sensitive_stream"}
         blocked_by_source_system = any(
             self._keyword_matches_identifier(system, keyword)
             for system in source_system_values
@@ -1152,9 +1176,65 @@ class WikiSynthesisEngine:
             and category_hint in {"general", "operations"}
             and ingest_lane != "knowledge"
         )
+        ingestion_classification_explicit = str(
+            metadata.get("ingestion_classification")
+            or payload.get("ingestion_classification")
+            or (
+                payload.get("backfill", {}).get("ingestion_classification")
+                if isinstance(payload.get("backfill"), dict)
+                else ""
+            )
+            or ""
+        ).strip().lower()
+        ingestion_classification_explicit_flag = bool(ingestion_classification_explicit)
+        classification_haystack = " ".join(
+            item
+            for item in (
+                normalized_content,
+                self._normalize_text(category),
+                self._normalize_text(source_id),
+                " ".join(source_system_values),
+                " ".join(source_type_values),
+            )
+            if item
+        )
+        operational_keyword_hits = [
+            keyword for keyword in operational_stream_keywords if keyword and keyword in classification_haystack
+        ]
+        pii_keyword_hits = [
+            keyword for keyword in pii_sensitive_keywords if keyword and keyword in classification_haystack
+        ]
+        pii_regex_hits = bool(
+            re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", content or "")
+            or re.search(
+                r"(?<!\d)(?:\+\d{7,15}|\d{10,15}|\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4})(?!\d)",
+                content or "",
+            )
+        )
+        if ingestion_classification_explicit in {"evergreen_knowledge", "operational_stream", "pii_sensitive_stream"}:
+            ingestion_classification = ingestion_classification_explicit
+        elif pii_keyword_hits or pii_regex_hits:
+            ingestion_classification = "pii_sensitive_stream"
+        elif has_event_stream_shape or bool(operational_keyword_hits) or (
+            (blocked_by_source_system or blocked_by_source_type) and not has_durable_signal
+        ):
+            ingestion_classification = "operational_stream"
+        else:
+            ingestion_classification = "evergreen_knowledge"
+        ingestion_classification_hard_block = (
+            (
+                (ingestion_classification_explicit_flag and ingestion_classification in ingestion_default_deny_classes)
+                or ingestion_classification == "pii_sensitive_stream"
+            )
+            and not trusted_hint
+            and not (ingest_lane == "knowledge" and has_durable_signal)
+        )
         heuristic_skip = False
         heuristic_reason: str | None = None
-        if has_event_stream_shape and not has_durable_signal:
+        if ingestion_classification_hard_block:
+            heuristic_skip = True
+            heuristic_reason = f"ingestion_classification:{ingestion_classification}"
+        elif has_event_stream_shape and not has_durable_signal:
             heuristic_skip = True
             heuristic_reason = "event_like_low_signal"
         elif source_noise_only:
@@ -1180,7 +1260,9 @@ class WikiSynthesisEngine:
             or (not has_event_stream_shape and not has_durable_signal and len(normalized_content) >= 80)
         )
 
-        if llm_mode != "off" and (llm_ambiguous or not llm_ambiguous_only):
+        if ingestion_classification_hard_block:
+            llm_reason_code = "ingestion_classification_hard_block"
+        elif llm_mode != "off" and (llm_ambiguous or not llm_ambiguous_only):
             llm_config = GatekeeperConfig(
                 min_sources_for_golden=max(2, self.gatekeeper_min_sources_for_golden),
                 conflict_free_days=max(1, self.gatekeeper_conflict_free_days),
@@ -1255,6 +1337,12 @@ class WikiSynthesisEngine:
             "has_durable_signal": has_durable_signal,
             "ingest_lane": ingest_lane,
             "heuristic_reason": heuristic_reason,
+            "ingestion_classification": ingestion_classification,
+            "ingestion_classification_hard_block": ingestion_classification_hard_block,
+            "ingestion_default_deny_classes": sorted(ingestion_default_deny_classes),
+            "ingestion_operational_keyword_hits": operational_keyword_hits[:20],
+            "ingestion_pii_keyword_hits": pii_keyword_hits[:20],
+            "ingestion_pii_regex_hits": pii_regex_hits,
             "llm_mode": llm_mode,
             "llm_ambiguous": llm_ambiguous,
             "llm_applied": llm_applied,

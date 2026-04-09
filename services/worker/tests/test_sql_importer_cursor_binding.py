@@ -84,6 +84,46 @@ class SQLImporterCursorBindingTests(unittest.TestCase):
         )
         self.assertEqual({"cursor": None}, execute_args[1])
 
+    def test_collect_records_advances_cursor_from_id_when_observed_at_missing(self) -> None:
+        rows = [
+            {
+                "id": 41,
+                "content": "Policy update for access gate",
+                "entity_key": "warehouse_2",
+                "category": "access_policy",
+            },
+            {
+                "id": 42,
+                "content": "Policy update for access gate with escalation",
+                "entity_key": "warehouse_2",
+                "category": "access_policy",
+            },
+        ]
+        fake_cursor = _FakeCursor(rows)
+        fake_conn = _FakeConnection(fake_cursor)
+
+        fake_psycopg = types.ModuleType("psycopg")
+        fake_rows = types.ModuleType("psycopg.rows")
+        fake_dict_row = object()
+        fake_rows.dict_row = fake_dict_row
+
+        def _connect(dsn: str, *, row_factory: object = None) -> _FakeConnection:
+            self.assertEqual("postgresql://example.local/test", dsn)
+            self.assertIs(row_factory, fake_dict_row)
+            return fake_conn
+
+        fake_psycopg.connect = _connect  # type: ignore[attr-defined]
+
+        importer = SQLImporter(
+            dsn="postgresql://example.local/test",
+            query="SELECT * FROM events ORDER BY id ASC",
+        )
+        with patch.dict(sys.modules, {"psycopg": fake_psycopg, "psycopg.rows": fake_rows}):
+            result = importer.collect_records(max_records=10, cursor=None, cursor_param="cursor")
+
+        self.assertEqual(2, len(result.records))
+        self.assertEqual("42", result.next_cursor)
+
 
 if __name__ == "__main__":
     unittest.main()

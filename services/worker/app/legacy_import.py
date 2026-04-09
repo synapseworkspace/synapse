@@ -616,11 +616,21 @@ class SQLImporter:
                 if _sanitize_key(key) == explicit_cursor_column:
                     return row.get(key)
         observed_at_field = self._mapping_text("observed_at_field")
-        return _first_non_empty(
+        fallback = _first_non_empty(
             row.get("observed_at"),
             row.get(observed_at_field) if observed_at_field else None,
             row.get("updated_at"),
+            row.get("created_at"),
+            row.get("id"),
+            row.get("source_id"),
         )
+        if fallback is not None:
+            return fallback
+        for key in sorted(row.keys()):
+            value = row.get(key)
+            if isinstance(value, (str, int, float, datetime)):
+                return value
+        return None
 
     def _mapping_text(self, key: str) -> str:
         value = self.mapping.get(key)

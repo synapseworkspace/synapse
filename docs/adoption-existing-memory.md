@@ -204,6 +204,8 @@ Quick policy + KPI loop:
 - `GET /v1/adoption/policy-calibration/quick-loop?project_id=...` for bottleneck-aware routing recommendations.
 - `POST /v1/adoption/policy-calibration/quick-loop/apply` (`dry_run=true` first) for safe preset apply with rollback snapshot.
 - `GET /v1/adoption/kpi?project_id=...&days=30` for onboarding KPI (`time_to_first_draft`, `time_to_first_publish`, `draft_noise_ratio`, `publish_revert_rate`).
+- `GET /v1/adoption/pipeline/visibility?project_id=...` for stage funnel plus `signal_noise_ratio` telemetry.
+- `GET /v1/adoption/sync/cursor-health?project_id=...` to detect polling connectors with missing/stale cursor progression before they cause replay storms.
 
 The UI intentionally keeps migration controls collapsed by default and exposes advanced filters only on demand.
 
