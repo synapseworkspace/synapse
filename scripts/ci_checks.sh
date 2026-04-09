@@ -460,7 +460,7 @@ python3 scripts/check_positioning_consistency.py >/dev/null
 echo "[4.6/6] Release error-budget policy gate"
 python3 scripts/check_release_error_budget.py \
   --history-jsonl eval/reliability_error_budget_sample.jsonl \
-  --window-days 7 \
+  --window-days 0 \
   --min-samples 4 \
   --max-failure-rate 0.2 \
   --max-consecutive-failures 2 >/dev/null
