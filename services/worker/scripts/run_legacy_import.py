@@ -285,6 +285,7 @@ def main() -> None:
             )
             for item in records
         ],
+        ingest_lane="knowledge",
         source_system=source_system,
         created_by=args.created_by,
         chunk_size=args.chunk_size,
