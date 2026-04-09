@@ -3657,6 +3657,9 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "queue",
         "webhook_events",
         "task_runtime",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "sheet",
     ],
     "blocked_source_type_keywords": [
         "external_event",
@@ -3682,6 +3685,9 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "telemetry",
         "trace",
         "payload_dump",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
     ],
     "event_stream_token_keywords": list(_DEFAULT_EVENT_STREAM_TOKEN_KEYWORDS),
     "durable_signal_keywords": [
@@ -3828,6 +3834,11 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "backfill_llm_classifier_min_confidence": 0.78,
     "backfill_llm_classifier_ambiguous_only": True,
     "backfill_llm_classifier_model": "",
+    "emit_reinforcement_drafts": False,
+    "draft_flood_max_open_per_page": 200,
+    "draft_flood_max_open_per_entity": 400,
+    "queue_pressure_safe_mode_open_drafts_threshold": 5000,
+    "queue_pressure_safe_mode_open_drafts_per_page_threshold": 200,
     "agent_worklog_timezone": "UTC",
     "agent_worklog_schedule_hour_local": 8,
     "agent_worklog_schedule_minute_local": 0,
@@ -5839,6 +5850,38 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     )
     model_value = str(value.get("backfill_llm_classifier_model") or "").strip()
     normalized["backfill_llm_classifier_model"] = model_value[:128] if model_value else ""
+    normalized["emit_reinforcement_drafts"] = _coerce_bool(
+        value.get("emit_reinforcement_drafts"),
+        bool(base["emit_reinforcement_drafts"]),
+    )
+    normalized["draft_flood_max_open_per_page"] = max(
+        50,
+        min(20000, _coerce_int(value.get("draft_flood_max_open_per_page"), int(base["draft_flood_max_open_per_page"]))),
+    )
+    normalized["draft_flood_max_open_per_entity"] = max(
+        50,
+        min(40000, _coerce_int(value.get("draft_flood_max_open_per_entity"), int(base["draft_flood_max_open_per_entity"]))),
+    )
+    normalized["queue_pressure_safe_mode_open_drafts_threshold"] = max(
+        100,
+        min(
+            200000,
+            _coerce_int(
+                value.get("queue_pressure_safe_mode_open_drafts_threshold"),
+                int(base["queue_pressure_safe_mode_open_drafts_threshold"]),
+            ),
+        ),
+    )
+    normalized["queue_pressure_safe_mode_open_drafts_per_page_threshold"] = max(
+        50,
+        min(
+            20000,
+            _coerce_int(
+                value.get("queue_pressure_safe_mode_open_drafts_per_page_threshold"),
+                int(base["queue_pressure_safe_mode_open_drafts_per_page_threshold"]),
+            ),
+        ),
+    )
     normalized["agent_worklog_timezone"] = _normalize_timezone_name(
         value.get("agent_worklog_timezone"),
         default=str(base["agent_worklog_timezone"]),
@@ -27419,12 +27462,25 @@ def _build_data_sources_catalog_pages(
     table_lines = [
         "# Data Sources Catalog",
         "",
+        "This catalog is the operational map of data feeding your agent workflows.",
+        "Use it to answer: where data lives, who owns it, freshness/SLA posture, and which agents depend on it.",
+        "",
         "## Connected Sources",
         "| Source | Type | Location | Owner | Freshness | Key Fields | Used by Agents |",
         "|---|---|---|---|---|---|---|",
     ]
     if not source_rows:
-        table_lines.extend(["| n/a | n/a | n/a | n/a | n/a | n/a | n/a |", ""])
+        table_lines.extend(
+            [
+                "| n/a | n/a | n/a | n/a | n/a | n/a | n/a |",
+                "",
+                "## Bootstrap Guidance",
+                "- Connect at least one trusted memory source (`ops_kb_items` or equivalent policy/process store).",
+                "- Ensure `curated_import.enabled=true` and noise preset is `enterprise_wiki_bootstrap`.",
+                "- Define source owner and freshness SLA to avoid stale policy pages.",
+                "",
+            ]
+        )
     detail_pages: list[dict[str, str]] = []
     for row in source_rows:
         source_type = _normalize_source_system(row[0], default="unknown")
@@ -27473,6 +27529,9 @@ def _build_data_sources_catalog_pages(
                     + ("\n".join([f"- `{field}`" for field in schema_sample]) if schema_sample else "- n/a")
                     + "\n\n## Agent Usage\n"
                     + (f"- Used by: {used_by_agents}" if used_by else "- No explicit usage mapped yet.")
+                    + "\n\n## Operational Notes\n"
+                    + "- Verify ownership and freshness before allowing auto-publish for policy/process pages.\n"
+                    + "- If this source is event-like, keep it in operational lane and out of wiki synthesis.\n"
                     + "\n"
                 ),
             }
@@ -27481,7 +27540,15 @@ def _build_data_sources_catalog_pages(
         table_lines.append(
             f"| [{safe_source_ref}](/wiki/{source_slug}) | {source_type} | `{location}` | {owner} | {freshness} | {key_fields_label} | {used_by_agents} |"
         )
-    table_lines.append("")
+    table_lines.extend(
+        [
+            "",
+            "## Governance",
+            "- High-signal knowledge (policy/process/runbook) can be promoted to published wiki pages.",
+            "- Event/payload-like streams should remain in operational lane and never dominate draft queue.",
+            "",
+        ]
+    )
     catalog_slug = _space_slug(space_key, "data-sources-catalog")
     pages.append(
         {
@@ -27566,7 +27633,19 @@ def _build_agent_capability_bootstrap_page(
             ]
         )
 
-    lines.extend(["", "## Capability Matrix", _render_agent_capability_matrix_markdown(matrix=matrix).strip(), ""])
+    lines.extend(
+        [
+            "",
+            "## Capability Matrix",
+            _render_agent_capability_matrix_markdown(matrix=matrix).strip(),
+            "",
+            "## Capability Signals",
+            "- Runtime intents observed in sessions/tasks.",
+            "- Tool invocations and handoff contracts between agents.",
+            "- Data-source access patterns and successful outcomes.",
+            "",
+        ]
+    )
     lines.extend(["## Handoffs", _render_agent_handoff_markdown(edges=edges if isinstance(edges, list) else []).strip(), ""])
     if isinstance(teams, list) and teams:
         lines.extend(["## Teams", "| Team | Agents |", "|---|---:|"])
@@ -27731,13 +27810,35 @@ def _build_operational_logic_bootstrap_page(
                 f"| {item['comment'].replace('|', '/')} | `{item['signal']}` | {item['action_candidate']} | {item['escalation_rule']} |"
             )
     else:
-        lines.append("| No high-signal patterns yet | operations | Capture more durable signals | Escalate on repeated evidence |")
+        fallback_rows = [
+            (
+                "Customer reports policy mismatch with current execution",
+                "policy",
+                "Open policy review task and attach evidence from at least 2 independent sources.",
+                "Escalate to approver if mismatch impacts SLA/finance/compliance.",
+            ),
+            (
+                "Agent sees repeated access failure in same location",
+                "incident",
+                "Trigger escalation runbook and publish temporary workaround in reviewed mode.",
+                "Escalate immediately when failure repeats >= 3 times within 24h.",
+            ),
+            (
+                "Operator confirms durable customer preference",
+                "preference",
+                "Update preference page and inject context for matching entity intents.",
+                "Escalate only if preference conflicts with active policy.",
+            ),
+        ]
+        for comment, signal, action_candidate, escalation_rule in fallback_rows:
+            lines.append(f"| {comment} | `{signal}` | {action_candidate} | {escalation_rule} |")
     lines.extend(
         [
             "",
             "## Governance",
             "- Noise goes to operational/event layer; only reusable patterns stay in wiki.",
             "- Policy-like updates require human review when confidence is low or impact is high.",
+            "- Use this map to document `when -> do -> escalate` process logic, not raw payload history.",
             "",
         ]
     )
@@ -28114,6 +28215,32 @@ def execute_adoption_sync_preset(
                         publish=True,
                     )
                 )
+            pipeline_visibility: dict[str, Any] | None = None
+            rejection_diagnostics: dict[str, Any] | None = None
+            try:
+                pipeline_visibility = get_adoption_pipeline_visibility(
+                    project_id=project_id,
+                    days=14,
+                    source_systems=None,
+                    namespaces=None,
+                )
+                rejection_diagnostics = get_adoption_rejection_diagnostics(
+                    project_id=project_id,
+                    days=14,
+                    sample_limit=5,
+                )
+                response["pipeline_visibility"] = pipeline_visibility
+                response["rejection_diagnostics"] = rejection_diagnostics
+            except Exception as explainability_exc:  # pragma: no cover - defensive envelope
+                warnings.append(
+                    {
+                        "code": "explainability_unavailable",
+                        "severity": "warning",
+                        "message": f"Could not build explainability snapshot: {explainability_exc}",
+                    }
+                )
+            warnings = _merge_adoption_warnings(warnings, _build_adoption_pipeline_pressure_warnings(pipeline_visibility))
+
             critical_warning_present = _has_critical_adoption_warnings(warnings)
             response["auto_safe_mode"] = {
                 "enabled": bool(payload.auto_apply_safe_mode_on_critical),
@@ -28133,35 +28260,13 @@ def execute_adoption_sync_preset(
                         )
                     )
                     response["auto_safe_mode"]["triggered"] = not bool(payload.dry_run)
+
+            response["explainability"] = _build_adoption_sync_explainability(
+                warnings=warnings,
+                pipeline_visibility=pipeline_visibility,
+                rejection_diagnostics=rejection_diagnostics,
+            )
             if warnings:
-                response["warnings"] = warnings
-            try:
-                pipeline_visibility = get_adoption_pipeline_visibility(
-                    project_id=project_id,
-                    days=14,
-                    source_systems=None,
-                    namespaces=None,
-                )
-                rejection_diagnostics = get_adoption_rejection_diagnostics(
-                    project_id=project_id,
-                    days=14,
-                    sample_limit=5,
-                )
-                response["pipeline_visibility"] = pipeline_visibility
-                response["rejection_diagnostics"] = rejection_diagnostics
-                response["explainability"] = _build_adoption_sync_explainability(
-                    warnings=warnings,
-                    pipeline_visibility=pipeline_visibility,
-                    rejection_diagnostics=rejection_diagnostics,
-                )
-            except Exception as explainability_exc:  # pragma: no cover - defensive envelope
-                warnings.append(
-                    {
-                        "code": "explainability_unavailable",
-                        "severity": "warning",
-                        "message": f"Could not build explainability snapshot: {explainability_exc}",
-                    }
-                )
                 response["warnings"] = warnings
 
             mark_request_completed(
@@ -28595,9 +28700,47 @@ def get_adoption_pipeline_visibility(
     queue_blocked_conflict = 0
     rejected_event_like = 0
     accepted_source = "events_estimated"
+    draft_flood_max_open_per_page = int(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("draft_flood_max_open_per_page") or 200)
+    draft_flood_max_open_per_entity = int(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("draft_flood_max_open_per_entity") or 400)
+    queue_pressure_open_drafts_threshold = int(
+        _DEFAULT_GATEKEEPER_ROUTING_POLICY.get("queue_pressure_safe_mode_open_drafts_threshold") or 5000
+    )
+    queue_pressure_open_drafts_per_page_threshold = int(
+        _DEFAULT_GATEKEEPER_ROUTING_POLICY.get("queue_pressure_safe_mode_open_drafts_per_page_threshold") or 200
+    )
+    max_open_drafts_per_page = 0
+    max_open_drafts_per_entity = 0
+    pages_over_open_draft_limit = 0
+    entities_over_open_draft_limit = 0
+    top_draft_pressure_pages: list[dict[str, Any]] = []
+    top_draft_pressure_entities: list[dict[str, Any]] = []
 
     with get_conn() as conn:
         with conn.cursor() as cur:
+            routing_policy = _load_project_routing_policy(conn, project_id=project_id)
+            draft_flood_max_open_per_page = max(
+                50,
+                int(routing_policy.get("draft_flood_max_open_per_page") or draft_flood_max_open_per_page),
+            )
+            draft_flood_max_open_per_entity = max(
+                50,
+                int(routing_policy.get("draft_flood_max_open_per_entity") or draft_flood_max_open_per_entity),
+            )
+            queue_pressure_open_drafts_threshold = max(
+                100,
+                int(
+                    routing_policy.get("queue_pressure_safe_mode_open_drafts_threshold")
+                    or queue_pressure_open_drafts_threshold
+                ),
+            )
+            queue_pressure_open_drafts_per_page_threshold = max(
+                50,
+                int(
+                    routing_policy.get("queue_pressure_safe_mode_open_drafts_per_page_threshold")
+                    or queue_pressure_open_drafts_per_page_threshold
+                ),
+            )
+
             if _memory_backfill_batches_table_exists(conn):
                 params: list[Any] = [project_id, cutoff]
                 where_sql = ["project_id = %s", "updated_at >= %s"]
@@ -28919,6 +29062,109 @@ def get_adoption_pipeline_visibility(
                 queue_row = cur.fetchone() or (0, 0)
                 queue_pending_review = int(queue_row[0] or 0)
                 queue_blocked_conflict = int(queue_row[1] or 0)
+                if _public_table_exists(conn, "wiki_pages"):
+                    cur.execute(
+                        """
+                        WITH page_open AS (
+                          SELECT
+                            d.page_id,
+                            COUNT(*)::bigint AS open_drafts
+                          FROM wiki_draft_changes d
+                          WHERE d.project_id = %s
+                            AND d.status IN ('pending_review', 'blocked_conflict')
+                          GROUP BY d.page_id
+                        )
+                        SELECT
+                          p.slug,
+                          p.title,
+                          p.entity_key,
+                          po.open_drafts
+                        FROM page_open po
+                        LEFT JOIN wiki_pages p ON p.id = po.page_id
+                        ORDER BY po.open_drafts DESC, p.slug ASC
+                        LIMIT 5
+                        """,
+                        (project_id,),
+                    )
+                    page_pressure_rows = cur.fetchall() or []
+                    for row in page_pressure_rows:
+                        open_drafts = int(row[3] or 0)
+                        max_open_drafts_per_page = max(max_open_drafts_per_page, open_drafts)
+                        top_draft_pressure_pages.append(
+                            {
+                                "slug": str(row[0] or ""),
+                                "title": str(row[1] or ""),
+                                "entity_key": str(row[2] or ""),
+                                "open_drafts": open_drafts,
+                            }
+                        )
+
+                    cur.execute(
+                        """
+                        WITH page_open AS (
+                          SELECT
+                            p.entity_key,
+                            COUNT(*)::bigint AS open_drafts
+                          FROM wiki_draft_changes d
+                          JOIN wiki_pages p ON p.id = d.page_id
+                          WHERE d.project_id = %s
+                            AND d.status IN ('pending_review', 'blocked_conflict')
+                          GROUP BY p.entity_key
+                        )
+                        SELECT entity_key, open_drafts
+                        FROM page_open
+                        ORDER BY open_drafts DESC, entity_key ASC
+                        LIMIT 5
+                        """,
+                        (project_id,),
+                    )
+                    entity_pressure_rows = cur.fetchall() or []
+                    for row in entity_pressure_rows:
+                        open_drafts = int(row[1] or 0)
+                        max_open_drafts_per_entity = max(max_open_drafts_per_entity, open_drafts)
+                        top_draft_pressure_entities.append(
+                            {
+                                "entity_key": str(row[0] or ""),
+                                "open_drafts": open_drafts,
+                            }
+                        )
+
+                    cur.execute(
+                        """
+                        WITH page_open AS (
+                          SELECT d.page_id, COUNT(*)::bigint AS open_drafts
+                          FROM wiki_draft_changes d
+                          WHERE d.project_id = %s
+                            AND d.status IN ('pending_review', 'blocked_conflict')
+                          GROUP BY d.page_id
+                        )
+                        SELECT COUNT(*)::bigint
+                        FROM page_open
+                        WHERE open_drafts > %s
+                        """,
+                        (project_id, draft_flood_max_open_per_page),
+                    )
+                    row = cur.fetchone()
+                    pages_over_open_draft_limit = int(row[0] or 0) if row else 0
+
+                    cur.execute(
+                        """
+                        WITH entity_open AS (
+                          SELECT p.entity_key, COUNT(*)::bigint AS open_drafts
+                          FROM wiki_draft_changes d
+                          JOIN wiki_pages p ON p.id = d.page_id
+                          WHERE d.project_id = %s
+                            AND d.status IN ('pending_review', 'blocked_conflict')
+                          GROUP BY p.entity_key
+                        )
+                        SELECT COUNT(*)::bigint
+                        FROM entity_open
+                        WHERE open_drafts > %s
+                        """,
+                        (project_id, draft_flood_max_open_per_entity),
+                    )
+                    row = cur.fetchone()
+                    entities_over_open_draft_limit = int(row[0] or 0) if row else 0
 
     def _stage_ratio(prev_value: int, next_value: int) -> float | None:
         if prev_value <= 0:
@@ -28972,6 +29218,46 @@ def get_adoption_pipeline_visibility(
                 "hint": hint_by_stage.get((str(top["from_stage"]), str(top["to_stage"])), "Inspect stage diagnostics."),
             }
 
+    queue_open_total = int(queue_pending_review + queue_blocked_conflict)
+    pressure_warnings: list[dict[str, Any]] = []
+    if queue_open_total > queue_pressure_open_drafts_threshold:
+        pressure_warnings.append(
+            {
+                "code": "draft_queue_pressure",
+                "severity": "critical",
+                "message": (
+                    "Open drafts queue exceeds safe OOTB threshold; enable stricter routing and safe mode."
+                ),
+                "open_drafts_total": queue_open_total,
+                "threshold": queue_pressure_open_drafts_threshold,
+            }
+        )
+    page_pressure_threshold = max(draft_flood_max_open_per_page, queue_pressure_open_drafts_per_page_threshold)
+    if max_open_drafts_per_page > page_pressure_threshold:
+        pressure_warnings.append(
+            {
+                "code": "draft_flood_page_limit",
+                "severity": "critical",
+                "message": "A page has too many open drafts; draft-flood guard should be enabled/tightened.",
+                "max_open_drafts_per_page": max_open_drafts_per_page,
+                "threshold": page_pressure_threshold,
+                "pages_over_limit": int(max(0, pages_over_open_draft_limit)),
+                "top_pages": top_draft_pressure_pages[:3],
+            }
+        )
+    if max_open_drafts_per_entity > draft_flood_max_open_per_entity:
+        pressure_warnings.append(
+            {
+                "code": "draft_flood_entity_limit",
+                "severity": "critical",
+                "message": "An entity has too many open drafts; noisy stream is dominating wiki synthesis.",
+                "max_open_drafts_per_entity": max_open_drafts_per_entity,
+                "threshold": draft_flood_max_open_per_entity,
+                "entities_over_limit": int(max(0, entities_over_open_draft_limit)),
+                "top_entities": top_draft_pressure_entities[:3],
+            }
+        )
+
     return {
         "project_id": project_id,
         "window_days": int(days),
@@ -29009,7 +29295,21 @@ def get_adoption_pipeline_visibility(
         "draft_queue": {
             "pending_review": queue_pending_review,
             "blocked_conflict": queue_blocked_conflict,
-            "open_total": int(queue_pending_review + queue_blocked_conflict),
+            "open_total": queue_open_total,
+        },
+        "draft_flood_guard": {
+            "thresholds": {
+                "max_open_per_page": int(draft_flood_max_open_per_page),
+                "max_open_per_entity": int(draft_flood_max_open_per_entity),
+                "safe_mode_open_drafts_threshold": int(queue_pressure_open_drafts_threshold),
+                "safe_mode_open_drafts_per_page_threshold": int(queue_pressure_open_drafts_per_page_threshold),
+            },
+            "max_open_per_page": int(max_open_drafts_per_page),
+            "max_open_per_entity": int(max_open_drafts_per_entity),
+            "pages_over_limit": int(max(0, pages_over_open_draft_limit)),
+            "entities_over_limit": int(max(0, entities_over_open_draft_limit)),
+            "top_pages": top_draft_pressure_pages,
+            "top_entities": top_draft_pressure_entities,
         },
         "page_channels": {
             "from_moderation": int(pages_from_moderation),
@@ -29025,6 +29325,7 @@ def get_adoption_pipeline_visibility(
         "stages": stages,
         "transitions": transitions,
         "bottleneck": bottleneck,
+        "warnings": pressure_warnings,
     }
 
 
@@ -29351,6 +29652,81 @@ def _has_critical_adoption_warnings(warnings: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _merge_adoption_warnings(
+    existing: list[dict[str, Any]] | None,
+    additional: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (existing or []) + (additional or []):
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip().lower()
+        message = str(item.get("message") or "").strip().lower()
+        key = f"{code}|{message}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(item))
+    return out
+
+
+def _build_adoption_pipeline_pressure_warnings(pipeline_visibility: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(pipeline_visibility, dict):
+        return []
+
+    draft_queue = pipeline_visibility.get("draft_queue") if isinstance(pipeline_visibility.get("draft_queue"), dict) else {}
+    draft_flood_guard = (
+        pipeline_visibility.get("draft_flood_guard")
+        if isinstance(pipeline_visibility.get("draft_flood_guard"), dict)
+        else {}
+    )
+    thresholds = draft_flood_guard.get("thresholds") if isinstance(draft_flood_guard.get("thresholds"), dict) else {}
+
+    queue_open_total = int(draft_queue.get("open_total") or 0)
+    queue_threshold = int(thresholds.get("safe_mode_open_drafts_threshold") or 5000)
+    max_open_per_page = int(draft_flood_guard.get("max_open_per_page") or 0)
+    max_open_per_entity = int(draft_flood_guard.get("max_open_per_entity") or 0)
+    max_open_page_threshold = int(thresholds.get("safe_mode_open_drafts_per_page_threshold") or 200)
+    max_open_entity_threshold = int(thresholds.get("max_open_per_entity") or 400)
+
+    warnings: list[dict[str, Any]] = []
+    if queue_open_total > queue_threshold:
+        warnings.append(
+            {
+                "code": "draft_queue_pressure",
+                "severity": "critical",
+                "message": "Open draft queue is above safe OOTB threshold.",
+                "open_drafts_total": queue_open_total,
+                "threshold": queue_threshold,
+                "next_action": "enable_adoption_safe_mode",
+            }
+        )
+    if max_open_per_page > max_open_page_threshold:
+        warnings.append(
+            {
+                "code": "draft_flood_page_limit",
+                "severity": "critical",
+                "message": "Single wiki page exceeded safe open-draft threshold.",
+                "max_open_per_page": max_open_per_page,
+                "threshold": max_open_page_threshold,
+                "next_action": "tighten_high_signal_routing",
+            }
+        )
+    if max_open_per_entity > max_open_entity_threshold:
+        warnings.append(
+            {
+                "code": "draft_flood_entity_limit",
+                "severity": "critical",
+                "message": "Single entity exceeded safe open-draft threshold.",
+                "max_open_per_entity": max_open_per_entity,
+                "threshold": max_open_entity_threshold,
+                "next_action": "tighten_high_signal_routing",
+            }
+        )
+    return warnings
+
+
 def _build_adoption_sync_explainability(
     *,
     warnings: list[dict[str, Any]],
@@ -29501,6 +29877,23 @@ def _build_adoption_safe_mode_target_config(*, current_config: dict[str, Any]) -
             int(current_routing.get("min_evidence_for_wiki_candidate") or 2),
         ),
         "backfill_requires_policy_signal": True,
+        "emit_reinforcement_drafts": False,
+        "draft_flood_max_open_per_page": min(
+            200,
+            max(100, int(current_routing.get("draft_flood_max_open_per_page") or 200)),
+        ),
+        "draft_flood_max_open_per_entity": min(
+            400,
+            max(150, int(current_routing.get("draft_flood_max_open_per_entity") or 400)),
+        ),
+        "queue_pressure_safe_mode_open_drafts_threshold": min(
+            5000,
+            max(500, int(current_routing.get("queue_pressure_safe_mode_open_drafts_threshold") or 5000)),
+        ),
+        "queue_pressure_safe_mode_open_drafts_per_page_threshold": min(
+            200,
+            max(80, int(current_routing.get("queue_pressure_safe_mode_open_drafts_per_page_threshold") or 200)),
+        ),
         "ingestion_classification_default_deny_classes": ["operational_stream", "pii_sensitive_stream"],
         "publish_mode_by_assertion_class": {
             "policy": "human_required",

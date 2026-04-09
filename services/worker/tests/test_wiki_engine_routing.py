@@ -518,6 +518,22 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertEqual(policy["auto_publish_risk_keywords_medium"][:2], ["sla", "finance"])
         self.assertEqual(policy["auto_publish_force_human_required_levels"][:2], ["high", "medium"])
 
+    def test_routing_policy_normalizes_draft_flood_controls(self) -> None:
+        policy = self.engine._normalize_gatekeeper_routing_policy(
+            {
+                "emit_reinforcement_drafts": True,
+                "draft_flood_max_open_per_page": "20",
+                "draft_flood_max_open_per_entity": "999999",
+                "queue_pressure_safe_mode_open_drafts_threshold": 12,
+                "queue_pressure_safe_mode_open_drafts_per_page_threshold": "0",
+            }
+        )
+        self.assertTrue(bool(policy["emit_reinforcement_drafts"]))
+        self.assertEqual(int(policy["draft_flood_max_open_per_page"]), 50)
+        self.assertEqual(int(policy["draft_flood_max_open_per_entity"]), 40000)
+        self.assertEqual(int(policy["queue_pressure_safe_mode_open_drafts_threshold"]), 100)
+        self.assertEqual(int(policy["queue_pressure_safe_mode_open_drafts_per_page_threshold"]), 50)
+
     def test_ingestion_classification_defaults_to_operational_stream_for_snapshot_noise(self) -> None:
         claim = ClaimInput(
             id=uuid.uuid4(),

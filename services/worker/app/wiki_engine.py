@@ -140,6 +140,9 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "queue",
         "webhook_events",
         "task_runtime",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "sheet",
     ],
     "blocked_source_type_keywords": [
         "external_event",
@@ -165,6 +168,9 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "telemetry",
         "trace",
         "payload_dump",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
     ],
     "event_stream_token_keywords": [
         "order",
@@ -308,6 +314,11 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "backfill_llm_classifier_min_confidence": 0.78,
     "backfill_llm_classifier_ambiguous_only": True,
     "backfill_llm_classifier_model": "",
+    "emit_reinforcement_drafts": False,
+    "draft_flood_max_open_per_page": 200,
+    "draft_flood_max_open_per_entity": 400,
+    "queue_pressure_safe_mode_open_drafts_threshold": 5000,
+    "queue_pressure_safe_mode_open_drafts_per_page_threshold": 200,
 }
 
 BACKFILL_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
@@ -1665,7 +1676,9 @@ class WikiSynthesisEngine:
     def _process_claim(self, conn, claim: ClaimInput) -> None:
         valid_from, valid_to, temporal_source = self._resolve_claim_valid_window(claim)
         fingerprint = self._claim_fingerprint(claim)
-        gate = self._gatekeeper_decide(conn, claim, fingerprint)
+        config = self._resolve_gatekeeper_config(conn, claim.project_id)
+        routing_policy = self._normalize_gatekeeper_routing_policy(config.routing_policy)
+        gate = self._gatekeeper_decide(conn, claim, fingerprint, config=config)
         self._record_gatekeeper_decision(conn, claim, gate)
         assertion_class = str((gate.features or {}).get("assertion_class") or "fact").strip().lower() or "fact"
         self._upsert_claim(
@@ -1753,6 +1766,55 @@ class WikiSynthesisEngine:
         elif page_resolution.mode == "existing_low_confidence":
             decision = "new_statement"
 
+        emit_reinforcement_drafts = bool(routing_policy.get("emit_reinforcement_drafts", False))
+        if decision in {"reinforcement", "duplicate_ignored"} and not emit_reinforcement_drafts:
+            self._set_claim_status(
+                conn,
+                claim_id=claim.id,
+                status="rejected",
+                rejection_reason="reinforcement_suppressed",
+                rejection_details={
+                    "decision": decision,
+                    "page_id": str(page.id),
+                    "section_key": section_key,
+                    "policy_key": "emit_reinforcement_drafts",
+                    "policy_value": False,
+                },
+            )
+            self._upsert_wiki_claim_link(
+                conn,
+                claim_id=claim.id,
+                page_id=page.id,
+                section_key=section_key,
+                insertion_status=decision,
+            )
+            return
+
+        if draft_status == "pending_review":
+            flood_guard = self._evaluate_draft_flood_guard(
+                conn,
+                project_id=claim.project_id,
+                page_id=page.id,
+                entity_key=page.entity_key,
+                routing_policy=routing_policy,
+            )
+            if bool(flood_guard.get("blocked")):
+                self._set_claim_status(
+                    conn,
+                    claim_id=claim.id,
+                    status="rejected",
+                    rejection_reason=str(flood_guard.get("reason") or "draft_flood_guard"),
+                    rejection_details=flood_guard,
+                )
+                self._upsert_wiki_claim_link(
+                    conn,
+                    claim_id=claim.id,
+                    page_id=page.id,
+                    section_key=section_key,
+                    insertion_status="rejected",
+                )
+                return
+
         patch = self._build_markdown_patch(
             decision=decision,
             claim=claim,
@@ -1806,16 +1868,13 @@ class WikiSynthesisEngine:
                     draft_status,
                 ),
             )
-            cur.execute(
-                """
-                INSERT INTO wiki_claim_links (claim_id, page_id, section_key, insertion_status)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (claim_id, page_id, section_key) DO UPDATE
-                SET insertion_status = EXCLUDED.insertion_status,
-                    created_at = NOW()
-                """,
-                (claim.id, page.id, section_key, decision),
-            )
+        self._upsert_wiki_claim_link(
+            conn,
+            claim_id=claim.id,
+            page_id=page.id,
+            section_key=section_key,
+            insertion_status=decision,
+        )
 
     def _upsert_claim(
         self,
@@ -1920,8 +1979,15 @@ class WikiSynthesisEngine:
                     ),
                 )
 
-    def _gatekeeper_decide(self, conn, claim: ClaimInput, fingerprint: str) -> GatekeeperDecision:
-        config = self._resolve_gatekeeper_config(conn, claim.project_id)
+    def _gatekeeper_decide(
+        self,
+        conn,
+        claim: ClaimInput,
+        fingerprint: str,
+        *,
+        config: GatekeeperConfig | None = None,
+    ) -> GatekeeperDecision:
+        resolved_config = config or self._resolve_gatekeeper_config(conn, claim.project_id)
         repeated_count = self._count_existing_claims_by_fingerprint(conn, claim.project_id, fingerprint)
         historical_source_count = self._count_source_diversity_by_fingerprint(conn, claim.project_id, fingerprint)
         incoming_source_ids = self._extract_source_ids(claim.evidence)
@@ -1929,16 +1995,142 @@ class WikiSynthesisEngine:
             conn,
             claim.project_id,
             claim.entity_key,
-            days=config.conflict_free_days,
+            days=resolved_config.conflict_free_days,
         )
         return self._gatekeeper_decide_from_inputs(
             claim=claim,
-            config=config,
+            config=resolved_config,
             repeated_count=repeated_count,
             historical_source_count=historical_source_count,
             incoming_source_ids=incoming_source_ids,
             has_recent_open_conflict=has_recent_open_conflict,
         )
+
+    def _set_claim_status(
+        self,
+        conn,
+        *,
+        claim_id: uuid.UUID,
+        status: str,
+        rejection_reason: str | None = None,
+        rejection_details: dict[str, Any] | None = None,
+    ) -> None:
+        metadata_patch: dict[str, Any] = {
+            "synthesis_control": {
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }
+        if rejection_reason:
+            metadata_patch["synthesis_control"]["reason"] = rejection_reason
+        if isinstance(rejection_details, dict) and rejection_details:
+            metadata_patch["synthesis_control"]["details"] = rejection_details
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE claims
+                SET status = %s,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (status, self._jsonb(metadata_patch), claim_id),
+            )
+
+    def _upsert_wiki_claim_link(
+        self,
+        conn,
+        *,
+        claim_id: uuid.UUID,
+        page_id: uuid.UUID,
+        section_key: str,
+        insertion_status: str,
+    ) -> None:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO wiki_claim_links (claim_id, page_id, section_key, insertion_status)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (claim_id, page_id, section_key) DO UPDATE
+                SET insertion_status = EXCLUDED.insertion_status,
+                    created_at = NOW()
+                """,
+                (claim_id, page_id, section_key, insertion_status),
+            )
+
+    def _evaluate_draft_flood_guard(
+        self,
+        conn,
+        *,
+        project_id: str,
+        page_id: uuid.UUID,
+        entity_key: str,
+        routing_policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        max_open_per_page = int(routing_policy.get("draft_flood_max_open_per_page", 200) or 200)
+        max_open_per_entity = int(routing_policy.get("draft_flood_max_open_per_entity", 400) or 400)
+        max_open_total = int(routing_policy.get("queue_pressure_safe_mode_open_drafts_threshold", 5000) or 5000)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH queue_counts AS (
+                  SELECT
+                    COUNT(*)::bigint AS open_total,
+                    COUNT(*) FILTER (WHERE page_id = %s)::bigint AS open_for_page
+                  FROM wiki_draft_changes
+                  WHERE project_id = %s
+                    AND status IN ('pending_review', 'blocked_conflict')
+                ),
+                entity_counts AS (
+                  SELECT COUNT(*)::bigint AS open_for_entity
+                  FROM wiki_draft_changes d
+                  JOIN wiki_pages p ON p.id = d.page_id
+                  WHERE d.project_id = %s
+                    AND d.status IN ('pending_review', 'blocked_conflict')
+                    AND p.entity_key = %s
+                )
+                SELECT
+                  qc.open_total,
+                  qc.open_for_page,
+                  ec.open_for_entity
+                FROM queue_counts qc
+                CROSS JOIN entity_counts ec
+                """,
+                (page_id, project_id, project_id, entity_key),
+            )
+            row = cur.fetchone() or (0, 0, 0)
+
+        open_total = int(row[0] or 0)
+        open_for_page = int(row[1] or 0)
+        open_for_entity = int(row[2] or 0)
+        blocked = (
+            open_total >= max_open_total
+            or open_for_page >= max_open_per_page
+            or open_for_entity >= max_open_per_entity
+        )
+        if open_total >= max_open_total:
+            reason = "draft_queue_pressure"
+        elif open_for_page >= max_open_per_page:
+            reason = "draft_flood_page_limit"
+        elif open_for_entity >= max_open_per_entity:
+            reason = "draft_flood_entity_limit"
+        else:
+            reason = "ok"
+        return {
+            "blocked": blocked,
+            "reason": reason,
+            "counts": {
+                "open_total": open_total,
+                "open_for_page": open_for_page,
+                "open_for_entity": open_for_entity,
+            },
+            "thresholds": {
+                "open_total": max_open_total,
+                "open_for_page": max_open_per_page,
+                "open_for_entity": max_open_per_entity,
+            },
+        }
 
     def _gatekeeper_decide_from_inputs(
         self,
@@ -2755,6 +2947,45 @@ class WikiSynthesisEngine:
         )
         model_value = str(value.get("backfill_llm_classifier_model") or "").strip()
         normalized["backfill_llm_classifier_model"] = model_value[:128] if model_value else ""
+        normalized["emit_reinforcement_drafts"] = bool(
+            value.get("emit_reinforcement_drafts", base["emit_reinforcement_drafts"])
+        )
+        try:
+            draft_flood_max_open_per_page = int(
+                value.get("draft_flood_max_open_per_page", base["draft_flood_max_open_per_page"])
+            )
+        except Exception:
+            draft_flood_max_open_per_page = int(base["draft_flood_max_open_per_page"])
+        normalized["draft_flood_max_open_per_page"] = max(50, min(20000, draft_flood_max_open_per_page))
+        try:
+            draft_flood_max_open_per_entity = int(
+                value.get("draft_flood_max_open_per_entity", base["draft_flood_max_open_per_entity"])
+            )
+        except Exception:
+            draft_flood_max_open_per_entity = int(base["draft_flood_max_open_per_entity"])
+        normalized["draft_flood_max_open_per_entity"] = max(50, min(40000, draft_flood_max_open_per_entity))
+        try:
+            queue_pressure_open_drafts = int(
+                value.get(
+                    "queue_pressure_safe_mode_open_drafts_threshold",
+                    base["queue_pressure_safe_mode_open_drafts_threshold"],
+                )
+            )
+        except Exception:
+            queue_pressure_open_drafts = int(base["queue_pressure_safe_mode_open_drafts_threshold"])
+        normalized["queue_pressure_safe_mode_open_drafts_threshold"] = max(100, min(200000, queue_pressure_open_drafts))
+        try:
+            queue_pressure_open_drafts_per_page = int(
+                value.get(
+                    "queue_pressure_safe_mode_open_drafts_per_page_threshold",
+                    base["queue_pressure_safe_mode_open_drafts_per_page_threshold"],
+                )
+            )
+        except Exception:
+            queue_pressure_open_drafts_per_page = int(base["queue_pressure_safe_mode_open_drafts_per_page_threshold"])
+        normalized["queue_pressure_safe_mode_open_drafts_per_page_threshold"] = max(
+            50, min(20000, queue_pressure_open_drafts_per_page)
+        )
         return normalized
 
     def _resolve_gatekeeper_config(self, conn, project_id: str) -> GatekeeperConfig:
