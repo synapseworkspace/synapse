@@ -28,7 +28,9 @@ def _matches_forbidden(path: str) -> bool:
         return True
     if normalized.startswith("node_modules/") or "/node_modules/" in normalized:
         return True
-    if normalized == ".env" or normalized.startswith(".env."):
+    if normalized == ".env":
+        return True
+    if normalized.startswith(".env.") and not normalized.endswith(".example"):
         return True
     return False
 
