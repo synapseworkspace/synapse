@@ -441,6 +441,35 @@ print(runs["runs"][0]["status"])
 
 This maps to `/v1/legacy-import/*` and is intended to replace project-specific one-off import scripts with reusable profile/template contracts.
 
+## Draft Moderation Ops (Safe Bulk Review)
+
+```python
+from synapse_sdk import WikiDraftBulkReviewFilter
+
+# 1) inspect draft inbox (project-scoped)
+drafts = synapse.list_wiki_drafts(status="pending_review", limit=50)
+print(len(drafts.get("drafts", [])))
+
+# 2) dry-run a safe bulk approve window
+preview = synapse.bulk_review_wiki_drafts(
+    reviewed_by="ops_reviewer",
+    action="approve",
+    dry_run=True,
+    limit=100,
+    filter=WikiDraftBulkReviewFilter(
+        category="policy",
+        category_mode="prefix",
+        source_system="postgres_sql",
+        assertion_class="process",
+        min_confidence=0.85,
+        min_risk_level="medium",
+    ),
+)
+print(preview["summary"])
+```
+
+These helpers map to `/v1/wiki/drafts` and `/v1/wiki/drafts/bulk-review`.
+
 ## Cookbook Examples
 
 See runnable scenarios in:

@@ -364,6 +364,33 @@ console.log((runs as any).runs?.[0]?.status);
 
 These SDK calls map to `/v1/legacy-import/*` and remove the need for per-project importer scripts by using reusable mapping templates and sync runner contracts.
 
+## Draft Moderation Ops (Safe Bulk Review)
+
+```ts
+// 1) read project-scoped draft inbox
+const inbox = await synapse.listWikiDrafts({ status: "pending_review", limit: 50 });
+console.log((inbox as any).drafts?.length ?? 0);
+
+// 2) dry-run bulk moderation with typed filter
+const preview = await synapse.bulkReviewWikiDrafts({
+  reviewedBy: "ops_reviewer",
+  action: "approve",
+  dryRun: true,
+  limit: 100,
+  filter: {
+    category: "policy",
+    category_mode: "prefix",
+    source_system: "postgres_sql",
+    assertion_class: "process",
+    min_confidence: 0.85,
+    min_risk_level: "medium"
+  }
+});
+console.log((preview as any).summary);
+```
+
+These calls map to `/v1/wiki/drafts` and `/v1/wiki/drafts/bulk-review`.
+
 ## Task Core Helpers
 
 ```ts

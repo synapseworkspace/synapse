@@ -4,7 +4,7 @@ import unittest
 from typing import Any
 
 from synapse_sdk.client import Synapse
-from synapse_sdk.types import MemoryBackfillRecord, SynapseConfig
+from synapse_sdk.types import MemoryBackfillRecord, SynapseConfig, WikiDraftBulkReviewFilter
 
 
 class _DummyTransport:
@@ -268,6 +268,43 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("limit"), 77)
         self.assertEqual((payload.get("filter") or {}).get("category"), "policy")
         self.assertEqual(payload.get("reason"), "legacy noise")
+
+    def test_bulk_review_wiki_drafts_accepts_typed_filter(self) -> None:
+        self.client.bulk_review_wiki_drafts(
+            reviewed_by="ops_reviewer",
+            action="approve",
+            dry_run=True,
+            filter=WikiDraftBulkReviewFilter(
+                category="policy",
+                category_mode="prefix",
+                source_system="postgres_sql",
+                page_type="process",
+                assertion_class="policy",
+                min_confidence=0.82,
+                min_risk_level="medium",
+            ),
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/drafts/bulk-review")
+        payload = call["payload"]
+        filter_payload = payload.get("filter") if isinstance(payload.get("filter"), dict) else {}
+        self.assertEqual(filter_payload.get("category"), "policy")
+        self.assertEqual(filter_payload.get("category_mode"), "prefix")
+        self.assertEqual(filter_payload.get("source_system"), "postgres_sql")
+        self.assertEqual(filter_payload.get("page_type"), "process")
+        self.assertEqual(filter_payload.get("assertion_class"), "policy")
+        self.assertEqual(filter_payload.get("min_confidence"), 0.82)
+        self.assertEqual(filter_payload.get("min_risk_level"), "medium")
+
+    def test_list_wiki_drafts_scopes_project_and_filters(self) -> None:
+        self.client.list_wiki_drafts(status="pending_review", limit=77)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/drafts")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("status"), "pending_review")
+        self.assertEqual(params.get("limit"), 77)
 
     def test_get_adoption_pipeline_visibility_is_project_scoped(self) -> None:
         self.client.get_adoption_pipeline_visibility(

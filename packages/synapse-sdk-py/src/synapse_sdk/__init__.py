@@ -54,6 +54,7 @@ from synapse_sdk.types import (
     Task,
     TaskComment,
     TaskLink,
+    WikiDraftBulkReviewFilter,
 )
 
 
@@ -72,6 +73,7 @@ __all__ = [
     "Task",
     "TaskComment",
     "TaskLink",
+    "WikiDraftBulkReviewFilter",
     "AgentProfile",
     "SynapseTransportError",
     "MCPContextHelper",

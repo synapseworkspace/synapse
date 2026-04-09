@@ -1,6 +1,9 @@
 export type SchemaVersion = "v1";
 export type DegradationMode = "buffer" | "drop" | "sync_flush";
 export type AdoptionMode = "full_loop" | "observe_only" | "draft_only" | "retrieve_only";
+export type WikiDraftStatus = "pending_review" | "blocked_conflict" | "approved" | "rejected";
+export type WikiDraftFilterMode = "exact" | "prefix" | "regex" | "contains";
+export type WikiDraftRiskLevel = "low" | "medium" | "high";
 
 export interface EvidenceRef {
   source_type: "dialog" | "tool_output" | "file" | "human_note" | "external_event";
@@ -106,6 +109,47 @@ export interface MonitorOptions {
 }
 
 export type AttachOptions = MonitorOptions;
+
+export interface ListWikiDraftsOptions {
+  status?: WikiDraftStatus | string;
+  limit?: number;
+}
+
+export interface WikiDraftBulkReviewFilter {
+  statuses?: Array<WikiDraftStatus | string>;
+  category?: string;
+  category_mode?: WikiDraftFilterMode;
+  source_system?: string;
+  source_system_mode?: WikiDraftFilterMode;
+  connector?: string;
+  connector_mode?: WikiDraftFilterMode;
+  page_type?: string;
+  page_type_mode?: WikiDraftFilterMode;
+  assertion_class?: string;
+  assertion_class_mode?: WikiDraftFilterMode;
+  tier?: string;
+  tier_mode?: WikiDraftFilterMode;
+  min_confidence?: number;
+  max_confidence?: number;
+  min_risk_level?: WikiDraftRiskLevel;
+  max_risk_level?: WikiDraftRiskLevel;
+  include_open_conflicts?: boolean;
+  include_archived_pages?: boolean;
+  include_published_pages?: boolean;
+}
+
+export interface BulkReviewWikiDraftsOptions {
+  reviewedBy: string;
+  action?: "approve" | "reject" | string;
+  dryRun?: boolean;
+  limit?: number;
+  filter?: WikiDraftBulkReviewFilter;
+  note?: string;
+  reason?: string;
+  force?: boolean;
+  dismissConflicts?: boolean;
+  idempotencyKey?: string;
+}
 
 export interface LangChainCallbackHandler {
   on_chain_start?: (serialized: unknown, inputs: unknown, kwargs?: Record<string, unknown>) => void;

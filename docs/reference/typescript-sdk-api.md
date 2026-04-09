@@ -17,6 +17,7 @@ Exports:
 - `BindLangChainOptions`
 - `BindLangGraphOptions`
 - `BootstrapMemoryInput`
+- `BulkReviewWikiDraftsOptions`
 - `Claim`
 - `CollectInsightOptions`
 - `DebugOptions`
@@ -31,6 +32,7 @@ Exports:
 - `InsightSynthesizer`
 - `LangChainCallbackHandler`
 - `LangChainCallbackHandlerOptions`
+- `ListWikiDraftsOptions`
 - `MemoryBackfillOptions`
 - `MemoryBackfillRecord`
 - `MonitorOptions`
@@ -58,6 +60,10 @@ Exports:
 - `TaskSource`
 - `TaskStatus`
 - `TelemetrySink`
+- `WikiDraftBulkReviewFilter`
+- `WikiDraftFilterMode`
+- `WikiDraftRiskLevel`
+- `WikiDraftStatus`
 - `WikiPublishChecklistPreset`
 - `WikiSpacePolicyAuditEntry`
 - `WikiSpacePolicyAuditResponse`

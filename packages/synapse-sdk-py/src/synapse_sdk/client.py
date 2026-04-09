@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, is_dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import inspect
@@ -9,7 +9,7 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 import re
 from threading import Lock
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -30,6 +30,7 @@ from synapse_sdk.types import (
     Task,
     TaskComment,
     TaskLink,
+    WikiDraftBulkReviewFilter,
 )
 
 _TRACE_ID: ContextVar[str | None] = ContextVar("synapse_trace_id", default=None)
@@ -814,6 +815,40 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def list_wiki_drafts(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "limit": max(1, min(200, int(limit))),
+        }
+        if status is not None and str(status).strip():
+            params["status"] = str(status).strip().lower()
+        return self._request_json(
+            "/v1/wiki/drafts",
+            method="GET",
+            params=params,
+        )
+
+    def _normalize_bulk_review_filter_payload(
+        self,
+        filter: Mapping[str, Any] | WikiDraftBulkReviewFilter | None,
+    ) -> dict[str, Any]:
+        if filter is None:
+            return {}
+        if isinstance(filter, Mapping):
+            return dict(filter)
+        if isinstance(filter, WikiDraftBulkReviewFilter):
+            payload = asdict(filter)
+            return {key: value for key, value in payload.items() if value is not None}
+        if is_dataclass(filter):
+            payload = asdict(filter)
+            return {str(key): value for key, value in payload.items() if value is not None}
+        raise TypeError("filter must be a mapping or WikiDraftBulkReviewFilter")
+
     def bulk_review_wiki_drafts(
         self,
         *,
@@ -821,7 +856,7 @@ class SynapseClient:
         action: str = "approve",
         dry_run: bool = True,
         limit: int = 200,
-        filter: dict[str, Any] | None = None,
+        filter: Mapping[str, Any] | WikiDraftBulkReviewFilter | None = None,
         note: str | None = None,
         reason: str | None = None,
         force: bool = False,
@@ -839,7 +874,7 @@ class SynapseClient:
             "action": normalized_action,
             "dry_run": bool(dry_run),
             "limit": max(1, min(2000, int(limit))),
-            "filter": dict(filter or {}),
+            "filter": self._normalize_bulk_review_filter_payload(filter),
             "note": str(note).strip() if note is not None and str(note).strip() else None,
             "reason": str(reason).strip() if reason is not None and str(reason).strip() else None,
             "force": bool(force),

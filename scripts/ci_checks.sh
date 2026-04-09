@@ -352,13 +352,16 @@ await synapse.executeAdoptionSyncPreset({
   dryRun: true,
   autoApplySafeModeOnCritical: false
 });
+await synapse.listWikiDrafts({ status: "pending_review", limit: 25 });
 
 const hasBulkReview = transport.requests.some((req) => req.path === "/v1/wiki/drafts/bulk-review" && req.method === "POST");
+const hasListDrafts = transport.requests.some((req) => req.path === "/v1/wiki/drafts" && req.method === "GET");
 const hasPipelineVisibility = transport.requests.some((req) => req.path === "/v1/adoption/pipeline/visibility" && req.method === "GET");
 const hasRejectionDiagnostics = transport.requests.some((req) => req.path === "/v1/adoption/rejections/diagnostics" && req.method === "GET");
 const hasSafeMode = transport.requests.some((req) => req.path === "/v1/adoption/safe-mode/enable" && req.method === "POST");
 const syncPresetCall = transport.requests.find((req) => req.path === "/v1/adoption/sync-presets/execute" && req.method === "POST");
 assert.equal(hasBulkReview, true, transport.requests);
+assert.equal(hasListDrafts, true, transport.requests);
 assert.equal(hasPipelineVisibility, true, transport.requests);
 assert.equal(hasRejectionDiagnostics, true, transport.requests);
 assert.equal(hasSafeMode, true, transport.requests);
@@ -837,6 +840,7 @@ client.execute_adoption_sync_preset(
     dry_run=True,
     auto_apply_safe_mode_on_critical=False,
 )
+client.list_wiki_drafts(status="pending_review", limit=25)
 client.flush()
 assert len(transport.events) >= 3
 assert len(transport.claims) >= 2
@@ -846,6 +850,14 @@ bulk_review_call = next(
         req
         for req in transport.requests
         if req.get("path") == "/v1/wiki/drafts/bulk-review" and req.get("method") == "POST"
+    ),
+    None,
+)
+list_drafts_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/wiki/drafts" and req.get("method") == "GET"
     ),
     None,
 )
@@ -882,6 +894,7 @@ sync_preset_call = next(
     None,
 )
 assert bulk_review_call is not None, transport.requests
+assert list_drafts_call is not None, transport.requests
 assert pipeline_visibility_call is not None, transport.requests
 assert rejection_diagnostics_call is not None, transport.requests
 assert safe_mode_call is not None, transport.requests

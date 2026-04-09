@@ -20,6 +20,7 @@ import type {
   InsightContext,
   InsightExtractor,
   InsightSynthesizer,
+  ListWikiDraftsOptions,
   MemoryBackfillOptions,
   MemoryBackfillRecord,
   MonitorOptions,
@@ -40,6 +41,7 @@ import type {
   TaskInput,
   TaskLinkInput,
   TaskStatus,
+  BulkReviewWikiDraftsOptions,
   WikiPublishChecklistPreset,
   WikiSpacePolicyAuditResponse,
   WikiSpacePolicyMode,
@@ -809,18 +811,18 @@ export class SynapseClient {
     });
   }
 
-  async bulkReviewWikiDrafts(options: {
-    reviewedBy: string;
-    action?: "approve" | "reject" | string;
-    dryRun?: boolean;
-    limit?: number;
-    filter?: Record<string, unknown>;
-    note?: string;
-    reason?: string;
-    force?: boolean;
-    dismissConflicts?: boolean;
-    idempotencyKey?: string;
-  }): Promise<Record<string, unknown>> {
+  async listWikiDrafts(options: ListWikiDraftsOptions = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/drafts", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        status: asOptionalString(options.status)?.toLowerCase(),
+        limit: normalizeInt(options.limit ?? 50, 1, 200)
+      }
+    });
+  }
+
+  async bulkReviewWikiDrafts(options: BulkReviewWikiDraftsOptions): Promise<Record<string, unknown>> {
     const reviewedBy = String(options.reviewedBy ?? "").trim();
     if (!reviewedBy) {
       throw new Error("reviewedBy is required");

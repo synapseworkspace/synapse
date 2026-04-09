@@ -11,6 +11,9 @@ AdoptionMode = Literal["full_loop", "observe_only", "draft_only", "retrieve_only
 TaskStatus = Literal["todo", "in_progress", "blocked", "done", "canceled"]
 TaskPriority = Literal["low", "normal", "high", "critical"]
 TaskSource = Literal["agent", "human", "system"]
+WikiDraftStatus = Literal["pending_review", "blocked_conflict", "approved", "rejected"]
+WikiDraftFilterMode = Literal["exact", "prefix", "regex", "contains"]
+WikiDraftRiskLevel = Literal["low", "medium", "high"]
 
 
 @dataclass
@@ -145,3 +148,27 @@ class AgentProfile:
     ensure_scaffold: bool = True
     include_daily_report_stub: bool = True
     last_seen_at: str | None = None
+
+
+@dataclass
+class WikiDraftBulkReviewFilter:
+    statuses: list[WikiDraftStatus] | None = None
+    category: str | None = None
+    category_mode: WikiDraftFilterMode = "exact"
+    source_system: str | None = None
+    source_system_mode: WikiDraftFilterMode = "exact"
+    connector: str | None = None
+    connector_mode: WikiDraftFilterMode = "exact"
+    page_type: str | None = None
+    page_type_mode: WikiDraftFilterMode = "exact"
+    assertion_class: str | None = None
+    assertion_class_mode: WikiDraftFilterMode = "exact"
+    tier: str | None = None
+    tier_mode: WikiDraftFilterMode = "exact"
+    min_confidence: float | None = None
+    max_confidence: float | None = None
+    min_risk_level: WikiDraftRiskLevel | None = None
+    max_risk_level: WikiDraftRiskLevel | None = None
+    include_open_conflicts: bool = False
+    include_archived_pages: bool = False
+    include_published_pages: bool = True
