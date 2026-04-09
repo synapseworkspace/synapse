@@ -957,6 +957,15 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
     sync_processor_lookback_minutes: int = Field(default=30, ge=1, le=1440)
     fail_on_sync_processor_unavailable: bool = False
+    auto_apply_safe_mode_on_critical: bool = True
+
+
+class AdoptionSafeModeEnableRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class AdoptionAgentWikiBootstrapRequest(BaseModel):
@@ -2932,6 +2941,209 @@ def _compute_agent_capability_confidence(summary: dict[str, Any]) -> float:
     return round(max(0.0, min(1.0, confidence)), 4)
 
 
+def _derive_runtime_agent_role(*, event_types: list[str], tools: list[str]) -> str:
+    probes = " ".join([*event_types, *tools]).lower()
+    if any(token in probes for token in ("dispatch", "route", "delivery", "logistics")):
+        return "Dispatch Agent"
+    if any(token in probes for token in ("support", "ticket", "customer", "chat")):
+        return "Support Agent"
+    if any(token in probes for token in ("billing", "invoice", "payment", "refund")):
+        return "Billing Agent"
+    if any(token in probes for token in ("review", "approve", "moderation", "policy")):
+        return "Governance Agent"
+    return "Runtime Agent"
+
+
+def _derive_runtime_agent_responsibilities(*, event_types: list[str], tools: list[str], data_sources: list[str]) -> list[str]:
+    responsibilities: list[str] = []
+    if event_types:
+        responsibilities.append(f"Handles runtime events ({', '.join(event_types[:3])}).")
+    if tools:
+        responsibilities.append(f"Uses tools: {', '.join(tools[:3])}.")
+    if data_sources:
+        responsibilities.append(f"Reads sources: {', '.join(data_sources[:3])}.")
+    if not responsibilities:
+        responsibilities.append("Processes operational tasks from runtime workload.")
+    return responsibilities[:4]
+
+
+def _build_runtime_agent_capability_matrix(
+    cur: Any,
+    *,
+    project_id: str,
+    max_agents: int,
+    lookback_days: int = 30,
+) -> list[dict[str, Any]]:
+    lookback_days = max(1, min(180, int(lookback_days)))
+    cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
+    limit = max(1, min(5000, int(max_agents)))
+
+    cur.execute(
+        """
+        SELECT
+          lower(trim(agent_id)) AS agent_id,
+          COUNT(*)::int AS events_total,
+          (COUNT(DISTINCT session_id) FILTER (WHERE COALESCE(session_id, '') <> ''))::int AS sessions_total,
+          MAX(observed_at) AS last_seen_at
+        FROM events
+        WHERE project_id = %s
+          AND COALESCE(trim(agent_id), '') <> ''
+          AND observed_at >= %s
+        GROUP BY lower(trim(agent_id))
+        ORDER BY events_total DESC, agent_id ASC
+        LIMIT %s
+        """,
+        (project_id, cutoff, limit),
+    )
+    rows = cur.fetchall() or []
+    has_tasks_table = _wiki_feature_table_exists(cur, "public.synapse_tasks")
+    matrix: list[dict[str, Any]] = []
+
+    for row in rows:
+        agent_id = str(row[0] or "").strip().lower()
+        if not agent_id:
+            continue
+        events_total = int(row[1] or 0)
+        sessions_total = int(row[2] or 0)
+        last_seen_at = row[3] if isinstance(row[3], datetime) else None
+        now_ts = datetime.now(UTC)
+        age_hours = (
+            int((now_ts - last_seen_at).total_seconds() // 3600)
+            if isinstance(last_seen_at, datetime)
+            else 24 * lookback_days
+        )
+        status = "active" if age_hours <= 24 else ("idle" if age_hours <= 24 * 7 else "offline")
+
+        cur.execute(
+            """
+            SELECT event_type, COUNT(*)::int
+            FROM events
+            WHERE project_id = %s
+              AND lower(COALESCE(agent_id, '')) = %s
+              AND observed_at >= %s
+            GROUP BY event_type
+            ORDER BY COUNT(*) DESC, event_type ASC
+            LIMIT 8
+            """,
+            (project_id, agent_id, cutoff),
+        )
+        event_rows = cur.fetchall() or []
+        event_types = [str(item[0] or "").strip() for item in event_rows if str(item[0] or "").strip()]
+
+        cur.execute(
+            """
+            SELECT tool_name, COUNT(*)::int
+            FROM (
+              SELECT
+                COALESCE(
+                  NULLIF(trim(payload->>'tool_name'), ''),
+                  NULLIF(trim(payload->>'tool'), ''),
+                  NULLIF(trim(payload#>>'{tool,name}'), '')
+                ) AS tool_name
+              FROM events
+              WHERE project_id = %s
+                AND lower(COALESCE(agent_id, '')) = %s
+                AND observed_at >= %s
+            ) t
+            WHERE COALESCE(tool_name, '') <> ''
+            GROUP BY tool_name
+            ORDER BY COUNT(*) DESC, tool_name ASC
+            LIMIT 8
+            """,
+            (project_id, agent_id, cutoff),
+        )
+        tool_rows = cur.fetchall() or []
+        tools = [str(item[0] or "").strip() for item in tool_rows if str(item[0] or "").strip()]
+
+        cur.execute(
+            """
+            SELECT source_name, COUNT(*)::int
+            FROM (
+              SELECT
+                COALESCE(
+                  NULLIF(trim(payload#>>'{metadata,source_system}'), ''),
+                  NULLIF(trim(payload#>>'{backfill,source_system}'), ''),
+                  NULLIF(trim(payload->>'source_system'), ''),
+                  NULLIF(trim(payload#>>'{metadata,source}'), '')
+                ) AS source_name
+              FROM events
+              WHERE project_id = %s
+                AND lower(COALESCE(agent_id, '')) = %s
+                AND observed_at >= %s
+            ) s
+            WHERE COALESCE(source_name, '') <> ''
+            GROUP BY source_name
+            ORDER BY COUNT(*) DESC, source_name ASC
+            LIMIT 8
+            """,
+            (project_id, agent_id, cutoff),
+        )
+        source_rows = cur.fetchall() or []
+        data_sources = [str(item[0] or "").strip() for item in source_rows if str(item[0] or "").strip()]
+
+        tasks_touched = 0
+        tasks_done = 0
+        if has_tasks_table:
+            cur.execute(
+                """
+                SELECT status, COUNT(*)::int
+                FROM synapse_tasks
+                WHERE project_id = %s
+                  AND lower(COALESCE(updated_by, '')) = %s
+                  AND updated_at >= %s
+                GROUP BY status
+                """,
+                (project_id, agent_id, cutoff),
+            )
+            task_rows = cur.fetchall() or []
+            for task_row in task_rows:
+                status_value = str(task_row[0] or "").strip().lower()
+                count = int(task_row[1] or 0)
+                tasks_touched += count
+                if status_value == "done":
+                    tasks_done += count
+
+        summary = {
+            "events_total": events_total,
+            "sessions_total": sessions_total,
+            "tasks_touched": tasks_touched,
+            "tasks_done": tasks_done,
+        }
+        confidence = _compute_agent_capability_confidence(summary)
+        role = _derive_runtime_agent_role(event_types=event_types, tools=tools)
+        responsibilities = _derive_runtime_agent_responsibilities(
+            event_types=event_types,
+            tools=tools,
+            data_sources=data_sources,
+        )
+        matrix.append(
+            {
+                "agent_id": agent_id,
+                "display_name": agent_id.replace("_", " ").title(),
+                "team": "Runtime Agents",
+                "role": role,
+                "status": status,
+                "responsibilities": responsibilities,
+                "tools": tools,
+                "data_sources": data_sources,
+                "limits": ["Inferred from runtime signals; register profile for explicit policy limits."],
+                "confidence": confidence,
+                "last_success_at": last_seen_at.isoformat() if isinstance(last_seen_at, datetime) else None,
+                "evidence": [
+                    {
+                        "kind": "runtime_events",
+                        "window_days": lookback_days,
+                        "events_total": events_total,
+                        "sessions_total": sessions_total,
+                        "top_event_types": event_types[:5],
+                    }
+                ],
+            }
+        )
+    matrix.sort(key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("agent_id") or "")))
+    return matrix
+
+
 def _build_agent_capability_matrix(
     cur: Any,
     *,
@@ -3522,6 +3734,31 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "event": "human_required",
         "fact": "conditional",
     },
+    "auto_publish_high_signal_assertion_classes": [
+        "policy",
+        "process",
+        "preference",
+    ],
+    "auto_publish_high_signal_page_types": [
+        "access",
+        "process",
+        "customer",
+    ],
+    "auto_publish_high_signal_category_keywords": [
+        "policy",
+        "rule",
+        "process",
+        "runbook",
+        "playbook",
+        "procedure",
+        "instruction",
+        "preference",
+        "регламент",
+        "правило",
+        "процесс",
+        "инструкция",
+        "предпочт",
+    ],
     "auto_publish_risk_keywords_high": [
         "legal",
         "compliance",
@@ -5493,6 +5730,21 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     )
     if not normalized["publish_mode_by_assertion_class"]:
         normalized["publish_mode_by_assertion_class"] = dict(base["publish_mode_by_assertion_class"])
+    normalized["auto_publish_high_signal_assertion_classes"] = _normalize_policy_keyword_list(
+        value.get("auto_publish_high_signal_assertion_classes"),
+        fallback=list(base["auto_publish_high_signal_assertion_classes"]),
+        limit=24,
+    )
+    normalized["auto_publish_high_signal_page_types"] = _normalize_policy_keyword_list(
+        value.get("auto_publish_high_signal_page_types"),
+        fallback=list(base["auto_publish_high_signal_page_types"]),
+        limit=24,
+    )
+    normalized["auto_publish_high_signal_category_keywords"] = _normalize_policy_keyword_list(
+        value.get("auto_publish_high_signal_category_keywords"),
+        fallback=list(base["auto_publish_high_signal_category_keywords"]),
+        limit=64,
+    )
     normalized["event_stream_min_numeric_token_ratio"] = max(
         0.0,
         min(1.0, _coerce_float(value.get("event_stream_min_numeric_token_ratio"), 0.45)),
@@ -5713,6 +5965,54 @@ def _classify_auto_publish_risk(
         "high_hits": high_hits,
         "medium_hits": medium_hits,
         "force_human_required": force_human,
+    }
+
+
+def _enforce_high_signal_auto_publish_gate(
+    *,
+    assertion_class: str | None,
+    category: str | None,
+    page_type: str | None,
+    routing_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    policy = routing_policy if isinstance(routing_policy, dict) else {}
+    allowed_assertion_classes = {
+        str(item).strip().lower()
+        for item in (policy.get("auto_publish_high_signal_assertion_classes") or [])
+        if str(item).strip()
+    }
+    allowed_page_types = {
+        str(item).strip().lower()
+        for item in (policy.get("auto_publish_high_signal_page_types") or [])
+        if str(item).strip()
+    }
+    category_keywords = [
+        str(item).strip().lower()
+        for item in (policy.get("auto_publish_high_signal_category_keywords") or [])
+        if str(item).strip()
+    ]
+
+    normalized_assertion_class = str(assertion_class or "").strip().lower()
+    normalized_page_type = str(page_type or "").strip().lower()
+    normalized_category = str(category or "").strip().lower()
+    keyword_hits = _match_policy_keywords(text=normalized_category, keywords=category_keywords)
+
+    matches = {
+        "assertion_class": bool(
+            normalized_assertion_class and normalized_assertion_class in allowed_assertion_classes
+        ),
+        "page_type": bool(normalized_page_type and normalized_page_type in allowed_page_types),
+        "category_keyword": bool(keyword_hits),
+    }
+    allowed = bool(matches["assertion_class"] or matches["page_type"] or matches["category_keyword"])
+    reason = "matched_high_signal_profile" if allowed else "blocked_by_high_signal_gate"
+    return {
+        "allowed": allowed,
+        "reason": reason,
+        "matches": matches,
+        "matched_keywords": keyword_hits[:8],
+        "allowed_assertion_classes": sorted(list(allowed_assertion_classes)),
+        "allowed_page_types": sorted(list(allowed_page_types)),
     }
 
 
@@ -24487,6 +24787,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
             outcome = "skipped"
             reason = "human_required"
             eligible_for_auto = False
+            high_signal_gate: dict[str, Any] | None = None
 
             if decision not in {"new_page", "new_section", "new_statement"}:
                 reason = f"decision_not_auto_publishable:{decision or 'unknown'}"
@@ -24500,7 +24801,21 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     reason = "human_required_by_policy"
             else:
                 eligible_for_auto = True
-                if has_open_conflict and not bool(policy["auto_publish_allow_conflicts"]):
+                high_signal_gate = _enforce_high_signal_auto_publish_gate(
+                    assertion_class=assertion_class,
+                    category=category,
+                    page_type=page_type,
+                    routing_policy=routing_policy,
+                )
+                if not bool(high_signal_gate.get("allowed")):
+                    eligible_for_auto = False
+                    reason = (
+                        "blocked_by_high_signal_gate:"
+                        f"class={assertion_class or 'unknown'}:"
+                        f"page_type={page_type or 'unknown'}:"
+                        f"category={category or 'unknown'}"
+                    )
+                elif has_open_conflict and not bool(policy["auto_publish_allow_conflicts"]):
                     eligible_for_auto = False
                     reason = "open_conflict_blocked"
                 elif mode == "conditional":
@@ -24593,6 +24908,7 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                     "effective_min_sources": effective_min_sources,
                     "mode": mode,
                     "has_open_conflict": has_open_conflict,
+                    "high_signal_gate": high_signal_gate,
                     "ticket_outcome_signal": ticket_outcome_signal,
                     "risk_tier": risk,
                     "outcome": outcome,
@@ -26765,28 +27081,41 @@ def _build_agent_capability_bootstrap_page(
     max_agents: int,
 ) -> list[dict[str, str]]:
     pages: list[dict[str, str]] = []
-    if not _agent_directory_table_exists_from_cursor(cur):
-        markdown = (
-            "# Agent Capability Profile\n\n"
-            "No registered agents found yet.\n\n"
-            "## Next Step\n"
-            "- Register agents via `/v1/agents/register` or Synapse SDK attach integration.\n"
-        )
-        pages.append(
-            {
-                "title": "Agent Capability Profile",
-                "slug": _space_slug(space_key, "agent-capability-profile"),
-                "page_type": "agent_profile",
-                "markdown": markdown,
-            }
-        )
-        return pages
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
 
-    orgchart_payload = get_agent_orgchart(project_id=project_id, include_handoffs=True, include_retired=False, max_agents=max_agents, max_edges=500)
+    orgchart_payload = get_agent_orgchart(
+        project_id=project_id,
+        include_handoffs=True,
+        include_retired=False,
+        max_agents=max_agents,
+        max_edges=500,
+    )
     nodes = orgchart_payload.get("nodes") if isinstance(orgchart_payload, dict) else []
     edges = orgchart_payload.get("edges") if isinstance(orgchart_payload, dict) else []
     teams = orgchart_payload.get("teams") if isinstance(orgchart_payload, dict) else []
-    matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+    if not isinstance(nodes, list) or not nodes:
+        nodes = [
+            {
+                "agent_id": str(item.get("agent_id") or ""),
+                "display_name": str(item.get("display_name") or item.get("agent_id") or "Agent"),
+                "team": str(item.get("team") or "Runtime Agents"),
+                "role": str(item.get("role") or "Runtime Agent"),
+                "status": str(item.get("status") or "active"),
+                "profile_slug": f"agents/{_slugify_segment(str(item.get('agent_id') or 'agent'))}",
+            }
+            for item in matrix
+            if str(item.get("agent_id") or "").strip()
+        ]
+    if not isinstance(teams, list) or not teams:
+        team_counts: dict[str, int] = {}
+        for item in matrix:
+            team_name = str(item.get("team") or "Runtime Agents")
+            team_counts[team_name] = int(team_counts.get(team_name, 0)) + 1
+        teams = [{"team": team_name, "agents_total": total} for team_name, total in sorted(team_counts.items())]
 
     lines = [
         "# Agent Capability Profile",
@@ -26805,7 +27134,15 @@ def _build_agent_capability_bootstrap_page(
             profile_slug = str(node.get("profile_slug") or f"agents/{_slugify_segment(agent_id)}")
             lines.append(f"| {display_name} (`{agent_id}`) | {team} | {role} | {status} | [Open](/wiki/{profile_slug}) |")
     else:
-        lines.append("| n/a | n/a | n/a | n/a | n/a |")
+        lines.append("| Runtime discovery pending | Runtime Agents | Runtime Agent | discovering | `/wiki/agents` |")
+
+    if not _agent_directory_table_exists_from_cursor(cur):
+        lines.extend(
+            [
+                "",
+                "> Profiles are inferred from runtime activity. Register explicit agent profiles via `/v1/agents/register` for richer org metadata.",
+            ]
+        )
 
     lines.extend(["", "## Capability Matrix", _render_agent_capability_matrix_markdown(matrix=matrix).strip(), ""])
     lines.extend(["## Handoffs", _render_agent_handoff_markdown(edges=edges if isinstance(edges, list) else []).strip(), ""])
@@ -27355,6 +27692,25 @@ def execute_adoption_sync_preset(
                         publish=True,
                     )
                 )
+            critical_warning_present = _has_critical_adoption_warnings(warnings)
+            response["auto_safe_mode"] = {
+                "enabled": bool(payload.auto_apply_safe_mode_on_critical),
+                "triggered": False,
+                "reason": "none",
+            }
+            if critical_warning_present:
+                response["auto_safe_mode"]["reason"] = "critical_warning_detected"
+                if bool(payload.auto_apply_safe_mode_on_critical):
+                    response["safe_mode"] = enable_adoption_safe_mode(
+                        AdoptionSafeModeEnableRequest(
+                            project_id=project_id,
+                            updated_by=updated_by,
+                            dry_run=bool(payload.dry_run),
+                            confirm_project_id=project_id if not payload.dry_run else None,
+                            note="Applied automatically by sync preset due to critical diagnostics.",
+                        )
+                    )
+                    response["auto_safe_mode"]["triggered"] = not bool(payload.dry_run)
             if warnings:
                 response["warnings"] = warnings
 
@@ -28515,6 +28871,164 @@ def _build_adoption_policy_calibration_quick_recommendation(
         "diagnostics": diagnostics,
         "pipeline": pipeline,
     }
+
+
+def _has_critical_adoption_warnings(warnings: list[dict[str, Any]]) -> bool:
+    for item in warnings:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("severity") or "").strip().lower() == "critical":
+            return True
+    return False
+
+
+def _build_adoption_safe_mode_target_config(*, current_config: dict[str, Any]) -> dict[str, Any]:
+    current_routing = _normalize_gatekeeper_routing_policy(current_config.get("routing_policy"))
+    routing_patch = {
+        "event_stream_min_token_hits": max(3, int(current_routing.get("event_stream_min_token_hits") or 2)),
+        "event_stream_min_kv_hits": max(3, int(current_routing.get("event_stream_min_kv_hits") or 2)),
+        "min_durable_signal_hits_for_backfill": max(
+            2,
+            int(current_routing.get("min_durable_signal_hits_for_backfill") or 1),
+        ),
+        "min_sources_for_wiki_candidate": max(
+            2,
+            int(current_routing.get("min_sources_for_wiki_candidate") or 2),
+        ),
+        "min_evidence_for_wiki_candidate": max(
+            2,
+            int(current_routing.get("min_evidence_for_wiki_candidate") or 2),
+        ),
+        "backfill_requires_policy_signal": True,
+        "ingestion_classification_default_deny_classes": ["operational_stream", "pii_sensitive_stream"],
+        "publish_mode_by_assertion_class": {
+            "policy": "human_required",
+            "process": "human_required",
+            "preference": "conditional",
+            "incident": "human_required",
+            "event": "human_required",
+            "fact": "human_required",
+        },
+    }
+    target_routing = _normalize_gatekeeper_routing_policy(_deep_merge_dict(current_routing, routing_patch))
+    changed_routing_keys = [
+        key for key in sorted(target_routing.keys()) if target_routing.get(key) != current_routing.get(key)
+    ]
+    current_publish_mode_by_category = (
+        current_config.get("publish_mode_by_category")
+        if isinstance(current_config.get("publish_mode_by_category"), dict)
+        else {}
+    )
+    target_publish_mode_by_category = dict(current_publish_mode_by_category)
+    for key in ("policy", "process", "runbook", "incident", "compliance", "security"):
+        target_publish_mode_by_category[key] = "human_required"
+
+    target_config = {
+        "publish_mode_default": "human_required",
+        "publish_mode_by_category": target_publish_mode_by_category,
+        "auto_publish_min_score": max(0.95, float(current_config.get("auto_publish_min_score", 0.9))),
+        "auto_publish_min_sources": max(3, int(current_config.get("auto_publish_min_sources", 3))),
+        "auto_publish_require_golden": True,
+        "auto_publish_allow_conflicts": False,
+        "routing_policy": target_routing,
+    }
+    changed_config_keys = [
+        key
+        for key in sorted(target_config.keys())
+        if target_config.get(key) != current_config.get(key)
+    ]
+    return {
+        "current_routing_policy": current_routing,
+        "target_routing_policy": target_routing,
+        "target_config": target_config,
+        "changed_routing_keys": changed_routing_keys,
+        "changed_config_keys": changed_config_keys,
+    }
+
+
+@app.post("/v1/adoption/safe-mode/enable", response_model=None)
+def enable_adoption_safe_mode(payload: AdoptionSafeModeEnableRequest) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm_value = str(payload.confirm_project_id or "").strip()
+        if confirm_value != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    current_config_payload = get_gatekeeper_config(project_id=project_id)
+    current_config = (
+        current_config_payload.get("config") if isinstance(current_config_payload.get("config"), dict) else {}
+    )
+    target_payload = _build_adoption_safe_mode_target_config(current_config=current_config)
+    response: dict[str, Any] = {
+        "status": "dry_run" if payload.dry_run else "applied",
+        "project_id": project_id,
+        "changed_routing_keys": target_payload.get("changed_routing_keys"),
+        "changed_config_keys": target_payload.get("changed_config_keys"),
+        "current_routing_policy": target_payload.get("current_routing_policy"),
+        "target_routing_policy": target_payload.get("target_routing_policy"),
+        "target_config": target_payload.get("target_config"),
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if payload.dry_run:
+        response["next_action"] = "rerun_with_dry_run=false_and_confirm_project_id"
+        return response
+
+    snapshot_payload = create_gatekeeper_config_snapshot(
+        GatekeeperConfigSnapshotCreateRequest(
+            project_id=project_id,
+            approved_by=payload.updated_by,
+            source="manual",
+            note=payload.note or "Auto safe mode snapshot before strict governance apply.",
+            config=current_config,
+            guardrails_met=True,
+            calibration_report={
+                "safe_mode": True,
+                "changed_routing_keys": target_payload.get("changed_routing_keys"),
+                "changed_config_keys": target_payload.get("changed_config_keys"),
+            },
+            artifact_refs={"safe_mode_endpoint": "/v1/adoption/safe-mode/enable"},
+        )
+    )
+    snapshot = snapshot_payload.get("snapshot") if isinstance(snapshot_payload.get("snapshot"), dict) else {}
+    target_config = target_payload.get("target_config") if isinstance(target_payload.get("target_config"), dict) else {}
+
+    updated = upsert_gatekeeper_config(
+        GatekeeperConfigUpsertRequest(
+            project_id=project_id,
+            updated_by=payload.updated_by,
+            min_sources_for_golden=int(current_config.get("min_sources_for_golden", 3)),
+            conflict_free_days=int(current_config.get("conflict_free_days", 7)),
+            min_score_for_golden=float(current_config.get("min_score_for_golden", 0.72)),
+            operational_short_text_len=int(current_config.get("operational_short_text_len", 32)),
+            operational_short_token_len=int(current_config.get("operational_short_token_len", 5)),
+            llm_assist_enabled=bool(current_config.get("llm_assist_enabled", False)),
+            llm_provider=str(current_config.get("llm_provider", "openai")),
+            llm_model=str(current_config.get("llm_model", "gpt-4.1-mini")),
+            llm_score_weight=float(current_config.get("llm_score_weight", 0.35)),
+            llm_min_confidence=float(current_config.get("llm_min_confidence", 0.65)),
+            llm_timeout_ms=int(current_config.get("llm_timeout_ms", 3500)),
+            publish_mode_default=str(target_config.get("publish_mode_default") or "human_required"),
+            publish_mode_by_category=(
+                target_config.get("publish_mode_by_category")
+                if isinstance(target_config.get("publish_mode_by_category"), dict)
+                else {}
+            ),
+            routing_policy=(
+                target_config.get("routing_policy")
+                if isinstance(target_config.get("routing_policy"), dict)
+                else _normalize_gatekeeper_routing_policy(None)
+            ),
+            auto_publish_min_score=float(target_config.get("auto_publish_min_score") or 0.95),
+            auto_publish_min_sources=int(target_config.get("auto_publish_min_sources") or 3),
+            auto_publish_require_golden=bool(target_config.get("auto_publish_require_golden", True)),
+            auto_publish_allow_conflicts=bool(target_config.get("auto_publish_allow_conflicts", False)),
+        )
+    )
+    response["snapshot_id"] = snapshot.get("id")
+    response["applied_config"] = updated.get("config") if isinstance(updated, dict) else None
+    return response
 
 
 @app.get("/v1/adoption/policy-calibration/quick-loop")
@@ -34647,11 +35161,40 @@ def get_agent_orgchart(
 ) -> Any:
     with get_conn() as conn:
         if not _agent_directory_table_exists(conn):
+            with conn.cursor() as cur:
+                matrix = _build_runtime_agent_capability_matrix(
+                    cur,
+                    project_id=project_id,
+                    max_agents=max_agents,
+                )
+            nodes = [
+                {
+                    "agent_id": str(item.get("agent_id") or ""),
+                    "display_name": str(item.get("display_name") or item.get("agent_id") or "Agent"),
+                    "team": str(item.get("team") or "Runtime Agents"),
+                    "role": str(item.get("role") or "Runtime Agent"),
+                    "status": str(item.get("status") or "active"),
+                    "profile_slug": f"agents/{_slugify_segment(str(item.get('agent_id') or 'agent'))}",
+                    "last_seen_at": str(item.get("last_success_at") or ""),
+                    "source": "runtime_inferred",
+                }
+                for item in matrix
+                if str(item.get("agent_id") or "").strip()
+            ]
+            team_counts: dict[str, int] = {}
+            for node in nodes:
+                team_name = str(node.get("team") or "Runtime Agents")
+                team_counts[team_name] = int(team_counts.get(team_name, 0)) + 1
+            teams = [
+                {"team": team, "agents_total": total}
+                for team, total in sorted(team_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+            ]
             return {
-                "nodes": [],
+                "nodes": nodes,
                 "edges": [],
-                "teams": [],
-                "summary": {"nodes_total": 0, "edges_total": 0, "teams_total": 0},
+                "teams": teams,
+                "summary": {"nodes_total": len(nodes), "edges_total": 0, "teams_total": len(teams)},
+                "source": "runtime_inferred",
             }
         with conn.cursor() as cur:
             filters = ["project_id = %s"]
@@ -34729,6 +35272,31 @@ def get_agent_orgchart(
                             "sla": edge.get("sla"),
                         }
                     )
+            if not rows:
+                matrix = _build_runtime_agent_capability_matrix(
+                    cur,
+                    project_id=project_id,
+                    max_agents=max_agents,
+                )
+                nodes = [
+                    {
+                        "agent_id": str(item.get("agent_id") or ""),
+                        "display_name": str(item.get("display_name") or item.get("agent_id") or "Agent"),
+                        "team": str(item.get("team") or "Runtime Agents"),
+                        "role": str(item.get("role") or "Runtime Agent"),
+                        "status": str(item.get("status") or "active"),
+                        "profile_slug": f"agents/{_slugify_segment(str(item.get('agent_id') or 'agent'))}",
+                        "last_seen_at": str(item.get("last_success_at") or ""),
+                        "source": "runtime_inferred",
+                    }
+                    for item in matrix
+                    if str(item.get("agent_id") or "").strip()
+                ]
+                edges = []
+                team_counts = {}
+                for node in nodes:
+                    team_name = str(node.get("team") or "Runtime Agents")
+                    team_counts[team_name] = int(team_counts.get(team_name, 0)) + 1
     teams = [
         {"team": team, "agents_total": count}
         for team, count in sorted(team_counts.items(), key=lambda item: (-item[1], item[0].lower()))

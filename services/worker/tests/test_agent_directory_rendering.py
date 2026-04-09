@@ -7,6 +7,8 @@ try:
     from services.api.app.main import (
         _build_agent_provenance_activity,
         _compute_agent_capability_confidence,
+        _derive_runtime_agent_responsibilities,
+        _derive_runtime_agent_role,
         _normalize_agent_directory_items,
         _normalize_agent_publish_policy,
         _render_agent_capability_matrix_markdown,
@@ -19,6 +21,8 @@ try:
 except Exception:  # pragma: no cover
     _build_agent_provenance_activity = None
     _compute_agent_capability_confidence = None
+    _derive_runtime_agent_responsibilities = None
+    _derive_runtime_agent_role = None
     _normalize_agent_directory_items = None
     _normalize_agent_publish_policy = None
     _render_agent_capability_matrix_markdown = None
@@ -33,6 +37,8 @@ except Exception:  # pragma: no cover
     _normalize_agent_directory_items is None
     or _build_agent_provenance_activity is None
     or _compute_agent_capability_confidence is None
+    or _derive_runtime_agent_responsibilities is None
+    or _derive_runtime_agent_role is None
     or _render_agent_capability_matrix_markdown is None
     or _normalize_agent_publish_policy is None
     or _render_agent_overview_markdown is None
@@ -192,6 +198,20 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(policy["default_mode"], "human_required")
         self.assertEqual(policy["by_page_type"].get("policy"), "human_required")
         self.assertEqual(policy["by_page_type"].get("operations_incident"), "conditional")
+
+    def test_runtime_role_and_responsibilities_are_human_readable(self) -> None:
+        role = _derive_runtime_agent_role(
+            event_types=["dispatch_task_started", "route_selected"],
+            tools=["maps_router", "fleet_registry"],
+        )
+        responsibilities = _derive_runtime_agent_responsibilities(
+            event_types=["dispatch_task_started", "route_selected"],
+            tools=["maps_router", "fleet_registry"],
+            data_sources=["orders_api", "warehouse_access_rules"],
+        )
+        self.assertEqual(role, "Dispatch Agent")
+        self.assertTrue(any("Handles runtime events" in item for item in responsibilities))
+        self.assertTrue(any("Uses tools" in item for item in responsibilities))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 Owner: Core team
 
 ## Правило актуальности
@@ -22,6 +22,15 @@ Owner: Core team
 - `in_progress`: в работе.
 - `done`: реализовано.
 - `blocked`: заблокировано внешним фактором.
+
+## Recent Updates
+
+- `2026-04-09` `done` Added runtime-inferred Agent Capability fallback:
+  - when `agent_directory_profiles` is missing/empty, Synapse now builds orgchart + capability signals from runtime `events`/`tasks`.
+- `2026-04-09` `done` Added high-signal auto-publish gate:
+  - auto-publish now requires durable profile match (assertion class/page type/category keyword) before approval.
+- `2026-04-09` `done` Added adoption auto safe-mode:
+  - new `/v1/adoption/safe-mode/enable` endpoint plus optional auto-apply from sync preset on critical diagnostics.
 
 ## Current Quarter Focus (Q2 2026)
 
