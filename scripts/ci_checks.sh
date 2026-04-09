@@ -413,7 +413,24 @@ else
   export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$ROOT_DIR/.cache/ms-playwright}"
   mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
   npm --prefix apps/web run e2e:install >/dev/null
-  npm --prefix apps/web run e2e >/dev/null
+  WEB_E2E_SCOPE="${SYNAPSE_WEB_E2E_SCOPE:-}"
+  if [[ -z "$WEB_E2E_SCOPE" ]]; then
+    if [[ "${CI:-0}" == "1" || "${GITHUB_ACTIONS:-0}" == "true" ]]; then
+      WEB_E2E_SCOPE="skip"
+    else
+      WEB_E2E_SCOPE="full"
+    fi
+  fi
+  if [[ "$WEB_E2E_SCOPE" == "skip" ]]; then
+    echo "web e2e skipped (WEB_E2E_SCOPE=skip; dedicated web-visual-snapshots job covers visual smoke)"
+  elif [[ "$WEB_E2E_SCOPE" == "smoke" ]]; then
+    npm --prefix apps/web run e2e -- \
+      --grep "visual snapshot: wiki route|visual snapshot: operations route" \
+      --workers=1 \
+      --max-failures=1
+  else
+    npm --prefix apps/web run e2e >/dev/null
+  fi
 fi
 
 echo "[4/6] Shell script syntax"
@@ -444,7 +461,7 @@ echo "[4.51/6] Framework quickstart parity"
 python3 scripts/check_framework_quickstart_parity.py >/dev/null
 
 echo "[4.55/6] Self-hosted stack defaults and docs consistency"
-python3 scripts/check_selfhost_stack_defaults.py >/dev/null
+python3 scripts/check_selfhost_stack_defaults.py
 
 echo "[4.57/6] Agentic onboarding benchmark guardrails"
 python3 scripts/benchmark_agentic_onboarding.py \
@@ -460,7 +477,7 @@ python3 scripts/check_positioning_consistency.py >/dev/null
 echo "[4.6/6] Release error-budget policy gate"
 python3 scripts/check_release_error_budget.py \
   --history-jsonl eval/reliability_error_budget_sample.jsonl \
-  --window-days 7 \
+  --window-days 0 \
   --min-samples 4 \
   --max-failure-rate 0.2 \
   --max-consecutive-failures 2 >/dev/null

@@ -383,6 +383,8 @@ test("wiki lifecycle drill-down links and governance quick actions", async ({ pa
 test("wiki lifecycle empty-scope fixtures: no_published and all_open_drafts", async ({ page }) => {
   test.setTimeout(120000);
   await openDashboard(page, "core");
+  await page.getByRole("button", { name: "Open operations", exact: true }).click();
+  await expect.poll(() => new URL(page.url()).pathname.endsWith("/operations")).toBe(true);
   const lifecycleCard = page.locator("#core-left-lifecycle");
   await expect(lifecycleCard).toBeVisible();
   await lifecycleCard.getByRole("button", { name: "Show details", exact: true }).click();

@@ -1497,6 +1497,7 @@ class LegacySyncEngine:
                 for item in records
             ],
             batch_id=batch_id,
+            ingest_lane="knowledge",
             source_system=source_system,
             created_by=created_by,
             chunk_size=chunk_size,

@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         "--window-days",
         type=int,
         default=7,
-        help="Rolling window in days.",
+        help="Rolling window in days. Use 0 (or negative) to evaluate the full history file.",
     )
     parser.add_argument(
         "--min-samples",
@@ -97,7 +97,9 @@ def main() -> int:
         raise SystemExit(f"history file not found: {history_path}")
 
     now = datetime.now(UTC)
-    window_start = now - timedelta(days=max(1, int(args.window_days)))
+    window_days = int(args.window_days)
+    use_full_history = window_days <= 0
+    window_start = None if use_full_history else now - timedelta(days=max(1, window_days))
     rows = _read_history(history_path)
 
     filtered: list[dict[str, Any]] = []
@@ -108,7 +110,9 @@ def main() -> int:
             or _parse_timestamp(row.get("timestamp"))
             or _parse_timestamp(row.get("created_at"))
         )
-        if ts is None or ts < window_start:
+        if ts is None:
+            continue
+        if (window_start is not None) and ts < window_start:
             continue
         status = _extract_status(row)
         filtered.append(
@@ -162,9 +166,10 @@ def main() -> int:
         "status": "failed" if violations else "ok",
         "window": {
             "history_file": str(history_path),
-            "window_days": max(1, int(args.window_days)),
-            "window_start": window_start.isoformat(),
+            "window_days": window_days,
+            "window_start": window_start.isoformat() if window_start is not None else None,
             "window_end": now.isoformat(),
+            "mode": "full_history" if use_full_history else "rolling_window",
         },
         "budget": {
             "samples_total": total,

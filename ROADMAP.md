@@ -105,6 +105,36 @@ Execution order for this track:
 6. P1 visibility + connectors.
 7. P2 release guardrails.
 
+## OOTB Quality Stage II (April 2026, post field feedback)
+
+Status: `in_progress`
+
+Goal:
+- после clean deploy + one-step bootstrap давать полезную, не зашумленную wiki без ручного SQL/policy-tuning;
+- не допускать draft-flood и деградации queue при источниках с высокой событийностью.
+
+### P0 (this sprint)
+
+1. `done` Draft-flood guardrails:
+   - routing knobs: `emit_reinforcement_drafts`, `draft_flood_max_open_per_page`, `draft_flood_max_open_per_entity`, queue pressure thresholds;
+   - worker-level suppression новых draft inserts при превышении page/entity/global limits;
+   - pipeline diagnostics + critical warnings для auto-safe-mode.
+2. `done` High-signal default routing hardening:
+   - расширен deny-list шумных source patterns (`wand_employee*`, `wand_transport_vehicle*`, `*_sheet_*`, telemetry/event snapshots);
+   - legacy sync uploads принудительно в `knowledge` lane для curated memory bootstrap.
+3. `done` Curated bootstrap page quality uplift:
+   - Data Sources Catalog / Agent Capability / Operational Logic bootstrap pages стали содержательнее (governance + actionable fallback content).
+
+### P1 (next)
+
+1. `planned` Agent capability enrichment from runtime registry/tools/handoffs (reduce `n/a` outputs).
+2. `planned` Source pages enrichment with real key fields/schema/freshness/usage sampling.
+3. `planned` OOTB moderation policy pack:
+   - auto-publish only high-signal classes;
+   - noisy classes always `pending_review`.
+4. `planned` Signal/noise stability monitor:
+   - queue growth alerts + “safe mode recommended/applied” audit trail.
+
 ## v0.1.3 Release Plan (Q2 2026)
 
 Status: `done`
