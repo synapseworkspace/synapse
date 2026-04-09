@@ -26534,6 +26534,16 @@ def _insert_bootstrap_pages(
     policy_space_fallback_enabled: bool = False,
     policy_space_fallback_candidates: list[str] | None = None,
 ) -> dict[str, Any]:
+    def _rewrite_wiki_space_links(markdown_value: str, *, from_space_key: str, to_space_key: str) -> str:
+        text = str(markdown_value or "")
+        if not text:
+            return text
+        source_space = _normalize_space_key(from_space_key, default="")
+        target_space = _normalize_space_key(to_space_key, default="")
+        if not source_space or not target_space or source_space == target_space:
+            return text
+        return text.replace(f"/wiki/{source_space}/", f"/wiki/{target_space}/")
+
     def _rewrite_slug_space(slug_value: str, *, target_space_key: str) -> str:
         normalized_slug = _normalize_wiki_slug(slug_value, slug_value)
         if "/" in normalized_slug:
@@ -26596,6 +26606,7 @@ def _insert_bootstrap_pages(
             page_type = str(spec.get("page_type") or "operations").strip().lower() or "operations"
             markdown = str(spec.get("markdown") or f"# {title}\n").rstrip() + "\n"
             space_key = _wiki_space_key_from_slug(slug)
+            original_space_key = space_key
             entity_key = slug
             fallback_applied_for_page = False
 
@@ -26631,6 +26642,12 @@ def _insert_bootstrap_pages(
                             "policy_candidates": diagnostics,
                         }
                     )
+            if fallback_applied_for_page:
+                markdown = _rewrite_wiki_space_links(
+                    markdown,
+                    from_space_key=original_space_key,
+                    to_space_key=space_key,
+                )
 
             cur.execute(
                 """
@@ -29086,12 +29103,13 @@ def get_adoption_kpi(
                 cur.execute(
                     """
                     SELECT COUNT(*)::bigint
-                    FROM wiki_page_versions
-                    WHERE project_id = %s
-                      AND created_at >= %s
+                    FROM wiki_page_versions page_versions
+                    JOIN wiki_pages pages ON pages.id = page_versions.page_id
+                    WHERE pages.project_id = %s
+                      AND page_versions.created_at >= %s
                       AND (
-                        LOWER(COALESCE(change_summary, '')) LIKE 'rollback to version%%'
-                        OR LOWER(COALESCE(change_summary, '')) LIKE 'rollback%%'
+                        LOWER(COALESCE(page_versions.change_summary, '')) LIKE 'rollback to version%%'
+                        OR LOWER(COALESCE(page_versions.change_summary, '')) LIKE 'rollback%%'
                       )
                     """,
                     (project_id, cutoff),
