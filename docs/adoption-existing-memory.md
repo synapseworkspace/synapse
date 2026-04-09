@@ -244,8 +244,10 @@ Run operator loop without raw API calls (safe dry-run defaults):
 
 ```bash
 synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+synapse-cli adoption connect-source --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --connector-id postgres_sql:ops_kb_items:polling --field-overrides-json '{"sql_dsn_env":"OPS_PG_DSN"}'
 synapse-cli adoption pipeline --api-url http://localhost:8080 --project-id omega_demo --days 14
 synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
+synapse-cli adoption enterprise-readiness --api-url http://localhost:8080 --project-id omega_demo
 synapse-cli adoption list-drafts --api-url http://localhost:8080 --project-id omega_demo --status pending_review --limit 50
 ```
 

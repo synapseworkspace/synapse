@@ -100,8 +100,10 @@ For a clean compose-profile acceptance (startup + acceptance + teardown):
 Recommended adoption operator pass (dry-run first):
 
 ```bash
+synapse-cli adoption connect-source --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --connector-id postgres_sql:ops_kb_items:polling --field-overrides-json '{"sql_dsn_env":"OPS_PG_DSN"}'
 synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
 synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
+synapse-cli adoption enterprise-readiness --api-url http://localhost:8080 --project-id omega_demo
 ```
 
 CI opt-in path:

@@ -592,6 +592,52 @@ class SynapseClient:
             },
         )
 
+    def bootstrap_adoption_import_connector(
+        self,
+        *,
+        updated_by: str,
+        connector_id: str,
+        source_type: str = "postgres_sql",
+        source_ref: str | None = None,
+        field_overrides: dict[str, Any] | None = None,
+        enabled: bool = True,
+        sync_interval_minutes: int = 60,
+        queue_sync: bool = True,
+        dry_run: bool = True,
+        sync_processor_lookback_minutes: int = 30,
+        fail_on_sync_processor_unavailable: bool = False,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        normalized_connector_id = str(connector_id or "").strip()
+        if not normalized_connector_id:
+            raise ValueError("connector_id is required")
+        normalized_source_type = str(source_type or "postgres_sql").strip().lower() or "postgres_sql"
+        if normalized_source_type not in {"postgres_sql", "memory_api"}:
+            raise ValueError("source_type must be one of: postgres_sql, memory_api")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "source_type": normalized_source_type,
+            "connector_id": normalized_connector_id,
+            "source_ref": str(source_ref).strip() if source_ref is not None and str(source_ref).strip() else None,
+            "field_overrides": dict(field_overrides or {}),
+            "enabled": bool(enabled),
+            "sync_interval_minutes": max(1, min(10080, int(sync_interval_minutes))),
+            "queue_sync": bool(queue_sync),
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+            "sync_processor_lookback_minutes": max(1, min(1440, int(sync_processor_lookback_minutes))),
+            "fail_on_sync_processor_unavailable": bool(fail_on_sync_processor_unavailable),
+        }
+        return self._request_json(
+            "/v1/adoption/import-connectors/bootstrap",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def list_adoption_noise_presets(
         self,
         *,
@@ -671,6 +717,16 @@ class SynapseClient:
             params["route_path"] = str(route_path).strip()
         return self._request_json(
             "/v1/adoption/selfhost/consistency",
+            method="GET",
+            params=params,
+        )
+
+    def get_enterprise_readiness(self, *, project_id: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if project_id is not None and str(project_id).strip():
+            params["project_id"] = str(project_id).strip()
+        return self._request_json(
+            "/v1/enterprise/readiness",
             method="GET",
             params=params,
         )

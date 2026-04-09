@@ -4,6 +4,12 @@ Last updated: 2026-04-03
 
 This page is the factual status of enterprise capabilities in Synapse OSS.
 
+Live API snapshot:
+
+```bash
+curl -s "http://localhost:8080/v1/enterprise/readiness?project_id=omega_demo" | jq
+```
+
 ## Current Status (As-Is)
 
 | Capability | Status | Notes |

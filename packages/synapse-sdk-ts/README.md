@@ -165,6 +165,24 @@ console.log(audit.entries.length);
 
 These APIs map to `/v1/wiki/spaces/{space_key}/policy*` and let you automate governance without custom scripts.
 
+## Adoption Ops Helpers
+
+```ts
+const connector = await synapse.bootstrapAdoptionImportConnector({
+  updatedBy: "ops_admin",
+  sourceType: "postgres_sql",
+  connectorId: "postgres_sql:ops_kb_items:polling",
+  fieldOverrides: { sql_dsn_env: "HW_MEMORY_DSN" },
+  dryRun: true
+});
+console.log(connector.status);
+
+const readiness = await synapse.getEnterpriseReadiness({ projectId: "omega_demo" });
+console.log(readiness.status);
+```
+
+These APIs map to `/v1/adoption/import-connectors/bootstrap` and `/v1/enterprise/readiness`.
+
 ## collectInsight Wrapper
 
 ```ts

@@ -908,6 +908,33 @@ type AdoptionImportConnectorResolvePayload = {
   field_overrides?: Record<string, unknown>;
 };
 
+type AdoptionImportConnectorBootstrapPayload = {
+  status: string;
+  dry_run: boolean;
+  source_ref?: string;
+  connector?: AdoptionImportConnectorItem;
+  source?: {
+    id?: string;
+    source_ref?: string;
+    enabled?: boolean;
+  };
+  validation?: {
+    is_valid?: boolean;
+    errors?: string[];
+    warnings?: string[];
+  };
+  sync_queue?: {
+    status?: string;
+    next_action?: string;
+    run?: {
+      id?: string;
+    };
+  };
+  sync_queue_processor?: {
+    status?: string;
+  };
+};
+
 type AdoptionKpiPayload = {
   project_id: string;
   window_days: number;
@@ -946,6 +973,29 @@ type SelfhostConsistencyPayload = {
     message?: string;
   }>;
   warnings_total?: number;
+};
+
+type EnterpriseReadinessPayload = {
+  status: "healthy" | "warning" | "critical" | string;
+  summary?: {
+    critical?: number;
+    warnings?: number;
+    auth_mode?: string;
+    rbac_mode?: string;
+    tenancy_mode?: string;
+  };
+  counts?: {
+    tenants?: number;
+    tenant_projects?: number;
+    active_auth_sessions?: number;
+    active_idp_connections?: number;
+    active_scim_tokens?: number;
+  };
+  warnings?: Array<{
+    code?: string;
+    severity?: string;
+    message?: string;
+  }>;
 };
 
 type AdoptionSyncPresetPayload = {
@@ -1044,11 +1094,6 @@ type LegacyImportSource = {
 
 type LegacyImportSourcesPayload = {
   sources: LegacyImportSource[];
-};
-
-type LegacyImportSourceUpsertPayload = {
-  status: string;
-  source: LegacyImportSource;
 };
 
 type WikiPageNode = {
@@ -2071,6 +2116,8 @@ export default function App() {
   const [policyQuickLoop, setPolicyQuickLoop] = useState<AdoptionPolicyQuickLoopPayload | null>(null);
   const [loadingPolicyQuickLoop, setLoadingPolicyQuickLoop] = useState(false);
   const [applyingPolicyQuickLoop, setApplyingPolicyQuickLoop] = useState(false);
+  const [enterpriseReadiness, setEnterpriseReadiness] = useState<EnterpriseReadinessPayload | null>(null);
+  const [loadingEnterpriseReadiness, setLoadingEnterpriseReadiness] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
   const [agentWikiBootstrapResult, setAgentWikiBootstrapResult] = useState<AdoptionAgentWikiBootstrapPayload | null>(null);
@@ -4027,6 +4074,26 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadEnterpriseReadiness = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setEnterpriseReadiness(null);
+      return;
+    }
+    setLoadingEnterpriseReadiness(true);
+    try {
+      const payload = await apiFetch<EnterpriseReadinessPayload>(
+        apiUrl,
+        `/v1/enterprise/readiness?project_id=${encodeURIComponent(project)}`,
+      );
+      setEnterpriseReadiness(payload);
+    } catch {
+      setEnterpriseReadiness(null);
+    } finally {
+      setLoadingEnterpriseReadiness(false);
+    }
+  }, [apiUrl, projectId]);
+
   const applyPolicyQuickLoopPreset = useCallback(
     async (dryRun: boolean) => {
       const project = projectId.trim();
@@ -4232,25 +4299,50 @@ export default function App() {
     setConnectingLegacySource(true);
     let connected = false;
     try {
-      const upsert = await apiFetch<LegacyImportSourceUpsertPayload>(apiUrl, "/v1/legacy-import/sources", {
-        method: "PUT",
-        body: {
-          project_id: project,
-          source_type: connectorSourceType || "postgres_sql",
-          source_ref: sourceRef,
-          enabled: true,
-          sync_interval_minutes: interval,
-          updated_by: reviewer.trim() || "web_ui",
-          config: {
-            ...baseConfig,
+      const bootstrap = await apiFetch<AdoptionImportConnectorBootstrapPayload>(
+        apiUrl,
+        "/v1/adoption/import-connectors/bootstrap",
+        {
+          method: "POST",
+          body: {
+            project_id: project,
+            updated_by: reviewer.trim() || "web_ui",
+            source_type: connectorSourceType || "postgres_sql",
+            connector_id: selectedConnector?.id || selectedConnectorId,
+            source_ref: sourceRef,
+            field_overrides: {
+              ...baseConfig,
+            },
+            enabled: true,
+            sync_interval_minutes: interval,
+            queue_sync: true,
+            dry_run: false,
+            confirm_project_id: project,
+            sync_processor_lookback_minutes: 30,
+            fail_on_sync_processor_unavailable: false,
           },
+          idempotencyKey: randomKey(),
         },
-      });
-      const sourceId = String(upsert.source?.id || "").trim();
+      );
+      const sourceId = String(bootstrap.source?.id || "").trim();
       if (!sourceId) {
-        throw new Error("legacy source id missing in API response");
+        throw new Error("connector bootstrap did not return source id");
       }
-      await runLegacySourceSync(sourceId);
+      if (String(bootstrap.status || "").trim().toLowerCase() === "blocked") {
+        throw new Error(
+          `connector validation failed: ${(bootstrap.validation?.errors || []).slice(0, 3).join("; ") || "unknown error"}`,
+        );
+      }
+      if (String(bootstrap.sync_queue?.status || "").trim().toLowerCase() === "unavailable") {
+        notifications.show({
+          color: "orange",
+          title: "Source connected, queue unavailable",
+          message: "Legacy sync scheduler is unavailable. Start worker scheduler and retry queue run.",
+        });
+      }
+      if (String(bootstrap.sync_queue?.status || "").trim().toLowerCase() === "skipped") {
+        await runLegacySourceSync(sourceId);
+      }
       if (legacyAutoOpenMigrationMode) {
         setCoreWorkspaceTab("drafts");
         setShowMigrationMode(true);
@@ -4259,7 +4351,7 @@ export default function App() {
       notifications.show({
         color: "teal",
         title: "Existing memory connected",
-        message: `${selectedConnector?.label || profile || connectorSourceType} connected. Initial sync queued.`,
+        message: `${selectedConnector?.label || profile || connectorSourceType} connected via connector bootstrap.`,
       });
       connected = true;
     } catch (error) {
@@ -4273,8 +4365,10 @@ export default function App() {
       await loadLegacyImportSources();
       await loadBootstrapRecommendation();
       await loadAdoptionPipelineVisibility();
+      await loadAdoptionRejections();
       await loadAdoptionKpi();
       await loadPolicyQuickLoop();
+      await loadEnterpriseReadiness();
     }
     return connected;
   }, [
@@ -4289,7 +4383,9 @@ export default function App() {
     legacySqlProfile,
     legacySyncIntervalMinutes,
     loadAdoptionPipelineVisibility,
+    loadAdoptionRejections,
     loadBootstrapRecommendation,
+    loadEnterpriseReadiness,
     loadAdoptionKpi,
     loadLegacyImportSources,
     loadPolicyQuickLoop,
@@ -4770,6 +4866,7 @@ export default function App() {
       setAdoptionRejections(null);
       setAdoptionKpi(null);
       setPolicyQuickLoop(null);
+      setEnterpriseReadiness(null);
       return;
     }
     void loadLegacyImportProfiles();
@@ -4780,12 +4877,14 @@ export default function App() {
     void loadAdoptionRejections();
     void loadAdoptionKpi();
     void loadPolicyQuickLoop();
+    void loadEnterpriseReadiness();
   }, [
     loadAdoptionImportConnectors,
     loadAdoptionKpi,
     loadAdoptionPipelineVisibility,
     loadAdoptionRejections,
     loadBootstrapRecommendation,
+    loadEnterpriseReadiness,
     loadLegacyImportProfiles,
     loadLegacyImportSources,
     loadPolicyQuickLoop,
@@ -5538,6 +5637,7 @@ export default function App() {
         await loadAdoptionRejections();
         await loadAdoptionKpi();
         await loadPolicyQuickLoop();
+        await loadEnterpriseReadiness();
         await loadWikiPages();
       } catch (error) {
         notifications.show({
@@ -5554,6 +5654,7 @@ export default function App() {
       loadAdoptionKpi,
       loadAdoptionPipelineVisibility,
       loadAdoptionRejections,
+      loadEnterpriseReadiness,
       loadLegacyImportSources,
       loadPolicyQuickLoop,
       loadWikiPages,
@@ -8461,6 +8562,27 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="grape"
+                              loading={loadingEnterpriseReadiness}
+                              onClick={() => void loadEnterpriseReadiness()}
+                            >
+                              Refresh enterprise
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              onClick={() => {
+                                document.getElementById("operations-enterprise-panel")?.scrollIntoView({
+                                  behavior: "smooth",
+                                  block: "start",
+                                });
+                              }}
+                            >
+                              View enterprise
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="violet"
                               loading={bootstrapProfileLoading}
                               onClick={() => void applyAdoptionBootstrapProfile(true)}
@@ -8655,6 +8777,71 @@ export default function App() {
                               ) : (
                                 <Text size="xs" c="dimmed">
                                   Rejection diagnostics are unavailable for current project yet.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
+                          <Paper withBorder p="xs" radius="md" id="operations-enterprise-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Text size="sm" fw={700}>
+                                  Enterprise readiness
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="grape"
+                                  loading={loadingEnterpriseReadiness}
+                                  onClick={() => void loadEnterpriseReadiness()}
+                                >
+                                  Refresh
+                                </Button>
+                              </Group>
+                              {enterpriseReadiness ? (
+                                <>
+                                  <Group gap={6} wrap="wrap">
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={
+                                        enterpriseReadiness.status === "critical"
+                                          ? "red"
+                                          : enterpriseReadiness.status === "warning"
+                                            ? "orange"
+                                            : "teal"
+                                      }
+                                    >
+                                      {enterpriseReadiness.status}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      auth {enterpriseReadiness.summary?.auth_mode || "open"}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      rbac {enterpriseReadiness.summary?.rbac_mode || "open"}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      tenancy {enterpriseReadiness.summary?.tenancy_mode || "open"}
+                                    </Badge>
+                                  </Group>
+                                  <Text size="xs" c="dimmed">
+                                    Tenants: {Number(enterpriseReadiness.counts?.tenants || 0)} • Mapped projects:{" "}
+                                    {Number(enterpriseReadiness.counts?.tenant_projects || 0)} • Active sessions:{" "}
+                                    {Number(enterpriseReadiness.counts?.active_auth_sessions || 0)}.
+                                  </Text>
+                                  {Array.isArray(enterpriseReadiness.warnings) && enterpriseReadiness.warnings.length > 0 ? (
+                                    <Text size="xs" c="dimmed">
+                                      Top warning: {enterpriseReadiness.warnings[0]?.code || "unknown"} —{" "}
+                                      {enterpriseReadiness.warnings[0]?.message || "check readiness details"}.
+                                    </Text>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      Enterprise baseline checks look healthy.
+                                    </Text>
+                                  )}
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Enterprise readiness snapshot is unavailable for current project yet.
                                 </Text>
                               )}
                             </Stack>

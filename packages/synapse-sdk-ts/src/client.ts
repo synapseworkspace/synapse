@@ -597,6 +597,54 @@ export class SynapseClient {
     });
   }
 
+  async bootstrapAdoptionImportConnector(options: {
+    updatedBy: string;
+    connectorId: string;
+    sourceType?: "postgres_sql" | "memory_api" | string;
+    sourceRef?: string;
+    fieldOverrides?: Record<string, unknown>;
+    enabled?: boolean;
+    syncIntervalMinutes?: number;
+    queueSync?: boolean;
+    dryRun?: boolean;
+    syncProcessorLookbackMinutes?: number;
+    failOnSyncProcessorUnavailable?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const connectorId = String(options.connectorId ?? "").trim();
+    if (!connectorId) {
+      throw new Error("connectorId is required");
+    }
+    const sourceType = String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql";
+    if (!["postgres_sql", "memory_api"].includes(sourceType)) {
+      throw new Error("sourceType must be one of: postgres_sql, memory_api");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/import-connectors/bootstrap", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        source_type: sourceType,
+        connector_id: connectorId,
+        source_ref: asOptionalString(options.sourceRef) ?? undefined,
+        field_overrides: options.fieldOverrides ?? {},
+        enabled: options.enabled ?? true,
+        sync_interval_minutes: normalizeInt(options.syncIntervalMinutes ?? 60, 1, 10080),
+        queue_sync: options.queueSync ?? true,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? undefined : this.projectId,
+        sync_processor_lookback_minutes: normalizeInt(options.syncProcessorLookbackMinutes ?? 30, 1, 1440),
+        fail_on_sync_processor_unavailable: options.failOnSyncProcessorUnavailable ?? false
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async listAdoptionNoisePresets(options: {
     lane?: "event" | "knowledge";
   } = {}): Promise<Record<string, unknown>> {
@@ -669,6 +717,17 @@ export class SynapseClient {
         web_build: asOptionalString(options.webBuild) ?? undefined,
         ui_profile: asOptionalString(options.uiProfile) ?? undefined,
         route_path: asOptionalString(options.routePath) ?? undefined
+      }
+    });
+  }
+
+  async getEnterpriseReadiness(options: {
+    projectId?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/enterprise/readiness", {
+      method: "GET",
+      params: {
+        project_id: asOptionalString(options.projectId) ?? undefined
       }
     });
   }

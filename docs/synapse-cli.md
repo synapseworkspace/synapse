@@ -152,6 +152,26 @@ synapse-cli adoption sync-preset \
   --with-pipeline
 ```
 
+Bootstrap connector in one step (`resolve -> upsert source -> queue`):
+
+```bash
+synapse-cli adoption connect-source \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --updated-by ops_admin \
+  --connector-id postgres_sql:ops_kb_items:polling \
+  --field-overrides-json '{"sql_dsn_env":"OPS_PG_DSN"}' \
+  --apply
+```
+
+Inspect enterprise readiness (auth/rbac/tenancy + table checks):
+
+```bash
+synapse-cli adoption enterprise-readiness \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo
+```
+
 Inspect funnel bottlenecks:
 
 ```bash

@@ -633,6 +633,115 @@ def _build_parser() -> argparse.ArgumentParser:
     adoption_sync_preset.add_argument("--json", action="store_true", help="Render output as JSON.")
     adoption_sync_preset.set_defaults(func=_cmd_adoption_sync_preset)
 
+    adoption_connect_source = adoption_subparsers.add_parser(
+        "connect-source",
+        help="Resolve connector template and bootstrap source+queue in one command (dry-run by default).",
+    )
+    adoption_connect_source.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_connect_source.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_connect_source.add_argument(
+        "--updated-by",
+        default="ops_admin",
+        help="Operator id for audit trail (default: ops_admin).",
+    )
+    adoption_connect_source.add_argument(
+        "--source-type",
+        default="postgres_sql",
+        choices=["postgres_sql", "memory_api"],
+        help="Connector source type (default: postgres_sql).",
+    )
+    adoption_connect_source.add_argument(
+        "--connector-id",
+        required=True,
+        help="Connector id from adoption connector catalog (e.g. postgres_sql:ops_kb_items:polling).",
+    )
+    adoption_connect_source.add_argument(
+        "--source-ref",
+        default=None,
+        help="Optional explicit source_ref (default: derived from connector id).",
+    )
+    adoption_connect_source.add_argument(
+        "--field-overrides-json",
+        default=None,
+        help="Optional JSON object merged into connector config patch.",
+    )
+    adoption_connect_source.add_argument(
+        "--sync-interval-minutes",
+        type=int,
+        default=60,
+        help="Sync interval for source upsert (1..10080, default: 60).",
+    )
+    adoption_connect_source.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Create/update source in disabled state.",
+    )
+    adoption_connect_source.add_argument(
+        "--skip-queue",
+        action="store_true",
+        help="Do not queue an immediate sync run.",
+    )
+    adoption_connect_source.add_argument(
+        "--sync-processor-lookback-minutes",
+        type=int,
+        default=30,
+        help="Lookback window for sync processor health check (1..1440, default: 30).",
+    )
+    adoption_connect_source.add_argument(
+        "--fail-on-sync-processor-unavailable",
+        action="store_true",
+        help="Fail command when queue processor appears unavailable after queueing.",
+    )
+    adoption_connect_source.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply bootstrap (default is dry-run preview).",
+    )
+    adoption_connect_source.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Optional idempotency key for bootstrap request.",
+    )
+    adoption_connect_source.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=10.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_connect_source.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_connect_source.set_defaults(func=_cmd_adoption_connect_source)
+
+    adoption_enterprise_readiness = adoption_subparsers.add_parser(
+        "enterprise-readiness",
+        help="Inspect enterprise auth/rbac/tenancy readiness snapshot.",
+    )
+    adoption_enterprise_readiness.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_enterprise_readiness.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Optional project id used for scoped readiness counters.",
+    )
+    adoption_enterprise_readiness.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_enterprise_readiness.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_enterprise_readiness.set_defaults(func=_cmd_adoption_enterprise_readiness)
+
     adoption_pipeline = adoption_subparsers.add_parser(
         "pipeline",
         help="Inspect adoption funnel visibility (accepted -> events -> claims -> drafts -> pages).",
@@ -2273,6 +2382,161 @@ def _cmd_adoption_sync_preset(args: argparse.Namespace) -> int:
                 f"claims={int(stages.get('claims', 0) or 0)} "
                 f"drafts={int(stages.get('drafts', 0) or 0)} "
                 f"pages={int(stages.get('pages', 0) or 0)}"
+            )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_connect_source(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    updated_by = str(_coerce_text(args.updated_by) or "").strip()
+    if not updated_by:
+        print("[synapse-cli] --updated-by is required", file=sys.stderr)
+        return 2
+    connector_id = str(_coerce_text(args.connector_id) or "").strip()
+    if not connector_id:
+        print("[synapse-cli] --connector-id is required", file=sys.stderr)
+        return 2
+    source_type = str(_coerce_text(args.source_type) or "postgres_sql").strip().lower() or "postgres_sql"
+    if source_type not in {"postgres_sql", "memory_api"}:
+        print("[synapse-cli] --source-type must be one of: postgres_sql, memory_api", file=sys.stderr)
+        return 2
+    field_overrides: dict[str, Any] = {}
+    field_overrides_raw = _coerce_text(args.field_overrides_json)
+    if field_overrides_raw:
+        parsed, parse_error = _parse_metadata_json(field_overrides_raw)
+        if parse_error:
+            print(f"[synapse-cli] invalid --field-overrides-json: {parse_error}", file=sys.stderr)
+            return 2
+        field_overrides = parsed
+    dry_run = not bool(args.apply)
+    request_payload: dict[str, Any] = {
+        "project_id": project_id,
+        "updated_by": updated_by,
+        "source_type": source_type,
+        "connector_id": connector_id,
+        "source_ref": _coerce_text(args.source_ref),
+        "field_overrides": field_overrides,
+        "enabled": not bool(args.disabled),
+        "sync_interval_minutes": max(1, min(10080, int(args.sync_interval_minutes))),
+        "queue_sync": not bool(args.skip_queue),
+        "dry_run": dry_run,
+        "confirm_project_id": None if dry_run else project_id,
+        "sync_processor_lookback_minutes": max(1, min(1440, int(args.sync_processor_lookback_minutes))),
+        "fail_on_sync_processor_unavailable": bool(args.fail_on_sync_processor_unavailable),
+    }
+    response = _synapse_api_json(
+        method="POST",
+        url=f"{api_url}/v1/adoption/import-connectors/bootstrap",
+        payload=request_payload,
+        timeout=timeout,
+        idempotency_key=_coerce_text(args.idempotency_key),
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        print("Adoption Connector Bootstrap")
+        print(f"- project_id: {project_id}")
+        print(f"- connector_id: {connector_id}")
+        print(f"- source_type: {source_type}")
+        print(f"- dry_run: {dry_run}")
+        validation = body.get("validation") if isinstance(body.get("validation"), dict) else {}
+        if validation:
+            print(
+                "- validation: "
+                f"is_valid={bool(validation.get('is_valid', True))} "
+                f"errors={len(validation.get('errors') or [])} "
+                f"warnings={len(validation.get('warnings') or [])}"
+            )
+        source_payload = body.get("source") if isinstance(body.get("source"), dict) else {}
+        if source_payload:
+            print(
+                "- source: "
+                f"id={source_payload.get('id')} "
+                f"ref={source_payload.get('source_ref')} "
+                f"enabled={source_payload.get('enabled')}"
+            )
+        sync_queue = body.get("sync_queue") if isinstance(body.get("sync_queue"), dict) else {}
+        if sync_queue:
+            print(
+                "- sync_queue: "
+                f"status={sync_queue.get('status') or ('queued' if sync_queue.get('run') else 'unknown')} "
+                f"next_action={sync_queue.get('next_action') or '-'}"
+            )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_enterprise_readiness(args: argparse.Namespace) -> int:
+    api_url = str(_coerce_text(getattr(args, "api_url", None)) or "").strip().rstrip("/")
+    if not api_url:
+        print("[synapse-cli] --api-url cannot be empty", file=sys.stderr)
+        return 2
+    timeout = max(0.2, float(getattr(args, "timeout_seconds", 6.0)))
+    project_id = _sanitize_project_id(getattr(args, "project_id", None))
+    params: dict[str, Any] = {}
+    if project_id:
+        params["project_id"] = project_id
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/enterprise/readiness",
+        params=params,
+        timeout=timeout,
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        summary = body.get("summary") if isinstance(body.get("summary"), dict) else {}
+        auth = body.get("auth") if isinstance(body.get("auth"), dict) else {}
+        print("Enterprise Readiness")
+        print(f"- status: {body.get('status') or 'unknown'}")
+        if summary:
+            print(
+                "- modes: "
+                f"auth={summary.get('auth_mode') or auth.get('auth_mode')} "
+                f"rbac={summary.get('rbac_mode') or auth.get('rbac_mode')} "
+                f"tenancy={summary.get('tenancy_mode') or auth.get('tenancy_mode')}"
+            )
+            print(
+                "- warnings: "
+                f"critical={int(summary.get('critical', 0) or 0)} "
+                f"warning={int(summary.get('warnings', 0) or 0)}"
+            )
+        counts = body.get("counts") if isinstance(body.get("counts"), dict) else {}
+        if counts:
+            print(
+                "- counts: "
+                f"tenants={int(counts.get('tenants', 0) or 0)} "
+                f"projects={int(counts.get('tenant_projects', 0) or 0)} "
+                f"sessions={int(counts.get('active_auth_sessions', 0) or 0)}"
             )
         print(f"- http_status: {response['status_code']}")
         if response.get("error"):

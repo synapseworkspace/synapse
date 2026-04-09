@@ -147,6 +147,36 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("connector_id"), "postgres_sql:ops_kb_items:polling")
         self.assertIsInstance(payload.get("field_overrides"), dict)
 
+    def test_bootstrap_adoption_import_connector_posts_expected_payload(self) -> None:
+        self.client.bootstrap_adoption_import_connector(
+            updated_by="ops_admin",
+            connector_id="postgres_sql:ops_kb_items:polling",
+            source_type="postgres_sql",
+            field_overrides={"sql_dsn_env": "HW_MEMORY_DSN"},
+            dry_run=False,
+            sync_interval_minutes=15,
+            queue_sync=True,
+            sync_processor_lookback_minutes=45,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/import-connectors/bootstrap")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("connector_id"), "postgres_sql:ops_kb_items:polling")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("sync_interval_minutes"), 15)
+        self.assertEqual(payload.get("sync_processor_lookback_minutes"), 45)
+
+    def test_get_enterprise_readiness_uses_get_endpoint(self) -> None:
+        self.client.get_enterprise_readiness(project_id="omega_demo")
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/enterprise/readiness")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+
     def test_get_adoption_kpi_is_project_scoped(self) -> None:
         self.client.get_adoption_kpi(days=21)
         call = self.client.calls[-1]

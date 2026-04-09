@@ -449,6 +449,19 @@ reset_preview = synapse.run_adoption_project_reset(
     dry_run=True,
 )
 print(reset_preview.get("summary"))
+
+# 6) one-command connector bootstrap + enterprise readiness snapshot
+connector_bootstrap = synapse.bootstrap_adoption_import_connector(
+    updated_by="ops_admin",
+    source_type="postgres_sql",
+    connector_id="postgres_sql:ops_kb_items:polling",
+    field_overrides={"sql_dsn_env": "HW_MEMORY_DSN"},
+    dry_run=True,
+)
+print(connector_bootstrap.get("status"))
+
+enterprise_readiness = synapse.get_enterprise_readiness(project_id="omega_demo")
+print(enterprise_readiness.get("status"))
 ```
 
 This maps to `/v1/legacy-import/*` and is intended to replace project-specific one-off import scripts with reusable profile/template contracts.
@@ -538,11 +551,19 @@ synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id om
 ```
 
 ```bash
+synapse-cli adoption connect-source --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --connector-id postgres_sql:ops_kb_items:polling --field-overrides-json '{"sql_dsn_env":"HW_MEMORY_DSN"}'
+```
+
+```bash
 synapse-cli adoption pipeline --api-url http://localhost:8080 --project-id omega_demo --days 14
 ```
 
 ```bash
 synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
+```
+
+```bash
+synapse-cli adoption enterprise-readiness --api-url http://localhost:8080 --project-id omega_demo
 ```
 
 ```bash

@@ -246,6 +246,22 @@ class AdoptionImportConnectorResolveRequest(BaseModel):
     field_overrides: dict[str, Any] | None = None
 
 
+class AdoptionImportConnectorBootstrapRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    source_type: str = Field(default="postgres_sql", pattern="^(postgres_sql|memory_api)$")
+    connector_id: str = Field(min_length=1, max_length=256)
+    source_ref: str | None = Field(default=None, min_length=1, max_length=2000)
+    field_overrides: dict[str, Any] | None = None
+    enabled: bool = True
+    sync_interval_minutes: int = Field(default=60, ge=1, le=10080)
+    queue_sync: bool = True
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    sync_processor_lookback_minutes: int = Field(default=30, ge=1, le=1440)
+    fail_on_sync_processor_unavailable: bool = False
+
+
 class AuthSessionCreateRequest(BaseModel):
     session_ttl_minutes: int | None = Field(default=None, ge=15, le=43200)
     metadata: dict[str, Any] | None = None
@@ -15265,9 +15281,162 @@ def _normalize_roles_list(values: list[str] | None) -> list[str]:
     return out[:32]
 
 
+def _enterprise_readiness_table_presence(conn) -> list[dict[str, Any]]:
+    table_specs = [
+        ("tenants", "Tenant registry", True),
+        ("tenant_memberships", "Tenant user memberships", True),
+        ("tenant_projects", "Tenant project mapping", True),
+        ("auth_sessions", "OIDC/auth sessions", True),
+        ("access_policy_decisions", "RBAC decision audit", False),
+        ("enterprise_idp_connections", "IdP/SAML bridge config", False),
+        ("scim_api_tokens", "SCIM token store", False),
+        ("scim_directory_users", "SCIM provisioned users", False),
+    ]
+    checks: list[dict[str, Any]] = []
+    for table_name, label, required in table_specs:
+        exists = _public_table_exists(conn, table_name)
+        checks.append(
+            {
+                "table": table_name,
+                "label": label,
+                "required": required,
+                "exists": bool(exists),
+                "status": "ok" if exists else ("critical" if required else "warning"),
+            }
+        )
+    return checks
+
+
+def _enterprise_readiness_counts(conn, *, project_id: str | None = None) -> dict[str, Any]:
+    counts: dict[str, Any] = {}
+    with conn.cursor() as cur:
+        if _public_table_exists(conn, "tenants"):
+            cur.execute("SELECT COUNT(*)::bigint FROM tenants")
+            row = cur.fetchone()
+            counts["tenants"] = int(row[0] if row and row[0] is not None else 0)
+        if _public_table_exists(conn, "tenant_memberships"):
+            cur.execute("SELECT COUNT(*)::bigint FROM tenant_memberships")
+            row = cur.fetchone()
+            counts["tenant_memberships"] = int(row[0] if row and row[0] is not None else 0)
+        if _public_table_exists(conn, "tenant_projects"):
+            cur.execute("SELECT COUNT(*)::bigint FROM tenant_projects")
+            row = cur.fetchone()
+            counts["tenant_projects"] = int(row[0] if row and row[0] is not None else 0)
+        if _public_table_exists(conn, "auth_sessions"):
+            cur.execute("SELECT COUNT(*)::bigint FROM auth_sessions WHERE expires_at > NOW()")
+            row = cur.fetchone()
+            counts["active_auth_sessions"] = int(row[0] if row and row[0] is not None else 0)
+        if _public_table_exists(conn, "enterprise_idp_connections"):
+            cur.execute("SELECT COUNT(*)::bigint FROM enterprise_idp_connections WHERE status = 'active'")
+            row = cur.fetchone()
+            counts["active_idp_connections"] = int(row[0] if row and row[0] is not None else 0)
+        if _public_table_exists(conn, "scim_api_tokens"):
+            cur.execute(
+                """
+                SELECT COUNT(*)::bigint
+                FROM scim_api_tokens
+                WHERE status = 'active'
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                """
+            )
+            row = cur.fetchone()
+            counts["active_scim_tokens"] = int(row[0] if row and row[0] is not None else 0)
+        if _public_table_exists(conn, "access_policy_decisions"):
+            if project_id:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::bigint
+                    FROM access_policy_decisions
+                    WHERE created_at >= NOW() - INTERVAL '24 hours'
+                      AND %s = ANY(project_ids)
+                    """,
+                    (project_id,),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::bigint
+                    FROM access_policy_decisions
+                    WHERE created_at >= NOW() - INTERVAL '24 hours'
+                    """
+                )
+            row = cur.fetchone()
+            counts["rbac_decisions_24h"] = int(row[0] if row and row[0] is not None else 0)
+    return counts
+
+
 @app.get("/v1/auth/mode")
 def get_auth_mode() -> dict[str, Any]:
     return enterprise.auth_mode_payload(enterprise.get_enterprise_settings())
+
+
+@app.get("/v1/enterprise/readiness")
+def get_enterprise_readiness(
+    project_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    settings = enterprise.get_enterprise_settings()
+    normalized_project_id = str(project_id or "").strip() or None
+    with get_conn() as conn:
+        table_checks = _enterprise_readiness_table_presence(conn)
+        counts = _enterprise_readiness_counts(conn, project_id=normalized_project_id)
+
+    warnings: list[dict[str, Any]] = []
+    for check in table_checks:
+        status = str(check.get("status") or "ok")
+        if status == "ok":
+            continue
+        warnings.append(
+            {
+                "code": f"table_{check.get('table')}_missing",
+                "severity": "critical" if bool(check.get("required")) else "warning",
+                "message": f"{check.get('label')}: table `{check.get('table')}` is missing.",
+            }
+        )
+
+    if settings.auth_mode == "oidc" and not bool(settings.oidc_issuer_url):
+        warnings.append(
+            {
+                "code": "oidc_issuer_missing",
+                "severity": "critical",
+                "message": "SYNAPSE_AUTH_MODE=oidc requires SYNAPSE_OIDC_ISSUER_URL.",
+            }
+        )
+    if settings.auth_mode == "oidc" and not bool(settings.oidc_audience):
+        warnings.append(
+            {
+                "code": "oidc_audience_missing",
+                "severity": "warning",
+                "message": "SYNAPSE_OIDC_AUDIENCE is not set; token audience checks may be too permissive.",
+            }
+        )
+    critical = [item for item in warnings if str(item.get("severity") or "").lower() == "critical"]
+    status = "healthy"
+    if critical:
+        status = "critical"
+    elif warnings:
+        status = "warning"
+
+    return {
+        "status": status,
+        "project_id": normalized_project_id,
+        "auth": enterprise.auth_mode_payload(settings),
+        "checks": table_checks,
+        "counts": counts,
+        "warnings": warnings,
+        "summary": {
+            "critical": len(critical),
+            "warnings": len(warnings) - len(critical),
+            "auth_mode": settings.auth_mode,
+            "rbac_mode": settings.rbac_mode,
+            "tenancy_mode": settings.tenancy_mode,
+        },
+        "recommendations": [
+            "Use `SYNAPSE_AUTH_MODE=oidc` + enforce RBAC/tenancy for production tenants.",
+            "Keep at least one active IdP connection and SCIM token for automated provisioning.",
+            "Monitor `/v1/enterprise/rbac/decisions` for deny spikes after policy changes.",
+        ],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 @app.get("/v1/enterprise/rbac/decisions")
@@ -25939,11 +26108,15 @@ def list_adoption_import_connectors(
     }
 
 
-@app.post("/v1/adoption/import-connectors/resolve")
-def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveRequest) -> dict[str, Any]:
-    normalized_source_type = str(payload.source_type or "postgres_sql").strip().lower() or "postgres_sql"
+def _resolve_adoption_import_connector_definition(
+    *,
+    source_type: str,
+    connector_id: str,
+    field_overrides: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    normalized_source_type = str(source_type or "postgres_sql").strip().lower() or "postgres_sql"
     connectors = _build_adoption_import_connectors(source_type=normalized_source_type, profile=None)
-    target_id = str(payload.connector_id or "").strip().lower()
+    target_id = str(connector_id or "").strip().lower()
     selected: dict[str, Any] | None = None
     for item in connectors:
         if str(item.get("id") or "").strip().lower() == target_id:
@@ -25954,22 +26127,48 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
             status_code=404,
             detail={
                 "error": "connector_not_found",
-                "connector_id": payload.connector_id,
+                "connector_id": connector_id,
                 "source_type": normalized_source_type,
             },
         )
 
     base_patch = selected.get("config_patch") if isinstance(selected.get("config_patch"), dict) else {}
-    overrides = _normalize_connector_overrides(payload.field_overrides)
+    overrides = _normalize_connector_overrides(field_overrides)
     resolved_patch = _deep_merge_dict(dict(base_patch), overrides)
     validation_hints = _build_connector_validation_hints(
-        connector_id=str(selected.get("id") or payload.connector_id),
+        connector_id=str(selected.get("id") or connector_id),
         source_type=str(selected.get("source_type") or normalized_source_type),
         sync_mode=str(selected.get("sync_mode") or ""),
         config_patch=resolved_patch,
     )
     selected["config_patch"] = resolved_patch
     selected["validation_hints"] = validation_hints
+    return selected, overrides
+
+
+def _normalize_adoption_connector_source_ref(
+    *,
+    explicit_ref: str | None,
+    connector_id: str,
+    source_type: str,
+) -> str:
+    raw = str(explicit_ref or "").strip()
+    if raw:
+        return raw[:2000]
+    fallback = re.sub(r"[^a-zA-Z0-9:_./-]+", "_", str(connector_id or "").strip().lower()).strip("._")
+    if not fallback:
+        fallback = f"{str(source_type or 'source').strip().lower() or 'source'}:default"
+    return fallback[:2000]
+
+
+@app.post("/v1/adoption/import-connectors/resolve")
+def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveRequest) -> dict[str, Any]:
+    normalized_source_type = str(payload.source_type or "postgres_sql").strip().lower() or "postgres_sql"
+    selected, overrides = _resolve_adoption_import_connector_definition(
+        source_type=normalized_source_type,
+        connector_id=str(payload.connector_id),
+        field_overrides=payload.field_overrides,
+    )
     return {
         "status": "ok",
         "source_type": normalized_source_type,
@@ -25978,6 +26177,212 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
         "field_overrides": overrides,
         "generated_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _queue_legacy_import_source_run(
+    conn,
+    *,
+    source_id: UUID,
+    project_id: str,
+    requested_by: str,
+) -> dict[str, Any]:
+    if not _public_table_exists(conn, "legacy_import_sync_runs"):
+        return {
+            "status": "unavailable",
+            "reason_code": "legacy_import_sync_runs_table_missing",
+            "next_action": "run migrations before queueing connector sync.",
+        }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id::text, status, trigger_mode, requested_by, created_at
+            FROM legacy_import_sync_runs
+            WHERE source_id = %s
+              AND status IN ('queued', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (source_id,),
+        )
+        existing = cur.fetchone()
+        if existing is not None:
+            return {
+                "status": "already_queued",
+                "run": {
+                    "id": str(existing[0]),
+                    "status": str(existing[1] or "queued"),
+                    "trigger_mode": str(existing[2] or "manual"),
+                    "requested_by": str(existing[3] or ""),
+                    "created_at": existing[4].isoformat() if isinstance(existing[4], datetime) else None,
+                },
+            }
+
+        run_id = uuid4()
+        cur.execute(
+            """
+            INSERT INTO legacy_import_sync_runs (
+              id,
+              source_id,
+              project_id,
+              status,
+              trigger_mode,
+              requested_by,
+              summary,
+              created_at,
+              updated_at
+            )
+            VALUES (%s, %s, %s, 'queued', 'manual', %s, '{}'::jsonb, NOW(), NOW())
+            """,
+            (run_id, source_id, project_id, requested_by),
+        )
+        return {
+            "status": "queued",
+            "run": {
+                "id": str(run_id),
+                "source_id": str(source_id),
+                "project_id": project_id,
+                "trigger_mode": "manual",
+                "requested_by": requested_by,
+            },
+            "next_action": "run_legacy_sync_scheduler",
+        }
+
+
+@app.post("/v1/adoption/import-connectors/bootstrap", response_model=None)
+def bootstrap_adoption_import_connector(
+    payload: AdoptionImportConnectorBootstrapRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm = str(payload.confirm_project_id or "").strip()
+        if confirm != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    normalized_source_type = str(payload.source_type or "postgres_sql").strip().lower() or "postgres_sql"
+    selected, overrides = _resolve_adoption_import_connector_definition(
+        source_type=normalized_source_type,
+        connector_id=payload.connector_id,
+        field_overrides=payload.field_overrides,
+    )
+    validation = selected.get("validation_hints") if isinstance(selected.get("validation_hints"), dict) else {}
+    validation_errors = list(validation.get("errors") or []) if isinstance(validation, dict) else []
+    validation_warnings = list(validation.get("warnings") or []) if isinstance(validation, dict) else []
+    source_ref = _normalize_adoption_connector_source_ref(
+        explicit_ref=payload.source_ref,
+        connector_id=str(selected.get("id") or payload.connector_id),
+        source_type=normalized_source_type,
+    )
+
+    actor = str(payload.updated_by or "").strip() or "ops_admin"
+    endpoint = "/v1/adoption/import-connectors/bootstrap"
+    response: dict[str, Any] = {
+        "status": "ok",
+        "project_id": project_id,
+        "dry_run": bool(payload.dry_run),
+        "source_type": normalized_source_type,
+        "connector": selected,
+        "field_overrides": overrides,
+        "validation": validation,
+        "source_ref": source_ref,
+        "upsert_plan": {
+            "enabled": bool(payload.enabled),
+            "sync_interval_minutes": int(payload.sync_interval_minutes),
+            "queue_sync": bool(payload.queue_sync),
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if validation_warnings:
+        response["warnings"] = validation_warnings
+    if validation_errors:
+        response["status"] = "blocked"
+        response["errors"] = validation_errors
+        if not payload.dry_run:
+            return JSONResponse(status_code=422, content=response)
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        try:
+            if not payload.dry_run and not validation_errors:
+                upsert = _upsert_legacy_import_source_record(
+                    conn,
+                    project_id=project_id,
+                    source_type=normalized_source_type,
+                    source_ref=source_ref,
+                    enabled=bool(payload.enabled),
+                    sync_interval_minutes=int(payload.sync_interval_minutes),
+                    next_run_at=None,
+                    config=selected.get("config_patch") if isinstance(selected.get("config_patch"), dict) else {},
+                    updated_by=actor,
+                )
+                source_payload = upsert["source"] if isinstance(upsert.get("source"), dict) else {}
+                response["source"] = source_payload
+                if upsert.get("profile_resolution"):
+                    response["profile_resolution"] = upsert["profile_resolution"]
+                if bool(payload.queue_sync) and source_payload.get("id"):
+                    queue_payload = _queue_legacy_import_source_run(
+                        conn,
+                        source_id=UUID(str(source_payload.get("id"))),
+                        project_id=project_id,
+                        requested_by=actor,
+                    )
+                    response["sync_queue"] = queue_payload
+                    response["sync_queue_processor"] = _legacy_sync_processor_health(
+                        conn,
+                        project_id=project_id,
+                        lookback_minutes=int(payload.sync_processor_lookback_minutes),
+                    )
+                    response["sync_cursor_health"] = _legacy_sync_cursor_health(
+                        conn,
+                        project_id=project_id,
+                        stale_after_hours=24,
+                    )
+                    if (
+                        bool(payload.fail_on_sync_processor_unavailable)
+                        and str((response.get("sync_queue_processor") or {}).get("status") or "") == "unavailable"
+                    ):
+                        response["status"] = "failed"
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=503,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=503, content=response)
+                else:
+                    response["sync_queue"] = {"status": "skipped", "reason_code": "queue_sync_disabled"}
+
+            mark_request_completed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
 
 
 def _normalize_space_key(value: Any, *, default: str = "") -> str:
@@ -37426,69 +37831,78 @@ def list_legacy_import_sync_contracts(
     }
 
 
-@app.put("/v1/legacy-import/sources")
-def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dict[str, Any]:
+def _upsert_legacy_import_source_record(
+    conn,
+    *,
+    project_id: str,
+    source_type: str,
+    source_ref: str,
+    enabled: bool,
+    sync_interval_minutes: int,
+    next_run_at: datetime | None,
+    config: dict[str, Any] | None,
+    updated_by: str,
+) -> dict[str, Any]:
     normalized_config, profile_meta = _normalize_legacy_import_source_config(
-        source_type=payload.source_type,
-        source_ref=payload.source_ref,
-        config=payload.config,
+        source_type=source_type,
+        source_ref=source_ref,
+        config=config,
     )
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO legacy_import_sources (
-                  id,
-                  project_id,
-                  source_type,
-                  source_ref,
-                  enabled,
-                  sync_interval_minutes,
-                  next_run_at,
-                  config,
-                  created_by,
-                  updated_by
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s, %s, %s)
-                ON CONFLICT (project_id, source_type, source_ref) DO UPDATE
-                SET enabled = EXCLUDED.enabled,
-                    sync_interval_minutes = EXCLUDED.sync_interval_minutes,
-                    next_run_at = COALESCE(EXCLUDED.next_run_at, legacy_import_sources.next_run_at),
-                    config = EXCLUDED.config,
-                    updated_by = EXCLUDED.updated_by,
-                    updated_at = NOW()
-                RETURNING
-                  id::text,
-                  project_id,
-                  source_type,
-                  source_ref,
-                  enabled,
-                  sync_interval_minutes,
-                  next_run_at,
-                  last_run_at,
-                  last_success_at,
-                  config,
-                  created_by,
-                  updated_by,
-                  created_at,
-                  updated_at
-                """,
-                (
-                    uuid4(),
-                    payload.project_id,
-                    payload.source_type,
-                    payload.source_ref,
-                    payload.enabled,
-                    payload.sync_interval_minutes,
-                    payload.next_run_at,
-                    Jsonb(normalized_config),
-                    payload.updated_by,
-                    payload.updated_by,
-                ),
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO legacy_import_sources (
+              id,
+              project_id,
+              source_type,
+              source_ref,
+              enabled,
+              sync_interval_minutes,
+              next_run_at,
+              config,
+              created_by,
+              updated_by
             )
-            row = cur.fetchone()
-    response: dict[str, Any] = {
-        "status": "ok",
+            VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()), %s, %s, %s)
+            ON CONFLICT (project_id, source_type, source_ref) DO UPDATE
+            SET enabled = EXCLUDED.enabled,
+                sync_interval_minutes = EXCLUDED.sync_interval_minutes,
+                next_run_at = COALESCE(EXCLUDED.next_run_at, legacy_import_sources.next_run_at),
+                config = EXCLUDED.config,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            RETURNING
+              id::text,
+              project_id,
+              source_type,
+              source_ref,
+              enabled,
+              sync_interval_minutes,
+              next_run_at,
+              last_run_at,
+              last_success_at,
+              config,
+              created_by,
+              updated_by,
+              created_at,
+              updated_at
+            """,
+            (
+                uuid4(),
+                project_id,
+                source_type,
+                source_ref,
+                enabled,
+                sync_interval_minutes,
+                next_run_at,
+                Jsonb(normalized_config),
+                updated_by,
+                updated_by,
+            ),
+        )
+        row = cur.fetchone()
+
+    result: dict[str, Any] = {
         "source": {
             "id": row[0],
             "project_id": row[1],
@@ -37504,10 +37918,28 @@ def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dic
             "updated_by": row[11],
             "created_at": row[12].isoformat(),
             "updated_at": row[13].isoformat(),
-        },
+        }
     }
     if profile_meta:
-        response["profile_resolution"] = profile_meta
+        result["profile_resolution"] = profile_meta
+    return result
+
+
+@app.put("/v1/legacy-import/sources")
+def upsert_legacy_import_source(payload: LegacyImportSourceUpsertRequest) -> dict[str, Any]:
+    with get_conn() as conn:
+        upsert = _upsert_legacy_import_source_record(
+            conn,
+            project_id=payload.project_id,
+            source_type=payload.source_type,
+            source_ref=payload.source_ref,
+            enabled=bool(payload.enabled),
+            sync_interval_minutes=int(payload.sync_interval_minutes),
+            next_run_at=payload.next_run_at,
+            config=payload.config,
+            updated_by=payload.updated_by,
+        )
+    response: dict[str, Any] = {"status": "ok", **upsert}
     return response
 
 

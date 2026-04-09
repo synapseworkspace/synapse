@@ -69,6 +69,22 @@ class _Handler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path == "/v1/enterprise/readiness":
+            self._send(
+                {
+                    "status": "warning",
+                    "summary": {
+                        "critical": 0,
+                        "warnings": 1,
+                        "auth_mode": "open",
+                        "rbac_mode": "open",
+                        "tenancy_mode": "open",
+                    },
+                    "counts": {"tenants": 1, "tenant_projects": 1, "active_auth_sessions": 2},
+                    "checks": [{"table": "tenants", "status": "ok"}],
+                }
+            )
+            return
         self._send({"detail": "not_found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -92,6 +108,23 @@ class _Handler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "summary": {"sources_queued": 2, "pipeline_runs": 1, "drafts_matched": 3, "drafts_applied": 0},
                     "diagnostics": {"items": [{"severity": "info", "message": "dry-run"}]},
+                    "echo": payload,
+                }
+            )
+            return
+        if path == "/v1/adoption/import-connectors/bootstrap":
+            self._send(
+                {
+                    "status": "ok",
+                    "dry_run": bool(payload.get("dry_run", True)),
+                    "connector": {"id": payload.get("connector_id"), "source_type": payload.get("source_type")},
+                    "validation": {"is_valid": True, "errors": [], "warnings": []},
+                    "source": {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "source_ref": payload.get("source_ref") or payload.get("connector_id"),
+                        "enabled": bool(payload.get("enabled", True)),
+                    },
+                    "sync_queue": {"status": "queued", "next_action": "run_legacy_sync_scheduler"},
                     "echo": payload,
                 }
             )
@@ -179,12 +212,30 @@ def main() -> int:
         assert sync.get("status") == "ok", sync
         pipeline = sync.get("pipeline")
         assert isinstance(pipeline, dict) and isinstance(pipeline.get("stages"), dict), sync
+        connector = _run_json_cmd(
+            base_cmd
+            + [
+                "connect-source",
+                "--api-url",
+                api_url,
+                "--project-id",
+                "omega_demo",
+                "--updated-by",
+                "ops_admin",
+                "--connector-id",
+                "postgres_sql:ops_kb_items:polling",
+                "--json",
+            ]
+        )
+        assert connector.get("status") == "ok", connector
         funnel = _run_json_cmd(base_cmd + ["pipeline", "--api-url", api_url, "--project-id", "omega_demo", "--json"])
         assert isinstance(funnel.get("stages"), dict), funnel
         rejections = _run_json_cmd(
             base_cmd + ["rejections", "--api-url", api_url, "--project-id", "omega_demo", "--days", "14", "--sample-limit", "5", "--json"]
         )
         assert isinstance(rejections.get("top_reasons"), list), rejections
+        readiness = _run_json_cmd(base_cmd + ["enterprise-readiness", "--api-url", api_url, "--project-id", "omega_demo", "--json"])
+        assert readiness.get("status") in {"ok", "warning", "critical", "healthy"}, readiness
     finally:
         server.shutdown()
         server.server_close()
