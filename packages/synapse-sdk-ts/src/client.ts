@@ -896,6 +896,42 @@ export class SynapseClient {
     });
   }
 
+  async getAdoptionPipelineVisibility(options: {
+    days?: number;
+    sourceSystems?: string[];
+    namespaces?: string[];
+  } = {}): Promise<Record<string, unknown>> {
+    const sourceSystems = Array.isArray(options.sourceSystems)
+      ? options.sourceSystems.map((value) => String(value).trim().toLowerCase()).filter((value) => value.length > 0)
+      : [];
+    const namespaces = Array.isArray(options.namespaces)
+      ? options.namespaces.map((value) => String(value).trim().toLowerCase()).filter((value) => value.length > 0)
+      : [];
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/pipeline/visibility", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        source_systems: sourceSystems.length > 0 ? sourceSystems.join(",") : undefined,
+        namespaces: namespaces.length > 0 ? namespaces.join(",") : undefined
+      }
+    });
+  }
+
+  async getAdoptionRejectionDiagnostics(options: {
+    days?: number;
+    sampleLimit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/rejections/diagnostics", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        sample_limit: normalizeInt(options.sampleLimit ?? 5, 1, 25)
+      }
+    });
+  }
+
   async listLegacyImportProfiles(options: {
     sourceType?: "postgres_sql" | string;
   } = {}): Promise<Record<string, unknown>> {

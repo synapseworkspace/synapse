@@ -269,6 +269,31 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual((payload.get("filter") or {}).get("category"), "policy")
         self.assertEqual(payload.get("reason"), "legacy noise")
 
+    def test_get_adoption_pipeline_visibility_is_project_scoped(self) -> None:
+        self.client.get_adoption_pipeline_visibility(
+            days=21,
+            source_systems=["postgres_sql", "memory_api"],
+            namespaces=["ops", "kb"],
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/pipeline/visibility")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("days"), 21)
+        self.assertEqual(params.get("source_systems"), "postgres_sql,memory_api")
+        self.assertEqual(params.get("namespaces"), "ops,kb")
+
+    def test_get_adoption_rejection_diagnostics_is_project_scoped(self) -> None:
+        self.client.get_adoption_rejection_diagnostics(days=11, sample_limit=7)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/rejections/diagnostics")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("days"), 11)
+        self.assertEqual(params.get("sample_limit"), 7)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -900,6 +900,43 @@ class SynapseClient:
             params={"project_id": self._config.project_id},
         )
 
+    def get_adoption_pipeline_visibility(
+        self,
+        *,
+        days: int = 14,
+        source_systems: list[str] | None = None,
+        namespaces: list[str] | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "days": max(1, min(90, int(days))),
+        }
+        if source_systems:
+            params["source_systems"] = ",".join([str(item).strip().lower() for item in source_systems if str(item).strip()])
+        if namespaces:
+            params["namespaces"] = ",".join([str(item).strip().lower() for item in namespaces if str(item).strip()])
+        return self._request_json(
+            "/v1/adoption/pipeline/visibility",
+            method="GET",
+            params=params,
+        )
+
+    def get_adoption_rejection_diagnostics(
+        self,
+        *,
+        days: int = 14,
+        sample_limit: int = 5,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/rejections/diagnostics",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "sample_limit": max(1, min(25, int(sample_limit))),
+            },
+        )
+
     def list_legacy_import_profiles(
         self,
         *,
