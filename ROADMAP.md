@@ -799,8 +799,30 @@ All items were completed and moved to `Recent Updates` for audit history.
 7. SDK API sprawl can reduce adoption if facade and plugin boundaries are not tightly controlled.
 8. Product-message drift: technical docs can overshadow Agentic Wiki value narrative and reduce conversion.
 
+## v0.1.5 Production Adoption DX (Q2 2026)
+
+Status: `in_progress`
+
+Goal:
+- сделать внедрение/операционное ведение Synapse максимально простым для production-команд;
+- закрепить no-code операторский путь `sync -> diagnose -> moderate` через единый CLI.
+
+Checklist:
+1. `done` CLI adoption operations bundle:
+   - expanded `synapse-cli adoption` with `sync-preset`, `pipeline`, `rejections` plus existing operator commands;
+   - kept safe dry-run defaults and machine-readable JSON outputs.
+2. `done` CI smoke for adoption CLI operations:
+   - added offline end-to-end smoke (`scripts/check_synapse_cli_adoption_ops.py`) covering all adoption operator commands via stubbed API.
+3. `planned` API/worker explainability envelope in sync preset:
+   - unify top-level reason buckets (`quality_gate`, `routing_policy`, `classification`) directly in preset summary payload.
+4. `planned` Operations route quick actions v2:
+   - add direct deep-link actions (`Run Sync Preset`, `View Pipeline`, `View Rejections`) with opinionated defaults.
+5. `planned` Release playbook refresh for adoption ops:
+   - align `getting-started`, `adoption-existing-memory`, and `self-hosted-deployment` with the new CLI-first operator flow.
+
 ## Recent Updates
 
+- 2026-04-09: Started `v0.1.5 Production Adoption DX`: extended `synapse-cli adoption` with one-command `sync-preset` and diagnostics commands (`pipeline`, `rejections`), updated CLI docs/README examples, and added dedicated offline CI smoke coverage (`scripts/check_synapse_cli_adoption_ops.py`) wired into `scripts/ci_checks.sh`.
 - 2026-04-09: Added no-code adoption operator commands to `synapse-cli`: new `adoption` group now supports `cursor-health`, `project-reset` (scoped + optional orphan draft page cascade), `list-drafts`, and `bulk-review-drafts` with safe dry-run defaults and advanced filters (category/source/connector/assertion/tier/confidence/risk); updated Python SDK README with concrete command recipes.
 - 2026-04-09: Added explicit worker regression coverage for `postgres_sql` polling placeholder safety: `test_collect_records_binds_cursor_with_existing_named_params` now verifies SQL importer binds `cursor=None` alongside existing named params (e.g. `project_id`) so queries with `%(cursor)s` never execute as raw SQL and fail with `syntax error at or near "%"`.
 - 2026-04-09: Added adoption recovery controls to SDKs (Python/TypeScript): exposed project-scope reset (`run_adoption_project_reset` / `runAdoptionProjectReset`) with scoped cleanup + orphan-draft cascade toggle, added cursor health diagnostics (`get_adoption_sync_cursor_health` / `getAdoptionSyncCursorHealth`), and extended sync preset APIs with processor safeguards (`sync_processor_lookback_minutes`, `fail_on_sync_processor_unavailable`); updated SDK READMEs and CI smoke assertions accordingly.

@@ -175,6 +175,14 @@ pip install -e packages/synapse-sdk-py
 synapse-cli quickstart --dir . --project-id omega_demo --api-url http://localhost:8080 --doctor-strict --verify-core-loop
 ```
 
+Operator-first adoption flow (dry-run safe by default):
+
+```bash
+synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14
+synapse-cli adoption list-drafts --api-url http://localhost:8080 --project-id omega_demo --status pending_review --limit 50
+```
+
 Run local workspace UI:
 
 ```bash

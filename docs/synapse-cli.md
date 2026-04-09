@@ -7,6 +7,7 @@
 - project bootstrap scaffolding (`init`).
 - integration snippet generation (`connect`).
 - coexistence/adoption rollout planning (`adopt`).
+- adoption operations (`adoption`).
 - one-command end-to-end core loop verification (`verify core-loop`).
 - one-command onboarding orchestration (`quickstart`).
 
@@ -115,6 +116,66 @@ synapse-cli adopt \
   --shadow-retrieval-check \
   --shadow-query "bc omega gate access policy" \
   --json
+```
+
+## adoption
+
+Operate project-scoped adoption workflows without raw API calls.
+
+Inspect cursor health:
+
+```bash
+synapse-cli adoption cursor-health \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --stale-after-hours 24
+```
+
+Run enterprise sync preset (dry-run by default):
+
+```bash
+synapse-cli adoption sync-preset \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --updated-by ops_admin \
+  --with-pipeline
+```
+
+Apply preset for real:
+
+```bash
+synapse-cli adoption sync-preset \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --updated-by ops_admin \
+  --apply \
+  --with-pipeline
+```
+
+Inspect funnel bottlenecks:
+
+```bash
+synapse-cli adoption pipeline \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --days 14
+```
+
+Inspect rejection reasons:
+
+```bash
+synapse-cli adoption rejections \
+  --api-url http://localhost:8080 \
+  --project-id omega_demo \
+  --days 14 \
+  --sample-limit 5
+```
+
+List and bulk-moderate drafts:
+
+```bash
+synapse-cli adoption list-drafts --api-url http://localhost:8080 --project-id omega_demo --status pending_review --limit 50
+synapse-cli adoption bulk-review-drafts --api-url http://localhost:8080 --project-id omega_demo --reviewed-by ops_reviewer --action approve --category policy --category-mode prefix --source-system postgres_sql --min-confidence 0.85
 ```
 
 ## verify core-loop

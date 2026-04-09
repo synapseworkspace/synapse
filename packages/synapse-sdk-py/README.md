@@ -534,6 +534,18 @@ synapse-cli adoption bulk-review-drafts --api-url http://localhost:8080 --projec
 ```
 
 ```bash
+synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+```
+
+```bash
+synapse-cli adoption pipeline --api-url http://localhost:8080 --project-id omega_demo --days 14
+```
+
+```bash
+synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
+```
+
+```bash
 synapse-cli wiki-space-policy get --api-url http://localhost:8080 --project-id omega_demo --space-key operations
 ```
 

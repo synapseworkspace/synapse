@@ -526,6 +526,187 @@ def _build_parser() -> argparse.ArgumentParser:
     adoption_bulk_review.add_argument("--json", action="store_true", help="Render output as JSON.")
     adoption_bulk_review.set_defaults(func=_cmd_adoption_bulk_review_drafts)
 
+    adoption_sync_preset = adoption_subparsers.add_parser(
+        "sync-preset",
+        help="Run enterprise curated sync preset (dry-run by default).",
+    )
+    adoption_sync_preset.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_sync_preset.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_sync_preset.add_argument(
+        "--updated-by",
+        default="ops_admin",
+        help="Operator id for audit trail (default: ops_admin).",
+    )
+    adoption_sync_preset.add_argument(
+        "--reviewed-by",
+        default=None,
+        help="Optional reviewer id for bootstrap moderation step.",
+    )
+    adoption_sync_preset.add_argument(
+        "--starter-profile",
+        default="support_ops",
+        choices=["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"],
+        help="Starter profile used when seeding starter pages (default: support_ops).",
+    )
+    adoption_sync_preset.add_argument(
+        "--role-template-key",
+        default=None,
+        choices=["support_ops", "logistics_ops", "sales_ops", "compliance_ops"],
+        help="Optional role template key to apply.",
+    )
+    adoption_sync_preset.add_argument(
+        "--role-template-space-key",
+        default=None,
+        help="Optional target space for role template.",
+    )
+    adoption_sync_preset.add_argument(
+        "--skip-bootstrap-profile",
+        action="store_true",
+        help="Do not apply bootstrap profile before sync queue execution.",
+    )
+    adoption_sync_preset.add_argument(
+        "--skip-queue",
+        action="store_true",
+        help="Do not queue enabled legacy sources.",
+    )
+    adoption_sync_preset.add_argument(
+        "--skip-bootstrap-approve",
+        action="store_true",
+        help="Do not run trusted bootstrap approve flow.",
+    )
+    adoption_sync_preset.add_argument(
+        "--skip-starter-pages",
+        action="store_true",
+        help="Do not include starter pages in preset run.",
+    )
+    adoption_sync_preset.add_argument(
+        "--sync-processor-lookback-minutes",
+        type=int,
+        default=30,
+        help="Lookback window for sync processor health check (1..1440, default: 30).",
+    )
+    adoption_sync_preset.add_argument(
+        "--fail-on-sync-processor-unavailable",
+        action="store_true",
+        help="Fail preset when queue processor health is unavailable/critical.",
+    )
+    adoption_sync_preset.add_argument(
+        "--disable-safe-mode-autotrigger",
+        action="store_true",
+        help="Disable automatic safe-mode apply on critical diagnostics.",
+    )
+    adoption_sync_preset.add_argument(
+        "--pipeline-days",
+        type=int,
+        default=14,
+        help="Visibility window for post-run pipeline snapshot (1..90, default: 14).",
+    )
+    adoption_sync_preset.add_argument(
+        "--with-pipeline",
+        action="store_true",
+        help="Also fetch pipeline visibility after preset execution.",
+    )
+    adoption_sync_preset.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply preset (default is dry-run preview).",
+    )
+    adoption_sync_preset.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Optional idempotency key for preset execution.",
+    )
+    adoption_sync_preset.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=10.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_sync_preset.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_sync_preset.set_defaults(func=_cmd_adoption_sync_preset)
+
+    adoption_pipeline = adoption_subparsers.add_parser(
+        "pipeline",
+        help="Inspect adoption funnel visibility (accepted -> events -> claims -> drafts -> pages).",
+    )
+    adoption_pipeline.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_pipeline.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_pipeline.add_argument(
+        "--days",
+        type=int,
+        default=14,
+        help="Visibility window in days (1..90, default: 14).",
+    )
+    adoption_pipeline.add_argument(
+        "--source-systems",
+        default=None,
+        help="Optional comma-separated source_system filters.",
+    )
+    adoption_pipeline.add_argument(
+        "--namespaces",
+        default=None,
+        help="Optional comma-separated namespace filters.",
+    )
+    adoption_pipeline.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_pipeline.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_pipeline.set_defaults(func=_cmd_adoption_pipeline_visibility)
+
+    adoption_rejections = adoption_subparsers.add_parser(
+        "rejections",
+        help="Inspect aggregated rejection diagnostics for adoption tuning.",
+    )
+    adoption_rejections.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_rejections.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_rejections.add_argument(
+        "--days",
+        type=int,
+        default=14,
+        help="Diagnostics window in days (1..90, default: 14).",
+    )
+    adoption_rejections.add_argument(
+        "--sample-limit",
+        type=int,
+        default=5,
+        help="Sample examples per reason (1..25, default: 5).",
+    )
+    adoption_rejections.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_rejections.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_rejections.set_defaults(func=_cmd_adoption_rejections)
+
     wiki_space_policy = subparsers.add_parser(
         "wiki-space-policy",
         help="Inspect and update wiki space policy (including publish checklist presets).",
@@ -1983,6 +2164,247 @@ def _cmd_adoption_bulk_review_drafts(args: argparse.Namespace) -> int:
                 f"applied={int(summary.get('applied', 0) or 0)} "
                 f"failed={int(summary.get('failed', 0) or 0)}"
             )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_sync_preset(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    updated_by = str(_coerce_text(args.updated_by) or "").strip()
+    if not updated_by:
+        print("[synapse-cli] --updated-by is required", file=sys.stderr)
+        return 2
+    starter_profile = str(_coerce_text(args.starter_profile) or "support_ops").strip().lower() or "support_ops"
+    if starter_profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
+        print("[synapse-cli] --starter-profile is invalid", file=sys.stderr)
+        return 2
+    role_template_key = str(_coerce_text(args.role_template_key) or "").strip().lower()
+    if role_template_key and role_template_key not in {"support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
+        print("[synapse-cli] --role-template-key is invalid", file=sys.stderr)
+        return 2
+    dry_run = not bool(args.apply)
+    request_payload: dict[str, Any] = {
+        "project_id": project_id,
+        "updated_by": updated_by,
+        "reviewed_by": _coerce_text(args.reviewed_by),
+        "preset_key": "enterprise_curated_safe",
+        "dry_run": dry_run,
+        "confirm_project_id": None if dry_run else project_id,
+        "apply_bootstrap_profile": not bool(args.skip_bootstrap_profile),
+        "queue_enabled_sources": not bool(args.skip_queue),
+        "run_bootstrap_approve": not bool(args.skip_bootstrap_approve),
+        "include_starter_pages": not bool(args.skip_starter_pages),
+        "starter_profile": starter_profile,
+        "include_role_template": bool(role_template_key),
+        "role_template_key": role_template_key or None,
+        "role_template_space_key": _coerce_text(args.role_template_space_key),
+        "sync_processor_lookback_minutes": max(1, min(1440, int(args.sync_processor_lookback_minutes))),
+        "fail_on_sync_processor_unavailable": bool(args.fail_on_sync_processor_unavailable),
+        "auto_apply_safe_mode_on_critical": not bool(args.disable_safe_mode_autotrigger),
+    }
+    response = _synapse_api_json(
+        method="POST",
+        url=f"{api_url}/v1/adoption/sync-presets/execute",
+        payload=request_payload,
+        timeout=timeout,
+        idempotency_key=_coerce_text(args.idempotency_key),
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    pipeline_payload: dict[str, Any] | None = None
+    pipeline_response: dict[str, Any] | None = None
+    if bool(args.with_pipeline) and bool(response["ok"]):
+        pipeline_response = _synapse_api_json(
+            method="GET",
+            url=f"{api_url}/v1/adoption/pipeline/visibility",
+            params={
+                "project_id": project_id,
+                "days": max(1, min(90, int(args.pipeline_days))),
+            },
+            timeout=timeout,
+        )
+        if isinstance(pipeline_response.get("payload"), dict):
+            pipeline_payload = dict(pipeline_response["payload"])
+    if bool(args.json):
+        result: dict[str, Any] = {
+            **body,
+            "_http_status": response["status_code"],
+            "_ok": bool(response["ok"]),
+            "_error": response.get("error"),
+        }
+        if pipeline_payload is not None:
+            result["pipeline"] = pipeline_payload
+            result["_pipeline_http_status"] = pipeline_response["status_code"] if pipeline_response is not None else None
+            result["_pipeline_ok"] = bool(pipeline_response["ok"]) if pipeline_response is not None else None
+            result["_pipeline_error"] = pipeline_response.get("error") if pipeline_response is not None else None
+        _print_json(result, pretty=True)
+    else:
+        summary = body.get("summary") if isinstance(body.get("summary"), dict) else {}
+        print("Adoption Sync Preset")
+        print(f"- project_id: {project_id}")
+        print(f"- preset: enterprise_curated_safe")
+        print(f"- updated_by: {updated_by}")
+        print(f"- dry_run: {dry_run}")
+        if summary:
+            print(
+                "- summary: "
+                f"sources_queued={int(summary.get('sources_queued', 0) or 0)} "
+                f"pipeline_runs={int(summary.get('pipeline_runs', 0) or 0)} "
+                f"drafts_matched={int(summary.get('drafts_matched', 0) or 0)} "
+                f"drafts_applied={int(summary.get('drafts_applied', 0) or 0)}"
+            )
+        diagnostics = body.get("diagnostics") if isinstance(body.get("diagnostics"), dict) else {}
+        if diagnostics:
+            items = diagnostics.get("items") if isinstance(diagnostics.get("items"), list) else []
+            print(f"- diagnostics_items: {len(items)}")
+        if pipeline_payload is not None:
+            stages = pipeline_payload.get("stages") if isinstance(pipeline_payload.get("stages"), dict) else {}
+            print(
+                "- pipeline: "
+                f"accepted={int(stages.get('accepted', 0) or 0)} "
+                f"events={int(stages.get('events', 0) or 0)} "
+                f"claims={int(stages.get('claims', 0) or 0)} "
+                f"drafts={int(stages.get('drafts', 0) or 0)} "
+                f"pages={int(stages.get('pages', 0) or 0)}"
+            )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_pipeline_visibility(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    source_systems = _parse_csv_tokens(args.source_systems)
+    namespaces = _parse_csv_tokens(args.namespaces)
+    params: dict[str, Any] = {"project_id": project_id, "days": max(1, min(90, int(args.days)))}
+    if source_systems:
+        params["source_systems"] = ",".join(source_systems)
+    if namespaces:
+        params["namespaces"] = ",".join(namespaces)
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/adoption/pipeline/visibility",
+        params=params,
+        timeout=timeout,
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        stages = body.get("stages") if isinstance(body.get("stages"), dict) else {}
+        conversion = body.get("conversion") if isinstance(body.get("conversion"), dict) else {}
+        bottlenecks = body.get("bottlenecks") if isinstance(body.get("bottlenecks"), list) else []
+        print("Adoption Pipeline Visibility")
+        print(f"- project_id: {project_id}")
+        print(f"- days: {params['days']}")
+        print(
+            "- stages: "
+            f"accepted={int(stages.get('accepted', 0) or 0)} "
+            f"events={int(stages.get('events', 0) or 0)} "
+            f"claims={int(stages.get('claims', 0) or 0)} "
+            f"drafts={int(stages.get('drafts', 0) or 0)} "
+            f"pages={int(stages.get('pages', 0) or 0)}"
+        )
+        if conversion:
+            print(
+                "- conversion: "
+                f"accepted_to_claims={conversion.get('accepted_to_claims')} "
+                f"claims_to_drafts={conversion.get('claims_to_drafts')} "
+                f"drafts_to_pages={conversion.get('drafts_to_pages')}"
+            )
+        if bottlenecks:
+            print("Top bottlenecks:")
+            for item in bottlenecks[:5]:
+                if not isinstance(item, dict):
+                    continue
+                print(
+                    "- "
+                    f"{item.get('stage') or 'unknown'} "
+                    f"severity={item.get('severity') or 'unknown'} "
+                    f"hint={item.get('hint') or '-'}"
+                )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_rejections(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    params: dict[str, Any] = {
+        "project_id": project_id,
+        "days": max(1, min(90, int(args.days))),
+        "sample_limit": max(1, min(25, int(args.sample_limit))),
+    }
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/adoption/rejections/diagnostics",
+        params=params,
+        timeout=timeout,
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        summary = body.get("summary") if isinstance(body.get("summary"), dict) else {}
+        top_reasons = body.get("top_reasons") if isinstance(body.get("top_reasons"), list) else []
+        print("Adoption Rejection Diagnostics")
+        print(f"- project_id: {project_id}")
+        print(f"- days: {params['days']}")
+        if summary:
+            print(
+                "- summary: "
+                f"rejected_total={int(summary.get('rejected_total', 0) or 0)} "
+                f"distinct_reasons={int(summary.get('distinct_reasons', 0) or 0)} "
+                f"sources_blocked={int(summary.get('sources_blocked', 0) or 0)}"
+            )
+        if top_reasons:
+            print("Top reasons:")
+            for item in top_reasons[:8]:
+                if not isinstance(item, dict):
+                    continue
+                print(
+                    "- "
+                    f"{item.get('reason_code') or 'unknown'} "
+                    f"count={int(item.get('count', 0) or 0)} "
+                    f"share={item.get('share')}"
+                )
         print(f"- http_status: {response['status_code']}")
         if response.get("error"):
             print(f"- error: {response['error']}")

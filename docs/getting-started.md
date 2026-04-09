@@ -1,6 +1,6 @@
 # Synapse Getting Started (First 15 Minutes)
 
-Last updated: 2026-04-04
+Last updated: 2026-04-09
 
 This guide is optimized for first value with minimal setup decisions.
 Synapse is used here as an **L2 Cognitive State Layer** with **Agentic Wiki** as the operator interface.
@@ -33,6 +33,20 @@ Optional one-command proof from CLI (when running inside repo workspace):
 
 ```bash
 synapse-cli verify core-loop --project-id omega_demo --json
+```
+
+## Adoption Ops (Production-first)
+
+Run curated sync preset with safe dry-run and immediate funnel snapshot:
+
+```bash
+synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+```
+
+Inspect why data is blocked/rejected:
+
+```bash
+synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
 ```
 
 ## Choose Your Path

@@ -56,6 +56,7 @@ python3 -m py_compile scripts/check_cookbook_snapshots.py
 python3 -m py_compile scripts/check_framework_adapter_contracts.py
 python3 -m py_compile scripts/check_framework_native_bindings.py
 python3 -m py_compile scripts/check_framework_quickstart_parity.py
+python3 -m py_compile scripts/check_synapse_cli_adoption_ops.py
 python3 -m py_compile scripts/benchmark_agentic_onboarding.py
 python3 -m py_compile scripts/check_positioning_consistency.py
 python3 -m py_compile scripts/check_core_slo_guardrails.py
@@ -1583,6 +1584,9 @@ finally:
     server.shutdown()
     server.server_close()
 PY
+
+echo "[5.27/6] synapse-cli adoption ops smoke (offline)"
+PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python scripts/check_synapse_cli_adoption_ops.py >/dev/null
 
 echo "[5.45/6] Cookbook snapshot stability"
 PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python scripts/check_cookbook_snapshots.py >/dev/null
