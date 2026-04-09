@@ -71,6 +71,10 @@ python3 scripts/check_api_web_compat_contract.py
 echo "[2.1/6] Worker routing unit tests"
 python3 -m unittest discover -s services/worker/tests -p 'test_*.py' >/dev/null
 
+echo "[2.2/6] Python SDK legacy/adoption contract tests"
+PYTHONPATH="$ROOT_DIR/packages/synapse-sdk-py/src" python3 -m unittest \
+  packages/synapse-sdk-py/tests/test_legacy_import_methods.py >/dev/null
+
 echo "[3/6] TypeScript typecheck"
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-sdk-ts/tsconfig.json --noEmit
 npm exec --yes --package typescript@5.8.3 -- tsc -p packages/synapse-openclaw-plugin/tsconfig.json --noEmit
@@ -137,6 +141,7 @@ const transport = {
   events: [],
   claims: [],
   backfills: [],
+  requests: [],
   async sendEvents(events) {
     this.events.push(...events);
   },
@@ -147,6 +152,12 @@ const transport = {
     this.backfills.push(payload);
   },
   async requestJson(path, options = {}) {
+    this.requests.push({
+      path,
+      method: String(options.method || "GET").toUpperCase(),
+      payload: options.payload || {},
+      params: options.params || {}
+    });
     if (path === "/v1/mcp/retrieval/explain" && options.method === "GET") {
       const params = options.params || {};
       return {
@@ -318,6 +329,42 @@ fallbackNative.invoke({ input: "fallback" });
 
 await frameworkSynapse.flush();
 
+await synapse.bulkReviewWikiDrafts({
+  reviewedBy: "ops_reviewer",
+  action: "approve",
+  dryRun: true,
+  limit: 12,
+  filter: { category: "policy", source_system: "postgres_sql" }
+});
+await synapse.getAdoptionPipelineVisibility({
+  days: 7,
+  sourceSystems: ["postgres_sql"],
+  namespaces: ["ops"]
+});
+await synapse.getAdoptionRejectionDiagnostics({ days: 7, sampleLimit: 3 });
+await synapse.enableAdoptionSafeMode({
+  updatedBy: "ops_admin",
+  dryRun: true,
+  note: "ci safe-mode dry-run"
+});
+await synapse.executeAdoptionSyncPreset({
+  updatedBy: "ops_admin",
+  dryRun: true,
+  autoApplySafeModeOnCritical: false
+});
+
+const hasBulkReview = transport.requests.some((req) => req.path === "/v1/wiki/drafts/bulk-review" && req.method === "POST");
+const hasPipelineVisibility = transport.requests.some((req) => req.path === "/v1/adoption/pipeline/visibility" && req.method === "GET");
+const hasRejectionDiagnostics = transport.requests.some((req) => req.path === "/v1/adoption/rejections/diagnostics" && req.method === "GET");
+const hasSafeMode = transport.requests.some((req) => req.path === "/v1/adoption/safe-mode/enable" && req.method === "POST");
+const syncPresetCall = transport.requests.find((req) => req.path === "/v1/adoption/sync-presets/execute" && req.method === "POST");
+assert.equal(hasBulkReview, true, transport.requests);
+assert.equal(hasPipelineVisibility, true, transport.requests);
+assert.equal(hasRejectionDiagnostics, true, transport.requests);
+assert.equal(hasSafeMode, true, transport.requests);
+assert.equal(Boolean(syncPresetCall), true, transport.requests);
+assert.equal(syncPresetCall?.payload?.auto_apply_safe_mode_on_critical, false, syncPresetCall);
+
 const frameworkDebug = frameworkSynapse.getDebugRecords();
 const frameworkAttachIntegrations = new Set(
   frameworkDebug
@@ -449,6 +496,7 @@ class MemoryTransport:
         self.events = []
         self.claims = []
         self.backfills = []
+        self.requests = []
         self.tasks = {}
         self.task_events = {}
         self.task_links = {}
@@ -461,6 +509,14 @@ class MemoryTransport:
     def request_json(self, path, *, method="GET", payload=None, params=None, idempotency_key=None):
         params = params or {}
         payload = payload or {}
+        self.requests.append(
+            {
+                "path": str(path),
+                "method": str(method).upper(),
+                "payload": dict(payload),
+                "params": dict(params),
+            }
+        )
         project_id = params.get("project_id") or payload.get("project_id") or "p"
         if path == "/v1/tasks" and method == "POST":
             task_id = payload.get("task_id") or "task-1"
@@ -758,10 +814,79 @@ client.link_task("task-1", created_by="ops_manager", link=TaskLink(link_type="dr
 task_detail = client.get_task("task-1")
 assert task_detail.get("task", {}).get("status") == "in_progress", task_detail
 assert len(task_detail.get("links", [])) >= 1, task_detail
+client.bulk_review_wiki_drafts(
+    reviewed_by="ops_reviewer",
+    action="approve",
+    dry_run=True,
+    limit=12,
+    filter={"category": "policy", "source_system": "postgres_sql"},
+)
+client.get_adoption_pipeline_visibility(
+    days=7,
+    source_systems=["postgres_sql"],
+    namespaces=["ops"],
+)
+client.get_adoption_rejection_diagnostics(days=7, sample_limit=3)
+client.enable_adoption_safe_mode(
+    updated_by="ops_admin",
+    dry_run=True,
+    note="ci safe-mode dry-run",
+)
+client.execute_adoption_sync_preset(
+    updated_by="ops_admin",
+    dry_run=True,
+    auto_apply_safe_mode_on_critical=False,
+)
 client.flush()
 assert len(transport.events) >= 3
 assert len(transport.claims) >= 2
 assert len(transport.backfills) >= 4
+bulk_review_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/wiki/drafts/bulk-review" and req.get("method") == "POST"
+    ),
+    None,
+)
+pipeline_visibility_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/adoption/pipeline/visibility" and req.get("method") == "GET"
+    ),
+    None,
+)
+rejection_diagnostics_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/adoption/rejections/diagnostics" and req.get("method") == "GET"
+    ),
+    None,
+)
+safe_mode_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/adoption/safe-mode/enable" and req.get("method") == "POST"
+    ),
+    None,
+)
+sync_preset_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/adoption/sync-presets/execute" and req.get("method") == "POST"
+    ),
+    None,
+)
+assert bulk_review_call is not None, transport.requests
+assert pipeline_visibility_call is not None, transport.requests
+assert rejection_diagnostics_call is not None, transport.requests
+assert safe_mode_call is not None, transport.requests
+assert sync_preset_call is not None, transport.requests
+assert sync_preset_call.get("payload", {}).get("auto_apply_safe_mode_on_critical") is False, sync_preset_call
 event_trace_ids = [e.trace_id for e in transport.events if getattr(e, "trace_id", None)]
 assert event_trace_ids, "missing trace ids in captured events"
 debug_events = client.get_debug_records(limit=200)
