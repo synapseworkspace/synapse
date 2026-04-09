@@ -423,7 +423,7 @@ else
   fi
   if [[ "$WEB_E2E_SCOPE" == "smoke" ]]; then
     npm --prefix apps/web run e2e -- \
-      --grep "task tracker lifecycle flow|core route split keeps drafts clean and operations tools isolated" \
+      --grep "visual snapshot: wiki route|visual snapshot: operations route" \
       --workers=1 \
       --max-failures=1 >/dev/null
   else
