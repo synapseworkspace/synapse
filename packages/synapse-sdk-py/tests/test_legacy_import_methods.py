@@ -187,6 +187,8 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             dry_run=False,
             include_role_template=True,
             role_template_key="logistics_ops",
+            sync_processor_lookback_minutes=45,
+            fail_on_sync_processor_unavailable=True,
             auto_apply_safe_mode_on_critical=False,
         )
         call = self.client.calls[-1]
@@ -198,6 +200,8 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("role_template_key"), "logistics_ops")
+        self.assertEqual(payload.get("sync_processor_lookback_minutes"), 45)
+        self.assertTrue(payload.get("fail_on_sync_processor_unavailable"))
         self.assertFalse(payload.get("auto_apply_safe_mode_on_critical"))
 
     def test_run_adoption_agent_wiki_bootstrap_posts_expected_payload(self) -> None:
@@ -330,6 +334,35 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(params.get("project_id"), "omega_demo")
         self.assertEqual(params.get("days"), 11)
         self.assertEqual(params.get("sample_limit"), 7)
+
+    def test_run_adoption_project_reset_posts_expected_payload(self) -> None:
+        self.client.run_adoption_project_reset(
+            requested_by="ops_admin",
+            scopes=["drafts", "wiki", "claims"],
+            reason="clean rerun",
+            cascade_cleanup_orphan_draft_pages=True,
+            dry_run=False,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/project-reset")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("requested_by"), "ops_admin")
+        self.assertEqual(payload.get("scopes"), ["drafts", "wiki", "claims"])
+        self.assertEqual(payload.get("reason"), "clean rerun")
+        self.assertTrue(payload.get("cascade_cleanup_orphan_draft_pages"))
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+
+    def test_get_adoption_sync_cursor_health_is_project_scoped(self) -> None:
+        self.client.get_adoption_sync_cursor_health(stale_after_hours=72)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/sync/cursor-health")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("stale_after_hours"), 72)
 
 
 if __name__ == "__main__":

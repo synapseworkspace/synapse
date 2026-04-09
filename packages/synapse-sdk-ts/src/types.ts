@@ -151,6 +151,33 @@ export interface BulkReviewWikiDraftsOptions {
   idempotencyKey?: string;
 }
 
+export interface AdoptionSyncPresetExecuteOptions {
+  updatedBy: string;
+  reviewedBy?: string;
+  dryRun?: boolean;
+  applyBootstrapProfile?: boolean;
+  queueEnabledSources?: boolean;
+  runBootstrapApprove?: boolean;
+  includeStarterPages?: boolean;
+  starterProfile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+  includeRoleTemplate?: boolean;
+  roleTemplateKey?: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+  roleTemplateSpaceKey?: string;
+  syncProcessorLookbackMinutes?: number;
+  failOnSyncProcessorUnavailable?: boolean;
+  autoApplySafeModeOnCritical?: boolean;
+  idempotencyKey?: string;
+}
+
+export interface AdoptionProjectResetOptions {
+  requestedBy: string;
+  scopes?: string[];
+  reason?: string;
+  cascadeCleanupOrphanDraftPages?: boolean;
+  dryRun?: boolean;
+  idempotencyKey?: string;
+}
+
 export interface LangChainCallbackHandler {
   on_chain_start?: (serialized: unknown, inputs: unknown, kwargs?: Record<string, unknown>) => void;
   on_chain_end?: (outputs: unknown, kwargs?: Record<string, unknown>) => void;

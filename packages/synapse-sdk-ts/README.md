@@ -360,6 +360,18 @@ const sourceId = String((upserted as any).source.id);
 await synapse.queueLegacyImportSourceSync({ sourceId, requestedBy: "ops_admin" });
 const runs = await synapse.listLegacyImportSyncRuns({ sourceId, limit: 20 });
 console.log((runs as any).runs?.[0]?.status);
+
+// 5) check cursor health + preview scoped reset
+const cursorHealth = await synapse.getAdoptionSyncCursorHealth({ staleAfterHours: 24 });
+console.log((cursorHealth as any).status);
+
+const resetPreview = await synapse.runAdoptionProjectReset({
+  requestedBy: "ops_admin",
+  scopes: ["drafts", "wiki", "claims", "events", "backfill"],
+  cascadeCleanupOrphanDraftPages: true,
+  dryRun: true
+});
+console.log((resetPreview as any).summary);
 ```
 
 These SDK calls map to `/v1/legacy-import/*` and remove the need for per-project importer scripts by using reusable mapping templates and sync runner contracts.

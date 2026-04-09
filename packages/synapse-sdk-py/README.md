@@ -437,6 +437,18 @@ source_id = source["source"]["id"]
 synapse.queue_legacy_import_source_sync(source_id, requested_by="ops_admin")
 runs = synapse.list_legacy_import_sync_runs(source_id=source_id, limit=20)
 print(runs["runs"][0]["status"])
+
+# 5) check cursor health and run safe project reset before clean rerun
+cursor_health = synapse.get_adoption_sync_cursor_health(stale_after_hours=24)
+print(cursor_health.get("status"))
+
+reset_preview = synapse.run_adoption_project_reset(
+    requested_by="ops_admin",
+    scopes=["drafts", "wiki", "claims", "events", "backfill"],
+    cascade_cleanup_orphan_draft_pages=True,
+    dry_run=True,
+)
+print(reset_preview.get("summary"))
 ```
 
 This maps to `/v1/legacy-import/*` and is intended to replace project-specific one-off import scripts with reusable profile/template contracts.

@@ -753,6 +753,8 @@ class SynapseClient:
         include_role_template: bool = False,
         role_template_key: str | None = None,
         role_template_space_key: str | None = None,
+        sync_processor_lookback_minutes: int = 30,
+        fail_on_sync_processor_unavailable: bool = False,
         auto_apply_safe_mode_on_critical: bool = True,
     ) -> dict[str, Any]:
         actor = str(updated_by or "").strip()
@@ -782,6 +784,8 @@ class SynapseClient:
                 if role_template_space_key is not None and str(role_template_space_key).strip()
                 else None
             ),
+            "sync_processor_lookback_minutes": max(1, min(1440, int(sync_processor_lookback_minutes))),
+            "fail_on_sync_processor_unavailable": bool(fail_on_sync_processor_unavailable),
             "auto_apply_safe_mode_on_critical": bool(auto_apply_safe_mode_on_critical),
         }
         return self._request_json(
@@ -813,6 +817,53 @@ class SynapseClient:
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),
+        )
+
+    def run_adoption_project_reset(
+        self,
+        *,
+        requested_by: str,
+        scopes: list[str] | None = None,
+        reason: str | None = None,
+        cascade_cleanup_orphan_draft_pages: bool = False,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        actor = str(requested_by or "").strip()
+        if not actor:
+            raise ValueError("requested_by is required")
+        normalized_scopes: list[str] = []
+        for item in scopes or []:
+            token = str(item or "").strip().lower()
+            if token and token not in normalized_scopes:
+                normalized_scopes.append(token)
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "requested_by": actor,
+            "reason": str(reason).strip() if reason is not None and str(reason).strip() else None,
+            "scopes": normalized_scopes or None,
+            "cascade_cleanup_orphan_draft_pages": bool(cascade_cleanup_orphan_draft_pages),
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+        }
+        return self._request_json(
+            "/v1/adoption/project-reset",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def get_adoption_sync_cursor_health(
+        self,
+        *,
+        stale_after_hours: int = 24,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/sync/cursor-health",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "stale_after_hours": max(1, min(24 * 30, int(stale_after_hours))),
+            },
         )
 
     def list_wiki_drafts(

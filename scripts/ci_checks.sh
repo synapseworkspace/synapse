@@ -347,26 +347,41 @@ await synapse.enableAdoptionSafeMode({
   dryRun: true,
   note: "ci safe-mode dry-run"
 });
+await synapse.runAdoptionProjectReset({
+  requestedBy: "ops_admin",
+  scopes: ["drafts", "wiki"],
+  cascadeCleanupOrphanDraftPages: true,
+  dryRun: true
+});
 await synapse.executeAdoptionSyncPreset({
   updatedBy: "ops_admin",
   dryRun: true,
+  syncProcessorLookbackMinutes: 60,
+  failOnSyncProcessorUnavailable: true,
   autoApplySafeModeOnCritical: false
 });
 await synapse.listWikiDrafts({ status: "pending_review", limit: 25 });
+await synapse.getAdoptionSyncCursorHealth({ staleAfterHours: 72 });
 
 const hasBulkReview = transport.requests.some((req) => req.path === "/v1/wiki/drafts/bulk-review" && req.method === "POST");
 const hasListDrafts = transport.requests.some((req) => req.path === "/v1/wiki/drafts" && req.method === "GET");
+const hasProjectReset = transport.requests.some((req) => req.path === "/v1/adoption/project-reset" && req.method === "POST");
+const hasCursorHealth = transport.requests.some((req) => req.path === "/v1/adoption/sync/cursor-health" && req.method === "GET");
 const hasPipelineVisibility = transport.requests.some((req) => req.path === "/v1/adoption/pipeline/visibility" && req.method === "GET");
 const hasRejectionDiagnostics = transport.requests.some((req) => req.path === "/v1/adoption/rejections/diagnostics" && req.method === "GET");
 const hasSafeMode = transport.requests.some((req) => req.path === "/v1/adoption/safe-mode/enable" && req.method === "POST");
 const syncPresetCall = transport.requests.find((req) => req.path === "/v1/adoption/sync-presets/execute" && req.method === "POST");
 assert.equal(hasBulkReview, true, transport.requests);
 assert.equal(hasListDrafts, true, transport.requests);
+assert.equal(hasProjectReset, true, transport.requests);
+assert.equal(hasCursorHealth, true, transport.requests);
 assert.equal(hasPipelineVisibility, true, transport.requests);
 assert.equal(hasRejectionDiagnostics, true, transport.requests);
 assert.equal(hasSafeMode, true, transport.requests);
 assert.equal(Boolean(syncPresetCall), true, transport.requests);
 assert.equal(syncPresetCall?.payload?.auto_apply_safe_mode_on_critical, false, syncPresetCall);
+assert.equal(syncPresetCall?.payload?.sync_processor_lookback_minutes, 60, syncPresetCall);
+assert.equal(syncPresetCall?.payload?.fail_on_sync_processor_unavailable, true, syncPresetCall);
 
 const frameworkDebug = frameworkSynapse.getDebugRecords();
 const frameworkAttachIntegrations = new Set(
@@ -835,12 +850,21 @@ client.enable_adoption_safe_mode(
     dry_run=True,
     note="ci safe-mode dry-run",
 )
+client.run_adoption_project_reset(
+    requested_by="ops_admin",
+    scopes=["drafts", "wiki"],
+    cascade_cleanup_orphan_draft_pages=True,
+    dry_run=True,
+)
 client.execute_adoption_sync_preset(
     updated_by="ops_admin",
     dry_run=True,
+    sync_processor_lookback_minutes=60,
+    fail_on_sync_processor_unavailable=True,
     auto_apply_safe_mode_on_critical=False,
 )
 client.list_wiki_drafts(status="pending_review", limit=25)
+client.get_adoption_sync_cursor_health(stale_after_hours=72)
 client.flush()
 assert len(transport.events) >= 3
 assert len(transport.claims) >= 2
@@ -885,6 +909,22 @@ safe_mode_call = next(
     ),
     None,
 )
+project_reset_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/adoption/project-reset" and req.get("method") == "POST"
+    ),
+    None,
+)
+cursor_health_call = next(
+    (
+        req
+        for req in transport.requests
+        if req.get("path") == "/v1/adoption/sync/cursor-health" and req.get("method") == "GET"
+    ),
+    None,
+)
 sync_preset_call = next(
     (
         req
@@ -895,11 +935,15 @@ sync_preset_call = next(
 )
 assert bulk_review_call is not None, transport.requests
 assert list_drafts_call is not None, transport.requests
+assert project_reset_call is not None, transport.requests
+assert cursor_health_call is not None, transport.requests
 assert pipeline_visibility_call is not None, transport.requests
 assert rejection_diagnostics_call is not None, transport.requests
 assert safe_mode_call is not None, transport.requests
 assert sync_preset_call is not None, transport.requests
 assert sync_preset_call.get("payload", {}).get("auto_apply_safe_mode_on_critical") is False, sync_preset_call
+assert int(sync_preset_call.get("payload", {}).get("sync_processor_lookback_minutes") or 0) == 60, sync_preset_call
+assert bool(sync_preset_call.get("payload", {}).get("fail_on_sync_processor_unavailable")) is True, sync_preset_call
 event_trace_ids = [e.trace_id for e in transport.events if getattr(e, "trace_id", None)]
 assert event_trace_ids, "missing trace ids in captured events"
 debug_events = client.get_debug_records(limit=200)

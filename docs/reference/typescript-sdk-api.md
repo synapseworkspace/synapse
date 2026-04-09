@@ -10,6 +10,8 @@ Source: `packages/synapse-sdk-ts/src/types.ts`
 
 Exports:
 - `AdoptionMode`
+- `AdoptionProjectResetOptions`
+- `AdoptionSyncPresetExecuteOptions`
 - `AgentProfileInput`
 - `AttachBootstrapMemoryOptions`
 - `AttachOptions`

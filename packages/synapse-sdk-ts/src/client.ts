@@ -5,6 +5,8 @@ import type {
   AttachBootstrapMemoryOptions,
   AgentProfileInput,
   AttachOptions,
+  AdoptionProjectResetOptions,
+  AdoptionSyncPresetExecuteOptions,
   BindCrewAiOptions,
   BindLangChainOptions,
   BindLangGraphOptions,
@@ -739,21 +741,7 @@ export class SynapseClient {
     });
   }
 
-  async executeAdoptionSyncPreset(options: {
-    updatedBy: string;
-    reviewedBy?: string;
-    dryRun?: boolean;
-    applyBootstrapProfile?: boolean;
-    queueEnabledSources?: boolean;
-    runBootstrapApprove?: boolean;
-    includeStarterPages?: boolean;
-    starterProfile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
-    includeRoleTemplate?: boolean;
-    roleTemplateKey?: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
-    roleTemplateSpaceKey?: string;
-    autoApplySafeModeOnCritical?: boolean;
-    idempotencyKey?: string;
-  }): Promise<Record<string, unknown>> {
+  async executeAdoptionSyncPreset(options: AdoptionSyncPresetExecuteOptions): Promise<Record<string, unknown>> {
     const updatedBy = String(options.updatedBy ?? "").trim();
     if (!updatedBy) {
       throw new Error("updatedBy is required");
@@ -778,12 +766,50 @@ export class SynapseClient {
       include_role_template: options.includeRoleTemplate ?? false,
       role_template_key: asOptionalString(options.roleTemplateKey)?.toLowerCase() ?? undefined,
       role_template_space_key: asOptionalString(options.roleTemplateSpaceKey) ?? undefined,
+      sync_processor_lookback_minutes: normalizeInt(options.syncProcessorLookbackMinutes ?? 30, 1, 1440),
+      fail_on_sync_processor_unavailable: options.failOnSyncProcessorUnavailable ?? false,
       auto_apply_safe_mode_on_critical: options.autoApplySafeModeOnCritical ?? true
     };
     return this.requestJson<Record<string, unknown>>("/v1/adoption/sync-presets/execute", {
       method: "POST",
       payload,
       idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async runAdoptionProjectReset(options: AdoptionProjectResetOptions): Promise<Record<string, unknown>> {
+    const requestedBy = String(options.requestedBy ?? "").trim();
+    if (!requestedBy) {
+      throw new Error("requestedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    const scopes = Array.isArray(options.scopes)
+      ? options.scopes.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)
+      : [];
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/project-reset", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        requested_by: requestedBy,
+        reason: asOptionalString(options.reason) ?? undefined,
+        scopes: scopes.length > 0 ? scopes : undefined,
+        cascade_cleanup_orphan_draft_pages: options.cascadeCleanupOrphanDraftPages ?? false,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? undefined : this.projectId
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getAdoptionSyncCursorHealth(options: {
+    staleAfterHours?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/sync/cursor-health", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        stale_after_hours: normalizeInt(options.staleAfterHours ?? 24, 1, 24 * 30)
+      }
     });
   }
 
