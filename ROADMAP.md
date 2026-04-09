@@ -23,15 +23,6 @@ Owner: Core team
 - `done`: реализовано.
 - `blocked`: заблокировано внешним фактором.
 
-## Recent Updates
-
-- `2026-04-09` `done` Added runtime-inferred Agent Capability fallback:
-  - when `agent_directory_profiles` is missing/empty, Synapse now builds orgchart + capability signals from runtime `events`/`tasks`.
-- `2026-04-09` `done` Added high-signal auto-publish gate:
-  - auto-publish now requires durable profile match (assertion class/page type/category keyword) before approval.
-- `2026-04-09` `done` Added adoption auto safe-mode:
-  - new `/v1/adoption/safe-mode/enable` endpoint plus optional auto-apply from sync preset on critical diagnostics.
-
 ## Current Quarter Focus (Q2 2026)
 
 1. Universal `synapse-sdk` contracts and adapters.
@@ -810,6 +801,9 @@ All items were completed and moved to `Recent Updates` for audit history.
 
 ## Recent Updates
 
+- 2026-04-09: Added runtime-inferred Agent Capability fallback for bootstrap/orgchart paths: when `agent_directory_profiles` is absent or empty, Synapse now derives agent nodes/capabilities from runtime `events` + `synapse_tasks` signals to avoid empty `n/a` capability pages on first integration.
+- 2026-04-09: Added high-signal auto-publish gate in `/v1/wiki/auto-publish/run`: drafts now require durable-profile match (assertion class/page type/category keyword) before policy-based auto-approval; diagnostics now expose `high_signal_gate` rationale per item.
+- 2026-04-09: Added adoption safe-mode control surface: new endpoint `POST /v1/adoption/safe-mode/enable` (dry-run/apply with snapshot) and optional auto-trigger from `POST /v1/adoption/sync-presets/execute` via `auto_apply_safe_mode_on_critical` when critical sync diagnostics are detected.
 - 2026-04-08: Completed `v0.1.3` adoption hardening release pack: shipped setup wizard v2 (`connect -> curated preview -> first publish`), new curated dry-run explain API (`POST /v1/backfill/curated-explain`), connector resolve endpoint with field overrides + validation hints (`POST /v1/adoption/import-connectors/resolve`), policy calibration quick loop (`GET/POST /v1/adoption/policy-calibration/quick-loop*`) with rollback-safe apply, onboarding KPI endpoint (`GET /v1/adoption/kpi`), self-host consistency gate (`GET /v1/adoption/selfhost/consistency`), and docs polish (`adoption-connector-cookbook`, `operator-first-24h`).
 - 2026-04-06: Added `Real-World Adoption Backlog` from production integration feedback with explicit `P0/P1/P2` priorities: split knowledge/event ingest lanes, bootstrap import profile, reject diagnostics API, scoped project reset API, and self-host core wiki defaults; added exit criteria and execution order.
 - 2026-04-06: Completed Agent Worklog Intelligence UI closure in core Operations route: added project-level worklog policy controls (timezone, local schedule, min activity score, idle-day mode, realtime trigger + lookback), `Sync worklogs now` action, and integrated live AI orgchart view (teams, handoffs, profile deep-links) backed by `GET /v1/agents/orgchart`.
