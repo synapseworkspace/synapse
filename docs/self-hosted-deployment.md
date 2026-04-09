@@ -97,6 +97,13 @@ For a clean compose-profile acceptance (startup + acceptance + teardown):
 ./scripts/run_selfhost_core_acceptance.sh
 ```
 
+Recommended adoption operator pass (dry-run first):
+
+```bash
+synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
+```
+
 CI opt-in path:
 
 1. `workflow_dispatch` in `.github/workflows/ci.yml` with input `run_selfhost_acceptance=true`.

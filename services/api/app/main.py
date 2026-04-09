@@ -27713,6 +27713,34 @@ def execute_adoption_sync_preset(
                     response["auto_safe_mode"]["triggered"] = not bool(payload.dry_run)
             if warnings:
                 response["warnings"] = warnings
+            try:
+                pipeline_visibility = get_adoption_pipeline_visibility(
+                    project_id=project_id,
+                    days=14,
+                    source_systems=None,
+                    namespaces=None,
+                )
+                rejection_diagnostics = get_adoption_rejection_diagnostics(
+                    project_id=project_id,
+                    days=14,
+                    sample_limit=5,
+                )
+                response["pipeline_visibility"] = pipeline_visibility
+                response["rejection_diagnostics"] = rejection_diagnostics
+                response["explainability"] = _build_adoption_sync_explainability(
+                    warnings=warnings,
+                    pipeline_visibility=pipeline_visibility,
+                    rejection_diagnostics=rejection_diagnostics,
+                )
+            except Exception as explainability_exc:  # pragma: no cover - defensive envelope
+                warnings.append(
+                    {
+                        "code": "explainability_unavailable",
+                        "severity": "warning",
+                        "message": f"Could not build explainability snapshot: {explainability_exc}",
+                    }
+                )
+                response["warnings"] = warnings
 
             mark_request_completed(
                 conn,
@@ -28898,6 +28926,138 @@ def _has_critical_adoption_warnings(warnings: list[dict[str, Any]]) -> bool:
         if str(item.get("severity") or "").strip().lower() == "critical":
             return True
     return False
+
+
+def _build_adoption_sync_explainability(
+    *,
+    warnings: list[dict[str, Any]],
+    pipeline_visibility: dict[str, Any] | None,
+    rejection_diagnostics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    top_reasons = (
+        rejection_diagnostics.get("top_reject_reasons")
+        if isinstance(rejection_diagnostics, dict) and isinstance(rejection_diagnostics.get("top_reject_reasons"), list)
+        else []
+    )
+    reason_counts: dict[str, int] = {}
+    for item in top_reasons:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip().lower()
+        if not key:
+            continue
+        reason_counts[key] = int(item.get("count") or 0)
+    total_rejections = int(
+        (rejection_diagnostics or {}).get("summary", {}).get("rejected_total", 0)
+        if isinstance((rejection_diagnostics or {}).get("summary"), dict)
+        else 0
+    )
+
+    classification_count = sum(count for key, count in reason_counts.items() if key.startswith("classification:"))
+    quality_gate_tags = {
+        "event_stream_shape",
+        "insufficient_support",
+        "backfill_without_durable_signal",
+        "runtime_noise",
+    }
+    routing_policy_tags = {
+        "ingestion_default_deny",
+        "blocked_source_id",
+        "blocked_source_type",
+        "blocked_source_system",
+        "blocked_category",
+        "blocked_entity",
+        "routing_hard_block",
+    }
+    quality_gate_count = sum(count for key, count in reason_counts.items() if key in quality_gate_tags)
+    routing_policy_count = sum(count for key, count in reason_counts.items() if key in routing_policy_tags)
+
+    critical_warnings = [
+        item
+        for item in warnings
+        if isinstance(item, dict) and str(item.get("severity") or "").strip().lower() == "critical"
+    ]
+    warning_codes = [
+        str(item.get("code") or "").strip().lower()
+        for item in warnings
+        if isinstance(item, dict) and str(item.get("code") or "").strip()
+    ]
+    runtime_guard_count = len(warning_codes)
+
+    stages = (
+        pipeline_visibility.get("pipeline")
+        if isinstance(pipeline_visibility, dict) and isinstance(pipeline_visibility.get("pipeline"), dict)
+        else {}
+    )
+    accepted = int(stages.get("accepted") or 0)
+    claims = int(stages.get("claims") or 0)
+    drafts = int(stages.get("drafts") or 0)
+    pages = int(stages.get("pages") or 0)
+    claims_gap = max(0, accepted - claims)
+    draft_gap = max(0, claims - drafts)
+    publish_gap = max(0, drafts - pages)
+
+    bucket_counts = {
+        "quality_gate": quality_gate_count,
+        "routing_policy": routing_policy_count,
+        "classification": classification_count,
+        "runtime_guardrails": runtime_guard_count,
+    }
+    bucket_total = sum(bucket_counts.values())
+
+    def _top_tags(keys: set[str], *, prefix: str | None = None, limit: int = 3) -> list[str]:
+        selected: list[tuple[str, int]] = []
+        for key, count in reason_counts.items():
+            if prefix and key.startswith(prefix):
+                selected.append((key, count))
+                continue
+            if key in keys:
+                selected.append((key, count))
+        selected.sort(key=lambda item: (-item[1], item[0]))
+        return [item[0] for item in selected[:limit]]
+
+    reason_buckets = {
+        "quality_gate": {
+            "count": int(quality_gate_count),
+            "share": round(float(quality_gate_count / bucket_total), 4) if bucket_total > 0 else 0.0,
+            "top_tags": _top_tags(quality_gate_tags),
+        },
+        "routing_policy": {
+            "count": int(routing_policy_count),
+            "share": round(float(routing_policy_count / bucket_total), 4) if bucket_total > 0 else 0.0,
+            "top_tags": _top_tags(routing_policy_tags),
+        },
+        "classification": {
+            "count": int(classification_count),
+            "share": round(float(classification_count / bucket_total), 4) if bucket_total > 0 else 0.0,
+            "top_tags": _top_tags(set(), prefix="classification:"),
+        },
+        "runtime_guardrails": {
+            "count": int(runtime_guard_count),
+            "share": round(float(runtime_guard_count / bucket_total), 4) if bucket_total > 0 else 0.0,
+            "top_tags": warning_codes[:3],
+        },
+    }
+
+    primary_bucket = max(reason_buckets.items(), key=lambda item: int((item[1] or {}).get("count") or 0))[0]
+    if int((reason_buckets.get(primary_bucket) or {}).get("count") or 0) <= 0:
+        primary_bucket = "none"
+
+    return {
+        "status": "ok",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": {
+            "total_rejections": int(total_rejections),
+            "critical_warnings": len(critical_warnings),
+            "primary_bucket": primary_bucket,
+        },
+        "reason_buckets": reason_buckets,
+        "pipeline_gap": {
+            "accepted_to_claims": claims_gap,
+            "claims_to_drafts": draft_gap,
+            "drafts_to_pages": publish_gap,
+        },
+    }
 
 
 def _build_adoption_safe_mode_target_config(*, current_config: dict[str, Any]) -> dict[str, Any]:

@@ -210,6 +210,17 @@ def main() -> int:
     sync_queue = sync_response.get("sync_queue") if isinstance(sync_response.get("sync_queue"), dict) else {}
     processor_state = sync_response.get("sync_queue_processor") if isinstance(sync_response.get("sync_queue_processor"), dict) else {}
     warnings = sync_response.get("warnings") if isinstance(sync_response.get("warnings"), list) else []
+    explainability = sync_response.get("explainability") if isinstance(sync_response.get("explainability"), dict) else {}
+    reason_buckets = explainability.get("reason_buckets") if isinstance(explainability.get("reason_buckets"), dict) else {}
+    _assert(bool(reason_buckets), f"sync preset explainability reason_buckets missing: {json.dumps(sync_response, ensure_ascii=False)}")
+    _assert(
+        isinstance(sync_response.get("pipeline_visibility"), dict),
+        f"sync preset pipeline_visibility missing: {json.dumps(sync_response, ensure_ascii=False)}",
+    )
+    _assert(
+        isinstance(sync_response.get("rejection_diagnostics"), dict),
+        f"sync preset rejection_diagnostics missing: {json.dumps(sync_response, ensure_ascii=False)}",
+    )
     queued_now = int(sync_queue.get("queued") or 0)
     already_queued = int(sync_queue.get("already_queued") or 0)
     _assert(

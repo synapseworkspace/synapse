@@ -240,6 +240,15 @@ Generate attach snippet directly:
 synapse-cli connect openclaw --dir . --adoption-mode observe_only
 ```
 
+Run operator loop without raw API calls (safe dry-run defaults):
+
+```bash
+synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+synapse-cli adoption pipeline --api-url http://localhost:8080 --project-id omega_demo --days 14
+synapse-cli adoption rejections --api-url http://localhost:8080 --project-id omega_demo --days 14 --sample-limit 5
+synapse-cli adoption list-drafts --api-url http://localhost:8080 --project-id omega_demo --status pending_review --limit 50
+```
+
 ## Operational Guardrails
 
 - Keep `source_id` stable for idempotent backfill and dedup safety.

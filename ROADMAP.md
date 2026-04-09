@@ -801,7 +801,7 @@ All items were completed and moved to `Recent Updates` for audit history.
 
 ## v0.1.5 Production Adoption DX (Q2 2026)
 
-Status: `in_progress`
+Status: `done`
 
 Goal:
 - сделать внедрение/операционное ведение Synapse максимально простым для production-команд;
@@ -813,15 +813,16 @@ Checklist:
    - kept safe dry-run defaults and machine-readable JSON outputs.
 2. `done` CI smoke for adoption CLI operations:
    - added offline end-to-end smoke (`scripts/check_synapse_cli_adoption_ops.py`) covering all adoption operator commands via stubbed API.
-3. `planned` API/worker explainability envelope in sync preset:
+3. `done` API/worker explainability envelope in sync preset:
    - unify top-level reason buckets (`quality_gate`, `routing_policy`, `classification`) directly in preset summary payload.
-4. `planned` Operations route quick actions v2:
+4. `done` Operations route quick actions v2:
    - add direct deep-link actions (`Run Sync Preset`, `View Pipeline`, `View Rejections`) with opinionated defaults.
-5. `planned` Release playbook refresh for adoption ops:
+5. `done` Release playbook refresh for adoption ops:
    - align `getting-started`, `adoption-existing-memory`, and `self-hosted-deployment` with the new CLI-first operator flow.
 
 ## Recent Updates
 
+- 2026-04-09: Completed remaining `v0.1.5` adoption-DX closure items: `POST /v1/adoption/sync-presets/execute` now returns a unified explainability envelope (`reason_buckets`, `pipeline_gap`, primary blocker summary) plus embedded `pipeline_visibility` and `rejection_diagnostics`; Operations UI gained quick actions (`View pipeline`, `View rejections`, refresh controls) with a new rejection diagnostics panel; updated self-host + adoption playbooks for the new CLI-first operator loop.
 - 2026-04-09: Started `v0.1.5 Production Adoption DX`: extended `synapse-cli adoption` with one-command `sync-preset` and diagnostics commands (`pipeline`, `rejections`), updated CLI docs/README examples, and added dedicated offline CI smoke coverage (`scripts/check_synapse_cli_adoption_ops.py`) wired into `scripts/ci_checks.sh`.
 - 2026-04-09: Added no-code adoption operator commands to `synapse-cli`: new `adoption` group now supports `cursor-health`, `project-reset` (scoped + optional orphan draft page cascade), `list-drafts`, and `bulk-review-drafts` with safe dry-run defaults and advanced filters (category/source/connector/assertion/tier/confidence/risk); updated Python SDK README with concrete command recipes.
 - 2026-04-09: Added explicit worker regression coverage for `postgres_sql` polling placeholder safety: `test_collect_records_binds_cursor_with_existing_named_params` now verifies SQL importer binds `cursor=None` alongside existing named params (e.g. `project_id`) so queries with `%(cursor)s` never execute as raw SQL and fail with `syntax error at or near "%"`.

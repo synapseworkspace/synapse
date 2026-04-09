@@ -838,6 +838,35 @@ type AdoptionPipelineVisibilityPayload = {
   }>;
 };
 
+type AdoptionRejectionDiagnosticsPayload = {
+  project_id: string;
+  window_days: number;
+  summary?: {
+    rejected_total?: number;
+    sampled_examples?: number;
+  };
+  top_reject_reasons?: Array<{
+    key: string;
+    count: number;
+  }>;
+  top_blocked_patterns?: {
+    source_types?: Array<{ key: string; count: number }>;
+    source_systems?: Array<{ key: string; count: number }>;
+    tool_names?: Array<{ key: string; count: number }>;
+  };
+  suggested_policy_knobs?: Array<{
+    knob: string;
+    hint: string;
+  }>;
+  examples?: Array<{
+    claim_id?: string;
+    category?: string;
+    reason_tags?: string[];
+    updated_at?: string;
+    claim_text_snippet?: string;
+  }>;
+};
+
 type LegacyImportProfile = {
   profile: string;
   label: string;
@@ -923,6 +952,23 @@ type AdoptionSyncPresetPayload = {
   status: string;
   project_id: string;
   dry_run: boolean;
+  explainability?: {
+    summary?: {
+      total_rejections?: number;
+      critical_warnings?: number;
+      primary_bucket?: string;
+    };
+    reason_buckets?: Record<
+      string,
+      {
+        count?: number;
+        share?: number;
+        top_tags?: string[];
+      }
+    >;
+  };
+  pipeline_visibility?: AdoptionPipelineVisibilityPayload;
+  rejection_diagnostics?: AdoptionRejectionDiagnosticsPayload;
   bootstrap_profile?: Record<string, unknown>;
   sync_queue?: {
     queued?: number;
@@ -2009,6 +2055,8 @@ export default function App() {
   const [bootstrapProfileResult, setBootstrapProfileResult] = useState<AdoptionBootstrapProfileApplyPayload | null>(null);
   const [adoptionPipeline, setAdoptionPipeline] = useState<AdoptionPipelineVisibilityPayload | null>(null);
   const [adoptionPipelineLoading, setAdoptionPipelineLoading] = useState(false);
+  const [adoptionRejections, setAdoptionRejections] = useState<AdoptionRejectionDiagnosticsPayload | null>(null);
+  const [adoptionRejectionsLoading, setAdoptionRejectionsLoading] = useState(false);
   const [, setLoadingBootstrapRecommendation] = useState(false);
   const [legacyProfiles, setLegacyProfiles] = useState<LegacyImportProfile[]>([]);
   const [adoptionImportConnectors, setAdoptionImportConnectors] = useState<AdoptionImportConnectorItem[]>([]);
@@ -3914,6 +3962,31 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadAdoptionRejections = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setAdoptionRejections(null);
+      return;
+    }
+    setAdoptionRejectionsLoading(true);
+    try {
+      const query = new URLSearchParams({
+        project_id: project,
+        days: "14",
+        sample_limit: "5",
+      });
+      const payload = await apiFetch<AdoptionRejectionDiagnosticsPayload>(
+        apiUrl,
+        `/v1/adoption/rejections/diagnostics?${query.toString()}`,
+      );
+      setAdoptionRejections(payload);
+    } catch {
+      setAdoptionRejections(null);
+    } finally {
+      setAdoptionRejectionsLoading(false);
+    }
+  }, [apiUrl, projectId]);
+
   const loadAdoptionKpi = useCallback(async () => {
     const project = projectId.trim();
     if (!project) {
@@ -4694,6 +4767,7 @@ export default function App() {
       setLegacySources([]);
       setBootstrapRecommendation(null);
       setAdoptionPipeline(null);
+      setAdoptionRejections(null);
       setAdoptionKpi(null);
       setPolicyQuickLoop(null);
       return;
@@ -4703,12 +4777,14 @@ export default function App() {
     void loadLegacyImportSources();
     void loadBootstrapRecommendation();
     void loadAdoptionPipelineVisibility();
+    void loadAdoptionRejections();
     void loadAdoptionKpi();
     void loadPolicyQuickLoop();
   }, [
     loadAdoptionImportConnectors,
     loadAdoptionKpi,
     loadAdoptionPipelineVisibility,
+    loadAdoptionRejections,
     loadBootstrapRecommendation,
     loadLegacyImportProfiles,
     loadLegacyImportSources,
@@ -5427,22 +5503,39 @@ export default function App() {
           },
           idempotencyKey: randomKey(),
         });
+        if (payload.pipeline_visibility) {
+          setAdoptionPipeline(payload.pipeline_visibility);
+        }
+        if (payload.rejection_diagnostics) {
+          setAdoptionRejections(payload.rejection_diagnostics);
+        }
+        const explainabilityPrimaryBucket = String(payload.explainability?.summary?.primary_bucket || "").trim();
+        const explainabilityRejectedTotal = Number(payload.explainability?.summary?.total_rejections || 0);
         if (dryRun) {
           notifications.show({
             color: "indigo",
             title: "Sync preset preview ready",
-            message: `Candidates: ${Number(payload.bootstrap_approve?.summary?.candidates || 0)}.`,
+            message:
+              `Candidates: ${Number(payload.bootstrap_approve?.summary?.candidates || 0)}.` +
+              (explainabilityPrimaryBucket
+                ? ` Primary blocker: ${explainabilityPrimaryBucket.replace(/_/g, " ")} (${explainabilityRejectedTotal} rejected).`
+                : ""),
           });
         } else {
           notifications.show({
             color: "teal",
             title: "Sync preset applied",
-            message: `Queued ${Number(payload.sync_queue?.queued || 0)} source(s), approved ${Number(payload.bootstrap_approve?.summary?.approved || 0)} draft(s).`,
+            message:
+              `Queued ${Number(payload.sync_queue?.queued || 0)} source(s), approved ${Number(payload.bootstrap_approve?.summary?.approved || 0)} draft(s).` +
+              (explainabilityPrimaryBucket
+                ? ` Primary blocker: ${explainabilityPrimaryBucket.replace(/_/g, " ")}.`
+                : ""),
           });
           setCoreWorkspaceTab("drafts");
         }
         await loadLegacyImportSources();
         await loadAdoptionPipelineVisibility();
+        await loadAdoptionRejections();
         await loadAdoptionKpi();
         await loadPolicyQuickLoop();
         await loadWikiPages();
@@ -5460,6 +5553,7 @@ export default function App() {
       apiUrl,
       loadAdoptionKpi,
       loadAdoptionPipelineVisibility,
+      loadAdoptionRejections,
       loadLegacyImportSources,
       loadPolicyQuickLoop,
       loadWikiPages,
@@ -8333,6 +8427,39 @@ export default function App() {
                             </Button>
                             <Button
                               size="xs"
+                              variant="subtle"
+                              onClick={() => {
+                                document.getElementById("operations-pipeline-panel")?.scrollIntoView({
+                                  behavior: "smooth",
+                                  block: "start",
+                                });
+                              }}
+                            >
+                              View pipeline
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
+                              color="orange"
+                              loading={adoptionRejectionsLoading}
+                              onClick={() => void loadAdoptionRejections()}
+                            >
+                              Refresh rejections
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              onClick={() => {
+                                document.getElementById("operations-rejections-panel")?.scrollIntoView({
+                                  behavior: "smooth",
+                                  block: "start",
+                                });
+                              }}
+                            >
+                              View rejections
+                            </Button>
+                            <Button
+                              size="xs"
                               variant="light"
                               color="violet"
                               loading={bootstrapProfileLoading}
@@ -8421,7 +8548,7 @@ export default function App() {
                             </Text>
                           ) : null}
                           {adoptionPipeline ? (
-                            <Paper withBorder p="xs" radius="md">
+                            <Paper withBorder p="xs" radius="md" id="operations-pipeline-panel">
                               <Stack gap={6}>
                                 <Group justify="space-between" align="center" wrap="wrap">
                                   <Text size="xs" fw={700}>
@@ -8481,6 +8608,57 @@ export default function App() {
                               Pipeline visibility is unavailable for current project yet.
                             </Text>
                           )}
+                          <Paper withBorder p="xs" radius="md" id="operations-rejections-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Text size="sm" fw={700}>
+                                  Rejection diagnostics (14d)
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="orange"
+                                  loading={adoptionRejectionsLoading}
+                                  onClick={() => void loadAdoptionRejections()}
+                                >
+                                  Refresh
+                                </Button>
+                              </Group>
+                              {adoptionRejections ? (
+                                <>
+                                  <Text size="xs" c="dimmed">
+                                    Rejected total: {Number(adoptionRejections.summary?.rejected_total || 0)}. Sampled examples:{" "}
+                                    {Number(adoptionRejections.summary?.sampled_examples || 0)}.
+                                  </Text>
+                                  {Array.isArray(adoptionRejections.top_reject_reasons) &&
+                                  adoptionRejections.top_reject_reasons.length > 0 ? (
+                                    <Group gap={6} wrap="wrap">
+                                      {adoptionRejections.top_reject_reasons.slice(0, 6).map((item) => (
+                                        <Badge key={`rej-reason-${item.key}`} size="xs" variant="light" color="orange">
+                                          {item.key} · {item.count}
+                                        </Badge>
+                                      ))}
+                                    </Group>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      No dominant rejection tags in current window.
+                                    </Text>
+                                  )}
+                                  {Array.isArray(adoptionRejections.suggested_policy_knobs) &&
+                                  adoptionRejections.suggested_policy_knobs.length > 0 ? (
+                                    <Text size="xs" c="dimmed">
+                                      Suggested next step: {adoptionRejections.suggested_policy_knobs[0]?.knob} —{" "}
+                                      {adoptionRejections.suggested_policy_knobs[0]?.hint}
+                                    </Text>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Rejection diagnostics are unavailable for current project yet.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
                           <Paper withBorder p="xs" radius="md">
                             <Stack gap={6}>
                               <Group justify="space-between" align="center" wrap="wrap">
