@@ -425,7 +425,7 @@ else
     npm --prefix apps/web run e2e -- \
       --grep "visual snapshot: wiki route|visual snapshot: operations route" \
       --workers=1 \
-      --max-failures=1 >/dev/null
+      --max-failures=1
   else
     npm --prefix apps/web run e2e >/dev/null
   fi
@@ -459,7 +459,7 @@ echo "[4.51/6] Framework quickstart parity"
 python3 scripts/check_framework_quickstart_parity.py >/dev/null
 
 echo "[4.55/6] Self-hosted stack defaults and docs consistency"
-python3 scripts/check_selfhost_stack_defaults.py >/dev/null
+python3 scripts/check_selfhost_stack_defaults.py
 
 echo "[4.57/6] Agentic onboarding benchmark guardrails"
 python3 scripts/benchmark_agentic_onboarding.py \
