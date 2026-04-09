@@ -269,6 +269,263 @@ def _build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--json", action="store_true", help="Render adoption plan as JSON.")
     adopt.set_defaults(func=_cmd_adopt_existing_memory)
 
+    adoption = subparsers.add_parser(
+        "adoption",
+        help="Operate adoption workflows (cursor health, reset, drafts review) without raw API calls.",
+    )
+    adoption_subparsers = adoption.add_subparsers(dest="adoption_command")
+
+    adoption_cursor_health = adoption_subparsers.add_parser(
+        "cursor-health",
+        help="Inspect sync cursor freshness for legacy connectors.",
+    )
+    adoption_cursor_health.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_cursor_health.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_cursor_health.add_argument(
+        "--stale-after-hours",
+        type=int,
+        default=24,
+        help="Cursor staleness threshold in hours (1..720, default: 24).",
+    )
+    adoption_cursor_health.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_cursor_health.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_cursor_health.set_defaults(func=_cmd_adoption_cursor_health)
+
+    adoption_project_reset = adoption_subparsers.add_parser(
+        "project-reset",
+        help="Run scoped adoption reset (dry-run by default).",
+    )
+    adoption_project_reset.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_project_reset.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_project_reset.add_argument(
+        "--requested-by",
+        default="ops_admin",
+        help="Actor id for audit trail (default: ops_admin).",
+    )
+    adoption_project_reset.add_argument(
+        "--scopes",
+        default="drafts,wiki,claims,events,backfill",
+        help="Comma-separated scopes to reset (default: drafts,wiki,claims,events,backfill).",
+    )
+    adoption_project_reset.add_argument(
+        "--reason",
+        default=None,
+        help="Optional reset reason.",
+    )
+    adoption_project_reset.add_argument(
+        "--cascade-cleanup-orphan-draft-pages",
+        action="store_true",
+        help="Also remove orphan draft pages.",
+    )
+    adoption_project_reset.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply reset (default is dry-run preview).",
+    )
+    adoption_project_reset.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Optional idempotency key for reset request.",
+    )
+    adoption_project_reset.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=8.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_project_reset.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_project_reset.set_defaults(func=_cmd_adoption_project_reset)
+
+    adoption_list_drafts = adoption_subparsers.add_parser(
+        "list-drafts",
+        help="List wiki drafts for adoption triage.",
+    )
+    adoption_list_drafts.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_list_drafts.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_list_drafts.add_argument(
+        "--status",
+        default=None,
+        help="Optional draft status filter (pending_review|blocked_conflict|approved|rejected).",
+    )
+    adoption_list_drafts.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Max drafts to fetch (1..200, default: 50).",
+    )
+    adoption_list_drafts.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=6.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_list_drafts.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_list_drafts.set_defaults(func=_cmd_adoption_list_drafts)
+
+    adoption_bulk_review = adoption_subparsers.add_parser(
+        "bulk-review-drafts",
+        help="Bulk approve/reject drafts with optional safety filters (dry-run by default).",
+    )
+    adoption_bulk_review.add_argument(
+        "--api-url",
+        default=os.getenv("SYNAPSE_API_URL", "http://localhost:8080"),
+        help="Synapse API URL (default: env SYNAPSE_API_URL or http://localhost:8080).",
+    )
+    adoption_bulk_review.add_argument(
+        "--project-id",
+        default=os.getenv("SYNAPSE_PROJECT_ID"),
+        help="Project ID scope (default: env SYNAPSE_PROJECT_ID).",
+    )
+    adoption_bulk_review.add_argument(
+        "--reviewed-by",
+        required=True,
+        help="Reviewer id used for moderation audit.",
+    )
+    adoption_bulk_review.add_argument(
+        "--action",
+        default="approve",
+        choices=["approve", "reject"],
+        help="Bulk moderation action (default: approve).",
+    )
+    adoption_bulk_review.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Max matched drafts to process (1..2000, default: 200).",
+    )
+    adoption_bulk_review.add_argument(
+        "--statuses",
+        default=None,
+        help="Optional comma-separated statuses filter.",
+    )
+    adoption_bulk_review.add_argument("--category", default=None, help="Filter by claim category.")
+    adoption_bulk_review.add_argument(
+        "--category-mode",
+        default="exact",
+        choices=["exact", "prefix", "regex", "contains"],
+        help="Category matching mode (default: exact).",
+    )
+    adoption_bulk_review.add_argument("--source-system", default=None, help="Filter by evidence source_system.")
+    adoption_bulk_review.add_argument(
+        "--source-system-mode",
+        default="exact",
+        choices=["exact", "prefix", "regex", "contains"],
+        help="source_system matching mode (default: exact).",
+    )
+    adoption_bulk_review.add_argument("--connector", default=None, help="Filter by connector id.")
+    adoption_bulk_review.add_argument(
+        "--connector-mode",
+        default="exact",
+        choices=["exact", "prefix", "regex", "contains"],
+        help="Connector matching mode (default: exact).",
+    )
+    adoption_bulk_review.add_argument("--page-type", default=None, help="Filter by wiki page type.")
+    adoption_bulk_review.add_argument(
+        "--page-type-mode",
+        default="exact",
+        choices=["exact", "prefix", "regex", "contains"],
+        help="Page type matching mode (default: exact).",
+    )
+    adoption_bulk_review.add_argument("--assertion-class", default=None, help="Filter by assertion class.")
+    adoption_bulk_review.add_argument(
+        "--assertion-class-mode",
+        default="exact",
+        choices=["exact", "prefix", "regex", "contains"],
+        help="Assertion class matching mode (default: exact).",
+    )
+    adoption_bulk_review.add_argument("--tier", default=None, help="Filter by gatekeeper tier.")
+    adoption_bulk_review.add_argument(
+        "--tier-mode",
+        default="exact",
+        choices=["exact", "prefix", "regex", "contains"],
+        help="Tier matching mode (default: exact).",
+    )
+    adoption_bulk_review.add_argument("--min-confidence", type=float, default=None, help="Minimum confidence filter.")
+    adoption_bulk_review.add_argument("--max-confidence", type=float, default=None, help="Maximum confidence filter.")
+    adoption_bulk_review.add_argument(
+        "--min-risk-level",
+        default=None,
+        choices=["low", "medium", "high"],
+        help="Minimum risk level filter.",
+    )
+    adoption_bulk_review.add_argument(
+        "--max-risk-level",
+        default=None,
+        choices=["low", "medium", "high"],
+        help="Maximum risk level filter.",
+    )
+    adoption_bulk_review.add_argument(
+        "--include-open-conflicts",
+        action="store_true",
+        help="Include drafts with open conflicts.",
+    )
+    adoption_bulk_review.add_argument(
+        "--include-archived-pages",
+        action="store_true",
+        help="Include drafts linked to archived pages.",
+    )
+    adoption_bulk_review.add_argument(
+        "--exclude-published-pages",
+        action="store_true",
+        help="Exclude drafts linked to already published pages.",
+    )
+    adoption_bulk_review.add_argument("--filter-json", default=None, help="Optional JSON object merged into filter payload.")
+    adoption_bulk_review.add_argument("--note", default=None, help="Optional moderation note.")
+    adoption_bulk_review.add_argument("--reason", default=None, help="Optional rejection reason.")
+    adoption_bulk_review.add_argument("--force", action="store_true", help="Force approve despite conflicts.")
+    adoption_bulk_review.add_argument(
+        "--dismiss-conflicts",
+        action="store_true",
+        help="Dismiss linked conflicts on reject.",
+    )
+    adoption_bulk_review.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply moderation actions (default is dry-run preview).",
+    )
+    adoption_bulk_review.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Optional idempotency key for bulk request.",
+    )
+    adoption_bulk_review.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=8.0,
+        help="HTTP timeout per request in seconds.",
+    )
+    adoption_bulk_review.add_argument("--json", action="store_true", help="Render output as JSON.")
+    adoption_bulk_review.set_defaults(func=_cmd_adoption_bulk_review_drafts)
+
     wiki_space_policy = subparsers.add_parser(
         "wiki-space-policy",
         help="Inspect and update wiki space policy (including publish checklist presets).",
@@ -1428,6 +1685,308 @@ def _cmd_adopt_existing_memory(args: argparse.Namespace) -> int:
         for command in quickstart_commands:
             print(f"- {command}")
     return 0
+
+
+def _resolve_adoption_ops_api_args(args: argparse.Namespace) -> dict[str, Any]:
+    api_url = str(_coerce_text(getattr(args, "api_url", None)) or "").strip().rstrip("/")
+    if not api_url:
+        return {"ok": False, "error": "--api-url cannot be empty"}
+    project_id = _sanitize_project_id(getattr(args, "project_id", None))
+    if not project_id:
+        return {"ok": False, "error": "--project-id is required (or set SYNAPSE_PROJECT_ID)"}
+    timeout_seconds = max(0.2, float(getattr(args, "timeout_seconds", 6.0)))
+    return {"ok": True, "api_url": api_url, "project_id": project_id, "timeout_seconds": timeout_seconds}
+
+
+def _parse_csv_tokens(value: str | None) -> list[str]:
+    raw = str(_coerce_text(value) or "").strip()
+    if not raw:
+        return []
+    tokens: list[str] = []
+    for item in raw.split(","):
+        token = str(item or "").strip().lower()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _cmd_adoption_cursor_health(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    stale_after_hours = max(1, min(24 * 30, int(args.stale_after_hours)))
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/adoption/sync/cursor-health",
+        params={"project_id": project_id, "stale_after_hours": stale_after_hours},
+        timeout=timeout,
+    )
+    payload = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **payload,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        print("Adoption Cursor Health")
+        print(f"- project_id: {project_id}")
+        print(f"- status: {payload.get('status') or ('ok' if response['ok'] else 'error')}")
+        print(f"- stale_after_hours: {stale_after_hours}")
+        print(f"- source_rows: {len(sources)}")
+        if summary:
+            print(
+                "- summary: "
+                f"healthy={int(summary.get('healthy', 0) or 0)} "
+                f"warning={int(summary.get('warning', 0) or 0)} "
+                f"critical={int(summary.get('critical', 0) or 0)}"
+            )
+        if sources:
+            print("Top sources:")
+            for item in sources[:10]:
+                if not isinstance(item, dict):
+                    continue
+                print(
+                    "- "
+                    f"{item.get('source_ref') or item.get('source_id') or 'unknown'} "
+                    f"health={item.get('health') or 'unknown'} "
+                    f"cursor_age_hours={item.get('cursor_age_hours')}"
+                )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_project_reset(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    requested_by = str(_coerce_text(args.requested_by) or "").strip()
+    if not requested_by:
+        print("[synapse-cli] --requested-by is required", file=sys.stderr)
+        return 2
+    dry_run = not bool(args.apply)
+    scopes = _parse_csv_tokens(args.scopes)
+    payload = {
+        "project_id": project_id,
+        "requested_by": requested_by,
+        "reason": _coerce_text(args.reason),
+        "scopes": scopes or None,
+        "cascade_cleanup_orphan_draft_pages": bool(args.cascade_cleanup_orphan_draft_pages),
+        "dry_run": dry_run,
+        "confirm_project_id": None if dry_run else project_id,
+    }
+    response = _synapse_api_json(
+        method="POST",
+        url=f"{api_url}/v1/adoption/project-reset",
+        payload=payload,
+        timeout=timeout,
+        idempotency_key=_coerce_text(args.idempotency_key),
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        summary = body.get("summary") if isinstance(body.get("summary"), dict) else {}
+        print("Adoption Project Reset")
+        print(f"- project_id: {project_id}")
+        print(f"- requested_by: {requested_by}")
+        print(f"- dry_run: {dry_run}")
+        print(f"- scopes: {', '.join(scopes) if scopes else '(default)'}")
+        if summary:
+            print(
+                "- summary: "
+                f"tables={int(summary.get('tables_touched', 0) or 0)} "
+                f"matched={int(summary.get('matched_rows', 0) or 0)} "
+                f"deleted={int(summary.get('deleted_rows', 0) or 0)}"
+            )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_list_drafts(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    limit = max(1, min(200, int(args.limit)))
+    status = str(_coerce_text(args.status) or "").strip().lower()
+    params: dict[str, Any] = {"project_id": project_id, "limit": limit}
+    if status:
+        params["status"] = status
+    response = _synapse_api_json(
+        method="GET",
+        url=f"{api_url}/v1/wiki/drafts",
+        params=params,
+        timeout=timeout,
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    drafts = body.get("drafts") if isinstance(body.get("drafts"), list) else []
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        print("Adoption Draft List")
+        print(f"- project_id: {project_id}")
+        print(f"- status_filter: {status or '(none)'}")
+        print(f"- total: {len(drafts)}")
+        for item in drafts[:10]:
+            if not isinstance(item, dict):
+                continue
+            page = item.get("page") if isinstance(item.get("page"), dict) else {}
+            claim = item.get("claim") if isinstance(item.get("claim"), dict) else {}
+            print(
+                "- "
+                f"{item.get('id')} "
+                f"status={item.get('status')} "
+                f"category={claim.get('category') or 'unknown'} "
+                f"page={page.get('slug') or 'n/a'} "
+                f"confidence={item.get('confidence')}"
+            )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
+
+
+def _cmd_adoption_bulk_review_drafts(args: argparse.Namespace) -> int:
+    resolved = _resolve_adoption_ops_api_args(args)
+    if not resolved["ok"]:
+        print(f"[synapse-cli] {resolved['error']}", file=sys.stderr)
+        return 2
+    api_url = str(resolved["api_url"])
+    project_id = str(resolved["project_id"])
+    timeout = float(resolved["timeout_seconds"])
+    reviewed_by = str(_coerce_text(args.reviewed_by) or "").strip()
+    if not reviewed_by:
+        print("[synapse-cli] --reviewed-by is required", file=sys.stderr)
+        return 2
+    filter_payload: dict[str, Any] = {}
+    filter_json_raw = _coerce_text(args.filter_json)
+    if filter_json_raw:
+        parsed, parse_error = _parse_metadata_json(filter_json_raw)
+        if parse_error:
+            print(f"[synapse-cli] --filter-json {parse_error}", file=sys.stderr)
+            return 2
+        filter_payload.update(parsed)
+    statuses = _parse_csv_tokens(args.statuses)
+    if statuses:
+        filter_payload["statuses"] = statuses
+    for key, value in (
+        ("category", _coerce_text(args.category)),
+        ("category_mode", _coerce_text(args.category_mode)),
+        ("source_system", _coerce_text(args.source_system)),
+        ("source_system_mode", _coerce_text(args.source_system_mode)),
+        ("connector", _coerce_text(args.connector)),
+        ("connector_mode", _coerce_text(args.connector_mode)),
+        ("page_type", _coerce_text(args.page_type)),
+        ("page_type_mode", _coerce_text(args.page_type_mode)),
+        ("assertion_class", _coerce_text(args.assertion_class)),
+        ("assertion_class_mode", _coerce_text(args.assertion_class_mode)),
+        ("tier", _coerce_text(args.tier)),
+        ("tier_mode", _coerce_text(args.tier_mode)),
+    ):
+        if value:
+            filter_payload[key] = value
+    if args.min_confidence is not None:
+        filter_payload["min_confidence"] = max(0.0, min(1.0, float(args.min_confidence)))
+    if args.max_confidence is not None:
+        filter_payload["max_confidence"] = max(0.0, min(1.0, float(args.max_confidence)))
+    if _coerce_text(args.min_risk_level):
+        filter_payload["min_risk_level"] = str(args.min_risk_level).strip().lower()
+    if _coerce_text(args.max_risk_level):
+        filter_payload["max_risk_level"] = str(args.max_risk_level).strip().lower()
+    if bool(args.include_open_conflicts):
+        filter_payload["include_open_conflicts"] = True
+    if bool(args.include_archived_pages):
+        filter_payload["include_archived_pages"] = True
+    if bool(args.exclude_published_pages):
+        filter_payload["include_published_pages"] = False
+
+    dry_run = not bool(args.apply)
+    request_payload = {
+        "project_id": project_id,
+        "reviewed_by": reviewed_by,
+        "action": str(args.action).strip().lower(),
+        "dry_run": dry_run,
+        "limit": max(1, min(2000, int(args.limit))),
+        "filter": filter_payload,
+        "note": _coerce_text(args.note),
+        "reason": _coerce_text(args.reason),
+        "force": bool(args.force),
+        "dismiss_conflicts": bool(args.dismiss_conflicts),
+    }
+    response = _synapse_api_json(
+        method="POST",
+        url=f"{api_url}/v1/wiki/drafts/bulk-review",
+        payload=request_payload,
+        timeout=timeout,
+        idempotency_key=_coerce_text(args.idempotency_key),
+    )
+    body = response["payload"] if isinstance(response.get("payload"), dict) else {}
+    if bool(args.json):
+        _print_json(
+            {
+                **body,
+                "_http_status": response["status_code"],
+                "_ok": bool(response["ok"]),
+                "_error": response.get("error"),
+            },
+            pretty=True,
+        )
+    else:
+        summary = body.get("summary") if isinstance(body.get("summary"), dict) else {}
+        print("Adoption Draft Bulk Review")
+        print(f"- project_id: {project_id}")
+        print(f"- action: {request_payload['action']}")
+        print(f"- dry_run: {dry_run}")
+        if summary:
+            print(
+                "- summary: "
+                f"scanned={int(summary.get('scanned', 0) or 0)} "
+                f"matched={int(summary.get('matched', 0) or 0)} "
+                f"applied={int(summary.get('applied', 0) or 0)} "
+                f"failed={int(summary.get('failed', 0) or 0)}"
+            )
+        print(f"- http_status: {response['status_code']}")
+        if response.get("error"):
+            print(f"- error: {response['error']}")
+    return 0 if bool(response["ok"]) else 1
 
 
 def _cmd_wiki_space_policy_get(args: argparse.Namespace) -> int:

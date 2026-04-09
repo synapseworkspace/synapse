@@ -518,6 +518,22 @@ synapse-cli adopt --dir . --memory-system ops_kb_items --memory-source hybrid --
 ```
 
 ```bash
+synapse-cli adoption cursor-health --api-url http://localhost:8080 --project-id omega_demo --stale-after-hours 24
+```
+
+```bash
+synapse-cli adoption project-reset --api-url http://localhost:8080 --project-id omega_demo --requested-by ops_admin --scopes drafts,wiki,claims,events,backfill --cascade-cleanup-orphan-draft-pages
+```
+
+```bash
+synapse-cli adoption list-drafts --api-url http://localhost:8080 --project-id omega_demo --status pending_review --limit 50
+```
+
+```bash
+synapse-cli adoption bulk-review-drafts --api-url http://localhost:8080 --project-id omega_demo --reviewed-by ops_reviewer --action approve --category policy --category-mode prefix --source-system postgres_sql --min-confidence 0.85
+```
+
+```bash
 synapse-cli wiki-space-policy get --api-url http://localhost:8080 --project-id omega_demo --space-key operations
 ```
 
