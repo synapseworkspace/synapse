@@ -25,3 +25,4 @@ test-results/
 # Local env
 .env
 .env.*
+!.env.selfhost.example
