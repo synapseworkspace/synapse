@@ -144,6 +144,11 @@ def _validate_docs_consistency(errors: list[str]) -> None:
         "docs/release-workflow.md: missing release evidence bundle script reference",
         errors,
     )
+    _assert(
+        "bump_release_version.py" in release_workflow,
+        "docs/release-workflow.md: missing one-command version bump script reference",
+        errors,
+    )
 
     required_compat_rows = [
         "`synapseworkspace-sdk` (Python)",
@@ -255,6 +260,26 @@ def _validate_docs_consistency(errors: list[str]) -> None:
     _assert(
         "verify-artifact-install-matrix" in release_workflow_ci and "verify-install-matrix" in release_workflow_ci,
         ".github/workflows/release-packages.yml: missing install matrix verification jobs",
+        errors,
+    )
+    _assert(
+        "prepublish-version-guard" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing prepublish version collision guard job",
+        errors,
+    )
+    _assert(
+        "--require-version-absent" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing prepublish version absence check",
+        errors,
+    )
+    _assert(
+        "--require-latest-match" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing latest-version registry trust check",
+        errors,
+    )
+    _assert(
+        "check_python_package_install_smoke.py" in release_workflow_ci and "check_npm_package_install_smoke.mjs" in release_workflow_ci,
+        ".github/workflows/release-packages.yml: missing install smoke script checks",
         errors,
     )
     _assert(

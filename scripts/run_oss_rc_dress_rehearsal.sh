@@ -83,7 +83,11 @@ python_result='{"status":"skipped"}'
 node_result='{"status":"skipped"}'
 docs_result='{"status":"skipped"}'
 
-python3 scripts/check_release_versions.py >/dev/null
+RELEASE_VERSION="$(python3 scripts/check_release_versions.py | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')"
+if [[ -z "$RELEASE_VERSION" ]]; then
+  echo "Could not resolve release version via scripts/check_release_versions.py" >&2
+  exit 1
+fi
 python3 scripts/check_publish_hygiene.py >/dev/null
 
 if [[ "$SKIP_DOCS" != "1" ]]; then
@@ -135,21 +139,7 @@ if [[ "$SKIP_PYTHON" != "1" ]]; then
   python3 -m venv "$PY_INSTALL_VENV"
   source "$PY_INSTALL_VENV/bin/activate"
   python -m pip install --quiet "$WHEEL_PATH"
-  python - <<'PY' > "$TMP_DIR/python-result.json"
-import json
-from synapse_sdk import Synapse, SynapseConfig, OpenClawConnector
-
-client = Synapse(SynapseConfig(api_url="http://localhost:8080", project_id="rc_dress_rehearsal"))
-connector = OpenClawConnector(client)
-
-payload = {
-    "status": "ok",
-    "imported": ["Synapse", "SynapseConfig", "OpenClawConnector"],
-    "project_id": client.project_id,
-    "connector_type": type(connector).__name__,
-}
-print(json.dumps(payload, ensure_ascii=False))
-PY
+  python scripts/check_python_package_install_smoke.py --expected-version "$RELEASE_VERSION" --check-cli > "$TMP_DIR/python-result.json"
   deactivate
   python_result="$(cat "$TMP_DIR/python-result.json")"
 fi
@@ -182,22 +172,9 @@ JSON
     "$NPM_PACK_DIR/$SDK_TGZ" \
     "$NPM_PACK_DIR/$OPENCLAW_TGZ"
 
-  cat > "$NPM_APP_DIR/check.mjs" <<'JS'
-import { Synapse } from "@synapseworkspace/sdk";
-import { createSynapseOpenClawPlugin } from "@synapseworkspace/openclaw-plugin";
-
-const client = new Synapse({ apiUrl: "http://localhost:8080", projectId: "rc_dress_rehearsal" });
-const plugin = createSynapseOpenClawPlugin(client);
-
-const payload = {
-  status: "ok",
-  imported: ["Synapse", "createSynapseOpenClawPlugin"],
-  pluginType: plugin.constructor.name
-};
-console.log(JSON.stringify(payload));
-JS
-
-  node "$NPM_APP_DIR/check.mjs" > "$TMP_DIR/node-result.json"
+  node scripts/check_npm_package_install_smoke.mjs \
+    --expected-version "$RELEASE_VERSION" \
+    --project-root "$NPM_APP_DIR" > "$TMP_DIR/node-result.json"
   node_result="$(cat "$TMP_DIR/node-result.json")"
 fi
 

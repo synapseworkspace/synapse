@@ -120,14 +120,37 @@ def _probe_package(pkg: RegistryPackage, timeout_s: float) -> dict[str, Any]:
         }
 
 
-def _is_success(result: dict[str, Any], *, require_available: bool, expected_version: str | None) -> bool:
+def _is_success(
+    result: dict[str, Any],
+    *,
+    require_available: bool,
+    expected_version: str | None,
+    require_version_absent: bool,
+    require_latest_match: bool,
+) -> bool:
     if require_available and not bool(result.get("available")):
         return False
-    if expected_version:
-        versions = result.get("versions")
-        if not isinstance(versions, list):
+    latest = str(result.get("latest") or "").strip()
+    versions = result.get("versions")
+    versions_set = {str(item) for item in versions} if isinstance(versions, list) else set()
+
+    if require_version_absent:
+        if not expected_version:
             return False
-        return expected_version in {str(item) for item in versions}
+        return expected_version not in versions_set
+
+    if expected_version:
+        if not versions_set:
+            return False
+        if expected_version not in versions_set:
+            return False
+        if require_latest_match and latest and latest != expected_version:
+            return False
+        return True
+
+    if require_latest_match:
+        if not latest:
+            return False
     return True
 
 
@@ -153,12 +176,28 @@ def main() -> int:
         default=12.0,
         help="HTTP timeout per package request (default: 12).",
     )
+    parser.add_argument(
+        "--require-version-absent",
+        action="store_true",
+        help="Fail if expected version already exists in any package registry.",
+    )
+    parser.add_argument(
+        "--require-latest-match",
+        action="store_true",
+        help="When expected version is set, require registry latest tag/version to match it.",
+    )
     parser.add_argument("--output-json", help="Optional path to write JSON report.")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
     attempts = max(1, int(args.attempts))
     expected_version = str(args.expected_version).strip() if args.expected_version else None
+    require_version_absent = bool(args.require_version_absent)
+    require_latest_match = bool(args.require_latest_match)
+    if require_version_absent and not expected_version:
+        parser.error("--require-version-absent requires --expected-version")
+    if require_latest_match and not expected_version:
+        parser.error("--require-latest-match requires --expected-version")
     final_results: list[dict[str, Any]] = []
     success = False
 
@@ -169,6 +208,8 @@ def main() -> int:
                 item,
                 require_available=bool(args.require_available),
                 expected_version=expected_version,
+                require_version_absent=require_version_absent,
+                require_latest_match=require_latest_match,
             )
             for item in results
         ]
@@ -198,6 +239,8 @@ def main() -> int:
         "attempts": attempts,
         "expected_version": expected_version,
         "require_available": bool(args.require_available),
+        "require_version_absent": require_version_absent,
+        "require_latest_match": require_latest_match,
         "results": final_results,
     }
 

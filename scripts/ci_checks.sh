@@ -39,6 +39,8 @@ python3 -m py_compile scripts/integration_legacy_sync_queue_processing.py
 python3 -m py_compile scripts/integration_lifecycle_telemetry.py
 python3 -m py_compile scripts/check_queue_governance_policy.py
 python3 -m py_compile scripts/check_release_versions.py
+python3 -m py_compile scripts/bump_release_version.py
+python3 -m py_compile scripts/check_python_package_install_smoke.py
 python3 -m py_compile scripts/generate_release_evidence_bundle.py
 python3 -m py_compile scripts/check_publish_hygiene.py
 python3 -m py_compile scripts/generate_sdk_api_reference.py

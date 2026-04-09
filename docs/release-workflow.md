@@ -16,6 +16,12 @@ Practical step-by-step checklist:
 
 All packages must share the same version (enforced by `scripts/check_release_versions.py`).
 
+Use one command to bump all publishable package manifests consistently:
+
+```bash
+python3 scripts/bump_release_version.py 0.1.3
+```
+
 ## Registry Verification
 
 Do not rely on static status text in docs. Verify package availability from registries:
@@ -63,6 +69,7 @@ Pipeline stages:
    - npm with provenance (`npm publish --provenance`)
 8. Verify public registry propagation:
    - run `scripts/check_registry_package_availability.py` with retries and expected version;
+   - enforce latest tag alignment (`--require-latest-match`) so plain `pip install` / `npm install` resolves current release without version confusion;
    - upload verification report as CI artifact.
 9. Verify clean-room install/import matrix from registries:
    - run Linux + macOS checks for `pip install synapseworkspace-sdk==<version>`;
@@ -72,9 +79,16 @@ Pipeline stages:
    - optional product notes from `docs/releases/vX.Y.Z.md` (if file exists);
    - release evidence bundle appendix from workflow artifacts.
 
+Install smoke commands used by CI (can be run locally in clean rooms):
+- Python: `python3 scripts/check_python_package_install_smoke.py --expected-version X.Y.Z --check-cli`
+- npm: `node scripts/check_npm_package_install_smoke.mjs --expected-version X.Y.Z --project-root <cleanroom_dir>`
+
 Publishing guard:
 - release workflow publishes only when repository variable `RELEASE_PUBLISH_ENABLED=true`.
 - when disabled (default), workflow still builds and uploads release artifacts, but skips publish jobs.
+- pre-publish version collision guard is enabled by default:
+  - workflow fails if release version is already present in PyPI/npm metadata;
+  - override only for controlled reruns with `RELEASE_ALLOW_EXISTING_VERSION=true`.
 
 ## Repository Setup Checklist
 

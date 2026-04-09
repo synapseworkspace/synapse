@@ -90,6 +90,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -119,11 +122,9 @@ jobs:
           source .venv/bin/activate
           python3 -m pip install --upgrade pip
           python3 -m pip install dist/python/*.whl
-          python3 - <<'PY'
-          import json
-          from synapse_sdk import Synapse
-          print(json.dumps({"status": "ok", "class": Synapse.__name__}))
-          PY
+          python3 scripts/check_python_package_install_smoke.py \
+            --expected-version "${{ needs.build.outputs.release_version }}" \
+            --check-cli
 
       - name: Verify npm install from local release artifacts
         run: |
@@ -133,23 +134,47 @@ jobs:
           npm install "${GITHUB_WORKSPACE}"/dist/npm/*.tgz >/dev/null
           npm ls @synapseworkspace/sdk @synapseworkspace/schema @synapseworkspace/openclaw-plugin >/dev/null
           test -f node_modules/@synapseworkspace/schema/schemas/v1/observation-event.schema.json
-          node --input-type=module - <<'JS'
-          import * as sdk from "@synapseworkspace/sdk";
-          import * as plugin from "@synapseworkspace/openclaw-plugin";
-          if (!sdk || !plugin) {
-            throw new Error("package import check failed");
-          }
-          console.log(JSON.stringify({
-            status: "ok",
-            sdkExports: Object.keys(sdk).length,
-            pluginExports: Object.keys(plugin).length,
-          }));
-          JS
+          node "${GITHUB_WORKSPACE}/scripts/check_npm_package_install_smoke.mjs" \
+            --expected-version "${{ needs.build.outputs.release_version }}" \
+            --project-root "/tmp/synapse-npm-artifact-check"
+
+  prepublish-version-guard:
+    needs:
+      - build
+      - verify-artifact-install-matrix
+    if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure release version is not already published (unless override enabled)
+        env:
+          RELEASE_ALLOW_EXISTING_VERSION: ${{ vars.RELEASE_ALLOW_EXISTING_VERSION }}
+          RELEASE_VERSION: ${{ needs.build.outputs.release_version }}
+        run: |
+          if [[ "${RELEASE_ALLOW_EXISTING_VERSION}" == "true" ]]; then
+            echo "RELEASE_ALLOW_EXISTING_VERSION=true, skipping pre-publish absence guard."
+            exit 0
+          fi
+          python3 scripts/check_registry_package_availability.py \
+            --expected-version "${RELEASE_VERSION}" \
+            --require-version-absent \
+            --attempts 1 \
+            --retry-delay-seconds 1
 
   publish-pypi:
     needs:
       - build
       - verify-artifact-install-matrix
+      - prepublish-version-guard
     if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -173,6 +198,7 @@ jobs:
     needs:
       - build
       - verify-artifact-install-matrix
+      - prepublish-version-guard
     if: ${{ vars.RELEASE_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -232,6 +258,7 @@ jobs:
           python3 scripts/check_registry_package_availability.py \
             --require-available \
             --expected-version "${{ needs.build.outputs.release_version }}" \
+            --require-latest-match \
             --attempts 18 \
             --retry-delay-seconds 15 \
             --output-json artifacts/release/registry-availability.json
@@ -256,6 +283,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -273,15 +303,9 @@ jobs:
           source .venv/bin/activate
           python3 -m pip install --upgrade pip
           python3 -m pip install "synapseworkspace-sdk==${{ needs.build.outputs.release_version }}"
-          python3 - <<'PY'
-          import json
-          from synapse_sdk import Synapse
-          payload = {
-              "status": "ok",
-              "class": Synapse.__name__,
-          }
-          print(json.dumps(payload))
-          PY
+          python3 scripts/check_python_package_install_smoke.py \
+            --expected-version "${{ needs.build.outputs.release_version }}" \
+            --check-cli
 
       - name: Verify clean-room npm install
         run: |
@@ -294,18 +318,9 @@ jobs:
             "@synapseworkspace/openclaw-plugin@${{ needs.build.outputs.release_version }}" >/dev/null
           npm ls @synapseworkspace/sdk @synapseworkspace/schema @synapseworkspace/openclaw-plugin >/dev/null
           test -f node_modules/@synapseworkspace/schema/schemas/v1/observation-event.schema.json
-          node --input-type=module - <<'JS'
-          import * as sdk from "@synapseworkspace/sdk";
-          import * as plugin from "@synapseworkspace/openclaw-plugin";
-          if (!sdk || !plugin) {
-            throw new Error("package import check failed");
-          }
-          console.log(JSON.stringify({
-            status: "ok",
-            sdkExports: Object.keys(sdk).length,
-            pluginExports: Object.keys(plugin).length,
-          }));
-          JS
+          node "${GITHUB_WORKSPACE}/scripts/check_npm_package_install_smoke.mjs" \
+            --expected-version "${{ needs.build.outputs.release_version }}" \
+            --project-root "/tmp/synapse-npm-install-check"
 
   release-evidence-pack:
     needs:

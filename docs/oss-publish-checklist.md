@@ -6,7 +6,11 @@ Use this checklist when cutting a new public release.
 
 ## A) Pre-Flight (Local)
 
-- [ ] Update package versions consistently (`synapseworkspace-sdk`, `@synapseworkspace/sdk`, `@synapseworkspace/schema`, `@synapseworkspace/openclaw-plugin`).
+- [ ] Update package versions consistently (`synapseworkspace-sdk`, `@synapseworkspace/sdk`, `@synapseworkspace/schema`, `@synapseworkspace/openclaw-plugin`):
+
+```bash
+python3 scripts/bump_release_version.py X.Y.Z
+```
 - [ ] Update `CHANGELOG.md`.
 - [ ] Run CI checks locally:
 
@@ -71,6 +75,7 @@ git push -u origin main
 - [ ] GitHub Environment `npm` is configured.
 - [ ] Trusted Publishing is configured in PyPI and npm for this repository.
 - [ ] Repository variable `RELEASE_PUBLISH_ENABLED` is set to `true` (only after Trusted Publishing is verified).
+- [ ] Keep `RELEASE_ALLOW_EXISTING_VERSION` unset/false for normal releases (enable only for controlled rerun after partial publish).
 - [ ] Tag protection / maintainer access rules are in place.
 
 Reference:
@@ -89,6 +94,7 @@ git push origin vX.Y.Z
 - [ ] Confirm jobs are green:
   - `build`
   - `verify-artifact-install-matrix`
+  - `prepublish-version-guard`
   - `publish-pypi` / `publish-npm`
   - `verify-registry`
   - `verify-install-matrix`
