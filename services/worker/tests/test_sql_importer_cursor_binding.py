@@ -124,6 +124,58 @@ class SQLImporterCursorBindingTests(unittest.TestCase):
         self.assertEqual(2, len(result.records))
         self.assertEqual("42", result.next_cursor)
 
+    def test_collect_records_binds_cursor_with_existing_named_params(self) -> None:
+        rows = [
+            {
+                "id": "evt-1",
+                "content": "Escalation path updated for late shipments",
+                "entity_key": "dispatch",
+                "category": "process",
+                "observed_at": "2026-04-09T09:30:00Z",
+            }
+        ]
+        fake_cursor = _FakeCursor(rows)
+        fake_conn = _FakeConnection(fake_cursor)
+
+        fake_psycopg = types.ModuleType("psycopg")
+        fake_rows = types.ModuleType("psycopg.rows")
+        fake_dict_row = object()
+        fake_rows.dict_row = fake_dict_row
+
+        def _connect(dsn: str, *, row_factory: object = None) -> _FakeConnection:
+            self.assertEqual("postgresql://example.local/test", dsn)
+            self.assertIs(row_factory, fake_dict_row)
+            return fake_conn
+
+        fake_psycopg.connect = _connect  # type: ignore[attr-defined]
+
+        importer = SQLImporter(
+            dsn="postgresql://example.local/test",
+            query=(
+                "SELECT * FROM events "
+                "WHERE project_id = %(project_id)s "
+                "AND (%(cursor)s::timestamptz IS NULL OR observed_at > %(cursor)s::timestamptz)"
+            ),
+            query_params={"project_id": "omega_demo"},
+        )
+
+        with patch.dict(sys.modules, {"psycopg": fake_psycopg, "psycopg.rows": fake_rows}):
+            result = importer.collect_records(max_records=10, cursor=None, cursor_param="cursor")
+
+        self.assertEqual(1, len(result.records))
+        self.assertEqual(1, len(fake_cursor.execute_calls))
+        execute_args = fake_cursor.execute_calls[0]
+        self.assertEqual(2, len(execute_args))
+        self.assertEqual(
+            (
+                "SELECT * FROM events "
+                "WHERE project_id = %(project_id)s "
+                "AND (%(cursor)s::timestamptz IS NULL OR observed_at > %(cursor)s::timestamptz)"
+            ),
+            execute_args[0],
+        )
+        self.assertEqual({"project_id": "omega_demo", "cursor": None}, execute_args[1])
+
 
 if __name__ == "__main__":
     unittest.main()
