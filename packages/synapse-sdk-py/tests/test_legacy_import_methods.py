@@ -187,6 +187,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             dry_run=False,
             include_role_template=True,
             role_template_key="logistics_ops",
+            auto_apply_safe_mode_on_critical=False,
         )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/adoption/sync-presets/execute")
@@ -197,6 +198,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("role_template_key"), "logistics_ops")
+        self.assertFalse(payload.get("auto_apply_safe_mode_on_critical"))
 
     def test_run_adoption_agent_wiki_bootstrap_posts_expected_payload(self) -> None:
         self.client.run_adoption_agent_wiki_bootstrap(
@@ -222,6 +224,50 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("max_sources"), 12)
         self.assertEqual(payload.get("max_agents"), 30)
         self.assertEqual(payload.get("max_signals"), 15)
+
+    def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
+        self.client.enable_adoption_safe_mode(
+            updated_by="ops_admin",
+            dry_run=False,
+            note="critical queue regression",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/safe-mode/enable")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("note"), "critical queue regression")
+
+    def test_bulk_review_wiki_drafts_posts_expected_payload(self) -> None:
+        self.client.bulk_review_wiki_drafts(
+            reviewed_by="ops_reviewer",
+            action="reject",
+            dry_run=False,
+            limit=77,
+            filter={
+                "category": "policy",
+                "category_mode": "prefix",
+                "source_system": "postgres_sql",
+                "assertion_class": "process",
+                "min_confidence": 0.8,
+            },
+            reason="legacy noise",
+            dismiss_conflicts=True,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/drafts/bulk-review")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("reviewed_by"), "ops_reviewer")
+        self.assertEqual(payload.get("action"), "reject")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("limit"), 77)
+        self.assertEqual((payload.get("filter") or {}).get("category"), "policy")
+        self.assertEqual(payload.get("reason"), "legacy noise")
 
 
 if __name__ == "__main__":

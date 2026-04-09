@@ -801,6 +801,7 @@ All items were completed and moved to `Recent Updates` for audit history.
 
 ## Recent Updates
 
+- 2026-04-09: Hardened adoption visibility + SDK ergonomics: `GET /v1/adoption/pipeline/visibility` now reports explicit `page_channels` and includes windowed published-page fallback for scoped filters (avoids false `pages=0` when starter/bootstrap pages are already published); added SDK parity methods in Python/TypeScript for `POST /v1/wiki/drafts/bulk-review` and `POST /v1/adoption/safe-mode/enable`, plus sync preset option `auto_apply_safe_mode_on_critical`.
 - 2026-04-09: Added runtime-inferred Agent Capability fallback for bootstrap/orgchart paths: when `agent_directory_profiles` is absent or empty, Synapse now derives agent nodes/capabilities from runtime `events` + `synapse_tasks` signals to avoid empty `n/a` capability pages on first integration.
 - 2026-04-09: Added high-signal auto-publish gate in `/v1/wiki/auto-publish/run`: drafts now require durable-profile match (assertion class/page type/category keyword) before policy-based auto-approval; diagnostics now expose `high_signal_gate` rationale per item.
 - 2026-04-09: Added adoption safe-mode control surface: new endpoint `POST /v1/adoption/safe-mode/enable` (dry-run/apply with snapshot) and optional auto-trigger from `POST /v1/adoption/sync-presets/execute` via `auto_apply_safe_mode_on_critical` when critical sync diagnostics are detected.

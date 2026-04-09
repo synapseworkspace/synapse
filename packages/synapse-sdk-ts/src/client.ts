@@ -749,6 +749,7 @@ export class SynapseClient {
     includeRoleTemplate?: boolean;
     roleTemplateKey?: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
     roleTemplateSpaceKey?: string;
+    autoApplySafeModeOnCritical?: boolean;
     idempotencyKey?: string;
   }): Promise<Record<string, unknown>> {
     const updatedBy = String(options.updatedBy ?? "").trim();
@@ -774,11 +775,74 @@ export class SynapseClient {
       starter_profile: starterProfile,
       include_role_template: options.includeRoleTemplate ?? false,
       role_template_key: asOptionalString(options.roleTemplateKey)?.toLowerCase() ?? undefined,
-      role_template_space_key: asOptionalString(options.roleTemplateSpaceKey) ?? undefined
+      role_template_space_key: asOptionalString(options.roleTemplateSpaceKey) ?? undefined,
+      auto_apply_safe_mode_on_critical: options.autoApplySafeModeOnCritical ?? true
     };
     return this.requestJson<Record<string, unknown>>("/v1/adoption/sync-presets/execute", {
       method: "POST",
       payload,
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async enableAdoptionSafeMode(options: {
+    updatedBy: string;
+    dryRun?: boolean;
+    note?: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/safe-mode/enable", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? undefined : this.projectId,
+        note: asOptionalString(options.note) ?? undefined
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async bulkReviewWikiDrafts(options: {
+    reviewedBy: string;
+    action?: "approve" | "reject" | string;
+    dryRun?: boolean;
+    limit?: number;
+    filter?: Record<string, unknown>;
+    note?: string;
+    reason?: string;
+    force?: boolean;
+    dismissConflicts?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const reviewedBy = String(options.reviewedBy ?? "").trim();
+    if (!reviewedBy) {
+      throw new Error("reviewedBy is required");
+    }
+    const action = String(options.action ?? "approve").trim().toLowerCase();
+    if (!["approve", "reject"].includes(action)) {
+      throw new Error("action must be one of: approve, reject");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/drafts/bulk-review", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        reviewed_by: reviewedBy,
+        action,
+        dry_run: options.dryRun ?? true,
+        limit: normalizeInt(options.limit ?? 200, 1, 2000),
+        filter: options.filter ?? {},
+        note: asOptionalString(options.note) ?? undefined,
+        reason: asOptionalString(options.reason) ?? undefined,
+        force: options.force ?? false,
+        dismiss_conflicts: options.dismissConflicts ?? true
+      },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
   }

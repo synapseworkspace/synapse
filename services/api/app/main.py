@@ -28139,6 +28139,8 @@ def get_adoption_pipeline_visibility(
     claims_total = 0
     drafts_total = 0
     pages_total = 0
+    pages_from_published = 0
+    pages_from_published_window = 0
     queue_pending_review = 0
     queue_blocked_conflict = 0
     rejected_event_like = 0
@@ -28391,23 +28393,28 @@ def get_adoption_pipeline_visibility(
 
             pages_from_published = 0
             if _public_table_exists(conn, "wiki_pages"):
-                if source_filters or namespace_filters:
-                    # Source/namespace scoped visibility relies on evidence-linked moderation flow.
-                    pages_from_published = 0
-                else:
-                    cur.execute(
-                        """
-                        SELECT COUNT(*)::bigint
-                        FROM wiki_pages
-                        WHERE project_id = %s
-                          AND status = 'published'
-                        """,
-                        (project_id,),
-                    )
-                    published_row = cur.fetchone()
-                    pages_from_published = int((published_row[0] if published_row else 0) or 0)
+                cur.execute(
+                    """
+                    SELECT
+                      COUNT(*)::bigint,
+                      COUNT(*) FILTER (WHERE updated_at >= %s)::bigint
+                    FROM wiki_pages
+                    WHERE project_id = %s
+                      AND status = 'published'
+                    """,
+                    (cutoff, project_id),
+                )
+                published_row = cur.fetchone() or (0, 0)
+                pages_from_published = int((published_row[0] if published_row else 0) or 0)
+                pages_from_published_window = int((published_row[1] if published_row else 0) or 0)
 
-            pages_total = max(int(pages_from_moderation), int(pages_from_published))
+            if source_filters or namespace_filters:
+                # For scoped diagnostic views, moderation-linked pages remain source-attributed.
+                # Bootstrap/starter pages have no evidence channel, so include windowed published
+                # count as unscoped fallback to avoid false "0 pages" impressions.
+                pages_total = max(int(pages_from_moderation), int(pages_from_published_window))
+            else:
+                pages_total = max(int(pages_from_moderation), int(pages_from_published))
 
             if _public_table_exists(conn, "wiki_draft_changes"):
                 queue_filters = ["project_id = %s", "status IN ('pending_review', 'blocked_conflict')"]
@@ -28553,6 +28560,17 @@ def get_adoption_pipeline_visibility(
             "pending_review": queue_pending_review,
             "blocked_conflict": queue_blocked_conflict,
             "open_total": int(queue_pending_review + queue_blocked_conflict),
+        },
+        "page_channels": {
+            "from_moderation": int(pages_from_moderation),
+            "from_published_total": int(pages_from_published),
+            "from_published_window": int(pages_from_published_window),
+            "scope_limited": bool(source_filters or namespace_filters),
+            "scope_note": (
+                "Published fallback includes project-level pages without evidence attribution."
+                if source_filters or namespace_filters
+                else "Project-wide page counts."
+            ),
         },
         "stages": stages,
         "transitions": transitions,

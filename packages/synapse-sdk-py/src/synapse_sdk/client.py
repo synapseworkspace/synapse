@@ -752,6 +752,7 @@ class SynapseClient:
         include_role_template: bool = False,
         role_template_key: str | None = None,
         role_template_space_key: str | None = None,
+        auto_apply_safe_mode_on_critical: bool = True,
     ) -> dict[str, Any]:
         actor = str(updated_by or "").strip()
         if not actor:
@@ -780,9 +781,72 @@ class SynapseClient:
                 if role_template_space_key is not None and str(role_template_space_key).strip()
                 else None
             ),
+            "auto_apply_safe_mode_on_critical": bool(auto_apply_safe_mode_on_critical),
         }
         return self._request_json(
             "/v1/adoption/sync-presets/execute",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def enable_adoption_safe_mode(
+        self,
+        *,
+        updated_by: str,
+        dry_run: bool = True,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+            "note": str(note).strip() if note is not None and str(note).strip() else None,
+        }
+        return self._request_json(
+            "/v1/adoption/safe-mode/enable",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def bulk_review_wiki_drafts(
+        self,
+        *,
+        reviewed_by: str,
+        action: str = "approve",
+        dry_run: bool = True,
+        limit: int = 200,
+        filter: dict[str, Any] | None = None,
+        note: str | None = None,
+        reason: str | None = None,
+        force: bool = False,
+        dismiss_conflicts: bool = True,
+    ) -> dict[str, Any]:
+        actor = str(reviewed_by or "").strip()
+        if not actor:
+            raise ValueError("reviewed_by is required")
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"approve", "reject"}:
+            raise ValueError("action must be one of: approve, reject")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "reviewed_by": actor,
+            "action": normalized_action,
+            "dry_run": bool(dry_run),
+            "limit": max(1, min(2000, int(limit))),
+            "filter": dict(filter or {}),
+            "note": str(note).strip() if note is not None and str(note).strip() else None,
+            "reason": str(reason).strip() if reason is not None and str(reason).strip() else None,
+            "force": bool(force),
+            "dismiss_conflicts": bool(dismiss_conflicts),
+        }
+        return self._request_json(
+            "/v1/wiki/drafts/bulk-review",
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),
