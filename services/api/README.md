@@ -142,6 +142,7 @@ Environment:
 - `GET /v1/agents?project_id=...&status=active&team=Support` (agent directory listing with status/team summaries)
 - `GET /v1/agents/orgchart?project_id=...&include_handoffs=true` (graph-ready orgchart payload: nodes + optional handoff edges + team groups)
 - `POST /v1/agents/register` (upsert agent profile and sync Confluence-like agent wiki scaffold: `agents/index`, per-agent folder + `overview/runbooks/daily-reports/created-pages/incidents/changelog`)
+- If `/v1/agents/register` is not wired yet, Synapse now falls back to payload-based runtime discovery (`events.agent_id`, `payload.agent_id`, metadata agent fields) for capability/orgchart bootstrap.
 - `GET /v1/agents/publish-policy?project_id=...&agent_id=support_bot` (agent-level publish guardrails by domain/page type)
 - `PUT /v1/agents/publish-policy` (upsert guardrails; `human_required` blocks direct publish and requires review-first status flow)
 - `POST /v1/agents/worklogs/sync` (generate per-agent daily worklogs from runtime/task activity and refresh `daily-reports` wiki pages; supports `timezone`, `include_idle_days`, `min_activity_score`, and trigger metadata `trigger_mode/trigger_reason` for daily batch + realtime close-signal flows)

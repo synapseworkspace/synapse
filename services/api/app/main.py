@@ -3057,6 +3057,49 @@ def _derive_runtime_agent_scenarios(
     return scenarios[:4]
 
 
+_RUNTIME_AGENT_ID_PLACEHOLDERS = {
+    "unknown",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "system",
+    "ops_admin",
+    "synapse_api",
+    "synapse_agent",
+}
+
+
+def _runtime_agent_id_sql_expr(*, table_alias: str | None = None) -> str:
+    prefix = f"{table_alias}." if table_alias else ""
+    fields = [
+        f"NULLIF(trim({prefix}agent_id), '')",
+        f"NULLIF(trim({prefix}payload->>'agent_id'), '')",
+        f"NULLIF(trim({prefix}payload->>'agent'), '')",
+        f"NULLIF(trim({prefix}payload->>'assistant_id'), '')",
+        f"NULLIF(trim({prefix}payload->>'bot_id'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{agent,id}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{agent,agent_id}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{metadata,agent_id}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{metadata,agent}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{metadata,runtime_agent_id}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{metadata,assistant_id}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{metadata,bot_id}}'), '')",
+        f"NULLIF(trim({prefix}payload#>>'{{actor,agent_id}}'), '')",
+    ]
+    return f"lower(trim(COALESCE({', '.join(fields)})))"
+
+
+def _runtime_agent_filter_sql(*, column: str) -> str:
+    placeholders = ", ".join([f"'{item}'" for item in sorted(_RUNTIME_AGENT_ID_PLACEHOLDERS)])
+    return (
+        f"COALESCE({column}, '') <> ''"
+        f" AND {column} !~ '@'"
+        f" AND {column} !~ '^[0-9]+$'"
+        f" AND {column} NOT IN ({placeholders})"
+    )
+
+
 def _build_runtime_agent_capability_matrix(
     cur: Any,
     *,
@@ -3067,20 +3110,29 @@ def _build_runtime_agent_capability_matrix(
     lookback_days = max(1, min(180, int(lookback_days)))
     cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
     limit = max(1, min(5000, int(max_agents)))
+    runtime_agent_expr = _runtime_agent_id_sql_expr(table_alias="e")
+    runtime_agent_filter = _runtime_agent_filter_sql(column="runtime_agent_id")
 
     cur.execute(
-        """
+        f"""
+        WITH runtime_events AS (
+          SELECT
+            {runtime_agent_expr} AS runtime_agent_id,
+            e.session_id,
+            e.observed_at
+          FROM events e
+          WHERE e.project_id = %s
+            AND e.observed_at >= %s
+        )
         SELECT
-          lower(trim(agent_id)) AS agent_id,
+          runtime_agent_id AS agent_id,
           COUNT(*)::int AS events_total,
           (COUNT(DISTINCT session_id) FILTER (WHERE COALESCE(session_id, '') <> ''))::int AS sessions_total,
           MAX(observed_at) AS last_seen_at
-        FROM events
-        WHERE project_id = %s
-          AND COALESCE(trim(agent_id), '') <> ''
-          AND observed_at >= %s
-        GROUP BY lower(trim(agent_id))
-        ORDER BY events_total DESC, agent_id ASC
+        FROM runtime_events
+        WHERE {runtime_agent_filter}
+        GROUP BY runtime_agent_id
+        ORDER BY events_total DESC, runtime_agent_id ASC
         LIMIT %s
         """,
         (project_id, cutoff, limit),
@@ -3105,14 +3157,14 @@ def _build_runtime_agent_capability_matrix(
         status = "active" if age_hours <= 24 else ("idle" if age_hours <= 24 * 7 else "offline")
 
         cur.execute(
-            """
-            SELECT event_type, COUNT(*)::int
-            FROM events
-            WHERE project_id = %s
-              AND lower(COALESCE(agent_id, '')) = %s
-              AND observed_at >= %s
-            GROUP BY event_type
-            ORDER BY COUNT(*) DESC, event_type ASC
+            f"""
+            SELECT e.event_type, COUNT(*)::int
+            FROM events e
+            WHERE e.project_id = %s
+              AND {_runtime_agent_id_sql_expr(table_alias='e')} = %s
+              AND e.observed_at >= %s
+            GROUP BY e.event_type
+            ORDER BY COUNT(*) DESC, e.event_type ASC
             LIMIT 8
             """,
             (project_id, agent_id, cutoff),
@@ -3121,19 +3173,19 @@ def _build_runtime_agent_capability_matrix(
         event_types = [str(item[0] or "").strip() for item in event_rows if str(item[0] or "").strip()]
 
         cur.execute(
-            """
+            f"""
             SELECT tool_name, COUNT(*)::int
             FROM (
               SELECT
                 COALESCE(
-                  NULLIF(trim(payload->>'tool_name'), ''),
-                  NULLIF(trim(payload->>'tool'), ''),
-                  NULLIF(trim(payload#>>'{tool,name}'), '')
+                  NULLIF(trim(e.payload->>'tool_name'), ''),
+                  NULLIF(trim(e.payload->>'tool'), ''),
+                  NULLIF(trim(e.payload#>>'{{tool,name}}'), '')
                 ) AS tool_name
-              FROM events
-              WHERE project_id = %s
-                AND lower(COALESCE(agent_id, '')) = %s
-                AND observed_at >= %s
+              FROM events e
+              WHERE e.project_id = %s
+                AND {_runtime_agent_id_sql_expr(table_alias='e')} = %s
+                AND e.observed_at >= %s
             ) t
             WHERE COALESCE(tool_name, '') <> ''
             GROUP BY tool_name
@@ -3146,20 +3198,20 @@ def _build_runtime_agent_capability_matrix(
         tools = [str(item[0] or "").strip() for item in tool_rows if str(item[0] or "").strip()]
 
         cur.execute(
-            """
+            f"""
             SELECT source_name, COUNT(*)::int
             FROM (
               SELECT
                 COALESCE(
-                  NULLIF(trim(payload#>>'{metadata,source_system}'), ''),
-                  NULLIF(trim(payload#>>'{backfill,source_system}'), ''),
-                  NULLIF(trim(payload->>'source_system'), ''),
-                  NULLIF(trim(payload#>>'{metadata,source}'), '')
+                  NULLIF(trim(e.payload#>>'{{metadata,source_system}}'), ''),
+                  NULLIF(trim(e.payload#>>'{{backfill,source_system}}'), ''),
+                  NULLIF(trim(e.payload->>'source_system'), ''),
+                  NULLIF(trim(e.payload#>>'{{metadata,source}}'), '')
                 ) AS source_name
-              FROM events
-              WHERE project_id = %s
-                AND lower(COALESCE(agent_id, '')) = %s
-                AND observed_at >= %s
+              FROM events e
+              WHERE e.project_id = %s
+                AND {_runtime_agent_id_sql_expr(table_alias='e')} = %s
+                AND e.observed_at >= %s
             ) s
             WHERE COALESCE(source_name, '') <> ''
             GROUP BY source_name
@@ -17075,6 +17127,8 @@ def get_event_ingest_throughput(
         filters.append("event_type = %s")
         params.append(event_type.strip())
     where_clause = " AND ".join(filters)
+    runtime_agent_expr = _runtime_agent_id_sql_expr()
+    runtime_agent_filter = _runtime_agent_filter_sql(column=runtime_agent_expr)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -17083,7 +17137,7 @@ def get_event_ingest_throughput(
                 SELECT
                   COUNT(*)::int AS events_ingested,
                   COUNT(DISTINCT session_id)::int AS sessions_active,
-                  COUNT(DISTINCT agent_id)::int AS agents_active,
+                  COUNT(DISTINCT CASE WHEN {runtime_agent_filter} THEN {runtime_agent_expr} END)::int AS agents_active,
                   COUNT(DISTINCT event_type)::int AS event_types_active
                 FROM events
                 WHERE {where_clause}
@@ -27845,31 +27899,42 @@ def _collect_agent_source_usage(
 
     if _wiki_feature_table_exists(cur, "public.events"):
         cutoff = datetime.now(UTC) - timedelta(days=30)
+        runtime_agent_expr = _runtime_agent_id_sql_expr(table_alias="e")
+        runtime_agent_filter = _runtime_agent_filter_sql(column="runtime_agent_id")
         cur.execute(
-            """
+            f"""
+            WITH runtime_events AS (
+              SELECT
+                {runtime_agent_expr} AS runtime_agent_id,
+                lower(trim(COALESCE(
+                  NULLIF(e.payload#>>'{{metadata,source_system}}', ''),
+                  NULLIF(e.payload#>>'{{backfill,source_system}}', ''),
+                  NULLIF(e.payload->>'source_system', ''),
+                  NULLIF(e.payload#>>'{{metadata,source}}', '')
+                ))) AS source_name,
+                trim(COALESCE(
+                  NULLIF(e.payload->>'action_type', ''),
+                  NULLIF(e.payload#>>'{{metadata,action_type}}', ''),
+                  NULLIF(e.payload->>'intent', ''),
+                  e.event_type
+                )) AS action_type,
+                trim(COALESCE(
+                  NULLIF(e.payload->>'tool_name', ''),
+                  NULLIF(e.payload->>'tool', ''),
+                  NULLIF(e.payload#>>'{{tool,name}}', '')
+                )) AS tool_name,
+                e.observed_at
+              FROM events e
+              WHERE e.project_id = %s
+                AND e.observed_at >= %s
+            )
             SELECT
-              lower(trim(COALESCE(agent_id, ''))) AS agent_id,
-              lower(trim(COALESCE(
-                NULLIF(payload#>>'{metadata,source_system}', ''),
-                NULLIF(payload#>>'{backfill,source_system}', ''),
-                NULLIF(payload->>'source_system', ''),
-                NULLIF(payload#>>'{metadata,source}', '')
-              ))) AS source_name,
-              trim(COALESCE(
-                NULLIF(payload->>'action_type', ''),
-                NULLIF(payload#>>'{metadata,action_type}', ''),
-                NULLIF(payload->>'intent', ''),
-                event_type
-              )) AS action_type,
-              trim(COALESCE(
-                NULLIF(payload->>'tool_name', ''),
-                NULLIF(payload->>'tool', ''),
-                NULLIF(payload#>>'{tool,name}', '')
-              )) AS tool_name
-            FROM events
-            WHERE project_id = %s
-              AND observed_at >= %s
-              AND COALESCE(trim(agent_id), '') <> ''
+              runtime_agent_id AS agent_id,
+              source_name,
+              action_type,
+              tool_name
+            FROM runtime_events
+            WHERE {runtime_agent_filter}
             ORDER BY observed_at DESC
             LIMIT 40000
             """,

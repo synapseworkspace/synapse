@@ -147,7 +147,9 @@ Goal:
 3. `done` OOTB moderation policy pack:
    - auto-publish only high-signal classes;
    - noisy classes always `pending_review`.
-4. `planned` Signal/noise stability monitor:
+4. `done` Runtime registry fallback from event payloads:
+   - capability/source-usage discovery now infers `agent_id` from runtime event payload/metadata fields when explicit `/v1/agents/register` integration is absent.
+5. `planned` Signal/noise stability monitor:
    - queue growth alerts + “safe mode recommended/applied” audit trail.
 
 ## v0.1.3 Release Plan (Q2 2026)
@@ -867,6 +869,7 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-04-10: Improved OOTB runtime agent discovery without explicit registry integration: added payload-based runtime `agent_id` inference (`events.agent_id` + `payload.agent_id` + metadata/agent fields) to capability matrix and source-usage mapping, and updated throughput `agents_active` metric to use the same normalized runtime identity filter so bootstrap pages stop defaulting to `runtime discovery pending` in mixed integrations.
 - 2026-04-09: Fixed field-reported regressions from production adoption: `/v1/adoption/kpi` no longer references non-existent `wiki_page_versions.project_id` (now uses `wiki_page_versions -> wiki_pages.project_id` join), and bootstrap page insert now rewrites internal wiki links when `policy_space_fallback` reroutes slugs across spaces (prevents broken `/wiki/operations/...` links after fallback to `logistics`); added self-host integration regression coverage in `scripts/integration_legacy_sync_queue_processing.py`.
 - 2026-04-09: Completed `Release trust (P0)` hardening for OSS publish reliability: added strict pre-publish registry collision gate (`prepublish-version-guard` + `--require-version-absent`), strengthened post-publish registry trust checks (`--require-latest-match`), introduced reusable install smoke verifiers (`scripts/check_python_package_install_smoke.py`, `scripts/check_npm_package_install_smoke.mjs`) wired into both artifact and registry install matrix jobs, added one-command multi-package version bump utility (`scripts/bump_release_version.py`), and upgraded RC dress rehearsal to assert exact installed versions + CLI availability.
 - 2026-04-09: Delivered follow-up production DX closure for roadmap items `3/4/5`: added `GET /v1/enterprise/readiness` (auth/rbac/tenancy posture + enterprise table checks + scoped counters), shipped one-shot connector onboarding endpoint `POST /v1/adoption/import-connectors/bootstrap` (`resolve -> upsert source -> optional queue/processor diagnostics`), wired Python/TypeScript SDK helpers (`get_enterprise_readiness` / `getEnterpriseReadiness`, `bootstrap_adoption_import_connector` / `bootstrapAdoptionImportConnector`), extended `synapse-cli adoption` with `connect-source` + `enterprise-readiness`, and upgraded Operations UI migration mode to use connector bootstrap path with an enterprise readiness panel.

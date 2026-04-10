@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 import unittest
 
 try:
@@ -8,6 +8,8 @@ try:
     from services.api.app.main import (
         _build_agent_capability_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
+        _build_runtime_agent_capability_matrix,
+        _collect_agent_source_usage,
         _build_project_wiki_quality_report_from_rows,
         _build_agent_provenance_activity,
         _compute_agent_capability_confidence,
@@ -23,11 +25,15 @@ try:
         _render_agent_handoff_markdown,
         _render_agent_overview_markdown,
         _render_agent_scorecards_markdown,
+        _runtime_agent_filter_sql,
+        _runtime_agent_id_sql_expr,
     )
 except Exception:  # pragma: no cover
     _api_main = None
     _build_agent_capability_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
+    _build_runtime_agent_capability_matrix = None
+    _collect_agent_source_usage = None
     _build_project_wiki_quality_report_from_rows = None
     _build_agent_provenance_activity = None
     _compute_agent_capability_confidence = None
@@ -43,6 +49,8 @@ except Exception:  # pragma: no cover
     _render_agent_handoff_markdown = None
     _render_agent_overview_markdown = None
     _render_agent_scorecards_markdown = None
+    _runtime_agent_filter_sql = None
+    _runtime_agent_id_sql_expr = None
 
 
 @unittest.skipIf(
@@ -62,7 +70,11 @@ except Exception:  # pragma: no cover
     or _render_agent_daily_worklog_entry is None
     or _render_agent_daily_reports_page is None
     or _render_agent_handoff_markdown is None
-    or _render_agent_scorecards_markdown is None,
+    or _render_agent_scorecards_markdown is None
+    or _build_runtime_agent_capability_matrix is None
+    or _collect_agent_source_usage is None
+    or _runtime_agent_filter_sql is None
+    or _runtime_agent_id_sql_expr is None,
     "api agent directory helpers unavailable",
 )
 class AgentDirectoryRenderingTests(unittest.TestCase):
@@ -420,6 +432,108 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertTrue(bool(checks.get("core_required_pages_present")))
         self.assertTrue(bool(checks.get("core_publish_coverage")))
         self.assertFalse(bool(checks.get("daily_summary_open_draft_ratio")))
+
+    def test_runtime_agent_sql_expr_and_filter_include_payload_fallbacks(self) -> None:
+        expr = _runtime_agent_id_sql_expr(table_alias="e")
+        self.assertIn("e.payload->>'agent_id'", expr)
+        self.assertIn("e.payload#>>'{metadata,agent_id}'", expr)
+        self.assertIn("e.payload#>>'{agent,id}'", expr)
+
+        runtime_filter = _runtime_agent_filter_sql(column="runtime_agent_id")
+        self.assertIn("runtime_agent_id !~ '@'", runtime_filter)
+        self.assertIn("NOT IN", runtime_filter)
+
+    def test_runtime_capability_matrix_uses_payload_agent_fallback_in_queries(self) -> None:
+        assert _api_main is not None
+
+        class _RuntimeCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+                self.sql: list[str] = []
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                self.sql.append(text)
+                if "GROUP BY runtime_agent_id" in text:
+                    self.mode = "agents"
+                elif "GROUP BY e.event_type" in text:
+                    self.mode = "events"
+                elif "GROUP BY tool_name" in text:
+                    self.mode = "tools"
+                elif "GROUP BY source_name" in text:
+                    self.mode = "sources"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "agents":
+                    return [("dispatch_bot", 12, 3, datetime(2026, 4, 10, 12, 0, tzinfo=UTC))]
+                if self.mode == "events":
+                    return [("dispatch_task_started", 8)]
+                if self.mode == "tools":
+                    return [("maps_router", 5)]
+                if self.mode == "sources":
+                    return [("orders_api", 4)]
+                return []
+
+        cursor = _RuntimeCursor()
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._wiki_feature_table_exists = lambda cur, table: False
+            matrix = _build_runtime_agent_capability_matrix(
+                cursor,
+                project_id="omega_demo",
+                max_agents=10,
+            )
+        finally:
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        self.assertEqual(len(matrix), 1)
+        self.assertEqual(matrix[0]["agent_id"], "dispatch_bot")
+        combined_sql = "\n".join(cursor.sql)
+        self.assertIn("payload->>'agent_id'", combined_sql)
+        self.assertIn("payload#>>'{metadata,agent_id}'", combined_sql)
+        self.assertNotIn("COALESCE(trim(agent_id), '') <> ''", combined_sql)
+
+    def test_collect_agent_source_usage_uses_runtime_agent_inference(self) -> None:
+        assert _api_main is not None
+
+        class _SourceUsageCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+                self.sql: list[str] = []
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                self.sql.append(text)
+                if "FROM agent_directory_profiles" in text:
+                    self.mode = "profiles"
+                elif "FROM runtime_events" in text and "source_name" in text:
+                    self.mode = "events"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "profiles":
+                    return []
+                if self.mode == "events":
+                    return [("dispatch_bot", "orders_api", "dispatch", "maps_router")]
+                return []
+
+        cursor = _SourceUsageCursor()
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._wiki_feature_table_exists = lambda cur, table: table == "public.events"
+            usage = _collect_agent_source_usage(cursor, project_id="omega_demo")
+        finally:
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        self.assertIn("orders_api", usage)
+        self.assertIn("dispatch_bot", usage["orders_api"]["agents"])
+        combined_sql = "\n".join(cursor.sql)
+        self.assertIn("runtime_agent_id", combined_sql)
+        self.assertIn("payload->>'agent_id'", combined_sql)
+        self.assertIn("payload#>>'{metadata,agent_id}'", combined_sql)
 
 
 if __name__ == "__main__":
