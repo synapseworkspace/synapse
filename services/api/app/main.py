@@ -3570,6 +3570,7 @@ _GATEKEEPER_CONFIG_HAS_PUBLISH_COLUMNS: bool | None = None
 _GATEKEEPER_CONFIG_HAS_ROUTING_POLICY_COLUMN: bool | None = None
 _SOURCE_OWNERSHIP_TABLE_EXISTS: bool | None = None
 _BACKFILL_BATCH_HAS_DECISION_COUNTERS: bool | None = None
+_BACKFILL_BATCH_HAS_REASON_COUNTERS: bool | None = None
 _LEGACY_IMPORT_SOURCES_TABLE_EXISTS: bool | None = None
 _MEMORY_BACKFILL_BATCHES_TABLE_EXISTS: bool | None = None
 _ACCESS_POLICY_DECISIONS_TABLE_EXISTS: bool | None = None
@@ -3748,6 +3749,34 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "event_stream_min_kv_hits": 2,
     "min_durable_signal_hits": 1,
     "min_durable_signal_hits_for_backfill": 1,
+    "high_signal_route_keywords": [
+        "policy",
+        "process",
+        "procedure",
+        "runbook",
+        "playbook",
+        "sop",
+        "manual",
+        "instruction",
+        "escalation",
+        "access",
+        "compliance",
+        "business_rule",
+        "company_operating_model",
+        "operating_model",
+        "logistics_kpi_framework",
+        "kpi_framework",
+        "регламент",
+        "правило",
+        "процесс",
+        "инструкция",
+        "эскалац",
+        "доступ",
+    ],
+    "high_signal_min_keyword_hits": 1,
+    "claims_floor_min_events": 120,
+    "claims_floor_alert_after_minutes": 20,
+    "claims_floor_min_conversion_ratio": 0.01,
     "publish_mode_by_assertion_class": {
         "policy": "conditional",
         "process": "conditional",
@@ -3957,6 +3986,25 @@ def _backfill_batch_has_decision_counters(conn) -> bool:
         present = {str(row[0]) for row in cur.fetchall()}
     _BACKFILL_BATCH_HAS_DECISION_COUNTERS = required.issubset(present)
     return _BACKFILL_BATCH_HAS_DECISION_COUNTERS
+
+
+def _backfill_batch_has_reason_counters(conn) -> bool:
+    global _BACKFILL_BATCH_HAS_REASON_COUNTERS
+    if _BACKFILL_BATCH_HAS_REASON_COUNTERS is not None:
+        return _BACKFILL_BATCH_HAS_REASON_COUNTERS
+    required = {"drop_reason_counts", "keep_reason_counts"}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'memory_backfill_batches'
+            """
+        )
+        present = {str(row[0]) for row in cur.fetchall()}
+    _BACKFILL_BATCH_HAS_REASON_COUNTERS = required.issubset(present)
+    return _BACKFILL_BATCH_HAS_REASON_COUNTERS
 
 
 def _legacy_import_sources_table_exists(conn) -> bool:
@@ -5710,6 +5758,11 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         value.get("durable_signal_keywords"),
         fallback=list(base["durable_signal_keywords"]),
     )
+    normalized["high_signal_route_keywords"] = _normalize_policy_keyword_list(
+        value.get("high_signal_route_keywords"),
+        fallback=list(base["high_signal_route_keywords"]),
+        limit=128,
+    )
     normalized["ingestion_classification_default_deny_classes"] = _normalize_policy_keyword_list(
         value.get("ingestion_classification_default_deny_classes"),
         fallback=list(base["ingestion_classification_default_deny_classes"]),
@@ -5791,6 +5844,34 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     normalized["min_durable_signal_hits_for_backfill"] = max(
         0,
         min(20, _coerce_int(value.get("min_durable_signal_hits_for_backfill"), 1)),
+    )
+    normalized["high_signal_min_keyword_hits"] = max(
+        1,
+        min(20, _coerce_int(value.get("high_signal_min_keyword_hits"), int(base["high_signal_min_keyword_hits"]))),
+    )
+    normalized["claims_floor_min_events"] = max(
+        1,
+        min(100000, _coerce_int(value.get("claims_floor_min_events"), int(base["claims_floor_min_events"]))),
+    )
+    normalized["claims_floor_alert_after_minutes"] = max(
+        1,
+        min(
+            1440,
+            _coerce_int(
+                value.get("claims_floor_alert_after_minutes"),
+                int(base["claims_floor_alert_after_minutes"]),
+            ),
+        ),
+    )
+    normalized["claims_floor_min_conversion_ratio"] = max(
+        0.0,
+        min(
+            1.0,
+            _coerce_float(
+                value.get("claims_floor_min_conversion_ratio"),
+                float(base["claims_floor_min_conversion_ratio"]),
+            ),
+        ),
     )
     normalized["retrieval_feedback_window_days"] = max(
         1,
@@ -28490,6 +28571,7 @@ def get_adoption_rejection_diagnostics(
     sample_limit: int = Query(default=5, ge=1, le=25),
 ) -> dict[str, Any]:
     cutoff = datetime.now(UTC) - timedelta(days=days)
+    preclaim_drop_reason_counts: dict[str, int] = {}
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -28514,6 +28596,28 @@ def get_adoption_rejection_diagnostics(
                 (project_id, cutoff),
             )
             rows = cur.fetchall() or []
+        if _memory_backfill_batches_table_exists(conn) and _backfill_batch_has_reason_counters(conn):
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(drop_reason_counts, '{}'::jsonb)
+                    FROM memory_backfill_batches
+                    WHERE project_id = %s
+                      AND updated_at >= %s
+                    ORDER BY updated_at DESC
+                    LIMIT 5000
+                    """,
+                    (project_id, cutoff),
+                )
+                for row in cur.fetchall() or []:
+                    bucket = row[0] if isinstance(row[0], dict) else {}
+                    for key, value in bucket.items():
+                        reason_key = str(key or "").strip().lower()
+                        if not reason_key:
+                            continue
+                        preclaim_drop_reason_counts[reason_key] = int(
+                            preclaim_drop_reason_counts.get(reason_key, 0)
+                        ) + int(value or 0)
 
     reason_counts: dict[str, int] = {}
     blocked_source_type_counts: dict[str, int] = {}
@@ -28601,12 +28705,14 @@ def get_adoption_rejection_diagnostics(
         ]
 
     top_reasons = _top(reason_counts, limit=10)
+    top_preclaim_reasons = _top(preclaim_drop_reason_counts, limit=10)
     top_source_types = _top(blocked_source_type_counts, limit=10)
     top_source_systems = _top(blocked_source_system_counts, limit=10)
     top_tool_names = _top(blocked_tool_counts, limit=10)
 
     suggestions: list[dict[str, str]] = []
     reason_top_keys = {item["key"] for item in top_reasons[:5]}
+    reason_top_keys.update({item["key"] for item in top_preclaim_reasons[:5]})
     if "blocked_source_type" in reason_top_keys or "blocked_source_system" in reason_top_keys:
         suggestions.append(
             {
@@ -28619,6 +28725,13 @@ def get_adoption_rejection_diagnostics(
             {
                 "knob": "routing_policy.event_stream_min_*",
                 "hint": "Snapshot-like payloads dominate; pre-filter order/telemetry events before backfill.",
+            }
+        )
+    if "event_like_low_signal" in reason_top_keys or "event_transport_low_signal" in reason_top_keys:
+        suggestions.append(
+            {
+                "knob": "routing_policy.high_signal_route_keywords / high_signal_min_keyword_hits",
+                "hint": "Extraction is too strict; promote policy/process/runbook markers into high-signal route lane.",
             }
         )
     if "backfill_without_durable_signal" in reason_top_keys:
@@ -28651,8 +28764,10 @@ def get_adoption_rejection_diagnostics(
         "summary": {
             "rejected_total": len(rows),
             "sampled_examples": len(examples),
+            "preclaim_dropped_total": int(sum(preclaim_drop_reason_counts.values())),
         },
         "top_reject_reasons": top_reasons,
+        "top_preclaim_drop_reasons": top_preclaim_reasons,
         "top_blocked_patterns": {
             "source_types": top_source_types,
             "source_systems": top_source_systems,
@@ -28699,7 +28814,11 @@ def get_adoption_pipeline_visibility(
     queue_pending_review = 0
     queue_blocked_conflict = 0
     rejected_event_like = 0
+    kept_durable = 0
+    trusted_bypass = 0
     accepted_source = "events_estimated"
+    extraction_drop_reasons: dict[str, int] = {}
+    extraction_keep_reasons: dict[str, int] = {}
     draft_flood_max_open_per_page = int(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("draft_flood_max_open_per_page") or 200)
     draft_flood_max_open_per_entity = int(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("draft_flood_max_open_per_entity") or 400)
     queue_pressure_open_drafts_threshold = int(
@@ -28708,6 +28827,11 @@ def get_adoption_pipeline_visibility(
     queue_pressure_open_drafts_per_page_threshold = int(
         _DEFAULT_GATEKEEPER_ROUTING_POLICY.get("queue_pressure_safe_mode_open_drafts_per_page_threshold") or 200
     )
+    claims_floor_min_events = int(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("claims_floor_min_events") or 120)
+    claims_floor_alert_after_minutes = int(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("claims_floor_alert_after_minutes") or 20)
+    claims_floor_min_conversion_ratio = float(_DEFAULT_GATEKEEPER_ROUTING_POLICY.get("claims_floor_min_conversion_ratio") or 0.01)
+    first_event_at: datetime | None = None
+    last_event_at: datetime | None = None
     max_open_drafts_per_page = 0
     max_open_drafts_per_entity = 0
     pages_over_open_draft_limit = 0
@@ -28740,6 +28864,21 @@ def get_adoption_pipeline_visibility(
                     or queue_pressure_open_drafts_per_page_threshold
                 ),
             )
+            claims_floor_min_events = max(
+                1,
+                int(routing_policy.get("claims_floor_min_events") or claims_floor_min_events),
+            )
+            claims_floor_alert_after_minutes = max(
+                1,
+                int(routing_policy.get("claims_floor_alert_after_minutes") or claims_floor_alert_after_minutes),
+            )
+            claims_floor_min_conversion_ratio = max(
+                0.0,
+                min(
+                    1.0,
+                    float(routing_policy.get("claims_floor_min_conversion_ratio") or claims_floor_min_conversion_ratio),
+                ),
+            )
 
             if _memory_backfill_batches_table_exists(conn):
                 params: list[Any] = [project_id, cutoff]
@@ -28754,13 +28893,15 @@ def get_adoption_pipeline_visibility(
                           COALESCE(SUM(total_items), 0)::bigint,
                           COALESCE(SUM(inserted_events), 0)::bigint,
                           COALESCE(SUM(generated_claims), 0)::bigint,
-                          COALESCE(SUM(dropped_event_like), 0)::bigint
+                          COALESCE(SUM(dropped_event_like), 0)::bigint,
+                          COALESCE(SUM(kept_durable), 0)::bigint,
+                          COALESCE(SUM(trusted_bypass), 0)::bigint
                         FROM memory_backfill_batches
                         WHERE {' AND '.join(where_sql)}
                         """,
                         tuple(params),
                     )
-                    row = cur.fetchone() or (0, 0, 0, 0)
+                    row = cur.fetchone() or (0, 0, 0, 0, 0, 0)
                 else:
                     cur.execute(
                         f"""
@@ -28774,12 +28915,45 @@ def get_adoption_pipeline_visibility(
                         tuple(params),
                     )
                     batch_row = cur.fetchone() or (0, 0, 0)
-                    row = (batch_row[0], batch_row[1], batch_row[2], 0)
+                    row = (batch_row[0], batch_row[1], batch_row[2], 0, 0, 0)
                 batch_total_items = int(row[0] or 0)
                 rejected_event_like = int(row[3] or 0)
+                kept_durable = int(row[4] or 0)
+                trusted_bypass = int(row[5] or 0)
                 if not namespace_filters:
                     accepted_records = batch_total_items
                     accepted_source = "memory_backfill_batches"
+
+                if _backfill_batch_has_reason_counters(conn):
+                    cur.execute(
+                        f"""
+                        SELECT
+                          COALESCE(drop_reason_counts, '{{}}'::jsonb),
+                          COALESCE(keep_reason_counts, '{{}}'::jsonb)
+                        FROM memory_backfill_batches
+                        WHERE {' AND '.join(where_sql)}
+                        ORDER BY updated_at DESC
+                        LIMIT 5000
+                        """,
+                        tuple(params),
+                    )
+                    for drop_counts_raw, keep_counts_raw in (cur.fetchall() or []):
+                        drop_counts = drop_counts_raw if isinstance(drop_counts_raw, dict) else {}
+                        keep_counts = keep_counts_raw if isinstance(keep_counts_raw, dict) else {}
+                        for key, value in drop_counts.items():
+                            reason_key = str(key or "").strip().lower()
+                            if not reason_key:
+                                continue
+                            extraction_drop_reasons[reason_key] = int(extraction_drop_reasons.get(reason_key, 0)) + int(
+                                value or 0
+                            )
+                        for key, value in keep_counts.items():
+                            reason_key = str(key or "").strip().lower()
+                            if not reason_key:
+                                continue
+                            extraction_keep_reasons[reason_key] = int(extraction_keep_reasons.get(reason_key, 0)) + int(
+                                value or 0
+                            )
 
             event_filters = ["e.project_id = %s", "e.event_type = 'memory_backfill'", "e.observed_at >= %s"]
             event_params: list[Any] = [project_id, cutoff]
@@ -28812,7 +28986,10 @@ def get_adoption_pipeline_visibility(
                 event_params.append(namespace_filters)
             cur.execute(
                 f"""
-                SELECT COUNT(*)::bigint
+                SELECT
+                  COUNT(*)::bigint,
+                  MIN(e.observed_at),
+                  MAX(e.observed_at)
                 FROM events e
                 WHERE {' AND '.join(event_filters)}
                 """,
@@ -28820,6 +28997,8 @@ def get_adoption_pipeline_visibility(
             )
             event_row = cur.fetchone()
             events_total = int((event_row[0] if event_row else 0) or 0)
+            first_event_at = event_row[1] if (event_row and isinstance(event_row[1], datetime)) else None
+            last_event_at = event_row[2] if (event_row and isinstance(event_row[2], datetime)) else None
             if accepted_records <= 0:
                 accepted_records = events_total
                 accepted_source = "events_estimated"
@@ -29258,6 +29437,55 @@ def get_adoption_pipeline_visibility(
             }
         )
 
+    events_to_claims_conversion = _stage_ratio(int(stages[1]["count"]), int(stages[2]["count"]))
+    now_utc = datetime.now(UTC)
+    first_event_age_minutes: float | None = None
+    if first_event_at is not None:
+        first_event_age_minutes = round(
+            max(0.0, (now_utc - first_event_at).total_seconds() / 60.0),
+            2,
+        )
+    claims_floor_triggered = bool(
+        int(events_total) >= int(claims_floor_min_events)
+        and int(claims_total) == 0
+        and first_event_age_minutes is not None
+        and float(first_event_age_minutes) >= float(claims_floor_alert_after_minutes)
+    )
+    if claims_floor_triggered:
+        pressure_warnings.append(
+            {
+                "code": "events_claims_zero_floor",
+                "severity": "critical",
+                "message": (
+                    "Events are flowing but no claims were generated within the floor window."
+                ),
+                "events": int(events_total),
+                "claims": int(claims_total),
+                "min_events": int(claims_floor_min_events),
+                "alert_after_minutes": int(claims_floor_alert_after_minutes),
+                "observed_age_minutes": float(first_event_age_minutes or 0.0),
+                "next_action": "run_adoption_rejections_diagnostics_and_relax_high_signal_thresholds",
+            }
+        )
+
+    def _counter_items(counter: dict[str, int], *, limit: int = 12) -> list[dict[str, Any]]:
+        total = max(0, sum(int(value or 0) for value in counter.values()))
+        rows: list[dict[str, Any]] = []
+        for key, count in sorted(counter.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
+            value = int(count or 0)
+            if value <= 0:
+                continue
+            rows.append(
+                {
+                    "reason": str(key),
+                    "count": value,
+                    "share": round(float(value) / float(max(1, total)), 4),
+                }
+            )
+            if len(rows) >= max(1, int(limit)):
+                break
+        return rows
+
     return {
         "project_id": project_id,
         "window_days": int(days),
@@ -29286,9 +29514,29 @@ def get_adoption_pipeline_visibility(
                 4,
             ),
         },
+        "extraction": {
+            "kept_durable": int(max(0, kept_durable)),
+            "trusted_bypass": int(max(0, trusted_bypass)),
+            "drop_reasons": _counter_items(extraction_drop_reasons, limit=20),
+            "keep_reasons": _counter_items(extraction_keep_reasons, limit=20),
+            "drop_reasons_total": int(max(0, sum(int(v or 0) for v in extraction_drop_reasons.values()))),
+            "keep_reasons_total": int(max(0, sum(int(v or 0) for v in extraction_keep_reasons.values()))),
+        },
+        "claims_floor_guard": {
+            "min_events": int(claims_floor_min_events),
+            "alert_after_minutes": int(claims_floor_alert_after_minutes),
+            "min_conversion_ratio": float(claims_floor_min_conversion_ratio),
+            "events_total": int(events_total),
+            "claims_total": int(claims_total),
+            "events_to_claims_conversion": events_to_claims_conversion,
+            "first_event_at": first_event_at.isoformat() if first_event_at is not None else None,
+            "last_event_at": last_event_at.isoformat() if last_event_at is not None else None,
+            "first_event_age_minutes": first_event_age_minutes,
+            "triggered": claims_floor_triggered,
+        },
         "conversions": {
             "accepted_to_events": _stage_ratio(int(stages[0]["count"]), int(stages[1]["count"])),
-            "events_to_claims": _stage_ratio(int(stages[1]["count"]), int(stages[2]["count"])),
+            "events_to_claims": events_to_claims_conversion,
             "claims_to_drafts": _stage_ratio(int(stages[2]["count"]), int(stages[3]["count"])),
             "drafts_to_pages": _stage_ratio(int(stages[3]["count"]), int(stages[4]["count"])),
         },
@@ -29675,6 +29923,11 @@ def _build_adoption_pipeline_pressure_warnings(pipeline_visibility: dict[str, An
     if not isinstance(pipeline_visibility, dict):
         return []
 
+    claims_floor_guard = (
+        pipeline_visibility.get("claims_floor_guard")
+        if isinstance(pipeline_visibility.get("claims_floor_guard"), dict)
+        else {}
+    )
     draft_queue = pipeline_visibility.get("draft_queue") if isinstance(pipeline_visibility.get("draft_queue"), dict) else {}
     draft_flood_guard = (
         pipeline_visibility.get("draft_flood_guard")
@@ -29724,6 +29977,37 @@ def _build_adoption_pipeline_pressure_warnings(pipeline_visibility: dict[str, An
                 "next_action": "tighten_high_signal_routing",
             }
         )
+    if bool(claims_floor_guard.get("triggered")):
+        warnings.append(
+            {
+                "code": "events_claims_zero_floor",
+                "severity": "critical",
+                "message": "Events are accumulating but claims remain zero beyond floor threshold.",
+                "events": int(claims_floor_guard.get("events_total") or 0),
+                "claims": int(claims_floor_guard.get("claims_total") or 0),
+                "min_events": int(claims_floor_guard.get("min_events") or 0),
+                "alert_after_minutes": int(claims_floor_guard.get("alert_after_minutes") or 0),
+                "next_action": "inspect_extraction_drop_reasons_and_relax_high_signal_lane",
+            }
+        )
+    else:
+        conversion = claims_floor_guard.get("events_to_claims_conversion")
+        min_conversion = float(claims_floor_guard.get("min_conversion_ratio") or 0.0)
+        events_total = int(claims_floor_guard.get("events_total") or 0)
+        if conversion is not None and events_total >= int(claims_floor_guard.get("min_events") or 0):
+            conversion_value = float(conversion)
+            if conversion_value < min_conversion:
+                warnings.append(
+                    {
+                        "code": "events_claims_low_conversion",
+                        "severity": "warning",
+                        "message": "Events→claims conversion is below configured floor.",
+                        "conversion": conversion_value,
+                        "min_conversion_ratio": min_conversion,
+                        "events": events_total,
+                        "next_action": "review_high_signal_keywords_or_backfill_classifier",
+                    }
+                )
     return warnings
 
 
@@ -29738,6 +30022,16 @@ def _build_adoption_sync_explainability(
         if isinstance(rejection_diagnostics, dict) and isinstance(rejection_diagnostics.get("top_reject_reasons"), list)
         else []
     )
+    extraction = (
+        pipeline_visibility.get("extraction")
+        if isinstance(pipeline_visibility, dict) and isinstance(pipeline_visibility.get("extraction"), dict)
+        else {}
+    )
+    extraction_drop_reasons = (
+        extraction.get("drop_reasons")
+        if isinstance(extraction.get("drop_reasons"), list)
+        else []
+    )
     reason_counts: dict[str, int] = {}
     for item in top_reasons:
         if not isinstance(item, dict):
@@ -29746,6 +30040,13 @@ def _build_adoption_sync_explainability(
         if not key:
             continue
         reason_counts[key] = int(item.get("count") or 0)
+    for item in extraction_drop_reasons:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("reason") or "").strip().lower()
+        if not key:
+            continue
+        reason_counts[key] = int(reason_counts.get(key, 0)) + int(item.get("count") or 0)
     total_rejections = int(
         (rejection_diagnostics or {}).get("summary", {}).get("rejected_total", 0)
         if isinstance((rejection_diagnostics or {}).get("summary"), dict)
@@ -29758,6 +30059,9 @@ def _build_adoption_sync_explainability(
         "insufficient_support",
         "backfill_without_durable_signal",
         "runtime_noise",
+        "event_like_low_signal",
+        "event_transport_low_signal",
+        "worker_exception",
     }
     routing_policy_tags = {
         "ingestion_default_deny",
@@ -29767,6 +30071,8 @@ def _build_adoption_sync_explainability(
         "blocked_category",
         "blocked_entity",
         "routing_hard_block",
+        "ingestion_classification:operational_stream",
+        "ingestion_classification:pii_sensitive_stream",
     }
     quality_gate_count = sum(count for key, count in reason_counts.items() if key in quality_gate_tags)
     routing_policy_count = sum(count for key, count in reason_counts.items() if key in routing_policy_tags)

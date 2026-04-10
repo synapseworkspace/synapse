@@ -253,6 +253,34 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
     "event_stream_min_kv_hits": 2,
     "min_durable_signal_hits": 1,
     "min_durable_signal_hits_for_backfill": 1,
+    "high_signal_route_keywords": [
+        "policy",
+        "process",
+        "procedure",
+        "runbook",
+        "playbook",
+        "sop",
+        "manual",
+        "instruction",
+        "escalation",
+        "access",
+        "compliance",
+        "business_rule",
+        "company_operating_model",
+        "operating_model",
+        "logistics_kpi_framework",
+        "kpi_framework",
+        "регламент",
+        "правило",
+        "процесс",
+        "инструкция",
+        "эскалац",
+        "доступ",
+    ],
+    "high_signal_min_keyword_hits": 1,
+    "claims_floor_min_events": 120,
+    "claims_floor_alert_after_minutes": 20,
+    "claims_floor_min_conversion_ratio": 0.01,
     "publish_mode_by_assertion_class": {
         "policy": "conditional",
         "process": "conditional",
@@ -747,6 +775,7 @@ class WikiSynthesisEngine:
         self._llm_classifier = llm_classifier or OpenAIGatekeeperClassifier()
         self._claims_has_fingerprint_column_cache: bool | None = None
         self._backfill_batches_have_decision_counters_cache: bool | None = None
+        self._backfill_batches_have_reason_counters_cache: bool | None = None
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
         self._gatekeeper_config_has_publish_columns_cache: bool | None = None
         self._gatekeeper_config_has_routing_policy_column_cache: bool | None = None
@@ -781,9 +810,18 @@ class WikiSynthesisEngine:
                 metrics["failed"] += 1
         return metrics
 
-    def extract_backfill_claims(self, conn, *, limit: int = 200) -> dict[str, int]:
+    def extract_backfill_claims(self, conn, *, limit: int = 200) -> dict[str, Any]:
         picked = self._pick_backfill_events(conn, limit=limit)
         project_routing_policy_cache: dict[str, dict[str, Any]] = {}
+        drop_reason_counts: dict[str, int] = {}
+        keep_reason_counts: dict[str, int] = {}
+
+        def _bump(counter: dict[str, int], reason: str | None) -> None:
+            key = self._normalize_counter_reason(reason)
+            if not key:
+                return
+            counter[key] = int(counter.get(key, 0)) + 1
+
         metrics = {
             "picked": len(picked),
             "claims_generated": 0,
@@ -792,6 +830,8 @@ class WikiSynthesisEngine:
             "dropped_event_like": 0,
             "kept_durable": 0,
             "trusted_bypass": 0,
+            "drop_reason_counts": drop_reason_counts,
+            "keep_reason_counts": keep_reason_counts,
         }
         for event_id, project_id, agent_id, session_id, payload, observed_at in picked:
             payload_dict = payload if isinstance(payload, dict) else {}
@@ -840,15 +880,25 @@ class WikiSynthesisEngine:
                     dropped_event_like_increment = 0
                     kept_durable_increment = 0
                     trusted_bypass_increment = 0
+                    suppression_reason: str | None = None
+                    keep_reason: str | None = None
                     if claim_payload is not None:
                         self._enqueue_claim_proposal(conn, claim_payload)
                         generated = 1
                         if suppression_eval and bool(suppression_eval.get("trusted_hint")):
                             trusted_bypass_increment = 1
+                            keep_reason = "trusted_hint"
                         elif suppression_eval and bool(suppression_eval.get("has_durable_signal")):
                             kept_durable_increment = 1
+                            keep_reason = str(
+                                suppression_eval.get("durable_signal_reason")
+                                or "durable_signal"
+                            )
+                        else:
+                            keep_reason = "kept_unsuppressed"
                     elif suppression_eval:
                         reason = str(suppression_eval.get("reason") or "")
+                        suppression_reason = reason or "suppressed_unknown"
                         if reason in {
                             "event_like_low_signal",
                             "event_transport_low_signal",
@@ -865,6 +915,8 @@ class WikiSynthesisEngine:
                         dropped_event_like_increment=dropped_event_like_increment,
                         kept_durable_increment=kept_durable_increment,
                         trusted_bypass_increment=trusted_bypass_increment,
+                        drop_reason=suppression_reason,
+                        keep_reason=keep_reason,
                         failed=False,
                     )
                 metrics["claims_generated"] += generated
@@ -872,6 +924,8 @@ class WikiSynthesisEngine:
                 metrics["dropped_event_like"] += dropped_event_like_increment
                 metrics["kept_durable"] += kept_durable_increment
                 metrics["trusted_bypass"] += trusted_bypass_increment
+                _bump(drop_reason_counts, suppression_reason)
+                _bump(keep_reason_counts, keep_reason)
             except Exception as exc:
                 with conn.transaction():
                     self._set_event_pipeline_state(conn, event_id, status="failed", last_error=str(exc))
@@ -880,9 +934,11 @@ class WikiSynthesisEngine:
                         payload_dict,
                         processed_increment=0,
                         generated_increment=0,
+                        drop_reason="worker_exception",
                         failed=True,
                     )
                 metrics["failed"] += 1
+                _bump(drop_reason_counts, "worker_exception")
         with conn.transaction():
             self._finalize_ready_backfill_batches(conn)
         return metrics
@@ -1096,7 +1152,9 @@ class WikiSynthesisEngine:
             str(item).strip().lower() for item in policy.get("event_stream_token_keywords", []) if str(item).strip()
         )
         durable_signal_keywords = list(policy.get("durable_signal_keywords", []))
+        high_signal_route_keywords = list(policy.get("high_signal_route_keywords", []))
         min_durable_signal_hits_for_backfill = int(policy.get("min_durable_signal_hits_for_backfill", 1))
+        high_signal_min_keyword_hits = int(policy.get("high_signal_min_keyword_hits", 1))
         event_stream_min_token_hits = int(policy.get("event_stream_min_token_hits", 2))
         event_stream_min_kv_hits = int(policy.get("event_stream_min_kv_hits", 2))
         event_stream_min_numeric_token_ratio = float(policy.get("event_stream_min_numeric_token_ratio", 0.45))
@@ -1120,7 +1178,15 @@ class WikiSynthesisEngine:
             "escalation",
         }
         has_durable_keyword_signal = bool(expanded_token_set & policy_signal_tokens)
-        has_durable_signal = durable_hits >= min_durable_signal_hits_for_backfill or has_durable_keyword_signal
+        has_durable_signal = (
+            durable_hits >= min_durable_signal_hits_for_backfill
+            or has_durable_keyword_signal
+        )
+        durable_signal_reason = "none"
+        if has_durable_keyword_signal:
+            durable_signal_reason = "policy_token"
+        elif durable_hits >= min_durable_signal_hits_for_backfill:
+            durable_signal_reason = "durable_keyword"
         event_hits = sum(1 for token in expanded_token_set if token in event_stream_token_keywords)
         kv_hits = len(
             re.findall(
@@ -1209,6 +1275,24 @@ class WikiSynthesisEngine:
             )
             if item
         )
+        classification_token_set = set(self._tokens(classification_haystack))
+        high_signal_hits: list[str] = []
+        for raw_keyword in high_signal_route_keywords:
+            keyword = str(raw_keyword or "").strip().lower()
+            if not keyword:
+                continue
+            if any(ch in keyword for ch in (" ", "_", "-", "/", ":")):
+                matched = keyword in classification_haystack
+            else:
+                matched = keyword in classification_token_set
+            if matched and keyword not in high_signal_hits:
+                high_signal_hits.append(keyword)
+            if len(high_signal_hits) >= 24:
+                break
+        has_high_signal_route = len(high_signal_hits) >= max(1, high_signal_min_keyword_hits)
+        if has_high_signal_route:
+            has_durable_signal = True
+            durable_signal_reason = "high_signal_route"
         operational_keyword_hits = [
             keyword for keyword in operational_stream_keywords if keyword and keyword in classification_haystack
         ]
@@ -1358,6 +1442,9 @@ class WikiSynthesisEngine:
             "llm_ambiguous": llm_ambiguous,
             "llm_applied": llm_applied,
             "llm_reason_code": llm_reason_code,
+            "durable_signal_reason": durable_signal_reason,
+            "high_signal_route_hits": high_signal_hits,
+            "high_signal_route_matched": has_high_signal_route,
         }
         if llm_assessment is not None:
             response["llm_status"] = llm_assessment.status
@@ -1521,6 +1608,13 @@ class WikiSynthesisEngine:
                 ),
             )
 
+    def _normalize_counter_reason(self, value: str | None) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"[^a-z0-9:_-]+", "_", text).strip("_")
+        return text[:80]
+
     def _update_backfill_batch_metrics(
         self,
         conn,
@@ -1531,6 +1625,8 @@ class WikiSynthesisEngine:
         dropped_event_like_increment: int = 0,
         kept_durable_increment: int = 0,
         trusted_bypass_increment: int = 0,
+        drop_reason: str | None = None,
+        keep_reason: str | None = None,
         failed: bool,
     ) -> None:
         backfill = payload.get("backfill")
@@ -1556,31 +1652,85 @@ class WikiSynthesisEngine:
                 )
                 return
 
+            normalized_drop_reason = self._normalize_counter_reason(drop_reason)
+            normalized_keep_reason = self._normalize_counter_reason(keep_reason)
+            has_reason_counters = self._backfill_batches_have_reason_counters(conn)
+
             if self._backfill_batches_have_decision_counters(conn):
-                cur.execute(
-                    """
-                    UPDATE memory_backfill_batches
-                    SET processed_events = processed_events + %s,
-                        generated_claims = generated_claims + %s,
-                        dropped_event_like = dropped_event_like + %s,
-                        kept_durable = kept_durable + %s,
-                        trusted_bypass = trusted_bypass + %s,
-                        status = CASE
-                          WHEN status = 'ready' THEN 'processing'
-                          ELSE status
-                        END,
-                        updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (
-                        processed_increment,
-                        generated_increment,
-                        dropped_event_like_increment,
-                        kept_durable_increment,
-                        trusted_bypass_increment,
-                        batch_id,
-                    ),
-                )
+                if has_reason_counters:
+                    cur.execute(
+                        """
+                        UPDATE memory_backfill_batches
+                        SET processed_events = processed_events + %s,
+                            generated_claims = generated_claims + %s,
+                            dropped_event_like = dropped_event_like + %s,
+                            kept_durable = kept_durable + %s,
+                            trusted_bypass = trusted_bypass + %s,
+                            drop_reason_counts = CASE
+                              WHEN %s = '' THEN COALESCE(drop_reason_counts, '{}'::jsonb)
+                              ELSE jsonb_set(
+                                COALESCE(drop_reason_counts, '{}'::jsonb),
+                                ARRAY[%s],
+                                to_jsonb(COALESCE((COALESCE(drop_reason_counts, '{}'::jsonb)->>%s)::int, 0) + 1),
+                                TRUE
+                              )
+                            END,
+                            keep_reason_counts = CASE
+                              WHEN %s = '' THEN COALESCE(keep_reason_counts, '{}'::jsonb)
+                              ELSE jsonb_set(
+                                COALESCE(keep_reason_counts, '{}'::jsonb),
+                                ARRAY[%s],
+                                to_jsonb(COALESCE((COALESCE(keep_reason_counts, '{}'::jsonb)->>%s)::int, 0) + 1),
+                                TRUE
+                              )
+                            END,
+                            status = CASE
+                              WHEN status = 'ready' THEN 'processing'
+                              ELSE status
+                            END,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            processed_increment,
+                            generated_increment,
+                            dropped_event_like_increment,
+                            kept_durable_increment,
+                            trusted_bypass_increment,
+                            normalized_drop_reason,
+                            normalized_drop_reason,
+                            normalized_drop_reason,
+                            normalized_keep_reason,
+                            normalized_keep_reason,
+                            normalized_keep_reason,
+                            batch_id,
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE memory_backfill_batches
+                        SET processed_events = processed_events + %s,
+                            generated_claims = generated_claims + %s,
+                            dropped_event_like = dropped_event_like + %s,
+                            kept_durable = kept_durable + %s,
+                            trusted_bypass = trusted_bypass + %s,
+                            status = CASE
+                              WHEN status = 'ready' THEN 'processing'
+                              ELSE status
+                            END,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (
+                            processed_increment,
+                            generated_increment,
+                            dropped_event_like_increment,
+                            kept_durable_increment,
+                            trusted_bypass_increment,
+                            batch_id,
+                        ),
+                    )
             else:
                 cur.execute(
                     """
@@ -1625,6 +1775,23 @@ class WikiSynthesisEngine:
             present = {str(row[0]) for row in cur.fetchall()}
         self._backfill_batches_have_decision_counters_cache = required.issubset(present)
         return self._backfill_batches_have_decision_counters_cache
+
+    def _backfill_batches_have_reason_counters(self, conn) -> bool:
+        if self._backfill_batches_have_reason_counters_cache is not None:
+            return self._backfill_batches_have_reason_counters_cache
+        required = {"drop_reason_counts", "keep_reason_counts"}
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'memory_backfill_batches'
+                """
+            )
+            present = {str(row[0]) for row in cur.fetchall()}
+        self._backfill_batches_have_reason_counters_cache = required.issubset(present)
+        return self._backfill_batches_have_reason_counters_cache
 
     def _finalize_ready_backfill_batches(self, conn) -> None:
         with conn.cursor() as cur:
@@ -2817,6 +2984,11 @@ class WikiSynthesisEngine:
             value.get("durable_signal_keywords"),
             fallback=list(base["durable_signal_keywords"]),
         )
+        normalized["high_signal_route_keywords"] = self._normalize_policy_keyword_list(
+            value.get("high_signal_route_keywords"),
+            fallback=list(base["high_signal_route_keywords"]),
+            limit=128,
+        )
         normalized["ingestion_classification_default_deny_classes"] = self._normalize_policy_keyword_list(
             value.get("ingestion_classification_default_deny_classes"),
             fallback=list(base["ingestion_classification_default_deny_classes"]),
@@ -2892,6 +3064,30 @@ class WikiSynthesisEngine:
         except Exception:
             min_backfill_durable_hits = 1
         normalized["min_durable_signal_hits_for_backfill"] = max(0, min(20, min_backfill_durable_hits))
+        try:
+            high_signal_min_hits = int(value.get("high_signal_min_keyword_hits", int(base["high_signal_min_keyword_hits"])))
+        except Exception:
+            high_signal_min_hits = int(base["high_signal_min_keyword_hits"])
+        normalized["high_signal_min_keyword_hits"] = max(1, min(20, high_signal_min_hits))
+        try:
+            claims_floor_min_events = int(value.get("claims_floor_min_events", int(base["claims_floor_min_events"])))
+        except Exception:
+            claims_floor_min_events = int(base["claims_floor_min_events"])
+        normalized["claims_floor_min_events"] = max(1, min(100000, claims_floor_min_events))
+        try:
+            claims_floor_alert_after_minutes = int(
+                value.get("claims_floor_alert_after_minutes", int(base["claims_floor_alert_after_minutes"]))
+            )
+        except Exception:
+            claims_floor_alert_after_minutes = int(base["claims_floor_alert_after_minutes"])
+        normalized["claims_floor_alert_after_minutes"] = max(1, min(1440, claims_floor_alert_after_minutes))
+        try:
+            claims_floor_min_conversion_ratio = float(
+                value.get("claims_floor_min_conversion_ratio", float(base["claims_floor_min_conversion_ratio"]))
+            )
+        except Exception:
+            claims_floor_min_conversion_ratio = float(base["claims_floor_min_conversion_ratio"])
+        normalized["claims_floor_min_conversion_ratio"] = max(0.0, min(1.0, claims_floor_min_conversion_ratio))
         try:
             feedback_window_days = int(value.get("retrieval_feedback_window_days", 30))
         except Exception:

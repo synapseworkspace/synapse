@@ -58,6 +58,31 @@ class AdoptionPipelinePressureControlTests(unittest.TestCase):
         )
         self.assertEqual(warnings, [])
 
+    def test_pressure_warnings_include_events_claims_floor_alert(self) -> None:
+        warnings = _build_adoption_pipeline_pressure_warnings(
+            {
+                "draft_queue": {"open_total": 10},
+                "draft_flood_guard": {
+                    "thresholds": {
+                        "safe_mode_open_drafts_threshold": 5000,
+                        "safe_mode_open_drafts_per_page_threshold": 200,
+                        "max_open_per_entity": 400,
+                    },
+                    "max_open_per_page": 12,
+                    "max_open_per_entity": 20,
+                },
+                "claims_floor_guard": {
+                    "triggered": True,
+                    "events_total": 1672,
+                    "claims_total": 0,
+                    "min_events": 120,
+                    "alert_after_minutes": 20,
+                },
+            }
+        )
+        codes = {str(item.get("code") or "") for item in warnings if isinstance(item, dict)}
+        self.assertIn("events_claims_zero_floor", codes)
+
     def test_safe_mode_target_config_enforces_flood_guard_controls(self) -> None:
         payload = _build_adoption_safe_mode_target_config(
             current_config={
@@ -82,4 +107,3 @@ class AdoptionPipelinePressureControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

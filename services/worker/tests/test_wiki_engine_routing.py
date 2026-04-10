@@ -126,6 +126,27 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertEqual(str(evaluation.get("ingestion_classification")), "operational_stream")
         self.assertEqual(str(evaluation.get("reason")), "ingestion_classification:operational_stream")
 
+    def test_backfill_suppression_keeps_high_signal_business_rule_even_if_event_like(self) -> None:
+        evaluation = self.engine._evaluate_backfill_suppression(
+            source_id="ops_kb_items_rule_44",
+            content='{"rule":"if warehouse closed then reroute to backup depot","sla_minutes":30,"owner":"dispatch_oncall"}',
+            category="business_rule",
+            payload={
+                "metadata": {
+                    "source_system": "ops_kb_sync",
+                    "namespace": "company_operating_model",
+                }
+            },
+            metadata={
+                "source_system": "ops_kb_sync",
+                "namespace": "company_operating_model",
+            },
+        )
+        self.assertFalse(bool(evaluation.get("skip")))
+        self.assertTrue(bool(evaluation.get("has_durable_signal")))
+        self.assertEqual(str(evaluation.get("durable_signal_reason")), "high_signal_route")
+        self.assertTrue(bool(evaluation.get("high_signal_route_matched")))
+
     def test_backfill_suppression_hard_blocks_pii_ingestion_class(self) -> None:
         evaluation = self.engine._evaluate_backfill_suppression(
             source_id="customer_profile_42",

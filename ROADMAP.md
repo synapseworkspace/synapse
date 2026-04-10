@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 Owner: Core team
 
 ## Правило актуальности
@@ -124,6 +124,14 @@ Goal:
    - legacy sync uploads принудительно в `knowledge` lane для curated memory bootstrap.
 3. `done` Curated bootstrap page quality uplift:
    - Data Sources Catalog / Agent Capability / Operational Logic bootstrap pages стали содержательнее (governance + actionable fallback content).
+4. `done` High-signal extraction lane for `events -> claims`:
+   - добавлены `high_signal_route_keywords` + `high_signal_min_keyword_hits`, чтобы policy/process/runbook сигналы проходили даже при event-like форме.
+5. `done` Pre-claim extraction reason taxonomy:
+   - worker пишет агрегированные `drop_reason_counts` / `keep_reason_counts` в backfill batches;
+   - `/v1/adoption/pipeline/visibility` показывает причины, почему события были отброшены до claim stage.
+6. `done` Claims-floor safety diagnostics:
+   - guardrail `events >= N && claims == 0 && age >= T` с критическим warning и actionable next step;
+   - новые routing-policy knobs для floor-порогов (`claims_floor_*`).
 
 ### P1 (next)
 
