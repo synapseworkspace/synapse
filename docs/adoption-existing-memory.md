@@ -91,7 +91,7 @@ For pre-write simulation and connector validation, add:
 - `POST /v1/adoption/first-run/bootstrap` to auto-create starter wiki pages after initial connect (`Agent Profile`, `Data Map`, `Runbook`).
 - `POST /v1/adoption/wiki-space-templates/apply` to apply role-based wiki space scaffolding.
 - `POST /v1/adoption/sync-presets/execute` for one-command enterprise bootstrap flow.
-- `POST /v1/adoption/agent-wiki-bootstrap` to preview/apply a useful corporate wiki pack (Data Sources Catalog, Agent Capability Profile, Operational Logic Map) without custom scripts.
+- `POST /v1/adoption/agent-wiki-bootstrap` to preview/apply a useful corporate wiki pack with `preview_apply_flow`, `quality_report`, and `bootstrap_publish_core` (Data Sources Catalog, Agent Capability Profile, Tooling Map, Process Playbooks, Company Operating Context, Operational Logic Map) without custom scripts.
 
 ## Memory Tier Routing (Default Safety)
 

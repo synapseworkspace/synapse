@@ -7,6 +7,7 @@ try:
     import services.api.app.main as _api_main
     from services.api.app.main import (
         _build_agent_capability_bootstrap_page,
+        _build_agent_wiki_bootstrap_quality_report,
         _build_agent_provenance_activity,
         _compute_agent_capability_confidence,
         _derive_runtime_agent_responsibilities,
@@ -24,6 +25,7 @@ try:
 except Exception:  # pragma: no cover
     _api_main = None
     _build_agent_capability_bootstrap_page = None
+    _build_agent_wiki_bootstrap_quality_report = None
     _build_agent_provenance_activity = None
     _compute_agent_capability_confidence = None
     _derive_runtime_agent_responsibilities = None
@@ -42,6 +44,7 @@ except Exception:  # pragma: no cover
 @unittest.skipIf(
     _normalize_agent_directory_items is None
     or _build_agent_capability_bootstrap_page is None
+    or _build_agent_wiki_bootstrap_quality_report is None
     or _build_agent_provenance_activity is None
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
@@ -285,6 +288,39 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
             _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
             _api_main._build_runtime_agent_capability_matrix = original_runtime_matrix
             _api_main.get_agent_orgchart = original_get_orgchart
+
+    def test_bootstrap_quality_report_highlights_core_publish_gaps(self) -> None:
+        plan_pages = [
+            {
+                "title": "Agent Capability Profile",
+                "slug": "operations/agent-capability-profile",
+                "page_type": "agent_profile",
+                "markdown": "# Agent Capability Profile\n\n## Orgchart\n- A\n\n## Capability Matrix\n- B\n",
+            },
+            {
+                "title": "Data Sources Catalog",
+                "slug": "operations/data-sources-catalog",
+                "page_type": "data_map",
+                "markdown": "# Data Sources Catalog\n\n## Connected Sources\n- source\n",
+            },
+            {
+                "title": "Company Operating Context",
+                "slug": "operations/company-operating-context",
+                "page_type": "operations",
+                "markdown": "# Company Operating Context\n\n## Snapshot\n- ctx\n",
+            },
+        ]
+        page_result = {
+            "created": [
+                {"slug": "operations/agent-capability-profile", "status": "published"},
+                {"slug": "operations/data-sources-catalog", "status": "reviewed", "quality_gate": {"quality_score": 0.42}},
+            ]
+        }
+        report = _build_agent_wiki_bootstrap_quality_report(plan_pages=plan_pages, page_result=page_result)
+        self.assertEqual(report["mode"], "applied")
+        self.assertGreaterEqual(int(report["core_pages"]["planned"]), 2)
+        self.assertGreaterEqual(int(report["core_pages"]["published"]), 1)
+        self.assertGreaterEqual(int(report["core_pages"]["reviewed"]), 1)
 
 
 if __name__ == "__main__":

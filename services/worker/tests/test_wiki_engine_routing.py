@@ -680,6 +680,34 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertTrue(bool(result.get("blocked")))
         self.assertIn(str(result.get("reason")), {"operational_stream_pre_draft_filter", "event_payload_pre_draft_filter"})
 
+    def test_gatekeeper_daily_summary_stream_is_demoted(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="ops_daily_summary",
+            category="operations",
+            claim_text="Daily summary for 2026-04-10: processed 482 orders, 3 blocked, 11 retries.",
+            evidence=[
+                {
+                    "source_type": "external_event",
+                    "source_id": "daily_summary_2026_04_10",
+                    "tool_name": "memory_backfill",
+                    "source_system": "runtime_memory",
+                }
+            ],
+            metadata={},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["daily_summary_2026_04_10"],
+            has_recent_open_conflict=False,
+        )
+        self.assertEqual(decision.tier, "operational_memory")
+        self.assertTrue(bool(decision.features.get("ingestion_daily_summary_hits")))
+
 
 if __name__ == "__main__":
     unittest.main()

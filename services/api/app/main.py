@@ -990,10 +990,14 @@ class AdoptionAgentWikiBootstrapRequest(BaseModel):
     dry_run: bool = True
     confirm_project_id: str | None = None
     publish: bool = True
+    bootstrap_publish_core: bool = True
     space_key: str | None = Field(default="operations", min_length=1, max_length=256)
     include_data_sources_catalog: bool = True
     include_agent_capability_profile: bool = True
     include_operational_logic: bool = True
+    include_tooling_map: bool = True
+    include_process_playbooks: bool = True
+    include_company_operating_context: bool = True
     include_first_run_starter: bool = True
     max_sources: int = Field(default=25, ge=1, le=150)
     max_agents: int = Field(default=100, ge=1, le=5000)
@@ -3258,7 +3262,8 @@ def _build_agent_capability_matrix(
           responsibilities,
           tools,
           data_sources,
-          limits
+          limits,
+          metadata
         FROM agent_directory_profiles
         WHERE project_id = %s
         ORDER BY
@@ -3285,6 +3290,45 @@ def _build_agent_capability_matrix(
         tools = [str(item).strip() for item in (row[6] or []) if str(item).strip()] if isinstance(row[6], list) else []
         data_sources = [str(item).strip() for item in (row[7] or []) if str(item).strip()] if isinstance(row[7], list) else []
         limits = [str(item).strip() for item in (row[8] or []) if str(item).strip()] if isinstance(row[8], list) else []
+        metadata = row[9] if isinstance(row[9], dict) else {}
+        prompt_signal = str(
+            metadata.get("system_prompt")
+            or metadata.get("prompt")
+            or metadata.get("instructions")
+            or metadata.get("agent_prompt")
+            or ""
+        ).strip()
+        if prompt_signal:
+            prompt_signal = prompt_signal[:260]
+        static_config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
+        static_config_keys = [str(key).strip() for key in list(static_config.keys())[:8] if str(key).strip()]
+        registry_tools: list[str] = []
+        tool_registry = metadata.get("tool_registry")
+        if isinstance(tool_registry, list):
+            for item in tool_registry:
+                if isinstance(item, dict):
+                    candidate = str(item.get("name") or item.get("tool") or "").strip()
+                else:
+                    candidate = str(item or "").strip()
+                if candidate:
+                    registry_tools.append(candidate)
+        elif isinstance(tool_registry, dict):
+            for key in list(tool_registry.keys())[:30]:
+                candidate = str(key or "").strip()
+                if candidate:
+                    registry_tools.append(candidate)
+        allowed_actions_raw = metadata.get("allowed_actions")
+        allowed_actions = (
+            [str(item).strip() for item in allowed_actions_raw if str(item).strip()]
+            if isinstance(allowed_actions_raw, list)
+            else []
+        )
+        approval_rules_raw = metadata.get("approval_rules")
+        approval_rules = (
+            [str(item).strip() for item in approval_rules_raw if str(item).strip()]
+            if isinstance(approval_rules_raw, list)
+            else []
+        )
         cur.execute(
             """
             SELECT
@@ -3329,6 +3373,14 @@ def _build_agent_capability_matrix(
             tools=tools,
             data_sources=data_sources,
         )
+        if prompt_signal:
+            scenario_examples = [*scenario_examples, "Follows system prompt and policy intent during tool execution."][:4]
+        if allowed_actions:
+            typical_actions = [*typical_actions, f"Allowed actions: {', '.join(allowed_actions[:4])}."][:4]
+        if approval_rules:
+            escalation_rules = [*escalation_rules, f"Approval rules: {', '.join(approval_rules[:3])}."][:3]
+        if registry_tools:
+            tools = list(dict.fromkeys([*tools, *registry_tools]))[:20]
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -3343,6 +3395,11 @@ def _build_agent_capability_matrix(
                 "tools": tools,
                 "data_sources": data_sources,
                 "limits": limits,
+                "allowed_actions": allowed_actions[:20],
+                "approval_rules": approval_rules[:20],
+                "registry_tools": registry_tools[:30],
+                "prompt_signal": prompt_signal or None,
+                "static_config_keys": static_config_keys,
                 "confidence": confidence,
                 "last_success_at": latest_success_at,
                 "evidence": evidence,
@@ -3825,6 +3882,15 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "runtime_event",
         "event_stream",
         "payload_dump",
+    ],
+    "daily_summary_keywords": [
+        "daily summary",
+        "summary for",
+        "today summary",
+        "за день",
+        "итоги дня",
+        "daily report",
+        "worklog summary",
     ],
     "pii_sensitive_keywords": [
         "passport",
@@ -5875,6 +5941,11 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         value.get("operational_stream_keywords"),
         fallback=list(base["operational_stream_keywords"]),
         limit=128,
+    )
+    normalized["daily_summary_keywords"] = _normalize_policy_keyword_list(
+        value.get("daily_summary_keywords"),
+        fallback=list(base["daily_summary_keywords"]),
+        limit=64,
     )
     normalized["pii_sensitive_keywords"] = _normalize_policy_keyword_list(
         value.get("pii_sensitive_keywords"),
@@ -26769,6 +26840,7 @@ def _insert_bootstrap_pages(
     requested_status: str,
     policy_space_fallback_enabled: bool = False,
     policy_space_fallback_candidates: list[str] | None = None,
+    force_publish_slugs: list[str] | None = None,
 ) -> dict[str, Any]:
     def _assess_bootstrap_page_quality(
         *,
@@ -26934,6 +27006,12 @@ def _insert_bootstrap_pages(
     policy_space_fallback: list[dict[str, Any]] = []
     downgraded_to_reviewed = 0
     downgraded_by_quality_gate = 0
+    force_published_core_pages = 0
+    force_publish_slug_set = {
+        _normalize_wiki_slug(str(item or ""), str(item or "page"))
+        for item in (force_publish_slugs or [])
+        if str(item or "").strip()
+    }
     created_page_ids: list[str] = []
     snapshot_id_text: str | None = None
 
@@ -27046,9 +27124,14 @@ def _insert_bootstrap_pages(
                     status = "reviewed"
                     downgraded_to_reviewed += 1
                 elif not bool(quality_assessment.get("publish_ready")):
-                    status = "reviewed"
-                    downgraded_to_reviewed += 1
-                    downgraded_by_quality_gate += 1
+                    if slug in force_publish_slug_set:
+                        quality_assessment["forced_publish_core"] = True
+                        quality_assessment["publish_warning"] = "bootstrap_publish_core_override"
+                        force_published_core_pages += 1
+                    else:
+                        status = "reviewed"
+                        downgraded_to_reviewed += 1
+                        downgraded_by_quality_gate += 1
 
             page_id = uuid4()
             cur.execute(
@@ -27183,6 +27266,7 @@ def _insert_bootstrap_pages(
             "skipped": len(skipped),
             "published_downgraded_to_reviewed": downgraded_to_reviewed,
             "published_downgraded_by_quality_gate": downgraded_by_quality_gate,
+            "force_published_core_pages": force_published_core_pages,
         },
         "snapshot_id": snapshot_id_text,
     }
@@ -27705,13 +27789,30 @@ def _collect_agent_source_usage(
     cur: Any,
     *,
     project_id: str,
-) -> dict[str, set[str]]:
-    usage: dict[str, set[str]] = {}
+) -> dict[str, dict[str, set[str]]]:
+    usage: dict[str, dict[str, set[str]]] = {}
+
+    def _ensure_bucket(token: str) -> dict[str, set[str]]:
+        bucket = usage.get(token)
+        if bucket is None:
+            bucket = {"agents": set(), "scenarios": set()}
+            usage[token] = bucket
+        return bucket
+
+    def _register(token: str, *, agent_id: str, scenario: str | None = None) -> None:
+        normalized = str(token or "").strip().lower()
+        if not normalized:
+            return
+        bucket = _ensure_bucket(normalized)
+        bucket["agents"].add(agent_id)
+        if scenario:
+            bucket["scenarios"].add(str(scenario).strip()[:180])
+
     if not _wiki_feature_table_exists(cur, "public.agent_directory_profiles"):
         return usage
     cur.execute(
         """
-        SELECT agent_id, data_sources
+        SELECT agent_id, data_sources, metadata
         FROM agent_directory_profiles
         WHERE project_id = %s
         """,
@@ -27721,17 +27822,75 @@ def _collect_agent_source_usage(
     for row in rows:
         agent_id = str(row[0] or "").strip()
         data_sources = row[1] if isinstance(row[1], list) else []
+        metadata = row[2] if isinstance(row[2], dict) else {}
         if not agent_id:
             continue
+        scenario_hints: list[str] = []
+        metadata_scenarios = metadata.get("scenarios") if isinstance(metadata.get("scenarios"), list) else []
+        for item in metadata_scenarios:
+            value = str(item or "").strip()
+            if value:
+                scenario_hints.append(value[:180])
+                if len(scenario_hints) >= 5:
+                    break
         for item in data_sources:
             token = str(item or "").strip().lower()
             if not token:
                 continue
-            usage.setdefault(token, set()).add(agent_id)
+            _register(token, agent_id=agent_id, scenario=scenario_hints[0] if scenario_hints else None)
             for part in re.split(r"[^a-zA-Z0-9_:/.-]+", token):
                 normalized = part.strip().lower()
                 if normalized:
-                    usage.setdefault(normalized, set()).add(agent_id)
+                    _register(normalized, agent_id=agent_id, scenario=scenario_hints[0] if scenario_hints else None)
+
+    if _wiki_feature_table_exists(cur, "public.events"):
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        cur.execute(
+            """
+            SELECT
+              lower(trim(COALESCE(agent_id, ''))) AS agent_id,
+              lower(trim(COALESCE(
+                NULLIF(payload#>>'{metadata,source_system}', ''),
+                NULLIF(payload#>>'{backfill,source_system}', ''),
+                NULLIF(payload->>'source_system', ''),
+                NULLIF(payload#>>'{metadata,source}', '')
+              ))) AS source_name,
+              trim(COALESCE(
+                NULLIF(payload->>'action_type', ''),
+                NULLIF(payload#>>'{metadata,action_type}', ''),
+                NULLIF(payload->>'intent', ''),
+                event_type
+              )) AS action_type,
+              trim(COALESCE(
+                NULLIF(payload->>'tool_name', ''),
+                NULLIF(payload->>'tool', ''),
+                NULLIF(payload#>>'{tool,name}', '')
+              )) AS tool_name
+            FROM events
+            WHERE project_id = %s
+              AND observed_at >= %s
+              AND COALESCE(trim(agent_id), '') <> ''
+            ORDER BY observed_at DESC
+            LIMIT 40000
+            """,
+            (project_id, cutoff),
+        )
+        event_rows = cur.fetchall() or []
+        for row in event_rows:
+            agent_id = str(row[0] or "").strip().lower()
+            source_name = str(row[1] or "").strip().lower()
+            action_type = str(row[2] or "").strip()
+            tool_name = str(row[3] or "").strip()
+            if not agent_id or not source_name:
+                continue
+            scenario = action_type or "runtime_event"
+            if tool_name:
+                scenario = f"{scenario} via {tool_name}"
+            _register(source_name, agent_id=agent_id, scenario=scenario)
+            for part in re.split(r"[^a-zA-Z0-9_:/.-]+", source_name):
+                normalized = part.strip().lower()
+                if normalized:
+                    _register(normalized, agent_id=agent_id, scenario=scenario)
     return usage
 
 
@@ -27810,11 +27969,15 @@ def _build_data_sources_catalog_pages(
             str(config.get("source_system") or "").strip().lower(),
         }
         used_by: set[str] = set()
+        scenario_hints: set[str] = set()
         for token in usage_tokens:
             if not token:
                 continue
-            used_by.update(usage_map.get(token, set()))
+            usage_bucket = usage_map.get(token) if isinstance(usage_map.get(token), dict) else {}
+            used_by.update(set(usage_bucket.get("agents") or set()))
+            scenario_hints.update(set(usage_bucket.get("scenarios") or set()))
         used_by_agents = ", ".join(sorted(used_by)[:4]) if used_by else "none"
+        source_scenarios = "; ".join(sorted(scenario_hints)[:3]) if scenario_hints else "n/a"
 
         source_slug_leaf = _source_ref_slug(source_type, source_ref)
         source_slug = _space_slug(space_key, f"source-{source_slug_leaf}")
@@ -27836,6 +27999,7 @@ def _build_data_sources_catalog_pages(
                     + ("\n".join([f"- `{field}`" for field in schema_sample]) if schema_sample else "- n/a")
                     + "\n\n## Agent Usage\n"
                     + (f"- Used by: {used_by_agents}" if used_by else "- No explicit usage mapped yet.")
+                    + f"\n- Scenarios: {source_scenarios}"
                     + "\n\n## Operational Notes\n"
                     + "- Verify ownership and freshness before allowing auto-publish for policy/process pages.\n"
                     + "- If this source is event-like, keep it in operational lane and out of wiki synthesis.\n"
@@ -27966,6 +28130,10 @@ def _build_agent_capability_bootstrap_page(
             tools = [str(v).strip() for v in (item.get("tools") or []) if str(v).strip()]
             data_sources = [str(v).strip() for v in (item.get("data_sources") or []) if str(v).strip()]
             scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+            allowed_actions = [str(v).strip() for v in (item.get("allowed_actions") or []) if str(v).strip()]
+            approval_rules = [str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()]
+            static_config_keys = [str(v).strip() for v in (item.get("static_config_keys") or []) if str(v).strip()]
+            prompt_signal = str(item.get("prompt_signal") or "").strip()
             lines.extend(
                 [
                     "",
@@ -27976,6 +28144,10 @@ def _build_agent_capability_bootstrap_page(
                     f"- Toolset: {', '.join(tools[:6]) if tools else 'n/a'}",
                     f"- Data sources: {', '.join(data_sources[:6]) if data_sources else 'n/a'}",
                     f"- Constraints: {'; '.join(limits[:3]) if limits else 'n/a'}",
+                    f"- Allowed actions: {', '.join(allowed_actions[:6]) if allowed_actions else 'n/a'}",
+                    f"- Approval rules: {', '.join(approval_rules[:4]) if approval_rules else 'n/a'}",
+                    f"- Config keys: {', '.join(static_config_keys[:8]) if static_config_keys else 'n/a'}",
+                    f"- Prompt context: {prompt_signal[:200] if prompt_signal else 'n/a'}",
                     f"- Scenario examples: {'; '.join(scenarios[:2]) if scenarios else 'n/a'}",
                 ]
             )
@@ -28002,6 +28174,370 @@ def _build_agent_capability_bootstrap_page(
         }
     )
     return pages
+
+
+def _build_tooling_map_bootstrap_page(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_agents: int,
+) -> list[dict[str, str]]:
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+
+    tool_index: dict[str, dict[str, Any]] = {}
+    for item in matrix:
+        agent_id = str(item.get("agent_id") or "").strip()
+        if not agent_id:
+            continue
+        tools = [str(tool).strip() for tool in (item.get("tools") or []) if str(tool).strip()]
+        scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+        guardrails = [
+            *[str(v).strip() for v in (item.get("limits") or []) if str(v).strip()],
+            *[str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()],
+        ]
+        for tool in tools:
+            key = tool.lower()
+            bucket = tool_index.get(key)
+            if bucket is None:
+                bucket = {
+                    "tool": tool,
+                    "agents": set(),
+                    "scenarios": set(),
+                    "guardrails": set(),
+                }
+                tool_index[key] = bucket
+            bucket["agents"].add(agent_id)
+            for scenario in scenarios[:3]:
+                bucket["scenarios"].add(scenario)
+            for rule in guardrails[:3]:
+                bucket["guardrails"].add(rule)
+
+    lines = [
+        "# Tooling Map",
+        "",
+        "## Registry",
+        "| Tool | Used By Agents | Purpose / Scenario | Guardrails |",
+        "|---|---|---|---|",
+    ]
+    if tool_index:
+        for _, bucket in sorted(
+            tool_index.items(),
+            key=lambda item: (-len(item[1].get("agents") or []), str(item[1].get("tool") or "").lower()),
+        )[:200]:
+            agents = ", ".join(sorted(bucket["agents"])[:4]) if bucket["agents"] else "n/a"
+            scenario = "; ".join(sorted(bucket["scenarios"])[:2]) if bucket["scenarios"] else "n/a"
+            guardrails = "; ".join(sorted(bucket["guardrails"])[:2]) if bucket["guardrails"] else "n/a"
+            lines.append(f"| `{bucket['tool']}` | {agents} | {scenario} | {guardrails} |")
+    else:
+        lines.append("| n/a | n/a | Runtime tool discovery pending | Register tools via `/v1/agents/register` |")
+    lines.extend(
+        [
+            "",
+            "## Governance",
+            "- Any tool touching finance/compliance/customer identity should require approval or reviewer assignment.",
+            "- Prefer policy/process backed actions over direct payload-driven decisions.",
+            "",
+        ]
+    )
+    return [
+        {
+            "title": "Tooling Map",
+            "slug": _space_slug(space_key, "tooling-map"),
+            "page_type": "operations",
+            "markdown": "\n".join(lines),
+        }
+    ]
+
+
+def _build_process_playbooks_bootstrap_page(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_signals: int,
+) -> list[dict[str, str]]:
+    rows: list[tuple[Any, ...]] = []
+    query_limit = max(20, min(800, int(max_signals) * 10))
+    if _wiki_feature_table_exists(cur, "public.claims"):
+        cur.execute(
+            """
+            SELECT claim_text, category, metadata
+            FROM claims
+            WHERE project_id = %s
+              AND status <> 'rejected'
+              AND (
+                lower(COALESCE(category, '')) IN ('process', 'policy', 'runbook', 'incident', 'access')
+                OR lower(COALESCE(claim_text, '')) SIMILAR TO '%%(process|runbook|playbook|procedure|if|when|then|escalat)%%'
+              )
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (project_id, query_limit),
+        )
+        rows = cur.fetchall() or []
+    playbooks: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        claim_text = str(row[0] or "").strip()
+        category = str(row[1] or "operations").strip() or "operations"
+        metadata = row[2] if isinstance(row[2], dict) else {}
+        if not claim_text or len(claim_text) < 20:
+            continue
+        normalized = _normalize_statement_text(claim_text)[:200]
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        trigger = claim_text[:100]
+        action = _derive_action_candidate(claim_text, category)
+        escalation = _derive_escalation_rule(claim_text, float(metadata.get("llm_confidence") or 0.0), category)
+        playbooks.append(
+            {
+                "category": category,
+                "trigger": trigger,
+                "action": action,
+                "escalation": escalation,
+            }
+        )
+        if len(playbooks) >= max(6, min(50, int(max_signals))):
+            break
+
+    lines = [
+        "# Process Playbooks",
+        "",
+        "## Executable Patterns",
+        "| Trigger | Process Area | Action | Escalation |",
+        "|---|---|---|---|",
+    ]
+    if playbooks:
+        for item in playbooks:
+            lines.append(
+                f"| {item['trigger'].replace('|', '/')} | `{item['category']}` | {item['action']} | {item['escalation']} |"
+            )
+    else:
+        lines.extend(
+            [
+                "| Customer-facing policy mismatch | `policy` | Open policy review task and attach evidence from 2+ sources. | Escalate to approver if SLA/compliance impact exists. |",
+                "| Repeated route/access failure | `operations` | Apply fallback route and update runbook note. | Escalate to on-call when repeated >= 3 times in 24h. |",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## How To Use",
+            "1. Start from trigger condition in runtime event or operator note.",
+            "2. Execute mapped action with tool + policy context.",
+            "3. Apply escalation rule when confidence is low or impact is high.",
+            "",
+        ]
+    )
+    return [
+        {
+            "title": "Process Playbooks",
+            "slug": _space_slug(space_key, "process-playbooks"),
+            "page_type": "runbook",
+            "markdown": "\n".join(lines),
+        }
+    ]
+
+
+def _build_company_operating_context_bootstrap_page(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_signals: int,
+) -> list[dict[str, str]]:
+    source_counts: list[tuple[str, int]] = []
+    if _legacy_import_sources_table_exists_from_cursor(cur):
+        cur.execute(
+            """
+            SELECT source_type, COUNT(*)::int
+            FROM legacy_import_sources
+            WHERE project_id = %s
+              AND enabled = TRUE
+            GROUP BY source_type
+            ORDER BY COUNT(*) DESC, source_type ASC
+            LIMIT 20
+            """,
+            (project_id,),
+        )
+        source_counts = [(str(row[0] or "unknown"), int(row[1] or 0)) for row in (cur.fetchall() or [])]
+
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=200)
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=200)
+    team_rollup: dict[str, int] = {}
+    for item in matrix:
+        team = str(item.get("team") or "Runtime Agents")
+        team_rollup[team] = int(team_rollup.get(team, 0)) + 1
+
+    claims_rollup: list[tuple[str, int]] = []
+    if _wiki_feature_table_exists(cur, "public.claims"):
+        cur.execute(
+            """
+            SELECT category, COUNT(*)::int
+            FROM claims
+            WHERE project_id = %s
+              AND status <> 'rejected'
+            GROUP BY category
+            ORDER BY COUNT(*) DESC, category ASC
+            LIMIT %s
+            """,
+            (project_id, max(5, min(30, int(max_signals)))),
+        )
+        claims_rollup = [(str(row[0] or "general"), int(row[1] or 0)) for row in (cur.fetchall() or [])]
+
+    lines = [
+        "# Company Operating Context",
+        "",
+        "## Snapshot",
+        f"- Project: `{project_id}`",
+        f"- Active agents discovered: `{len(matrix)}`",
+        f"- Connected data sources: `{sum(count for _, count in source_counts)}`",
+        "",
+        "## Team Topology",
+        "| Team | Agents |",
+        "|---|---:|",
+    ]
+    if team_rollup:
+        for team, total in sorted(team_rollup.items(), key=lambda item: (-item[1], item[0].lower()))[:20]:
+            lines.append(f"| {team} | {int(total)} |")
+    else:
+        lines.append("| Runtime Agents | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Knowledge Domains",
+            "| Domain | Signals |",
+            "|---|---:|",
+        ]
+    )
+    if claims_rollup:
+        for category, total in claims_rollup:
+            lines.append(f"| `{category}` | {int(total)} |")
+    else:
+        lines.append("| `operations` | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Data Backbone",
+            "| Source Type | Connected Streams |",
+            "|---|---:|",
+        ]
+    )
+    if source_counts:
+        for source_type, total in source_counts[:20]:
+            lines.append(f"| `{source_type}` | {int(total)} |")
+    else:
+        lines.append("| `n/a` | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Core Operating Principles",
+            "- Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
+            "- Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
+            "- Agent actions should be constrained by tool guardrails and approval rules.",
+            "",
+        ]
+    )
+    return [
+        {
+            "title": "Company Operating Context",
+            "slug": _space_slug(space_key, "company-operating-context"),
+            "page_type": "operations",
+            "markdown": "\n".join(lines),
+        }
+    ]
+
+
+def _build_daily_operations_digest_bootstrap_page(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_days: int = 7,
+) -> list[dict[str, str]]:
+    rows: list[tuple[Any, ...]] = []
+    if _wiki_feature_table_exists(cur, "public.agent_daily_worklogs"):
+        cur.execute(
+            """
+            SELECT worklog_date, summary
+            FROM agent_daily_worklogs
+            WHERE project_id = %s
+            ORDER BY worklog_date DESC
+            LIMIT %s
+            """,
+            (project_id, max(1, min(30, int(max_days))) * 300),
+        )
+        rows = cur.fetchall() or []
+
+    day_totals: dict[str, dict[str, int]] = {}
+    for row in rows:
+        worklog_date = row[0]
+        summary = row[1] if isinstance(row[1], dict) else {}
+        if worklog_date is None:
+            continue
+        day_key = worklog_date.isoformat()
+        bucket = day_totals.get(day_key)
+        if bucket is None:
+            bucket = {
+                "events_total": 0,
+                "tasks_done": 0,
+                "tasks_blocked": 0,
+                "drafts_proposed": 0,
+                "pages_authored": 0,
+                "agents_reporting": 0,
+            }
+            day_totals[day_key] = bucket
+        bucket["events_total"] += int(summary.get("events_total") or 0)
+        bucket["tasks_done"] += int(summary.get("tasks_done") or 0)
+        bucket["tasks_blocked"] += int(summary.get("tasks_blocked") or 0)
+        bucket["drafts_proposed"] += int(summary.get("drafts_proposed") or 0)
+        bucket["pages_authored"] += int(summary.get("pages_authored") or 0)
+        bucket["agents_reporting"] += 1
+
+    lines = [
+        "# Daily Operations Digest",
+        "",
+        "Aggregated operational daily summaries to prevent draft/page fragmentation.",
+        "",
+        "## Last Days",
+        "| Date | Agents Reporting | Events | Tasks Done | Tasks Blocked | Drafts Proposed | Pages Authored |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    if day_totals:
+        for day_key in sorted(day_totals.keys(), reverse=True)[: max(1, min(14, int(max_days)))]:
+            bucket = day_totals[day_key]
+            lines.append(
+                f"| {day_key} | {bucket['agents_reporting']} | {bucket['events_total']} | {bucket['tasks_done']} | "
+                f"{bucket['tasks_blocked']} | {bucket['drafts_proposed']} | {bucket['pages_authored']} |"
+            )
+    else:
+        lines.append("| n/a | 0 | 0 | 0 | 0 | 0 | 0 |")
+    lines.extend(
+        [
+            "",
+            "## Notes",
+            "- Daily-summary-like signals should aggregate here instead of creating standalone wiki pages.",
+            "- Promote to process/policy pages only durable and reusable knowledge patterns.",
+            "",
+        ]
+    )
+    return [
+        {
+            "title": "Daily Operations Digest",
+            "slug": _space_slug(space_key, "daily-operations-digest"),
+            "page_type": "operations",
+            "markdown": "\n".join(lines),
+        }
+    ]
 
 
 def _derive_action_candidate(text: str, category: str) -> str:
@@ -28201,6 +28737,9 @@ def _build_agent_wiki_bootstrap_pages(
     include_data_sources_catalog: bool,
     include_agent_capability_profile: bool,
     include_operational_logic: bool,
+    include_tooling_map: bool,
+    include_process_playbooks: bool,
+    include_company_operating_context: bool,
     include_first_run_starter: bool,
     max_sources: int,
     max_agents: int,
@@ -28228,6 +28767,15 @@ def _build_agent_wiki_bootstrap_pages(
                     max_agents=max_agents,
                 )
             )
+        if include_tooling_map:
+            pages.extend(
+                _build_tooling_map_bootstrap_page(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_agents=max_agents,
+                )
+            )
         if include_operational_logic:
             pages.extend(
                 _build_operational_logic_bootstrap_page(
@@ -28235,6 +28783,32 @@ def _build_agent_wiki_bootstrap_pages(
                     project_id=project_id,
                     space_key=space_key,
                     max_signals=max_signals,
+                )
+            )
+        if include_process_playbooks:
+            pages.extend(
+                _build_process_playbooks_bootstrap_page(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_signals=max_signals,
+                )
+            )
+        if include_company_operating_context:
+            pages.extend(
+                _build_company_operating_context_bootstrap_page(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_signals=max_signals,
+                )
+            )
+            pages.extend(
+                _build_daily_operations_digest_bootstrap_page(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    max_days=min(14, max(3, int(max_signals // 4) or 7)),
                 )
             )
     deduped: list[dict[str, str]] = []
@@ -28320,13 +28894,103 @@ def _agent_wiki_bootstrap_dod(
     has_agent = any(slug.startswith("agents/") or slug.endswith("/agent-capability-profile") or slug == "agent-capability-profile" for slug in scope)
     has_data_sources = any("data-sources-catalog" in slug or slug.endswith("/data-map") or slug == "data-map" for slug in scope)
     has_process = any("operational-logic-map" in slug or "runbook" in slug for slug in scope)
+    has_tooling_map = any(slug.endswith("/tooling-map") or slug == "tooling-map" for slug in scope)
+    has_company_context = any(slug.endswith("/company-operating-context") or slug == "company-operating-context" for slug in scope)
     return {
         "agent_page": bool(has_agent),
         "data_sources_page": bool(has_data_sources),
         "operational_process_page": bool(has_process),
-        "published_minimum_ready": bool(has_agent and has_data_sources and has_process),
+        "tooling_map_page": bool(has_tooling_map),
+        "company_operating_context_page": bool(has_company_context),
+        "published_minimum_ready": bool(has_agent and has_data_sources and has_process and has_tooling_map and has_company_context),
         "pages_total": len(scope),
     }
+
+
+def _is_core_bootstrap_page_slug(slug: str) -> bool:
+    normalized = _normalize_wiki_slug(str(slug or ""), str(slug or "page"))
+    leaf = normalized.split("/")[-1]
+    core_leaves = {
+        "agent-capability-profile",
+        "tooling-map",
+        "process-playbooks",
+        "operational-logic-map",
+        "company-operating-context",
+        "data-sources-catalog",
+    }
+    return leaf in core_leaves
+
+
+def _build_agent_wiki_bootstrap_quality_report(
+    *,
+    plan_pages: list[dict[str, str]],
+    page_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan_by_slug: dict[str, dict[str, str]] = {}
+    for page in plan_pages:
+        slug = _normalize_wiki_slug(str(page.get("slug") or page.get("title") or "page"), str(page.get("title") or "page"))
+        plan_by_slug[slug] = page
+
+    core_planned_slugs = sorted([slug for slug in plan_by_slug.keys() if _is_core_bootstrap_page_slug(slug)])
+    status_by_slug: dict[str, str] = {}
+    quality_by_slug: dict[str, dict[str, Any]] = {}
+    created_rows = list((page_result or {}).get("created") or [])
+    for row in created_rows:
+        slug = _normalize_wiki_slug(str(row.get("slug") or ""), str(row.get("slug") or "page"))
+        status = str(row.get("status") or "unknown").strip().lower() or "unknown"
+        status_by_slug[slug] = status
+        quality = row.get("quality_gate") if isinstance(row.get("quality_gate"), dict) else {}
+        quality_by_slug[slug] = quality
+
+    placeholder_tokens = ("n/a", "pending", "to be filled", "runtime discovery pending", "no explicit usage mapped yet")
+    placeholder_hits = 0
+    token_total = 0
+    for slug in core_planned_slugs:
+        markdown = str((plan_by_slug.get(slug) or {}).get("markdown") or "")
+        words = re.findall(r"[a-zа-я0-9_]+", markdown.lower())
+        token_total += len(words)
+        for token in placeholder_tokens:
+            placeholder_hits += markdown.lower().count(token)
+    placeholder_ratio = round(float(placeholder_hits) / float(max(1, token_total)), 4)
+
+    core_published = [slug for slug in core_planned_slugs if status_by_slug.get(slug) == "published"]
+    core_reviewed = [slug for slug in core_planned_slugs if status_by_slug.get(slug) == "reviewed"]
+    core_missing = [slug for slug in core_planned_slugs if slug not in status_by_slug]
+    not_published_reasons: list[dict[str, Any]] = []
+    for slug in core_reviewed:
+        quality = quality_by_slug.get(slug) or {}
+        not_published_reasons.append(
+            {
+                "slug": slug,
+                "reason": "quality_gate",
+                "quality_score": float(quality.get("quality_score") or 0.0),
+                "missing_required_markers": list(quality.get("missing_required_markers") or []),
+                "placeholder_hits": list(quality.get("placeholder_hits") or []),
+            }
+        )
+
+    report = {
+        "core_pages": {
+            "planned": len(core_planned_slugs),
+            "published": len(core_published),
+            "reviewed": len(core_reviewed),
+            "missing": len(core_missing),
+            "published_slugs": core_published,
+            "reviewed_slugs": core_reviewed,
+            "missing_slugs": core_missing,
+        },
+        "placeholder_ratio_core": float(placeholder_ratio),
+        "quality_findings": {
+            "not_published_reasons": not_published_reasons,
+        },
+        "pass": bool(len(core_published) >= max(4, len(core_planned_slugs) // 2) and placeholder_ratio < 0.10),
+    }
+    if not created_rows:
+        report["mode"] = "preview"
+        report["next_action"] = "apply_bootstrap_to_materialize_status_and_quality_findings"
+    else:
+        report["mode"] = "applied"
+    return report
 
 
 def _legacy_import_sources_table_exists_from_cursor(cur: Any) -> bool:
@@ -28721,6 +29385,9 @@ def run_adoption_agent_wiki_bootstrap(
                 include_data_sources_catalog=bool(payload.include_data_sources_catalog),
                 include_agent_capability_profile=bool(payload.include_agent_capability_profile),
                 include_operational_logic=bool(payload.include_operational_logic),
+                include_tooling_map=bool(payload.include_tooling_map),
+                include_process_playbooks=bool(payload.include_process_playbooks),
+                include_company_operating_context=bool(payload.include_company_operating_context),
                 include_first_run_starter=bool(payload.include_first_run_starter),
                 max_sources=int(payload.max_sources),
                 max_agents=int(payload.max_agents),
@@ -28741,6 +29408,7 @@ def run_adoption_agent_wiki_bootstrap(
                 "dry_run": bool(payload.dry_run),
                 "space_key": space_key,
                 "requested_status": requested_status,
+                "bootstrap_publish_core": bool(payload.bootstrap_publish_core),
                 "plan": {
                     "pages_total": len(page_preview),
                     "pages": page_preview,
@@ -28750,10 +29418,39 @@ def run_adoption_agent_wiki_bootstrap(
                     "knowledge_lane_recommended_noise_preset": "enterprise_wiki_bootstrap",
                     "note": "Operational/event stream stays out of wiki pages; reusable process knowledge is promoted.",
                 },
+                "preview_apply_flow": {
+                    "step_1": "preview",
+                    "step_2": "apply",
+                    "apply_hint": "rerun this endpoint with dry_run=false and confirm_project_id",
+                    "apply_payload_template": {
+                        "project_id": project_id,
+                        "updated_by": actor,
+                        "dry_run": False,
+                        "confirm_project_id": project_id,
+                        "publish": bool(payload.publish),
+                        "bootstrap_publish_core": bool(payload.bootstrap_publish_core),
+                        "space_key": space_key,
+                    },
+                },
                 "definition_of_done": _agent_wiki_bootstrap_dod(pages=plan_pages),
+                "quality_report": _build_agent_wiki_bootstrap_quality_report(
+                    plan_pages=plan_pages,
+                    page_result=None,
+                ),
                 "generated_at": datetime.now(UTC).isoformat(),
             }
+            if bool(payload.dry_run):
+                response["next_action"] = "rerun_with_dry_run=false_and_confirm_project_id"
             if not payload.dry_run:
+                force_publish_slugs = (
+                    [
+                        slug
+                        for slug in [str(item.get("slug") or "") for item in plan_pages]
+                        if _is_core_bootstrap_page_slug(slug)
+                    ]
+                    if bool(payload.bootstrap_publish_core and payload.publish)
+                    else []
+                )
                 page_result = _insert_bootstrap_pages(
                     conn,
                     project_id=project_id,
@@ -28763,6 +29460,7 @@ def run_adoption_agent_wiki_bootstrap(
                     requested_status=requested_status,
                     policy_space_fallback_enabled=True,
                     policy_space_fallback_candidates=[space_key, "logistics", "general"],
+                    force_publish_slugs=force_publish_slugs,
                 )
                 if int((page_result.get("summary") or {}).get("created") or 0) <= 0 and int(
                     (page_result.get("summary") or {}).get("skipped") or 0
@@ -28789,6 +29487,10 @@ def run_adoption_agent_wiki_bootstrap(
                 response["definition_of_done"] = _agent_wiki_bootstrap_dod(
                     pages=plan_pages,
                     created_slugs=created_slugs,
+                )
+                response["quality_report"] = _build_agent_wiki_bootstrap_quality_report(
+                    plan_pages=plan_pages,
+                    page_result=page_result,
                 )
 
             mark_request_completed(

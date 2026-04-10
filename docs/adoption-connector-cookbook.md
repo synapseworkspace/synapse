@@ -143,8 +143,12 @@ curl -X POST "http://localhost:8080/v1/adoption/agent-wiki-bootstrap" \
     "updated_by": "ops_manager",
     "dry_run": true,
     "space_key": "operations",
+    "bootstrap_publish_core": true,
     "include_data_sources_catalog": true,
     "include_agent_capability_profile": true,
+    "include_tooling_map": true,
+    "include_process_playbooks": true,
+    "include_company_operating_context": true,
     "include_operational_logic": true,
     "include_first_run_starter": true
   }'
@@ -161,6 +165,7 @@ curl -X POST "http://localhost:8080/v1/adoption/agent-wiki-bootstrap" \
     "dry_run": false,
     "confirm_project_id": "omega_demo",
     "space_key": "operations",
+    "bootstrap_publish_core": true,
     "publish": true
   }'
 ```
@@ -168,5 +173,12 @@ curl -X POST "http://localhost:8080/v1/adoption/agent-wiki-bootstrap" \
 Resulting pages include:
 - Data Sources Catalog (+ per-source detail pages)
 - Agent Capability Profile (orgchart + capability matrix + handoffs)
+- Tooling Map (tool ownership/scenarios/guardrails)
+- Process Playbooks (trigger/action/escalation patterns)
+- Company Operating Context (domain-level operating model snapshot)
 - Operational Logic Map (`comment -> signal -> action candidate -> escalation rule`)
 - Starter wiki pages (`Agent Profile`, `Data Map`, `Operational Runbook`)
+
+Response includes:
+- `preview_apply_flow` with exact follow-up payload for apply mode.
+- `quality_report` with core-page coverage, placeholder ratio, non-publish reasons, and DoD pass/fail summary.

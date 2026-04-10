@@ -239,6 +239,15 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "event_stream",
         "payload_dump",
     ],
+    "daily_summary_keywords": [
+        "daily summary",
+        "summary for",
+        "today summary",
+        "за день",
+        "итоги дня",
+        "daily report",
+        "worklog summary",
+    ],
     "pii_sensitive_keywords": [
         "passport",
         "ssn",
@@ -2481,6 +2490,7 @@ class WikiSynthesisEngine:
         high_signal_route_keywords = list(routing_policy.get("high_signal_route_keywords", []))
         high_signal_min_keyword_hits = int(routing_policy.get("high_signal_min_keyword_hits", 1))
         operational_stream_keywords = list(routing_policy.get("operational_stream_keywords", []))
+        daily_summary_keywords = list(routing_policy.get("daily_summary_keywords", []))
         pii_sensitive_keywords = list(routing_policy.get("pii_sensitive_keywords", []))
         ingestion_default_deny_classes = {
             str(item).strip().lower()
@@ -2701,12 +2711,33 @@ class WikiSynthesisEngine:
         )
         if routing_hard_block and high_signal_hard_block_override:
             routing_hard_block = False
+        operational_keyword_hits = [
+            keyword
+            for keyword in operational_stream_keywords
+            if keyword and keyword in classification_haystack
+        ][:20]
+        daily_summary_hits = [
+            keyword
+            for keyword in daily_summary_keywords
+            if keyword and keyword in classification_haystack
+        ][:20]
+        pii_keyword_hits = [
+            keyword
+            for keyword in pii_sensitive_keywords
+            if keyword and keyword in classification_haystack
+        ][:20]
         has_durable_signal = (
             has_policy_signal
             or has_process_signal
             or has_high_priority_signal
             or durable_signal_hits >= min_durable_signal_hits
             or has_high_signal_route
+        )
+        has_daily_summary_noise = bool(
+            daily_summary_hits
+            and not has_policy_signal
+            and not has_process_signal
+            and not has_high_signal_route
         )
         assertion_class = self._infer_assertion_class(
             category_hint=category_hint,
@@ -2734,16 +2765,6 @@ class WikiSynthesisEngine:
             and not has_durable_signal
             and (is_short or has_operational_pattern or category_hint == "general")
         )
-        operational_keyword_hits = [
-            keyword
-            for keyword in operational_stream_keywords
-            if keyword and keyword in classification_haystack
-        ][:20]
-        pii_keyword_hits = [
-            keyword
-            for keyword in pii_sensitive_keywords
-            if keyword and keyword in classification_haystack
-        ][:20]
         pii_regex_hits = bool(
             re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", claim.claim_text or "")
             or re.search(
@@ -2756,6 +2777,7 @@ class WikiSynthesisEngine:
             ingestion_classification = "pii_sensitive_stream"
         elif (
             looks_like_runtime_noise
+            or bool(daily_summary_hits)
             or has_event_stream_shape
             or blocked_by_source_system
             or blocked_by_source_type
@@ -2771,6 +2793,8 @@ class WikiSynthesisEngine:
             and not is_knowledge_ingest
         )
         if ingestion_default_deny_block:
+            routing_hard_block = True
+        if has_daily_summary_noise:
             routing_hard_block = True
         is_single_source_one_off = (
             not has_durable_signal
@@ -2931,6 +2955,8 @@ class WikiSynthesisEngine:
             "ingestion_classification_default_deny_classes": sorted(ingestion_default_deny_classes),
             "ingestion_default_deny_block": ingestion_default_deny_block,
             "ingestion_operational_keyword_hits": operational_keyword_hits,
+            "ingestion_daily_summary_hits": daily_summary_hits,
+            "has_daily_summary_noise": has_daily_summary_noise,
             "ingestion_pii_keyword_hits": pii_keyword_hits,
             "ingestion_pii_regex_hits": pii_regex_hits,
             "high_signal_route_hits": high_signal_route_hits,
@@ -3181,6 +3207,11 @@ class WikiSynthesisEngine:
             value.get("operational_stream_keywords"),
             fallback=list(base["operational_stream_keywords"]),
             limit=128,
+        )
+        normalized["daily_summary_keywords"] = self._normalize_policy_keyword_list(
+            value.get("daily_summary_keywords"),
+            fallback=list(base["daily_summary_keywords"]),
+            limit=64,
         )
         normalized["pii_sensitive_keywords"] = self._normalize_policy_keyword_list(
             value.get("pii_sensitive_keywords"),

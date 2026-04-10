@@ -71,7 +71,7 @@ Environment:
 - `GET /v1/adoption/wiki-space-templates` (catalog of role-based wiki-space templates for immediate useful structure)
 - `POST /v1/adoption/wiki-space-templates/apply` (apply role template + optional policy defaults + starter pages in target space)
 - `POST /v1/adoption/sync-presets/execute` (one-command enterprise preset: bootstrap profile + source sync queue + bootstrap approve + optional starter pages)
-- `POST /v1/adoption/agent-wiki-bootstrap` (preview/apply “Agent Wiki Bootstrap” out-of-box pack: data source catalog + agent capability profile + operational logic map + starter pages)
+- `POST /v1/adoption/agent-wiki-bootstrap` (preview/apply “Agent Wiki Bootstrap” out-of-box pack with `preview_apply_flow`, `quality_report`, optional `bootstrap_publish_core`, and include-flags for `tooling_map`, `process_playbooks`, `company_operating_context`, alongside data-source/capability/operational/starter pages)
 - `GET /v1/adoption/noise-presets?lane=knowledge` (reusable pre-ingest noise suppression presets; recommended knowledge preset is `knowledge_v2`)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
 - `GET /v1/adoption/pipeline/visibility?project_id=...&days=14&source_systems=legacy_import,postgres_sql&namespaces=ops` (end-to-end counters `accepted -> events -> claims -> drafts -> pages` with transition drops and bottleneck hints)
