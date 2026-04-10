@@ -92,6 +92,13 @@ type CoreWikiRightRailProps = {
   relatedPages: RelatedPageItem[];
   onOpenRelatedPage: (slug: string) => void;
   recentVersions: PageVersionItem[];
+  wikiQualitySummary: {
+    pass: boolean | null;
+    corePublished: number | null;
+    coreRequired: number | null;
+    placeholderRatioCore: number | null;
+    dailySummaryDraftRatio: number | null;
+  } | null;
   onOpenHistory: () => void;
   onOpenVersionHistory: (version: number) => void;
   formatDate: (value: string | null | undefined) => string;
@@ -139,6 +146,7 @@ export default function CoreWikiRightRail({
   relatedPages,
   onOpenRelatedPage,
   recentVersions,
+  wikiQualitySummary,
   onOpenHistory,
   onOpenVersionHistory,
   formatDate,
@@ -193,6 +201,36 @@ export default function CoreWikiRightRail({
           <Button size="compact-sm" variant="filled" color="cyan" fullWidth onClick={onOpenDrafts}>
             Open Drafts
           </Button>
+          <Divider />
+          <Text size="xs" fw={700}>
+            Wiki quality
+          </Text>
+          {wikiQualitySummary ? (
+            <Stack gap={4}>
+              <Group gap={6} wrap="wrap">
+                <Badge size="xs" variant="light" color={wikiQualitySummary.pass ? "teal" : "orange"}>
+                  {wikiQualitySummary.pass ? "healthy" : "attention"}
+                </Badge>
+                <Badge size="xs" variant="light" color="gray">
+                  core {wikiQualitySummary.corePublished ?? "—"}/{wikiQualitySummary.coreRequired ?? "—"}
+                </Badge>
+              </Group>
+              <Text size="xs" c="dimmed">
+                placeholders{" "}
+                {Number.isFinite(Number(wikiQualitySummary.placeholderRatioCore))
+                  ? `${Math.round(Number(wikiQualitySummary.placeholderRatioCore) * 100)}%`
+                  : "—"}
+                {" · "}daily-summary drafts{" "}
+                {Number.isFinite(Number(wikiQualitySummary.dailySummaryDraftRatio))
+                  ? `${Math.round(Number(wikiQualitySummary.dailySummaryDraftRatio) * 100)}%`
+                  : "—"}
+              </Text>
+            </Stack>
+          ) : (
+            <Text size="xs" c="dimmed">
+              Quality report appears after bootstrap + KPI refresh.
+            </Text>
+          )}
           <Divider />
           {isOperationsRoute ? (
             <Accordion multiple variant="separated" radius="md" chevronPosition="right" defaultValue={[]}>

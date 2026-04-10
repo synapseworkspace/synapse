@@ -950,6 +950,40 @@ type AdoptionKpiPayload = {
     status: string;
     hint?: string;
   }>;
+  wiki_quality?: {
+    quality?: {
+      pass?: boolean;
+      checks?: Record<string, boolean>;
+      thresholds?: {
+        placeholder_ratio_core_max?: number;
+        daily_summary_open_draft_ratio_max?: number;
+        min_core_published?: number;
+      };
+    };
+    core_pages?: {
+      required_leaves?: string[];
+      published_total?: number;
+      published_slugs?: string[];
+      missing_required_leaves?: string[];
+    };
+    content_quality?: {
+      placeholder_ratio_core?: number;
+      placeholder_hits_core?: number;
+      core_word_count_total?: number;
+    };
+    draft_noise?: {
+      open_drafts_total?: number;
+      daily_summary_open_drafts?: number;
+      daily_summary_open_draft_ratio?: number;
+    };
+    warnings?: Array<{
+      code?: string;
+      severity?: string;
+      ratio?: number;
+      threshold?: number;
+      message?: string;
+    }>;
+  };
 };
 
 type AdoptionPolicyQuickLoopPayload = {
@@ -8541,6 +8575,27 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="blue"
+                              loading={loadingAdoptionKpi}
+                              onClick={() => void loadAdoptionKpi()}
+                            >
+                              Refresh quality
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              onClick={() => {
+                                document.getElementById("operations-wiki-quality-panel")?.scrollIntoView({
+                                  behavior: "smooth",
+                                  block: "start",
+                                });
+                              }}
+                            >
+                              View quality
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="orange"
                               loading={adoptionRejectionsLoading}
                               onClick={() => void loadAdoptionRejections()}
@@ -8730,6 +8785,77 @@ export default function App() {
                               Pipeline visibility is unavailable for current project yet.
                             </Text>
                           )}
+                          <Paper withBorder p="xs" radius="md" id="operations-wiki-quality-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Text size="sm" fw={700}>
+                                  Wiki quality report
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="blue"
+                                  loading={loadingAdoptionKpi}
+                                  onClick={() => void loadAdoptionKpi()}
+                                >
+                                  Refresh quality
+                                </Button>
+                              </Group>
+                              {adoptionKpi?.wiki_quality ? (
+                                <>
+                                  <Group gap={6} wrap="wrap">
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={adoptionKpi.wiki_quality.quality?.pass ? "teal" : "orange"}
+                                    >
+                                      {adoptionKpi.wiki_quality.quality?.pass ? "quality pass" : "needs attention"}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      core published {Number(adoptionKpi.wiki_quality.core_pages?.published_total || 0)}
+                                      /
+                                      {Array.isArray(adoptionKpi.wiki_quality.core_pages?.required_leaves)
+                                        ? adoptionKpi.wiki_quality.core_pages?.required_leaves?.length
+                                        : "—"}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      placeholders{" "}
+                                      {Number.isFinite(Number(adoptionKpi.wiki_quality.content_quality?.placeholder_ratio_core))
+                                        ? `${Math.round(Number(adoptionKpi.wiki_quality.content_quality?.placeholder_ratio_core) * 100)}%`
+                                        : "—"}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      daily-summary drafts{" "}
+                                      {Number.isFinite(Number(adoptionKpi.wiki_quality.draft_noise?.daily_summary_open_draft_ratio))
+                                        ? `${Math.round(Number(adoptionKpi.wiki_quality.draft_noise?.daily_summary_open_draft_ratio) * 100)}%`
+                                        : "—"}
+                                    </Badge>
+                                  </Group>
+                                  <Text size="xs" c="dimmed">
+                                    Missing core pages:{" "}
+                                    {Array.isArray(adoptionKpi.wiki_quality.core_pages?.missing_required_leaves) &&
+                                    adoptionKpi.wiki_quality.core_pages?.missing_required_leaves?.length > 0
+                                      ? adoptionKpi.wiki_quality.core_pages?.missing_required_leaves?.join(", ")
+                                      : "none"}
+                                    .
+                                  </Text>
+                                  {Array.isArray(adoptionKpi.wiki_quality.warnings) && adoptionKpi.wiki_quality.warnings.length > 0 ? (
+                                    <Text size="xs" c="dimmed">
+                                      Top warning: {adoptionKpi.wiki_quality.warnings[0]?.code || "unknown"}.
+                                    </Text>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      Quality warnings are clear in the current window.
+                                    </Text>
+                                  )}
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Quality report is unavailable yet. Run bootstrap/apply and refresh KPI.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
                           <Paper withBorder p="xs" radius="md" id="operations-rejections-panel">
                             <Stack gap={6}>
                               <Group justify="space-between" align="center" wrap="wrap">
@@ -9458,6 +9584,30 @@ export default function App() {
                 setSelectedPageSlug(slug);
               }}
               recentVersions={selectedPageRecentVersions}
+              wikiQualitySummary={
+                adoptionKpi?.wiki_quality
+                  ? {
+                      pass:
+                        typeof adoptionKpi.wiki_quality.quality?.pass === "boolean"
+                          ? Boolean(adoptionKpi.wiki_quality.quality?.pass)
+                          : null,
+                      corePublished: Number.isFinite(Number(adoptionKpi.wiki_quality.core_pages?.published_total))
+                        ? Number(adoptionKpi.wiki_quality.core_pages?.published_total)
+                        : null,
+                      coreRequired: Array.isArray(adoptionKpi.wiki_quality.core_pages?.required_leaves)
+                        ? adoptionKpi.wiki_quality.core_pages?.required_leaves?.length || 0
+                        : null,
+                      placeholderRatioCore: Number.isFinite(Number(adoptionKpi.wiki_quality.content_quality?.placeholder_ratio_core))
+                        ? Number(adoptionKpi.wiki_quality.content_quality?.placeholder_ratio_core)
+                        : null,
+                      dailySummaryDraftRatio: Number.isFinite(
+                        Number(adoptionKpi.wiki_quality.draft_noise?.daily_summary_open_draft_ratio),
+                      )
+                        ? Number(adoptionKpi.wiki_quality.draft_noise?.daily_summary_open_draft_ratio)
+                        : null,
+                    }
+                  : null
+              }
               onOpenHistory={() => openHistoryDrawerForVersion(null)}
               onOpenVersionHistory={(version) => openHistoryDrawerForVersion(version)}
               formatDate={fmtDate}
