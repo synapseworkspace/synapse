@@ -350,13 +350,17 @@ def main() -> int:
             "confirm_project_id": project_id,
             "publish": True,
             "space_key": "operations",
+            "bootstrap_publish_core": True,
             "include_data_sources_catalog": True,
-            "include_agent_capability_profile": False,
-            "include_operational_logic": False,
+            "include_agent_capability_profile": True,
+            "include_tooling_map": True,
+            "include_process_playbooks": True,
+            "include_company_operating_context": True,
+            "include_operational_logic": True,
             "include_first_run_starter": False,
             "max_sources": 25,
             "max_agents": 10,
-            "max_signals": 10,
+            "max_signals": 40,
         },
         timeout_s=request_timeout_s,
     )
@@ -388,6 +392,40 @@ def main() -> int:
         f"catalog markdown missing rewritten logistics source links: {catalog_markdown}",
     )
 
+    # Regression guard #57: OOTB wiki quality gates should pass after clean bootstrap.
+    quality_params = _query(
+        {
+            "project_id": project_id,
+            "days": 30,
+            "placeholder_ratio_max": 0.10,
+            "daily_summary_draft_ratio_max": 0.20,
+            "min_core_published": 6,
+        }
+    )
+    quality_payload = _api_get(
+        api_url,
+        f"/v1/adoption/wiki-quality/report?{quality_params}",
+        timeout_s=request_timeout_s,
+    )
+    quality = quality_payload.get("quality") if isinstance(quality_payload.get("quality"), dict) else {}
+    checks = quality.get("checks") if isinstance(quality.get("checks"), dict) else {}
+    _assert(
+        bool(quality.get("pass")),
+        f"wiki quality gate failed: {json.dumps(quality_payload, ensure_ascii=False)}",
+    )
+    _assert(
+        bool(checks.get("placeholder_ratio_core")),
+        f"placeholder ratio gate failed: {json.dumps(quality_payload, ensure_ascii=False)}",
+    )
+    _assert(
+        bool(checks.get("daily_summary_open_draft_ratio")),
+        f"daily-summary draft ratio gate failed: {json.dumps(quality_payload, ensure_ascii=False)}",
+    )
+    _assert(
+        bool(checks.get("core_required_pages_present")),
+        f"required core pages are missing after bootstrap: {json.dumps(quality_payload, ensure_ascii=False)}",
+    )
+
     output = {
         "status": "ok",
         "project_id": project_id,
@@ -404,6 +442,13 @@ def main() -> int:
             "time_to_first_publish_sec": kpi_metrics.get("time_to_first_publish_sec"),
             "draft_noise_ratio": kpi_metrics.get("draft_noise_ratio"),
             "publish_revert_rate": kpi_metrics.get("publish_revert_rate"),
+        },
+        "wiki_quality": {
+            "pass": bool(quality.get("pass")),
+            "checks": checks,
+            "core_published": (quality_payload.get("core_pages") or {}).get("published_total"),
+            "placeholder_ratio_core": (quality_payload.get("content_quality") or {}).get("placeholder_ratio_core"),
+            "daily_summary_open_draft_ratio": (quality_payload.get("draft_noise") or {}).get("daily_summary_open_draft_ratio"),
         },
         "bootstrap_fallback_applied_count": len(applied_fallbacks),
         "generated_at": datetime.now(UTC).isoformat(),

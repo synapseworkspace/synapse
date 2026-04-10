@@ -1000,9 +1000,13 @@ class SynapseClient:
         updated_by: str,
         dry_run: bool = True,
         publish: bool = True,
+        bootstrap_publish_core: bool = True,
         space_key: str = "operations",
         include_data_sources_catalog: bool = True,
         include_agent_capability_profile: bool = True,
+        include_tooling_map: bool = True,
+        include_process_playbooks: bool = True,
+        include_company_operating_context: bool = True,
         include_operational_logic: bool = True,
         include_first_run_starter: bool = True,
         max_sources: int = 25,
@@ -1019,9 +1023,13 @@ class SynapseClient:
             "dry_run": bool(dry_run),
             "confirm_project_id": self._config.project_id if not dry_run else None,
             "publish": bool(publish),
+            "bootstrap_publish_core": bool(bootstrap_publish_core),
             "space_key": normalized_space_key,
             "include_data_sources_catalog": bool(include_data_sources_catalog),
             "include_agent_capability_profile": bool(include_agent_capability_profile),
+            "include_tooling_map": bool(include_tooling_map),
+            "include_process_playbooks": bool(include_process_playbooks),
+            "include_company_operating_context": bool(include_company_operating_context),
             "include_operational_logic": bool(include_operational_logic),
             "include_first_run_starter": bool(include_first_run_starter),
             "max_sources": max(1, min(150, int(max_sources))),
@@ -1061,6 +1069,26 @@ class SynapseClient:
             "/v1/adoption/pipeline/visibility",
             method="GET",
             params=params,
+        )
+
+    def get_adoption_wiki_quality_report(
+        self,
+        *,
+        days: int = 14,
+        placeholder_ratio_max: float = 0.10,
+        daily_summary_draft_ratio_max: float = 0.20,
+        min_core_published: int = 6,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/wiki-quality/report",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "placeholder_ratio_max": max(0.0, min(1.0, float(placeholder_ratio_max))),
+                "daily_summary_draft_ratio_max": max(0.0, min(1.0, float(daily_summary_draft_ratio_max))),
+                "min_core_published": max(1, min(50, int(min_core_published))),
+            },
         )
 
     def get_adoption_rejection_diagnostics(

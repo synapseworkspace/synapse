@@ -8,11 +8,13 @@ try:
     from services.api.app.main import (
         _build_agent_capability_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
+        _build_project_wiki_quality_report_from_rows,
         _build_agent_provenance_activity,
         _compute_agent_capability_confidence,
         _derive_runtime_agent_responsibilities,
         _derive_runtime_agent_role,
         _evaluate_agent_capability_bootstrap_contract,
+        _is_daily_summary_like_draft_row,
         _normalize_agent_directory_items,
         _normalize_agent_publish_policy,
         _render_agent_capability_matrix_markdown,
@@ -26,11 +28,13 @@ except Exception:  # pragma: no cover
     _api_main = None
     _build_agent_capability_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
+    _build_project_wiki_quality_report_from_rows = None
     _build_agent_provenance_activity = None
     _compute_agent_capability_confidence = None
     _derive_runtime_agent_responsibilities = None
     _derive_runtime_agent_role = None
     _evaluate_agent_capability_bootstrap_contract = None
+    _is_daily_summary_like_draft_row = None
     _normalize_agent_directory_items = None
     _normalize_agent_publish_policy = None
     _render_agent_capability_matrix_markdown = None
@@ -45,11 +49,13 @@ except Exception:  # pragma: no cover
     _normalize_agent_directory_items is None
     or _build_agent_capability_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
+    or _build_project_wiki_quality_report_from_rows is None
     or _build_agent_provenance_activity is None
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
     or _derive_runtime_agent_role is None
     or _evaluate_agent_capability_bootstrap_contract is None
+    or _is_daily_summary_like_draft_row is None
     or _render_agent_capability_matrix_markdown is None
     or _normalize_agent_publish_policy is None
     or _render_agent_overview_markdown is None
@@ -321,6 +327,99 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertGreaterEqual(int(report["core_pages"]["planned"]), 2)
         self.assertGreaterEqual(int(report["core_pages"]["published"]), 1)
         self.assertGreaterEqual(int(report["core_pages"]["reviewed"]), 1)
+
+    def test_daily_summary_draft_detector_uses_gatekeeper_and_text_signals(self) -> None:
+        by_feature = _is_daily_summary_like_draft_row(
+            page_slug="operations/dispatch-log",
+            page_title="Dispatch Log",
+            page_entity_key="dispatch",
+            markdown_patch="minor update",
+            semantic_diff={},
+            gatekeeper_features={"has_daily_summary_noise": True},
+        )
+        self.assertTrue(by_feature)
+
+        by_text = _is_daily_summary_like_draft_row(
+            page_slug="operations/daily-log",
+            page_title="Daily Operations Summary",
+            page_entity_key="ops_daily",
+            markdown_patch="Daily summary for 2026-04-10: processed 42 orders.",
+            semantic_diff={},
+            gatekeeper_features={},
+        )
+        self.assertTrue(by_text)
+
+        negative = _is_daily_summary_like_draft_row(
+            page_slug="operations/process-playbooks",
+            page_title="Process Playbooks",
+            page_entity_key="processes",
+            markdown_patch="Escalate billing incidents to L2 within 15 minutes.",
+            semantic_diff={},
+            gatekeeper_features={"ingestion_classification": "evergreen_knowledge"},
+        )
+        self.assertFalse(negative)
+
+    def test_project_wiki_quality_report_from_rows_applies_acceptance_thresholds(self) -> None:
+        published_pages = [
+            {
+                "slug": "operations/agent-capability-profile",
+                "title": "Agent Capability Profile",
+                "markdown": "# Agent Capability Profile\n\n## Role\nThis agent handles routing policy and execution control with incident guardrails.",
+            },
+            {
+                "slug": "operations/data-sources-catalog",
+                "title": "Data Sources Catalog",
+                "markdown": "# Data Sources Catalog\n\n## Sources\nOrders API, CRM, dispatch DB with ownership and freshness metadata.",
+            },
+            {
+                "slug": "operations/tooling-map",
+                "title": "Tooling Map",
+                "markdown": "# Tooling Map\n\n## Guardrails\nTool permissions, escalation triggers, and approval boundaries.",
+            },
+            {
+                "slug": "operations/process-playbooks",
+                "title": "Process Playbooks",
+                "markdown": "# Process Playbooks\n\n## Escalation\nWhen SLA risk persists for 15m, page on-call and notify dispatch lead.",
+            },
+            {
+                "slug": "operations/company-operating-context",
+                "title": "Company Operating Context",
+                "markdown": "# Company Operating Context\n\n## Domain Snapshot\nB2B logistics with strict yard-access and compliance windows.",
+            },
+            {
+                "slug": "operations/operational-logic-map",
+                "title": "Operational Logic Map",
+                "markdown": "# Operational Logic Map\n\n## Signal -> Action\nAccess issue signal maps to escalation and fallback delivery flow.",
+            },
+        ]
+        open_drafts = [
+            {
+                "draft_id": "d1",
+                "page_slug": "operations/daily-log",
+                "page_title": "Daily Summary",
+                "is_daily_summary_like": True,
+            },
+            {
+                "draft_id": "d2",
+                "page_slug": "operations/process-playbooks",
+                "page_title": "Process Playbooks",
+                "is_daily_summary_like": False,
+            },
+        ]
+        report = _build_project_wiki_quality_report_from_rows(
+            project_id="omega_demo",
+            published_pages=published_pages,
+            open_drafts=open_drafts,
+            window_days=14,
+            placeholder_ratio_max=0.10,
+            daily_summary_draft_ratio_max=0.20,
+            min_core_published=6,
+        )
+        checks = report.get("quality", {}).get("checks") if isinstance(report.get("quality"), dict) else {}
+        self.assertFalse(bool(report.get("quality", {}).get("pass")))
+        self.assertTrue(bool(checks.get("core_required_pages_present")))
+        self.assertTrue(bool(checks.get("core_publish_coverage")))
+        self.assertFalse(bool(checks.get("daily_summary_open_draft_ratio")))
 
 
 if __name__ == "__main__":

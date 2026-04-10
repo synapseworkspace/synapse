@@ -135,6 +135,9 @@ Goal:
 7. `done` Bootstrap core publish + quality report:
    - `agent-wiki-bootstrap` now returns explicit `Preview -> Apply` guidance and structured `quality_report` (core coverage, placeholder ratio, non-publish reasons);
    - introduced `bootstrap_publish_core=true` override so onboarding-critical pages are published with warning annotations even under partial evidence.
+8. `done` OOTB wiki quality gate + release regression hook:
+   - added `GET /v1/adoption/wiki-quality/report` with hard checks for required core pages, `placeholder_ratio_core <= 0.10`, and `daily_summary_open_draft_ratio <= 0.20`;
+   - wired self-host acceptance regression (`scripts/integration_legacy_sync_queue_processing.py`) to fail when wiki quality gate regresses after clean bootstrap.
 
 ### P1 (next)
 
@@ -1263,3 +1266,4 @@ Checklist:
 - 2026-04-09: Closed adoption feedback `P0/P1/P2` bootstrap + observability gaps: added policy-aware wiki-space fallback for first-run/agent/template bootstrap flows (with explicit 409 diagnostics when no writable space exists), enriched Data Sources Catalog pages with schema samples from connector mappings, strengthened Operational Logic synthesis to high-signal knowledge-only claims, and shipped sync cursor diagnostics endpoint (`GET /v1/adoption/sync/cursor-health`) plus pipeline signal/noise ratio telemetry.
 - 2026-04-10: OOTB content-quality hardening pass: added worker pre-draft hard filter for `operational_stream`/payload-like/PII claims, enriched claim metadata from backfill suppression signals, enabled high-signal route override in gatekeeper (`events -> claims` rescue for policy/process/runbook signals), strengthened bootstrap quality-gate to downgrade template/short pages from `published` to `reviewed`, and expanded Agent Capability bootstrap with actionable per-agent sections (actions/escalations/constraints/scenarios) plus acceptance tests for required sections/fact density.
 - 2026-04-10: OOTB bootstrap usefulness uplift (phase 2): expanded `agent-wiki-bootstrap` pack with `Tooling Map`, `Process Playbooks`, `Company Operating Context`, and aggregated `Daily Operations Digest`; enriched capability synthesis from static agent metadata (prompt/config/tool-registry/approval rules/allowed actions); added stronger source→agent usage/scenario mapping; introduced `bootstrap_publish_core` forced-core publish mode with warning annotations; and shipped structured bootstrap `quality_report` + explicit `preview_apply_flow` response contract for safer first-run UX.
+- 2026-04-10: Added adoption endpoint `GET /v1/adoption/wiki-quality/report` and KPI integration for hard OOTB quality checks (core page coverage, placeholder ratio, daily-summary draft ratio), plus clean self-host regression assertion in `integration_legacy_sync_queue_processing.py` to keep release quality stable.

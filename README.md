@@ -215,6 +215,7 @@ Enterprise shortcut (single API call):
 - `POST /v1/adoption/sync-presets/execute` runs curated bootstrap profile, queues legacy-source sync, executes trusted draft bootstrap, and seeds starter pages.
 - `POST /v1/adoption/agent-wiki-bootstrap` now supports explicit `Preview -> Apply` flow, `bootstrap_publish_core=true` (publish core onboarding pages with warning blocks when coverage is partial), and returns a structured `quality_report`.
 - bootstrap pack can include: `Data Sources Catalog`, `Agent Capability Profile`, `Tooling Map`, `Process Playbooks`, `Company Operating Context`, `Operational Logic Map`, plus starter pages.
+- `GET /v1/adoption/wiki-quality/report` provides a hard OOTB quality gate (`core coverage`, `placeholder ratio`, `daily-summary draft ratio`) for release/onboarding checks.
 
 ## Agentic Onboarding Benchmark
 

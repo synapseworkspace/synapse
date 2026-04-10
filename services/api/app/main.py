@@ -28921,6 +28921,34 @@ def _is_core_bootstrap_page_slug(slug: str) -> bool:
     return leaf in core_leaves
 
 
+_BOOTSTRAP_CORE_REQUIRED_LEAVES = {
+    "agent-capability-profile",
+    "data-sources-catalog",
+    "tooling-map",
+    "process-playbooks",
+    "company-operating-context",
+    "operational-logic-map",
+}
+
+_BOOTSTRAP_PLACEHOLDER_TOKENS = (
+    "n/a",
+    "pending",
+    "to be filled",
+    "runtime discovery pending",
+    "no explicit usage mapped yet",
+)
+
+_DAILY_SUMMARY_DRAFT_KEYWORDS = (
+    "daily summary",
+    "summary for",
+    "today summary",
+    "daily report",
+    "worklog summary",
+    "за день",
+    "итоги дня",
+)
+
+
 def _build_agent_wiki_bootstrap_quality_report(
     *,
     plan_pages: list[dict[str, str]],
@@ -28942,14 +28970,13 @@ def _build_agent_wiki_bootstrap_quality_report(
         quality = row.get("quality_gate") if isinstance(row.get("quality_gate"), dict) else {}
         quality_by_slug[slug] = quality
 
-    placeholder_tokens = ("n/a", "pending", "to be filled", "runtime discovery pending", "no explicit usage mapped yet")
     placeholder_hits = 0
     token_total = 0
     for slug in core_planned_slugs:
         markdown = str((plan_by_slug.get(slug) or {}).get("markdown") or "")
         words = re.findall(r"[a-zа-я0-9_]+", markdown.lower())
         token_total += len(words)
-        for token in placeholder_tokens:
+        for token in _BOOTSTRAP_PLACEHOLDER_TOKENS:
             placeholder_hits += markdown.lower().count(token)
     placeholder_ratio = round(float(placeholder_hits) / float(max(1, token_total)), 4)
 
@@ -28991,6 +29018,313 @@ def _build_agent_wiki_bootstrap_quality_report(
     else:
         report["mode"] = "applied"
     return report
+
+
+def _is_daily_summary_like_draft_row(
+    *,
+    page_slug: str | None,
+    page_title: str | None,
+    page_entity_key: str | None,
+    markdown_patch: str | None,
+    semantic_diff: dict[str, Any] | None,
+    gatekeeper_features: dict[str, Any] | None,
+) -> bool:
+    features = gatekeeper_features if isinstance(gatekeeper_features, dict) else {}
+    if bool(features.get("has_daily_summary_noise")):
+        return True
+    daily_hits = features.get("ingestion_daily_summary_hits")
+    if isinstance(daily_hits, list) and any(str(item or "").strip() for item in daily_hits):
+        return True
+
+    semantic = semantic_diff if isinstance(semantic_diff, dict) else {}
+    semantic_summary = str(semantic.get("summary") or "").strip().lower()
+    if "daily summary" in semantic_summary or "worklog" in semantic_summary:
+        return True
+
+    haystack = " ".join(
+        [
+            str(page_slug or "").strip().lower(),
+            str(page_title or "").strip().lower(),
+            str(page_entity_key or "").strip().lower(),
+            str(markdown_patch or "").strip().lower(),
+            str(semantic.get("after") or "").strip().lower(),
+            str(features.get("ingestion_classification") or "").strip().lower(),
+        ]
+    )
+    return any(keyword in haystack for keyword in _DAILY_SUMMARY_DRAFT_KEYWORDS)
+
+
+def _build_project_wiki_quality_report_from_rows(
+    *,
+    project_id: str,
+    published_pages: list[dict[str, Any]],
+    open_drafts: list[dict[str, Any]],
+    window_days: int,
+    placeholder_ratio_max: float,
+    daily_summary_draft_ratio_max: float,
+    min_core_published: int,
+) -> dict[str, Any]:
+    pages_by_slug: dict[str, dict[str, Any]] = {}
+    for row in published_pages:
+        slug = _normalize_wiki_slug(str(row.get("slug") or ""), str(row.get("title") or "page"))
+        if not slug:
+            continue
+        item = dict(row)
+        item["slug"] = slug
+        item["leaf"] = slug.split("/")[-1]
+        pages_by_slug[slug] = item
+
+    core_rows = [row for row in pages_by_slug.values() if str(row.get("leaf") or "") in _BOOTSTRAP_CORE_REQUIRED_LEAVES]
+    core_leaves_published = {str(row.get("leaf") or "") for row in core_rows}
+    core_missing_required = sorted(list(_BOOTSTRAP_CORE_REQUIRED_LEAVES - core_leaves_published))
+
+    token_total = 0
+    placeholder_hits_total = 0
+    thin_pages: list[dict[str, Any]] = []
+    for row in core_rows:
+        markdown = str(row.get("markdown") or "")
+        words = re.findall(r"[a-zа-я0-9_]+", markdown.lower())
+        token_total += len(words)
+        for token in _BOOTSTRAP_PLACEHOLDER_TOKENS:
+            placeholder_hits_total += markdown.lower().count(token)
+        word_count = len(words)
+        if word_count < 80:
+            thin_pages.append(
+                {
+                    "slug": str(row.get("slug") or ""),
+                    "title": str(row.get("title") or ""),
+                    "word_count": int(word_count),
+                }
+            )
+
+    placeholder_ratio = round(float(placeholder_hits_total) / float(max(1, token_total)), 4)
+
+    open_drafts_total = len(open_drafts)
+    daily_summary_open_rows = [row for row in open_drafts if bool(row.get("is_daily_summary_like"))]
+    daily_summary_open_total = len(daily_summary_open_rows)
+    daily_summary_open_ratio = round(float(daily_summary_open_total) / float(max(1, open_drafts_total)), 4)
+
+    thresholds = {
+        "placeholder_ratio_core_max": float(max(0.0, min(1.0, placeholder_ratio_max))),
+        "daily_summary_open_draft_ratio_max": float(max(0.0, min(1.0, daily_summary_draft_ratio_max))),
+        "min_core_published": int(max(1, min(50, min_core_published))),
+    }
+
+    checks = {
+        "core_required_pages_present": bool(len(core_missing_required) == 0),
+        "core_publish_coverage": bool(len(core_rows) >= int(thresholds["min_core_published"])),
+        "placeholder_ratio_core": bool(placeholder_ratio <= float(thresholds["placeholder_ratio_core_max"])),
+        "daily_summary_open_draft_ratio": bool(
+            open_drafts_total == 0 or daily_summary_open_ratio <= float(thresholds["daily_summary_open_draft_ratio_max"])
+        ),
+    }
+    overall_pass = all(bool(value) for value in checks.values())
+
+    warnings: list[dict[str, Any]] = []
+    if not checks["core_required_pages_present"]:
+        warnings.append(
+            {
+                "code": "core_required_pages_missing",
+                "severity": "critical",
+                "missing_slugs": core_missing_required,
+            }
+        )
+    if not checks["core_publish_coverage"]:
+        warnings.append(
+            {
+                "code": "core_publish_coverage_low",
+                "severity": "critical",
+                "published_core": len(core_rows),
+                "min_required": int(thresholds["min_core_published"]),
+            }
+        )
+    if not checks["placeholder_ratio_core"]:
+        warnings.append(
+            {
+                "code": "placeholder_ratio_core_high",
+                "severity": "warning",
+                "ratio": float(placeholder_ratio),
+                "threshold": float(thresholds["placeholder_ratio_core_max"]),
+            }
+        )
+    if not checks["daily_summary_open_draft_ratio"]:
+        warnings.append(
+            {
+                "code": "daily_summary_draft_ratio_high",
+                "severity": "warning",
+                "ratio": float(daily_summary_open_ratio),
+                "threshold": float(thresholds["daily_summary_open_draft_ratio_max"]),
+                "open_drafts_total": int(open_drafts_total),
+                "daily_summary_open_drafts": int(daily_summary_open_total),
+            }
+        )
+    if thin_pages:
+        warnings.append(
+            {
+                "code": "thin_core_pages",
+                "severity": "warning",
+                "count": len(thin_pages),
+                "samples": thin_pages[:8],
+            }
+        )
+
+    return {
+        "project_id": project_id,
+        "window_days": int(window_days),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "quality": {
+            "pass": bool(overall_pass),
+            "checks": checks,
+            "thresholds": thresholds,
+        },
+        "core_pages": {
+            "required_leaves": sorted(list(_BOOTSTRAP_CORE_REQUIRED_LEAVES)),
+            "published_total": len(core_rows),
+            "published_slugs": sorted([str(row.get("slug") or "") for row in core_rows]),
+            "missing_required_leaves": core_missing_required,
+            "thin_pages": thin_pages[:25],
+        },
+        "content_quality": {
+            "placeholder_ratio_core": float(placeholder_ratio),
+            "placeholder_hits_core": int(placeholder_hits_total),
+            "core_word_count_total": int(token_total),
+        },
+        "draft_noise": {
+            "open_drafts_total": int(open_drafts_total),
+            "daily_summary_open_drafts": int(daily_summary_open_total),
+            "daily_summary_open_draft_ratio": float(daily_summary_open_ratio),
+            "daily_summary_samples": [
+                {
+                    "draft_id": str(item.get("draft_id") or ""),
+                    "page_slug": str(item.get("page_slug") or ""),
+                    "page_title": str(item.get("page_title") or ""),
+                }
+                for item in daily_summary_open_rows[:8]
+            ],
+        },
+        "warnings": warnings,
+    }
+
+
+def _build_project_wiki_quality_report(
+    *,
+    project_id: str,
+    days: int,
+    placeholder_ratio_max: float,
+    daily_summary_draft_ratio_max: float,
+    min_core_published: int,
+) -> dict[str, Any]:
+    published_pages: list[dict[str, Any]] = []
+    open_drafts: list[dict[str, Any]] = []
+    cutoff = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            has_pages = _public_table_exists(conn, "wiki_pages")
+            has_versions = _public_table_exists(conn, "wiki_page_versions")
+            has_drafts = _public_table_exists(conn, "wiki_draft_changes")
+            has_gatekeeper = _public_table_exists(conn, "gatekeeper_decisions")
+
+            if has_pages:
+                markdown_sql = (
+                    "COALESCE((SELECT pv.markdown FROM wiki_page_versions pv WHERE pv.page_id = p.id ORDER BY pv.version DESC LIMIT 1), '')"
+                    if has_versions
+                    else "''"
+                )
+                cur.execute(
+                    f"""
+                    SELECT
+                      p.id::text,
+                      p.slug,
+                      p.title,
+                      p.entity_key,
+                      p.page_type,
+                      p.status,
+                      p.updated_at,
+                      {markdown_sql} AS markdown
+                    FROM wiki_pages p
+                    WHERE p.project_id = %s
+                      AND p.status = 'published'
+                    ORDER BY p.updated_at DESC
+                    """,
+                    (project_id,),
+                )
+                for row in (cur.fetchall() or []):
+                    published_pages.append(
+                        {
+                            "id": str(row[0] or ""),
+                            "slug": str(row[1] or ""),
+                            "title": str(row[2] or ""),
+                            "entity_key": str(row[3] or ""),
+                            "page_type": str(row[4] or ""),
+                            "status": str(row[5] or ""),
+                            "updated_at": row[6].isoformat() if isinstance(row[6], datetime) else None,
+                            "markdown": str(row[7] or ""),
+                        }
+                    )
+
+            if has_drafts:
+                gatekeeper_join_sql = (
+                    "LEFT JOIN gatekeeper_decisions g ON g.claim_id = d.claim_id"
+                    if has_gatekeeper
+                    else ""
+                )
+                gatekeeper_features_sql = "g.features" if has_gatekeeper else "'{}'::jsonb"
+                cur.execute(
+                    f"""
+                    SELECT
+                      d.id::text,
+                      d.status,
+                      d.markdown_patch,
+                      d.semantic_diff,
+                      p.slug,
+                      p.title,
+                      p.entity_key,
+                      {gatekeeper_features_sql}
+                    FROM wiki_draft_changes d
+                    LEFT JOIN wiki_pages p ON p.id = d.page_id
+                    {gatekeeper_join_sql}
+                    WHERE d.project_id = %s
+                      AND d.status IN ('pending_review', 'blocked_conflict')
+                      AND d.created_at >= %s
+                    ORDER BY d.created_at DESC
+                    LIMIT 10000
+                    """,
+                    (project_id, cutoff),
+                )
+                for row in (cur.fetchall() or []):
+                    semantic_diff = row[3] if isinstance(row[3], dict) else {}
+                    gatekeeper_features = row[7] if isinstance(row[7], dict) else {}
+                    open_drafts.append(
+                        {
+                            "draft_id": str(row[0] or ""),
+                            "status": str(row[1] or ""),
+                            "markdown_patch": str(row[2] or ""),
+                            "semantic_diff": semantic_diff,
+                            "page_slug": str(row[4] or ""),
+                            "page_title": str(row[5] or ""),
+                            "page_entity_key": str(row[6] or ""),
+                            "gatekeeper_features": gatekeeper_features,
+                            "is_daily_summary_like": _is_daily_summary_like_draft_row(
+                                page_slug=str(row[4] or ""),
+                                page_title=str(row[5] or ""),
+                                page_entity_key=str(row[6] or ""),
+                                markdown_patch=str(row[2] or ""),
+                                semantic_diff=semantic_diff,
+                                gatekeeper_features=gatekeeper_features,
+                            ),
+                        }
+                    )
+
+    return _build_project_wiki_quality_report_from_rows(
+        project_id=project_id,
+        published_pages=published_pages,
+        open_drafts=open_drafts,
+        window_days=int(max(1, days)),
+        placeholder_ratio_max=float(placeholder_ratio_max),
+        daily_summary_draft_ratio_max=float(daily_summary_draft_ratio_max),
+        min_core_published=int(min_core_published),
+    )
 
 
 def _legacy_import_sources_table_exists_from_cursor(cur: Any) -> bool:
@@ -30593,6 +30927,23 @@ def get_adoption_pipeline_visibility(
     }
 
 
+@app.get("/v1/adoption/wiki-quality/report")
+def get_adoption_wiki_quality_report(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    placeholder_ratio_max: float = Query(default=0.10, ge=0.0, le=1.0),
+    daily_summary_draft_ratio_max: float = Query(default=0.20, ge=0.0, le=1.0),
+    min_core_published: int = Query(default=6, ge=1, le=50),
+) -> dict[str, Any]:
+    return _build_project_wiki_quality_report(
+        project_id=project_id,
+        days=int(days),
+        placeholder_ratio_max=float(placeholder_ratio_max),
+        daily_summary_draft_ratio_max=float(daily_summary_draft_ratio_max),
+        min_core_published=int(min_core_published),
+    )
+
+
 @app.get("/v1/adoption/kpi")
 def get_adoption_kpi(
     project_id: str,
@@ -30608,6 +30959,7 @@ def get_adoption_kpi(
     pipeline = get_adoption_pipeline_visibility(project_id=project_id, days=days)
     accepted_total = int((pipeline.get("pipeline") or {}).get("accepted") or 0)
     rejected_event_like = int(pipeline.get("rejected_event_like") or 0)
+    wiki_quality = get_adoption_wiki_quality_report(project_id=project_id, days=min(days, 90))
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -30740,6 +31092,17 @@ def get_adoption_kpi(
                 "hint": "Revert rate is elevated; enable stricter process simulation or human-required publish mode.",
             }
         )
+    wiki_quality_checks = wiki_quality.get("quality", {}).get("checks") if isinstance(wiki_quality.get("quality"), dict) else {}
+    if not bool((wiki_quality.get("quality") or {}).get("pass")):
+        alerts.append(
+            {
+                "metric": "wiki_quality",
+                "status": "warning",
+                "value": bool((wiki_quality.get("quality") or {}).get("pass")),
+                "hint": "Core wiki quality gates are not met; inspect /v1/adoption/wiki-quality/report for actionable gaps.",
+                "checks": wiki_quality_checks,
+            }
+        )
 
     return {
         "project_id": project_id,
@@ -30762,6 +31125,7 @@ def get_adoption_kpi(
         },
         "thresholds": alert_thresholds,
         "alerts": alerts,
+        "wiki_quality": wiki_quality,
     }
 
 

@@ -239,8 +239,12 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             updated_by="ops_admin",
             dry_run=False,
             space_key="operations",
+            bootstrap_publish_core=True,
             include_data_sources_catalog=True,
             include_agent_capability_profile=True,
+            include_tooling_map=True,
+            include_process_playbooks=True,
+            include_company_operating_context=True,
             include_operational_logic=True,
             max_sources=12,
             max_agents=30,
@@ -255,6 +259,10 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("space_key"), "operations")
+        self.assertTrue(payload.get("bootstrap_publish_core"))
+        self.assertTrue(payload.get("include_tooling_map"))
+        self.assertTrue(payload.get("include_process_playbooks"))
+        self.assertTrue(payload.get("include_company_operating_context"))
         self.assertEqual(payload.get("max_sources"), 12)
         self.assertEqual(payload.get("max_agents"), 30)
         self.assertEqual(payload.get("max_signals"), 15)
@@ -354,6 +362,23 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(params.get("days"), 21)
         self.assertEqual(params.get("source_systems"), "postgres_sql,memory_api")
         self.assertEqual(params.get("namespaces"), "ops,kb")
+
+    def test_get_adoption_wiki_quality_report_is_project_scoped(self) -> None:
+        self.client.get_adoption_wiki_quality_report(
+            days=30,
+            placeholder_ratio_max=0.08,
+            daily_summary_draft_ratio_max=0.15,
+            min_core_published=7,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/wiki-quality/report")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("days"), 30)
+        self.assertEqual(params.get("placeholder_ratio_max"), 0.08)
+        self.assertEqual(params.get("daily_summary_draft_ratio_max"), 0.15)
+        self.assertEqual(params.get("min_core_published"), 7)
 
     def test_get_adoption_rejection_diagnostics_is_project_scoped(self) -> None:
         self.client.get_adoption_rejection_diagnostics(days=11, sample_limit=7)

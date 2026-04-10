@@ -75,6 +75,7 @@ Environment:
 - `GET /v1/adoption/noise-presets?lane=knowledge` (reusable pre-ingest noise suppression presets; recommended knowledge preset is `knowledge_v2`)
 - `GET /v1/adoption/rejections/diagnostics?project_id=...&days=14&sample_limit=5` (aggregated reject reasons, blocked patterns, and suggested policy knobs)
 - `GET /v1/adoption/pipeline/visibility?project_id=...&days=14&source_systems=legacy_import,postgres_sql&namespaces=ops` (end-to-end counters `accepted -> events -> claims -> drafts -> pages` with transition drops and bottleneck hints)
+- `GET /v1/adoption/wiki-quality/report?project_id=...&days=14&placeholder_ratio_max=0.10&daily_summary_draft_ratio_max=0.20&min_core_published=6` (OOTB wiki quality gate: required core-page coverage, placeholder ratio on core published pages, daily-summary draft-noise ratio, actionable warnings)
 - `GET /v1/adoption/kpi?project_id=...&days=30` (adoption KPI cards and threshold alerts: first draft/publish latency, draft noise, revert rate)
 - `GET /v1/adoption/policy-calibration/quick-loop?project_id=...` (safe routing-policy recommendation from diagnostics + bottleneck analysis)
 - `POST /v1/adoption/policy-calibration/quick-loop/apply` (dry-run/apply quick preset with rollback snapshot safety)

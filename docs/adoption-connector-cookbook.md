@@ -182,3 +182,9 @@ Resulting pages include:
 Response includes:
 - `preview_apply_flow` with exact follow-up payload for apply mode.
 - `quality_report` with core-page coverage, placeholder ratio, non-publish reasons, and DoD pass/fail summary.
+
+After apply, verify OOTB quality gate:
+
+```bash
+curl -s "http://localhost:8080/v1/adoption/wiki-quality/report?project_id=omega_demo&days=30&placeholder_ratio_max=0.10&daily_summary_draft_ratio_max=0.20&min_core_published=6" | jq .
+```

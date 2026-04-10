@@ -938,9 +938,13 @@ export class SynapseClient {
     updatedBy: string;
     dryRun?: boolean;
     publish?: boolean;
+    bootstrapPublishCore?: boolean;
     spaceKey?: string;
     includeDataSourcesCatalog?: boolean;
     includeAgentCapabilityProfile?: boolean;
+    includeToolingMap?: boolean;
+    includeProcessPlaybooks?: boolean;
+    includeCompanyOperatingContext?: boolean;
     includeOperationalLogic?: boolean;
     includeFirstRunStarter?: boolean;
     maxSources?: number;
@@ -961,9 +965,13 @@ export class SynapseClient {
         dry_run: dryRun,
         confirm_project_id: dryRun ? undefined : this.projectId,
         publish: options.publish ?? true,
+        bootstrap_publish_core: options.bootstrapPublishCore ?? true,
         space_key: asOptionalString(options.spaceKey) ?? "operations",
         include_data_sources_catalog: options.includeDataSourcesCatalog ?? true,
         include_agent_capability_profile: options.includeAgentCapabilityProfile ?? true,
+        include_tooling_map: options.includeToolingMap ?? true,
+        include_process_playbooks: options.includeProcessPlaybooks ?? true,
+        include_company_operating_context: options.includeCompanyOperatingContext ?? true,
         include_operational_logic: options.includeOperationalLogic ?? true,
         include_first_run_starter: options.includeFirstRunStarter ?? true,
         max_sources: normalizeInt(options.maxSources ?? 25, 1, 150),
@@ -1001,6 +1009,30 @@ export class SynapseClient {
         days: normalizeInt(options.days ?? 14, 1, 90),
         source_systems: sourceSystems.length > 0 ? sourceSystems.join(",") : undefined,
         namespaces: namespaces.length > 0 ? namespaces.join(",") : undefined
+      }
+    });
+  }
+
+  async getAdoptionWikiQualityReport(options: {
+    days?: number;
+    placeholderRatioMax?: number;
+    dailySummaryDraftRatioMax?: number;
+    minCorePublished?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    const placeholderRatioMax = Number.isFinite(options.placeholderRatioMax)
+      ? Number(options.placeholderRatioMax)
+      : 0.1;
+    const dailySummaryDraftRatioMax = Number.isFinite(options.dailySummaryDraftRatioMax)
+      ? Number(options.dailySummaryDraftRatioMax)
+      : 0.2;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/wiki-quality/report", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        placeholder_ratio_max: Math.max(0, Math.min(1, placeholderRatioMax)),
+        daily_summary_draft_ratio_max: Math.max(0, Math.min(1, dailySummaryDraftRatioMax)),
+        min_core_published: normalizeInt(options.minCorePublished ?? 6, 1, 50)
       }
     });
   }
