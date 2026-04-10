@@ -2983,6 +2983,76 @@ def _derive_runtime_agent_responsibilities(*, event_types: list[str], tools: lis
     return responsibilities[:4]
 
 
+def _derive_runtime_agent_actions(*, event_types: list[str], tools: list[str]) -> list[str]:
+    probe = " ".join([*event_types, *tools]).lower()
+    actions: list[str] = []
+    if any(token in probe for token in ("dispatch", "route", "delivery", "eta", "pickup")):
+        actions.append("Plans routing decisions and applies dispatch fallback actions.")
+    if any(token in probe for token in ("ticket", "support", "chat", "customer", "triage")):
+        actions.append("Triages customer issues and applies support runbooks.")
+    if any(token in probe for token in ("billing", "invoice", "payment", "refund", "chargeback")):
+        actions.append("Resolves billing exceptions and prepares finance-safe actions.")
+    if any(token in probe for token in ("policy", "review", "moderation", "governance", "compliance")):
+        actions.append("Evaluates policy/process changes and opens governance review when needed.")
+    if not actions:
+        actions.append("Executes operational tasks and maintains wiki-ready knowledge signals.")
+    return actions[:4]
+
+
+def _derive_runtime_agent_escalations(*, event_types: list[str], tools: list[str]) -> list[str]:
+    probe = " ".join([*event_types, *tools]).lower()
+    escalation_rules: list[str] = []
+    if any(token in probe for token in ("incident", "critical", "outage", "blocked", "escalat")):
+        escalation_rules.append("Escalates immediately on incident/critical signals to on-call owner.")
+    if any(token in probe for token in ("sla", "delay", "timeout", "late", "retry")):
+        escalation_rules.append("Escalates when SLA risk persists after mitigation attempt.")
+    if any(token in probe for token in ("policy", "compliance", "security", "privacy")):
+        escalation_rules.append("Requires human review for policy/compliance-impacting actions.")
+    if not escalation_rules:
+        escalation_rules.append("Escalates when confidence is low or repeat failures are detected.")
+    return escalation_rules[:3]
+
+
+def _derive_runtime_agent_limits(*, role: str, data_sources: list[str]) -> list[str]:
+    role_probe = str(role or "").lower()
+    limits: list[str] = []
+    if any(token in role_probe for token in ("support", "dispatch", "billing")):
+        limits.append("Operates under role-specific runbooks and approval guardrails.")
+    if data_sources:
+        limits.append("May only act on sources mapped in Data Sources Catalog.")
+    limits.append("High-risk policy/compliance updates require human approval before publish.")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in limits:
+        key = item.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item.strip())
+    return deduped[:3]
+
+
+def _derive_runtime_agent_scenarios(
+    *,
+    event_types: list[str],
+    tools: list[str],
+    data_sources: list[str],
+) -> list[str]:
+    probe = " ".join([*event_types, *tools, *data_sources]).lower()
+    scenarios: list[str] = []
+    if any(token in probe for token in ("dispatch", "route", "warehouse", "delivery")):
+        scenarios.append("When route/access constraints change, updates plan and escalates if SLA at risk.")
+    if any(token in probe for token in ("ticket", "support", "customer")):
+        scenarios.append("When customer issue repeats, executes triage playbook then escalates with evidence.")
+    if any(token in probe for token in ("billing", "invoice", "payment", "refund")):
+        scenarios.append("When payment anomaly detected, follows billing procedure and requests approval if needed.")
+    if any(token in probe for token in ("policy", "runbook", "process", "compliance")):
+        scenarios.append("When policy/process drift appears, drafts wiki change and routes for review.")
+    if not scenarios:
+        scenarios.append("Observes runtime signals, proposes reusable knowledge, escalates low-confidence outcomes.")
+    return scenarios[:4]
+
+
 def _build_runtime_agent_capability_matrix(
     cur: Any,
     *,
@@ -3132,6 +3202,14 @@ def _build_runtime_agent_capability_matrix(
             tools=tools,
             data_sources=data_sources,
         )
+        typical_actions = _derive_runtime_agent_actions(event_types=event_types, tools=tools)
+        escalation_rules = _derive_runtime_agent_escalations(event_types=event_types, tools=tools)
+        limits = _derive_runtime_agent_limits(role=role, data_sources=data_sources)
+        scenario_examples = _derive_runtime_agent_scenarios(
+            event_types=event_types,
+            tools=tools,
+            data_sources=data_sources,
+        )
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -3140,9 +3218,12 @@ def _build_runtime_agent_capability_matrix(
                 "role": role,
                 "status": status,
                 "responsibilities": responsibilities,
+                "typical_actions": typical_actions,
+                "escalation_rules": escalation_rules,
+                "scenario_examples": scenario_examples,
                 "tools": tools,
                 "data_sources": data_sources,
-                "limits": ["Inferred from runtime signals; register profile for explicit policy limits."],
+                "limits": limits,
                 "confidence": confidence,
                 "last_success_at": last_seen_at.isoformat() if isinstance(last_seen_at, datetime) else None,
                 "evidence": [
@@ -3241,6 +3322,13 @@ def _build_agent_capability_matrix(
                     }
                 )
         confidence = _compute_agent_capability_confidence(aggregate)
+        typical_actions = _derive_runtime_agent_actions(event_types=[], tools=tools)
+        escalation_rules = _derive_runtime_agent_escalations(event_types=[], tools=tools)
+        scenario_examples = _derive_runtime_agent_scenarios(
+            event_types=[],
+            tools=tools,
+            data_sources=data_sources,
+        )
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -3249,6 +3337,9 @@ def _build_agent_capability_matrix(
                 "role": str(row[3] or "").strip() or None,
                 "status": str(row[4] or "active").strip() or "active",
                 "responsibilities": responsibilities,
+                "typical_actions": typical_actions,
+                "escalation_rules": escalation_rules,
+                "scenario_examples": scenario_examples,
                 "tools": tools,
                 "data_sources": data_sources,
                 "limits": limits,
@@ -3743,6 +3834,18 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "personal_data",
         "персональ",
         "паспорт",
+    ],
+    "pre_draft_filter_enabled": True,
+    "pre_draft_noise_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "payload_dump",
+        "event_stream",
+        "telemetry",
+        "runtime_event",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
     ],
     "event_stream_min_numeric_token_ratio": 0.45,
     "event_stream_min_token_hits": 2,
@@ -5778,6 +5881,11 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
         fallback=list(base["pii_sensitive_keywords"]),
         limit=128,
     )
+    normalized["pre_draft_noise_keywords"] = _normalize_policy_keyword_list(
+        value.get("pre_draft_noise_keywords"),
+        fallback=list(base["pre_draft_noise_keywords"]),
+        limit=128,
+    )
     normalized["auto_publish_risk_keywords_high"] = _normalize_policy_keyword_list(
         value.get("auto_publish_risk_keywords_high"),
         fallback=list(base["auto_publish_risk_keywords_high"]),
@@ -5934,6 +6042,10 @@ def _normalize_gatekeeper_routing_policy(value: Any) -> dict[str, Any]:
     normalized["emit_reinforcement_drafts"] = _coerce_bool(
         value.get("emit_reinforcement_drafts"),
         bool(base["emit_reinforcement_drafts"]),
+    )
+    normalized["pre_draft_filter_enabled"] = _coerce_bool(
+        value.get("pre_draft_filter_enabled"),
+        bool(base["pre_draft_filter_enabled"]),
     )
     normalized["draft_flood_max_open_per_page"] = max(
         50,
@@ -26658,6 +26770,107 @@ def _insert_bootstrap_pages(
     policy_space_fallback_enabled: bool = False,
     policy_space_fallback_candidates: list[str] | None = None,
 ) -> dict[str, Any]:
+    def _assess_bootstrap_page_quality(
+        *,
+        page_type: str,
+        title: str,
+        markdown: str,
+    ) -> dict[str, Any]:
+        text = str(markdown or "")
+        normalized = text.lower()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        words = re.findall(r"[a-zа-я0-9_]+", normalized)
+        heading_lines = [line for line in lines if line.startswith("#")]
+        bullet_lines = [line for line in lines if line.startswith("- ") or line.startswith("* ")]
+        table_lines = [line for line in lines if line.startswith("|") and line.count("|") >= 2]
+        placeholder_tokens = [
+            "n/a",
+            "tbd",
+            "todo",
+            "runtime discovery pending",
+            "no explicit usage mapped yet",
+            "no high-signal patterns yet",
+        ]
+        placeholder_hits = [token for token in placeholder_tokens if token in normalized]
+        factual_signals = sum(
+            1
+            for line in lines
+            if any(
+                token in line.lower()
+                for token in (
+                    "policy",
+                    "process",
+                    "runbook",
+                    "owner",
+                    "sla",
+                    "escalat",
+                    "source",
+                    "tool",
+                    "handoff",
+                    "when ",
+                    "if ",
+                    "then ",
+                )
+            )
+        )
+        required_sections_by_type: dict[str, list[str]] = {
+            "agent_profile": ["## Orgchart", "## Capability Matrix", "## Capability Signals", "## Handoffs"],
+            "data_map": ["##", "Owner", "Freshness"],
+            "process": ["##", "Escalat"],
+            "runbook": ["##", "Action"],
+            "policy": ["##", "Rule"],
+        }
+        required_markers = required_sections_by_type.get(str(page_type or "").strip().lower(), ["##"])
+        missing_required = [marker for marker in required_markers if marker.lower() not in normalized]
+        capability_contract: dict[str, Any] | None = None
+        if str(page_type or "").strip().lower() == "agent_profile":
+            capability_contract = _evaluate_agent_capability_bootstrap_contract(
+                text,
+                min_sections=4,
+                min_facts=6,
+            )
+            missing_required.extend(list(capability_contract.get("missing_sections") or []))
+        min_words_by_type = {
+            "agent_profile": 120,
+            "data_map": 80,
+            "process": 55,
+            "runbook": 55,
+            "policy": 55,
+        }
+        min_words = int(min_words_by_type.get(str(page_type or "").strip().lower(), 40))
+        quality_score = 0.0
+        quality_score += min(0.35, len(words) / float(max(min_words, 1)) * 0.35)
+        quality_score += min(0.2, len(heading_lines) / 4.0 * 0.2)
+        quality_score += min(0.2, (len(bullet_lines) + len(table_lines)) / 10.0 * 0.2)
+        quality_score += min(0.25, factual_signals / 8.0 * 0.25)
+        quality_score -= min(0.25, len(placeholder_hits) * 0.08)
+        quality_score = round(max(0.0, min(1.0, quality_score)), 4)
+        publish_ready = bool(
+            len(words) >= min_words
+            and len(heading_lines) >= 2
+            and (len(bullet_lines) + len(table_lines)) >= 3
+            and factual_signals >= 3
+            and len(missing_required) == 0
+            and len(placeholder_hits) <= 1
+        )
+        if capability_contract is not None:
+            publish_ready = bool(publish_ready and capability_contract.get("passed"))
+        return {
+            "page_type": str(page_type or "operations"),
+            "title": str(title or ""),
+            "words": len(words),
+            "headings": len(heading_lines),
+            "bullets": len(bullet_lines),
+            "table_rows": len(table_lines),
+            "factual_signals": int(factual_signals),
+            "placeholder_hits": placeholder_hits,
+            "missing_required_markers": missing_required,
+            "min_words": min_words,
+            "quality_score": quality_score,
+            "publish_ready": publish_ready,
+            "capability_contract": capability_contract,
+        }
+
     def _rewrite_wiki_space_links(markdown_value: str, *, from_space_key: str, to_space_key: str) -> str:
         text = str(markdown_value or "")
         if not text:
@@ -26720,6 +26933,7 @@ def _insert_bootstrap_pages(
     skipped: list[dict[str, Any]] = []
     policy_space_fallback: list[dict[str, Any]] = []
     downgraded_to_reviewed = 0
+    downgraded_by_quality_gate = 0
     created_page_ids: list[str] = []
     snapshot_id_text: str | None = None
 
@@ -26816,6 +27030,11 @@ def _insert_bootstrap_pages(
                 continue
 
             status = requested_status
+            quality_assessment = _assess_bootstrap_page_quality(
+                page_type=page_type,
+                title=title,
+                markdown=markdown,
+            )
             if status == "published":
                 guard = _resolve_agent_publish_mode(
                     cur,
@@ -26826,6 +27045,10 @@ def _insert_bootstrap_pages(
                 if str(guard.get("mode") or "") == "human_required":
                     status = "reviewed"
                     downgraded_to_reviewed += 1
+                elif not bool(quality_assessment.get("publish_ready")):
+                    status = "reviewed"
+                    downgraded_to_reviewed += 1
+                    downgraded_by_quality_gate += 1
 
             page_id = uuid4()
             cur.execute(
@@ -26849,6 +27072,7 @@ def _insert_bootstrap_pages(
                             "created_by": created_by,
                             "profile": profile,
                             "policy_space_fallback": bool(fallback_applied_for_page),
+                            "bootstrap_quality_gate": quality_assessment,
                         }
                     ),
                 ),
@@ -26915,6 +27139,7 @@ def _insert_bootstrap_pages(
                     "version": 1,
                     "sections": len(sections),
                     "statements": statements_count,
+                    "quality_gate": quality_assessment,
                 }
             )
             created_page_ids.append(str(page_id))
@@ -26957,6 +27182,7 @@ def _insert_bootstrap_pages(
             "existing": len(existing),
             "skipped": len(skipped),
             "published_downgraded_to_reviewed": downgraded_to_reviewed,
+            "published_downgraded_by_quality_gate": downgraded_by_quality_gate,
         },
         "snapshot_id": snapshot_id_text,
     }
@@ -27721,12 +27947,46 @@ def _build_agent_capability_bootstrap_page(
             _render_agent_capability_matrix_markdown(matrix=matrix).strip(),
             "",
             "## Capability Signals",
-            "- Runtime intents observed in sessions/tasks.",
+            "- Runtime intents observed in sessions/tasks and converted into reusable actions.",
             "- Tool invocations and handoff contracts between agents.",
-            "- Data-source access patterns and successful outcomes.",
+            "- Data-source access patterns, policy limits, and escalation pathways.",
             "",
         ]
     )
+    lines.extend(["## Capability Deep Dive"])
+    if matrix:
+        for item in matrix[: max(1, min(20, max_agents))]:
+            agent_id = str(item.get("agent_id") or "").strip()
+            display_name = str(item.get("display_name") or agent_id or "Agent").strip() or "Agent"
+            role = str(item.get("role") or "Agent")
+            team = str(item.get("team") or "Unassigned")
+            actions = [str(v).strip() for v in (item.get("typical_actions") or []) if str(v).strip()]
+            escalations = [str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()]
+            limits = [str(v).strip() for v in (item.get("limits") or []) if str(v).strip()]
+            tools = [str(v).strip() for v in (item.get("tools") or []) if str(v).strip()]
+            data_sources = [str(v).strip() for v in (item.get("data_sources") or []) if str(v).strip()]
+            scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+            lines.extend(
+                [
+                    "",
+                    f"### {display_name} (`{agent_id}`)",
+                    f"- Team / Role: {team} / {role}",
+                    f"- Typical actions: {'; '.join(actions[:3]) if actions else 'n/a'}",
+                    f"- Escalation rules: {'; '.join(escalations[:2]) if escalations else 'n/a'}",
+                    f"- Toolset: {', '.join(tools[:6]) if tools else 'n/a'}",
+                    f"- Data sources: {', '.join(data_sources[:6]) if data_sources else 'n/a'}",
+                    f"- Constraints: {'; '.join(limits[:3]) if limits else 'n/a'}",
+                    f"- Scenario examples: {'; '.join(scenarios[:2]) if scenarios else 'n/a'}",
+                ]
+            )
+    else:
+        lines.extend(
+            [
+                "",
+                "- Runtime discovery pending. Connect at least one active agent or register profiles via `/v1/agents/register`.",
+            ]
+        )
+    lines.append("")
     lines.extend(["## Handoffs", _render_agent_handoff_markdown(edges=edges if isinstance(edges, list) else []).strip(), ""])
     if isinstance(teams, list) and teams:
         lines.extend(["## Teams", "| Team | Agents |", "|---|---:|"])
@@ -27993,6 +28253,60 @@ def _build_agent_wiki_bootstrap_pages(
             }
         )
     return deduped
+
+
+def _evaluate_agent_capability_bootstrap_contract(
+    markdown: str,
+    *,
+    min_sections: int = 4,
+    min_facts: int = 6,
+) -> dict[str, Any]:
+    text = str(markdown or "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    normalized = text.lower()
+    required_sections = [
+        "## Orgchart",
+        "## Capability Matrix",
+        "## Capability Signals",
+        "## Handoffs",
+    ]
+    present_sections = [section for section in required_sections if section.lower() in normalized]
+    missing_sections = [section for section in required_sections if section.lower() not in normalized]
+    fact_lines = [
+        line
+        for line in lines
+        if (
+            line.startswith("- ")
+            and any(
+                marker in line.lower()
+                for marker in (
+                    "team / role",
+                    "typical actions",
+                    "escalation rules",
+                    "toolset",
+                    "data sources",
+                    "constraints",
+                    "scenario examples",
+                )
+            )
+        )
+    ]
+    deep_dive_agents = [line for line in lines if line.startswith("### ") and "(`" in line]
+    passed = bool(
+        len(present_sections) >= max(1, int(min_sections))
+        and len(fact_lines) >= max(1, int(min_facts))
+        and len(deep_dive_agents) >= 1
+    )
+    return {
+        "passed": passed,
+        "required_sections": required_sections,
+        "present_sections": present_sections,
+        "missing_sections": missing_sections,
+        "facts_count": len(fact_lines),
+        "deep_dive_agents": len(deep_dive_agents),
+        "min_sections": int(min_sections),
+        "min_facts": int(min_facts),
+    }
 
 
 def _agent_wiki_bootstrap_dod(

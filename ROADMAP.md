@@ -135,9 +135,10 @@ Goal:
 
 ### P1 (next)
 
-1. `planned` Agent capability enrichment from runtime registry/tools/handoffs (reduce `n/a` outputs).
-2. `planned` Source pages enrichment with real key fields/schema/freshness/usage sampling.
-3. `planned` OOTB moderation policy pack:
+1. `done` Agent capability enrichment from runtime signals/tools/handoffs:
+   - capability bootstrap now includes per-agent `typical actions`, `escalation rules`, `constraints`, and `scenario examples` instead of template-only rows.
+2. `done` Source pages enrichment with real key fields/schema/freshness/usage sampling.
+3. `done` OOTB moderation policy pack:
    - auto-publish only high-signal classes;
    - noisy classes always `pending_review`.
 4. `planned` Signal/noise stability monitor:
@@ -1257,3 +1258,4 @@ Checklist:
 - 2026-04-09: Closed adoption feedback `P0` on ingest stability: switched backfill event identity to deterministic `project_id + source_id + record_fingerprint` (while preserving batch fallback), added per-batch duplicate-pair guard (`source_id + fingerprint`) and persisted `record_fingerprint`/`ingestion_classification` into backfill payload metadata to prevent linear growth on repeated sync uploads.
 - 2026-04-09: Closed adoption feedback `P0` on pre-claim noise filtering: hardened worker backfill suppression to block `pii_sensitive_stream` and explicit deny-class ingestion classifications before claim/draft generation, while preserving trusted knowledge hints and durable knowledge-lane signals.
 - 2026-04-09: Closed adoption feedback `P0/P1/P2` bootstrap + observability gaps: added policy-aware wiki-space fallback for first-run/agent/template bootstrap flows (with explicit 409 diagnostics when no writable space exists), enriched Data Sources Catalog pages with schema samples from connector mappings, strengthened Operational Logic synthesis to high-signal knowledge-only claims, and shipped sync cursor diagnostics endpoint (`GET /v1/adoption/sync/cursor-health`) plus pipeline signal/noise ratio telemetry.
+- 2026-04-10: OOTB content-quality hardening pass: added worker pre-draft hard filter for `operational_stream`/payload-like/PII claims, enriched claim metadata from backfill suppression signals, enabled high-signal route override in gatekeeper (`events -> claims` rescue for policy/process/runbook signals), strengthened bootstrap quality-gate to downgrade template/short pages from `published` to `reviewed`, and expanded Agent Capability bootstrap with actionable per-agent sections (actions/escalations/constraints/scenarios) plus acceptance tests for required sections/fact density.

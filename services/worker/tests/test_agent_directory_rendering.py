@@ -4,11 +4,14 @@ from datetime import date
 import unittest
 
 try:
+    import services.api.app.main as _api_main
     from services.api.app.main import (
+        _build_agent_capability_bootstrap_page,
         _build_agent_provenance_activity,
         _compute_agent_capability_confidence,
         _derive_runtime_agent_responsibilities,
         _derive_runtime_agent_role,
+        _evaluate_agent_capability_bootstrap_contract,
         _normalize_agent_directory_items,
         _normalize_agent_publish_policy,
         _render_agent_capability_matrix_markdown,
@@ -19,10 +22,13 @@ try:
         _render_agent_scorecards_markdown,
     )
 except Exception:  # pragma: no cover
+    _api_main = None
+    _build_agent_capability_bootstrap_page = None
     _build_agent_provenance_activity = None
     _compute_agent_capability_confidence = None
     _derive_runtime_agent_responsibilities = None
     _derive_runtime_agent_role = None
+    _evaluate_agent_capability_bootstrap_contract = None
     _normalize_agent_directory_items = None
     _normalize_agent_publish_policy = None
     _render_agent_capability_matrix_markdown = None
@@ -35,10 +41,12 @@ except Exception:  # pragma: no cover
 
 @unittest.skipIf(
     _normalize_agent_directory_items is None
+    or _build_agent_capability_bootstrap_page is None
     or _build_agent_provenance_activity is None
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
     or _derive_runtime_agent_role is None
+    or _evaluate_agent_capability_bootstrap_contract is None
     or _render_agent_capability_matrix_markdown is None
     or _normalize_agent_publish_policy is None
     or _render_agent_overview_markdown is None
@@ -212,6 +220,71 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(role, "Dispatch Agent")
         self.assertTrue(any("Handles runtime events" in item for item in responsibilities))
         self.assertTrue(any("Uses tools" in item for item in responsibilities))
+
+    def test_agent_capability_contract_passes_for_bootstrap_page(self) -> None:
+        assert _api_main is not None
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_runtime_matrix = _api_main._build_runtime_agent_capability_matrix
+        original_get_orgchart = _api_main.get_agent_orgchart
+        try:
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: False
+            _api_main._build_runtime_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "dispatch_bot",
+                    "display_name": "Dispatch Bot",
+                    "team": "Runtime Agents",
+                    "role": "Dispatch Agent",
+                    "status": "active",
+                    "responsibilities": ["Plans dispatch routes", "Monitors SLA risks"],
+                    "typical_actions": [
+                        "Plans routing decisions and applies dispatch fallback actions.",
+                        "Evaluates policy/process changes and opens governance review when needed.",
+                    ],
+                    "escalation_rules": [
+                        "Escalates when SLA risk persists after mitigation attempt.",
+                    ],
+                    "scenario_examples": [
+                        "When route/access constraints change, updates plan and escalates if SLA at risk.",
+                    ],
+                    "tools": ["maps_router", "fleet_registry"],
+                    "data_sources": ["orders_api", "warehouse_access_rules"],
+                    "limits": ["Operates under role-specific runbooks and approval guardrails."],
+                    "confidence": 0.88,
+                    "last_success_at": "2026-04-10T00:00:00+00:00",
+                    "evidence": [],
+                }
+            ]
+            _api_main.get_agent_orgchart = lambda **kwargs: {
+                "nodes": [
+                    {
+                        "agent_id": "dispatch_bot",
+                        "display_name": "Dispatch Bot",
+                        "team": "Runtime Agents",
+                        "role": "Dispatch Agent",
+                        "status": "active",
+                        "profile_slug": "agents/dispatch_bot",
+                    }
+                ],
+                "edges": [],
+                "teams": [{"team": "Runtime Agents", "agents_total": 1}],
+            }
+
+            pages = _build_agent_capability_bootstrap_page(
+                object(),
+                project_id="omega_demo",
+                space_key="operations",
+                max_agents=10,
+            )
+            self.assertTrue(bool(pages))
+            markdown = str(pages[0].get("markdown") or "")
+            contract = _evaluate_agent_capability_bootstrap_contract(markdown, min_sections=4, min_facts=6)
+            self.assertTrue(bool(contract.get("passed")))
+            self.assertEqual(list(contract.get("missing_sections") or []), [])
+            self.assertGreaterEqual(int(contract.get("facts_count") or 0), 6)
+        finally:
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_runtime_agent_capability_matrix = original_runtime_matrix
+            _api_main.get_agent_orgchart = original_get_orgchart
 
 
 if __name__ == "__main__":

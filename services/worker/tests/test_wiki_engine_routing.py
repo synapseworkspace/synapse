@@ -4,7 +4,13 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 
-from services.worker.app.wiki_engine import ClaimInput, GatekeeperConfig, GatekeeperLLMAssessment, WikiSynthesisEngine
+from services.worker.app.wiki_engine import (
+    ClaimInput,
+    GatekeeperConfig,
+    GatekeeperDecision,
+    GatekeeperLLMAssessment,
+    WikiSynthesisEngine,
+)
 
 
 def _base_gatekeeper_config() -> GatekeeperConfig:
@@ -612,6 +618,67 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertEqual(str(decision.features.get("ingestion_classification")), "pii_sensitive_stream")
         self.assertTrue(bool(decision.features.get("ingestion_default_deny_block")))
         self.assertEqual(decision.tier, "operational_memory")
+
+    def test_gatekeeper_high_signal_route_can_override_event_transport_block(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="ops_rule_42",
+            category="business_rule",
+            claim_text="company_operating_model: when warehouse is closed, apply backup runbook and escalate to on-call.",
+            evidence=[
+                {
+                    "source_type": "external_event",
+                    "source_id": "ops_kb_sync_rule_42",
+                    "tool_name": "memory_backfill",
+                    "source_system": "event_stream",
+                }
+            ],
+            metadata={"namespace": "company_operating_model"},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["ops_kb_sync_rule_42"],
+            has_recent_open_conflict=False,
+        )
+        self.assertTrue(bool(decision.features.get("high_signal_route_matched")))
+        self.assertTrue(bool(decision.features.get("high_signal_hard_block_override")))
+        self.assertIn(decision.tier, {"insight_candidate", "golden_candidate"})
+
+    def test_pre_draft_noise_filter_blocks_payload_like_operational_claim(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="order_snapshot_77",
+            category="operations",
+            claim_text='{"order_id":"ord_77","status":"processing","updated_at":"2026-04-09T10:00:00Z"}',
+            evidence=[],
+            metadata={},
+        )
+        gate = GatekeeperDecision(
+            tier="insight_candidate",
+            score=0.55,
+            rationale="test",
+            features={
+                "assertion_class": "event",
+                "ingestion_classification": "operational_stream",
+                "has_event_stream_shape": True,
+                "has_durable_signal": False,
+                "has_policy_signal": False,
+                "has_process_signal": False,
+                "high_signal_route_matched": False,
+            },
+        )
+        result = self.engine._evaluate_pre_draft_noise_filter(
+            claim=claim,
+            gate=gate,
+            routing_policy=self.engine._normalize_gatekeeper_routing_policy(None),
+        )
+        self.assertTrue(bool(result.get("blocked")))
+        self.assertIn(str(result.get("reason")), {"operational_stream_pre_draft_filter", "event_payload_pre_draft_filter"})
 
 
 if __name__ == "__main__":

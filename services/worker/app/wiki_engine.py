@@ -248,6 +248,18 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "персональ",
         "паспорт",
     ],
+    "pre_draft_filter_enabled": True,
+    "pre_draft_noise_keywords": [
+        "order_snapshot",
+        "invoice_snapshot",
+        "payload_dump",
+        "event_stream",
+        "telemetry",
+        "runtime_event",
+        "wand_employee",
+        "wand_transport_vehicle",
+        "_sheet_",
+    ],
     "event_stream_min_numeric_token_ratio": 0.45,
     "event_stream_min_token_hits": 2,
     "event_stream_min_kv_hits": 2,
@@ -1075,6 +1087,31 @@ class WikiSynthesisEngine:
                 "process_triplet": process_triplet,
             }
         ]
+        claim_metadata: dict[str, Any] = {
+            "source_id": source_id,
+            "ingest_lane": ingest_lane,
+            "entity_inference_source": entity_source,
+            "category_inference_source": category_source,
+            "ingestion_classification": str(evaluation.get("ingestion_classification") or "").strip().lower() or None,
+            "suppression_reason": str(evaluation.get("reason") or "").strip() or None,
+            "high_signal_route_matched": bool(evaluation.get("high_signal_route_matched")),
+            "high_signal_route_hits": list(evaluation.get("high_signal_route_hits") or [])[:20],
+            "durable_signal_reason": str(evaluation.get("durable_signal_reason") or "").strip() or None,
+        }
+        if backfill_source_system:
+            claim_metadata["source_system"] = backfill_source_system
+        namespace = str(
+            metadata_dict.get("namespace")
+            or metadata_dict.get("source_namespace")
+            or (
+                backfill_meta.get("namespace")
+                if isinstance(backfill_meta, dict)
+                else ""
+            )
+            or ""
+        ).strip()
+        if namespace:
+            claim_metadata["namespace"] = namespace
         return {
             "id": str(claim_id),
             "schema_version": "v1",
@@ -1087,6 +1124,7 @@ class WikiSynthesisEngine:
             "valid_from": payload.get("valid_from"),
             "valid_to": payload.get("valid_to"),
             "evidence": evidence,
+            "metadata": {key: value for key, value in claim_metadata.items() if value not in (None, "", [], {})},
         }
 
     def _should_skip_backfill_claim(
@@ -1861,6 +1899,21 @@ class WikiSynthesisEngine:
         if gate.tier == "operational_memory":
             return
 
+        pre_draft_noise_gate = self._evaluate_pre_draft_noise_filter(
+            claim=claim,
+            gate=gate,
+            routing_policy=routing_policy,
+        )
+        if bool(pre_draft_noise_gate.get("blocked")):
+            self._set_claim_status(
+                conn,
+                claim_id=claim.id,
+                status="rejected",
+                rejection_reason=str(pre_draft_noise_gate.get("reason") or "pre_draft_noise_filter"),
+                rejection_details=pre_draft_noise_gate,
+            )
+            return
+
         page_candidates = self._load_pages(conn, claim.project_id)
         page_resolution = self._resolve_page(claim, page_candidates, conn=conn)
 
@@ -2042,6 +2095,106 @@ class WikiSynthesisEngine:
             section_key=section_key,
             insertion_status=decision,
         )
+
+    def _evaluate_pre_draft_noise_filter(
+        self,
+        *,
+        claim: ClaimInput,
+        gate: GatekeeperDecision,
+        routing_policy: dict[str, Any],
+    ) -> dict[str, Any]:
+        policy = self._normalize_gatekeeper_routing_policy(routing_policy)
+        if not bool(policy.get("pre_draft_filter_enabled", True)):
+            return {"blocked": False, "reason": None, "policy_enabled": False}
+
+        features = gate.features if isinstance(gate.features, dict) else {}
+        text_raw = str(claim.claim_text or "")
+        text = self._normalize_text(text_raw)
+        token_set = set(self._tokens(text_raw))
+        metadata = claim.metadata if isinstance(claim.metadata, dict) else {}
+        assertion_class = str(features.get("assertion_class") or "fact").strip().lower() or "fact"
+        ingestion_classification = str(
+            features.get("ingestion_classification")
+            or metadata.get("ingestion_classification")
+            or ""
+        ).strip().lower()
+        category_hint = self._category_to_page_type(claim.category)
+        has_high_signal_route = bool(features.get("high_signal_route_matched")) or bool(
+            metadata.get("high_signal_route_matched")
+        )
+        has_durable_signal = bool(features.get("has_durable_signal")) or bool(features.get("has_policy_signal")) or bool(
+            features.get("has_process_signal")
+        )
+        knowledge_like_signal = bool(
+            has_durable_signal
+            or has_high_signal_route
+            or assertion_class in {"policy", "process", "preference", "incident"}
+            or category_hint in {"access", "process", "customer", "incident"}
+        )
+        pii_keywords = [
+            str(item).strip().lower() for item in policy.get("pii_sensitive_keywords", []) if str(item).strip()
+        ]
+        pii_keyword_hits = [keyword for keyword in pii_keywords if keyword in text][:20]
+        pii_regex_hits = bool(
+            re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text_raw or "")
+            or re.search(
+                r"(?<!\d)(?:\+\d{7,15}|\d{10,15}|\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4})(?!\d)",
+                text_raw or "",
+            )
+        )
+        payload_kv_hits = len(
+            re.findall(
+                r"\b(order_id|invoice_id|status|state|created_at|updated_at|customer_id|task_id|event_id)\s*[:=]",
+                text,
+            )
+        )
+        payload_like_json = bool(
+            (text.count("{") >= 1 and text.count("}") >= 1 and text.count(":") >= 3)
+            or payload_kv_hits >= 3
+        )
+        payload_like_id_pattern = bool(
+            re.search(
+                r"\b(order|заказ|invoice|event|ticket|shipment|delivery)[\s_:#-]{0,12}[a-z0-9_-]{3,}\b",
+                text,
+            )
+        )
+        noise_keywords = [
+            str(item).strip().lower() for item in policy.get("pre_draft_noise_keywords", []) if str(item).strip()
+        ]
+        noise_keyword_hits = [keyword for keyword in noise_keywords if keyword in text][:20]
+        has_event_stream_shape = bool(features.get("has_event_stream_shape")) or payload_like_json or payload_like_id_pattern
+
+        blocked = False
+        reason: str | None = None
+        if ingestion_classification == "pii_sensitive_stream" or pii_regex_hits or bool(pii_keyword_hits):
+            blocked = True
+            reason = "pii_hard_filter"
+        elif ingestion_classification == "operational_stream" and not knowledge_like_signal:
+            blocked = True
+            reason = "operational_stream_pre_draft_filter"
+        elif (has_event_stream_shape or bool(noise_keyword_hits)) and not knowledge_like_signal:
+            blocked = True
+            reason = "event_payload_pre_draft_filter"
+
+        return {
+            "blocked": blocked,
+            "reason": reason,
+            "policy_enabled": True,
+            "assertion_class": assertion_class,
+            "ingestion_classification": ingestion_classification,
+            "knowledge_like_signal": knowledge_like_signal,
+            "has_durable_signal": has_durable_signal,
+            "has_high_signal_route": has_high_signal_route,
+            "has_event_stream_shape": has_event_stream_shape,
+            "payload_like_json": payload_like_json,
+            "payload_kv_hits": payload_kv_hits,
+            "payload_like_id_pattern": payload_like_id_pattern,
+            "noise_keyword_hits": noise_keyword_hits,
+            "pii_keyword_hits": pii_keyword_hits,
+            "pii_regex_hits": pii_regex_hits,
+            "tier_before_filter": gate.tier,
+            "score_before_filter": gate.score,
+        }
 
     def _upsert_claim(
         self,
@@ -2325,6 +2478,8 @@ class WikiSynthesisEngine:
         blocked_entity_keywords = list(routing_policy.get("blocked_entity_keywords", []))
         blocked_source_id_keywords = list(routing_policy.get("blocked_source_id_keywords", []))
         durable_signal_keywords = list(routing_policy.get("durable_signal_keywords", []))
+        high_signal_route_keywords = list(routing_policy.get("high_signal_route_keywords", []))
+        high_signal_min_keyword_hits = int(routing_policy.get("high_signal_min_keyword_hits", 1))
         operational_stream_keywords = list(routing_policy.get("operational_stream_keywords", []))
         pii_sensitive_keywords = list(routing_policy.get("pii_sensitive_keywords", []))
         ingestion_default_deny_classes = {
@@ -2442,6 +2597,34 @@ class WikiSynthesisEngine:
         is_knowledge_ingest = "knowledge" in incoming_ingest_lanes
         source_diversity = max(historical_source_count, len(incoming_source_ids))
         source_id_blob = " ".join(self._normalize_text(item) for item in incoming_source_ids)
+        classification_haystack = " ".join(
+            item
+            for item in (
+                text,
+                normalized_category,
+                normalized_entity_key,
+                " ".join(incoming_source_systems),
+                " ".join(incoming_source_types),
+                " ".join(incoming_source_ids),
+                self._normalize_text(str(claim.metadata.get("namespace") or "")) if isinstance(claim.metadata, dict) else "",
+            )
+            if item
+        )
+        classification_token_set = set(self._tokens(classification_haystack))
+        high_signal_route_hits: list[str] = []
+        for raw_keyword in high_signal_route_keywords:
+            keyword = str(raw_keyword or "").strip().lower()
+            if not keyword:
+                continue
+            if any(ch in keyword for ch in (" ", "_", "-", "/", ":")):
+                matched = keyword in classification_haystack
+            else:
+                matched = keyword in classification_token_set
+            if matched and keyword not in high_signal_route_hits:
+                high_signal_route_hits.append(keyword)
+            if len(high_signal_route_hits) >= 24:
+                break
+        has_high_signal_route = len(high_signal_route_hits) >= max(1, high_signal_min_keyword_hits)
         blocked_by_category = any(keyword in normalized_category for keyword in blocked_category_keywords if keyword)
         blocked_by_source_system = any(
             self._keyword_matches_identifier(system, keyword)
@@ -2498,6 +2681,7 @@ class WikiSynthesisEngine:
             backfill_requires_policy_signal
             and has_backfill_evidence
             and not has_override_signal
+            and not has_high_signal_route
             and durable_signal_hits < min_durable_signal_hits_for_backfill
             and (category_hint == "general" or source_diversity <= 1)
         )
@@ -2510,11 +2694,19 @@ class WikiSynthesisEngine:
             or has_event_stream_shape
             or backfill_without_durable_signal
         ) and not has_override_signal
+        high_signal_hard_block_override = bool(
+            has_high_signal_route
+            and not blocked_by_source_id
+            and not blocked_by_entity
+        )
+        if routing_hard_block and high_signal_hard_block_override:
+            routing_hard_block = False
         has_durable_signal = (
             has_policy_signal
             or has_process_signal
             or has_high_priority_signal
             or durable_signal_hits >= min_durable_signal_hits
+            or has_high_signal_route
         )
         assertion_class = self._infer_assertion_class(
             category_hint=category_hint,
@@ -2541,18 +2733,6 @@ class WikiSynthesisEngine:
             and source_diversity <= 1
             and not has_durable_signal
             and (is_short or has_operational_pattern or category_hint == "general")
-        )
-        classification_haystack = " ".join(
-            item
-            for item in (
-                text,
-                normalized_category,
-                normalized_entity_key,
-                " ".join(incoming_source_systems),
-                " ".join(incoming_source_types),
-                " ".join(incoming_source_ids),
-            )
-            if item
         )
         operational_keyword_hits = [
             keyword
@@ -2753,6 +2933,9 @@ class WikiSynthesisEngine:
             "ingestion_operational_keyword_hits": operational_keyword_hits,
             "ingestion_pii_keyword_hits": pii_keyword_hits,
             "ingestion_pii_regex_hits": pii_regex_hits,
+            "high_signal_route_hits": high_signal_route_hits,
+            "high_signal_route_matched": has_high_signal_route,
+            "high_signal_hard_block_override": high_signal_hard_block_override,
             "routing_policy": routing_policy,
             "routing_hard_block": routing_hard_block,
             "blocked_by_category": blocked_by_category,
@@ -3004,6 +3187,11 @@ class WikiSynthesisEngine:
             fallback=list(base["pii_sensitive_keywords"]),
             limit=128,
         )
+        normalized["pre_draft_noise_keywords"] = self._normalize_policy_keyword_list(
+            value.get("pre_draft_noise_keywords"),
+            fallback=list(base["pre_draft_noise_keywords"]),
+            limit=128,
+        )
         normalized["auto_publish_risk_keywords_high"] = self._normalize_policy_keyword_list(
             value.get("auto_publish_risk_keywords_high"),
             fallback=list(base["auto_publish_risk_keywords_high"]),
@@ -3145,6 +3333,9 @@ class WikiSynthesisEngine:
         normalized["backfill_llm_classifier_model"] = model_value[:128] if model_value else ""
         normalized["emit_reinforcement_drafts"] = bool(
             value.get("emit_reinforcement_drafts", base["emit_reinforcement_drafts"])
+        )
+        normalized["pre_draft_filter_enabled"] = bool(
+            value.get("pre_draft_filter_enabled", base["pre_draft_filter_enabled"])
         )
         try:
             draft_flood_max_open_per_page = int(
