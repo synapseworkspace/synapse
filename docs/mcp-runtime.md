@@ -28,7 +28,10 @@ Implemented tools:
   - `score_breakdown.lexical_components.*` (token overlap + exact/phrase match signals),
   - `retrieval_confidence` with `confidence_breakdown.*`,
   - `context_policy` (`mode`, `eligible`, `blocked_by`, thresholds).
-- response context injection now prepends Step-0 state snippet when available (`explainability.state_snapshot`).
+- response context injection now enforces `state-first` protocol:
+  - phase 0: state snapshot (`get_state_snapshot`);
+  - phase 1: targeted page snippets only for ranked relevant pages;
+  - diagnostics in `context_injection.protocol` and `explainability.read_protocol`.
 
 Operator diagnostics endpoint in API:
 - `GET /v1/mcp/retrieval/explain?project_id=...&q=...&related_entity_key=...`

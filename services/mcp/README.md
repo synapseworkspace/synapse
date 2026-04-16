@@ -16,6 +16,9 @@ MCP runtime server that exposes published Synapse knowledge to agent frameworks.
   - `intent_alignment` and `intent_rank_score`,
   - `provenance` (`claim_id`, `source_ids`, `ticket_ids`, `outcome`) when claim evidence is available.
 - Search response also includes `context_injection.snippets` (top-k verified snippets selected for runtime injection, with provenance when available).
+- Retrieval follows enforced Step-0 protocol:
+  - phase 0: state snapshot first,
+  - phase 1: targeted snippets from ranked pages only (`context_injection.protocol` / `explainability.read_protocol`).
 - Optional intent controls:
   - `retrieval_intent=auto|general|process|policy|incident|preference`
   - `max_context_snippets=1..10`

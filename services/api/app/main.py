@@ -18389,6 +18389,23 @@ def create_wiki_page(
                 elif not markdown.endswith("\n"):
                     markdown = f"{markdown}\n"
                 status = payload.status
+                markdown = _apply_wiki_schema_contract(
+                    markdown=markdown,
+                    title=title,
+                    page_type=page_type,
+                    slug=slug,
+                    status=status,
+                    generated_at=datetime.now(UTC),
+                )
+                schema_contract = _evaluate_wiki_schema_contract(
+                    markdown=markdown,
+                    page_type=page_type,
+                    slug=slug,
+                )
+                decision_quality = _evaluate_decision_focused_quality_gate(
+                    markdown,
+                    page_type=page_type,
+                )
                 change_summary = (
                     payload.change_summary.strip() if isinstance(payload.change_summary, str) and payload.change_summary.strip() else None
                 ) or f"Page created by {payload.created_by}"
@@ -18432,6 +18449,40 @@ def create_wiki_page(
                         "page_type": page_type,
                         "required_status": "reviewed",
                         "agent_publish_guard": agent_publish_guard,
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=409,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=409, content=response)
+                if status == "published" and not bool(schema_contract.get("passed")):
+                    response = {
+                        "error": "wiki_schema_contract_required_for_publish",
+                        "project_id": payload.project_id,
+                        "slug": slug,
+                        "page_type": page_type,
+                        "missing_markers": list(schema_contract.get("missing_markers") or []),
+                        "hint": "Provide summary/status/last_updated frontmatter, backlinks, and decisions log quality fields.",
+                    }
+                    mark_request_completed(
+                        conn,
+                        endpoint=endpoint,
+                        idempotency_key=idempotency_key,
+                        status_code=409,
+                        response_body=response,
+                    )
+                    return JSONResponse(status_code=409, content=response)
+                if status == "published" and not bool(decision_quality.get("passed")):
+                    response = {
+                        "error": "wiki_quality_gate_decisions_required",
+                        "project_id": payload.project_id,
+                        "slug": slug,
+                        "page_type": page_type,
+                        "quality_gate": decision_quality,
+                        "hint": "Publish path requires decision-first content with dated decisions and explicit source links.",
                     }
                     mark_request_completed(
                         conn,
@@ -18621,6 +18672,8 @@ def create_wiki_page(
                     },
                     "snapshot_id": str(snapshot_id),
                     "inserted_statements": len(inserted_statement_ids),
+                    "schema_contract": schema_contract,
+                    "quality_gate": decision_quality,
                 }
                 if source_ownership_advisories > 0:
                     response["source_ownership_advisories"] = source_ownership_advisories
@@ -18754,6 +18807,23 @@ def update_wiki_page(
                         raise HTTPException(status_code=409, detail="empty_markdown_not_allowed")
                     if not markdown.endswith("\n"):
                         markdown = f"{markdown}\n"
+                    markdown = _apply_wiki_schema_contract(
+                        markdown=markdown,
+                        title=next_title,
+                        page_type=next_page_type,
+                        slug=existing_slug,
+                        status=next_status,
+                        generated_at=datetime.now(UTC),
+                    )
+                    schema_contract = _evaluate_wiki_schema_contract(
+                        markdown=markdown,
+                        page_type=next_page_type,
+                        slug=existing_slug,
+                    )
+                    decision_quality = _evaluate_decision_focused_quality_gate(
+                        markdown,
+                        page_type=next_page_type,
+                    )
                     change_summary = (
                         payload.change_summary.strip()
                         if isinstance(payload.change_summary, str) and payload.change_summary.strip()
@@ -18773,6 +18843,41 @@ def update_wiki_page(
                             "page_type": next_page_type,
                             "required_status": "reviewed",
                             "agent_publish_guard": agent_publish_guard,
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=409,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=409, content=response)
+                    if next_status == "published" and not bool(schema_contract.get("passed")):
+                        response = {
+                            "error": "wiki_schema_contract_required_for_publish",
+                            "project_id": payload.project_id,
+                            "slug": existing_slug,
+                            "page_type": next_page_type,
+                            "missing_markers": list(schema_contract.get("missing_markers") or []),
+                            "hint": "Provide summary/status/last_updated frontmatter, backlinks, and decisions log quality fields.",
+                        }
+                        mark_request_completed(
+                            conn,
+                            endpoint=endpoint,
+                            idempotency_key=idempotency_key,
+                            status_code=409,
+                            response_body=response,
+                        )
+                        return JSONResponse(status_code=409, content=response)
+                    if next_status == "published" and not bool(decision_quality.get("passed")) and not bool(payload.confirm_high_risk_publish):
+                        response = {
+                            "error": "wiki_quality_gate_decisions_required",
+                            "project_id": payload.project_id,
+                            "slug": existing_slug,
+                            "page_type": next_page_type,
+                            "quality_gate": decision_quality,
+                            "required_confirmation": "confirm_high_risk_publish=true",
+                            "hint": "Publish path requires decision-first content with dated decisions and explicit source links.",
                         }
                         mark_request_completed(
                             conn,
@@ -19083,6 +19188,8 @@ def update_wiki_page(
                         "snapshot_id": str(snapshot_id),
                         "superseded_statements": superseded_statements,
                         "inserted_statements": len(inserted_statement_ids),
+                        "schema_contract": schema_contract,
+                        "quality_gate": decision_quality,
                     }
                     if process_simulation_result is not None:
                         response["process_simulation"] = process_simulation_result
@@ -20230,7 +20337,7 @@ def list_wiki_pages(
     offset: int = Query(default=0, ge=0, le=50000),
     sort_by: str = Query(default="activity"),
     sort_dir: str = Query(default="desc"),
-    stale_days: int = Query(default=21, ge=1, le=365),
+    stale_days: int = Query(default=7, ge=1, le=365),
 ) -> dict[str, Any]:
     normalized_status = str(status or "").strip().lower()
     if normalized_status and normalized_status not in {"draft", "reviewed", "published", "archived"}:
@@ -20564,8 +20671,8 @@ def _load_lifecycle_action_telemetry_summary(
 @app.get("/v1/wiki/lifecycle/stats")
 def get_wiki_lifecycle_stats(
     project_id: str,
-    stale_days: int = Query(default=21, ge=1, le=365),
-    critical_days: int = Query(default=45, ge=1, le=365),
+    stale_days: int = Query(default=7, ge=1, le=365),
+    critical_days: int = Query(default=14, ge=1, le=365),
     stale_limit: int = Query(default=20, ge=1, le=200),
     space_key: str | None = Query(default=None),
 ) -> dict[str, Any]:
@@ -27375,6 +27482,29 @@ def _space_slug(space_key: str, leaf: str) -> str:
 
 _WIKI_SCHEMA_FRONTMATTER_REQUIRED = ("summary", "status", "last_updated")
 _WIKI_SCHEMA_DECISION_REQUIRED_PAGE_TYPES = {"agent_profile", "process", "runbook", "policy", "operations", "data_map"}
+_WIKI_SCHEMA_TYPED_SKELETONS: dict[str, list[tuple[str, str]]] = {
+    "workstream": [
+        ("Objective", "- Define scope, owner, and SLA target."),
+        ("Current Status", "- Track latest verified status and blockers."),
+        ("Next Actions", "- List concrete execution steps with accountable owners."),
+    ],
+    "person": [
+        ("Role", "- Define ownership area and operating boundaries."),
+        ("Responsibilities", "- List recurring decisions and operational duties."),
+        ("Escalation", "- Document when and where this role escalates issues."),
+    ],
+    "experiment": [
+        ("Hypothesis", "- State expected impact and success criteria."),
+        ("Current Result", "- Capture latest measured outcome and confidence."),
+        ("Next Checkpoint", "- Define next review date and decision trigger."),
+    ],
+    "metric": [
+        ("Definition", "- Explain exactly what the metric represents."),
+        ("Current Value", "- Record latest value and measurement date."),
+        ("Thresholds", "- Define warning/critical bounds and owner action."),
+        ("Source", "- Link system/source of truth for this metric."),
+    ],
+}
 
 
 def _parse_markdown_frontmatter(markdown: str) -> tuple[dict[str, str], str, bool]:
@@ -27451,6 +27581,144 @@ def _extract_markdown_backlinks(markdown: str) -> list[str]:
     return deduped
 
 
+def _decision_line_has_source(line: str) -> bool:
+    normalized = str(line or "").strip().lower()
+    if not normalized.startswith("- "):
+        return False
+    if "source:" in normalized:
+        return True
+    if re.search(r"https?://", normalized):
+        return True
+    if "/wiki/" in normalized or "[source]" in normalized:
+        return True
+    return False
+
+
+def _normalize_decisions_log_entries(markdown: str, *, generated_at: datetime) -> str:
+    lines = str(markdown or "").splitlines()
+    if not lines:
+        return str(markdown or "")
+    normalized_lines: list[str] = []
+    in_decisions = False
+    today = generated_at.astimezone(UTC).date().isoformat()
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("## "):
+            heading = stripped.lower()
+            in_decisions = heading in {"## decisions log", "## decision log"}
+            normalized_lines.append(raw)
+            continue
+        if in_decisions and stripped.startswith("- "):
+            entry = stripped[2:].strip()
+            if not re.match(r"^\d{4}-\d{2}-\d{2}\s+-\s+", entry):
+                entry = f"{today} - {entry}"
+            line = f"- {entry}"
+            if not _decision_line_has_source(line):
+                line = f"{line} | Source: internal://pending-validation"
+            normalized_lines.append(line)
+            continue
+        normalized_lines.append(raw)
+    return "\n".join(normalized_lines)
+
+
+def _decisions_log_entry_stats(markdown: str) -> dict[str, Any]:
+    lines = str(markdown or "").splitlines()
+    in_decisions = False
+    total = 0
+    missing_source = 0
+    missing_date = 0
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("## "):
+            heading = stripped.lower()
+            in_decisions = heading in {"## decisions log", "## decision log"}
+            continue
+        if not in_decisions or not stripped.startswith("- "):
+            continue
+        total += 1
+        entry = stripped[2:].strip()
+        if not re.match(r"^\d{4}-\d{2}-\d{2}\s+-\s+", entry):
+            missing_date += 1
+        if not _decision_line_has_source(stripped):
+            missing_source += 1
+    return {
+        "entries_total": total,
+        "entries_missing_source": missing_source,
+        "entries_missing_date": missing_date,
+    }
+
+
+def _append_typed_skeleton_sections(markdown: str, *, page_type: str) -> str:
+    normalized_type = str(page_type or "").strip().lower()
+    skeleton = _WIKI_SCHEMA_TYPED_SKELETONS.get(normalized_type) or []
+    if not skeleton:
+        return str(markdown or "")
+    output = str(markdown or "").rstrip()
+    lowered = output.lower()
+    for heading, bullet in skeleton:
+        marker = f"## {heading}".lower()
+        if marker in lowered:
+            continue
+        output += f"\n\n## {heading}\n{bullet}\n"
+        lowered = output.lower()
+    return output
+
+
+def _evaluate_decision_focused_quality_gate(markdown: str, *, page_type: str) -> dict[str, Any]:
+    normalized_type = str(page_type or "").strip().lower()
+    if normalized_type not in _WIKI_SCHEMA_DECISION_REQUIRED_PAGE_TYPES:
+        return {
+            "applies": False,
+            "passed": True,
+            "discussion_hits": 0,
+            "action_hits": 0,
+            "decision_entries": 0,
+            "reason": "not_applicable",
+        }
+    text = str(markdown or "")
+    lowered = text.lower()
+    discussion_tokens = (
+        "discussion",
+        "brainstorm",
+        "maybe",
+        "to discuss",
+        "question",
+        "open question",
+    )
+    action_tokens = (
+        "must",
+        "owner",
+        "sla",
+        "escalat",
+        "runbook",
+        "if ",
+        "then ",
+        "decision",
+    )
+    discussion_hits = sum(lowered.count(token) for token in discussion_tokens)
+    action_hits = sum(lowered.count(token) for token in action_tokens)
+    decision_stats = _decisions_log_entry_stats(text)
+    decision_entries = int(decision_stats.get("entries_total") or 0)
+    missing_source = int(decision_stats.get("entries_missing_source") or 0)
+    missing_date = int(decision_stats.get("entries_missing_date") or 0)
+    blocked = bool(
+        decision_entries <= 0
+        or missing_source > 0
+        or missing_date > 0
+        or (discussion_hits > 0 and action_hits <= 0)
+    )
+    return {
+        "applies": True,
+        "passed": not blocked,
+        "discussion_hits": int(discussion_hits),
+        "action_hits": int(action_hits),
+        "decision_entries": decision_entries,
+        "entries_missing_source": missing_source,
+        "entries_missing_date": missing_date,
+        "reason": "discussion_without_decision" if blocked else "ok",
+    }
+
+
 def _evaluate_wiki_schema_contract(
     *,
     markdown: str,
@@ -27463,6 +27731,7 @@ def _evaluate_wiki_schema_contract(
     missing_frontmatter = [key for key in _WIKI_SCHEMA_FRONTMATTER_REQUIRED if not str(frontmatter.get(key) or "").strip()]
     backlinks = _extract_markdown_backlinks(body)
     decisions_section_present = "## decisions log" in body.lower() or "## decision log" in body.lower()
+    decision_entry_stats = _decisions_log_entry_stats(body)
     is_state_page = normalized_type == "state" or normalized_slug.endswith("/state") or normalized_slug == "state"
     is_decisions_page = normalized_slug.endswith("/decisions-log") or normalized_slug == "decisions-log"
     needs_backlinks = not is_state_page
@@ -27474,6 +27743,10 @@ def _evaluate_wiki_schema_contract(
         missing_markers.append("backlinks")
     if needs_decisions_log and not decisions_section_present:
         missing_markers.append("decisions_log")
+    if decisions_section_present and int(decision_entry_stats.get("entries_missing_source") or 0) > 0:
+        missing_markers.append("decisions_log_source")
+    if decisions_section_present and int(decision_entry_stats.get("entries_missing_date") or 0) > 0:
+        missing_markers.append("decisions_log_date")
     return {
         "has_frontmatter": bool(has_frontmatter),
         "frontmatter": frontmatter,
@@ -27483,6 +27756,9 @@ def _evaluate_wiki_schema_contract(
         "needs_backlinks": bool(needs_backlinks),
         "has_decisions_log": bool(decisions_section_present),
         "needs_decisions_log": bool(needs_decisions_log),
+        "decision_entries_total": int(decision_entry_stats.get("entries_total") or 0),
+        "decision_entries_missing_source": int(decision_entry_stats.get("entries_missing_source") or 0),
+        "decision_entries_missing_date": int(decision_entry_stats.get("entries_missing_date") or 0),
         "missing_markers": missing_markers,
         "passed": len(missing_markers) == 0,
     }
@@ -27520,7 +27796,7 @@ def _apply_wiki_schema_contract(
     needs_backlinks = not is_state_page
     needs_decisions_log = normalized_page_type in _WIKI_SCHEMA_DECISION_REQUIRED_PAGE_TYPES and not decisions_section_present and not is_decisions_page and not is_state_page
 
-    enriched_body = text_body.rstrip()
+    enriched_body = _append_typed_skeleton_sections(text_body.rstrip(), page_type=normalized_page_type)
     if needs_backlinks and not backlinks:
         enriched_body += (
             "\n\n## Backlinks\n"
@@ -27529,8 +27805,9 @@ def _apply_wiki_schema_contract(
     if needs_decisions_log:
         enriched_body += (
             "\n\n## Decisions Log\n"
-            f"- {generated_at.astimezone(UTC).date().isoformat()} — Bootstrap seed created; validate owner, SLA, and escalation path.\n"
+            f"- {generated_at.astimezone(UTC).date().isoformat()} - Bootstrap seed created; validate owner, SLA, and escalation path. | Source: internal://bootstrap\n"
         )
+    enriched_body = _normalize_decisions_log_entries(enriched_body, generated_at=generated_at)
 
     metadata = dict(frontmatter)
     metadata["summary"] = summary
@@ -27545,6 +27822,7 @@ def _apply_wiki_schema_contract(
 
 def _build_decisions_log_seed_page(space_key: str) -> dict[str, str]:
     normalized_space = _normalize_space_key(space_key, default="operations")
+    today = datetime.now(UTC).date().isoformat()
     return {
         "title": "Decisions Log",
         "slug": _space_slug(normalized_space, "decisions-log"),
@@ -27554,8 +27832,8 @@ def _build_decisions_log_seed_page(space_key: str) -> dict[str, str]:
             "## How To Use\n"
             "- Capture high-impact process/policy decisions with date, owner, and rationale.\n"
             "- Link every decision to affected playbooks and rollback criteria.\n\n"
-            "## Seed Entries\n"
-            f"- {datetime.now(UTC).date().isoformat()} — Bootstrap baseline published. Owner: ops_manager. Scope: core wiki onboarding pack.\n"
+            "## Decisions Log\n"
+            f"- {today} - Bootstrap baseline published. Owner: ops_manager. Scope: core wiki onboarding pack. | Source: internal://bootstrap\n"
         ),
     }
 

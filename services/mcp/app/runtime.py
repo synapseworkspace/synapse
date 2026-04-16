@@ -1384,32 +1384,81 @@ class SynapseKnowledgeRuntime:
         state_title = str(state_page.get("title") or "Wiki State Snapshot").strip() or "Wiki State Snapshot"
         state_summary = str(state_snapshot.get("summary_markdown") or "").strip()
         state_snapshot_included = False
+        targeted_pages: list[dict[str, Any]] = []
+        targeted_page_slug_set: set[str] = set()
+        for row in reranked_results:
+            if not isinstance(row, dict):
+                continue
+            page = row.get("page") if isinstance(row.get("page"), dict) else {}
+            page_slug = str(page.get("slug") or row.get("page_slug") or "").strip()
+            page_title = str(page.get("title") or row.get("page_title") or "").strip()
+            if not page_slug or (state_slug and page_slug == state_slug):
+                continue
+            if page_slug in targeted_page_slug_set:
+                continue
+            targeted_page_slug_set.add(page_slug)
+            targeted_pages.append(
+                {
+                    "slug": page_slug,
+                    "title": page_title or page_slug,
+                    "reason": str(row.get("retrieval_reason") or "intent_ranked"),
+                }
+            )
+        state_snippet: dict[str, Any] | None = None
         if bool(state_snapshot.get("available")) and state_slug:
             already_present = any(str(item.get("page_slug") or "").strip() == state_slug for item in snippets if isinstance(item, dict))
             if not already_present and state_summary:
-                snippets.insert(
-                    0,
-                    {
-                        "statement_id": f"state:{state_slug}",
-                        "statement_text": state_summary,
-                        "page_slug": state_slug,
-                        "page_title": state_title,
-                        "page_type": "state",
-                        "section_key": "snapshot",
-                        "retrieval_confidence": 1.0,
-                        "intent_rank_score": None,
-                        "provenance": {"source": "state_snapshot", "mode": "step0"},
-                    },
-                )
+                state_snippet = {
+                    "statement_id": f"state:{state_slug}",
+                    "statement_text": state_summary,
+                    "page_slug": state_slug,
+                    "page_title": state_title,
+                    "page_type": "state",
+                    "section_key": "snapshot",
+                    "retrieval_confidence": 1.0,
+                    "intent_rank_score": None,
+                    "provenance": {"source": "state_snapshot", "mode": "step0"},
+                }
                 state_snapshot_included = True
             else:
                 state_snapshot_included = already_present
-        snippets = snippets[:max_context_snippets]
+                if already_present:
+                    for item in snippets:
+                        if isinstance(item, dict) and str(item.get("page_slug") or "").strip() == state_slug:
+                            state_snippet = item
+                            break
+
+        non_state_budget = max_context_snippets - 1 if state_snippet is not None else max_context_snippets
+        non_state_budget = max(0, non_state_budget)
+        non_state_snippets = [
+            item
+            for item in snippets
+            if isinstance(item, dict)
+            and str(item.get("page_slug") or "").strip()
+            and (not state_slug or str(item.get("page_slug") or "").strip() != state_slug)
+        ]
+        if targeted_page_slug_set:
+            non_state_snippets = [
+                item for item in non_state_snippets if str(item.get("page_slug") or "").strip() in targeted_page_slug_set
+            ]
+        non_state_snippets = non_state_snippets[:non_state_budget]
+        final_snippets: list[dict[str, Any]] = []
+        if state_snippet is not None:
+            final_snippets.append(state_snippet)
+        final_snippets.extend(non_state_snippets)
+        if len(final_snippets) > max_context_snippets:
+            final_snippets = final_snippets[:max_context_snippets]
         explainability["state_snapshot"] = {
             "included": bool(state_snapshot_included),
             "available": bool(state_snapshot.get("available")),
             "slug": state_slug or None,
             "updated_at": state_page.get("updated_at"),
+        }
+        explainability["read_protocol"] = {
+            "mode": "state_first_enforced",
+            "phase_0_state_slug": state_slug or None,
+            "phase_0_available": bool(state_snapshot.get("available")),
+            "phase_1_targeted_pages": targeted_pages[: max(1, max_context_snippets)],
         }
         return {
             "project_id": project_id,
@@ -1418,7 +1467,18 @@ class SynapseKnowledgeRuntime:
             "policy_filtered_out": filtered_out,
             "context_injection": {
                 "intent": explainability.get("intent", retrieval_intent),
-                "snippets": snippets,
+                "protocol": {
+                    "mode": "state_first_enforced",
+                    "phase_0": {
+                        "state_available": bool(state_snapshot.get("available")),
+                        "state_slug": state_slug or None,
+                    },
+                    "phase_1": {
+                        "targeted_pages": targeted_pages[: max(1, max_context_snippets)],
+                        "non_state_budget": int(non_state_budget),
+                    },
+                },
+                "snippets": final_snippets,
             },
             "explainability": explainability,
         }

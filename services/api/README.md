@@ -86,11 +86,11 @@ Environment:
 - `PUT /v1/adoption/source-ownership`
 - `DELETE /v1/adoption/source-ownership/{domain}?project_id=...`
 - `GET /v1/wiki/pages/search?project_id=...&q=...` (includes `meta` debug payload: scope, filters, page/draft status counters; `q=*` switches to predictable “show all pages” mode)
-- `GET /v1/wiki/pages?project_id=...&status=published&updated_by=ops_manager&with_open_drafts=true&q=...&sort_by=activity&sort_dir=desc&stale_days=21&limit=200&offset=0` (page index for wiki tree; includes draft counters per page, stale age/status markers, plus actor/open-draft filters)
+- `GET /v1/wiki/pages?project_id=...&status=published&updated_by=ops_manager&with_open_drafts=true&q=...&sort_by=activity&sort_dir=desc&stale_days=7&limit=200&offset=0` (page index for wiki tree; includes draft counters per page, stale age/status markers, plus actor/open-draft filters)
 - `GET /v1/wiki/stats?project_id=...` (page/draft status counters and latest update timestamps)
 - `GET /v1/wiki/state?project_id=...&space_key=operations` (build Step-0 state snapshot preview from wiki/tasks/agent signals)
 - `POST /v1/wiki/state/sync` (upsert Step-0 state snapshot page into wiki space as `page_type=state`)
-- `GET /v1/wiki/lifecycle/stats?project_id=...&stale_days=21&critical_days=45&stale_limit=20&space_key=operations` (lifecycle counters + stale page candidates for dashboards/diagnostics; optional `space_key` narrows scope for high-cardinality workspaces; response `meta` includes `searched_scope`, `filters_applied`, and `empty_scope` diagnostics with explanation codes `no_published|all_open_drafts|below_threshold`, details counters, and actionable `suggested_actions` hints)
+- `GET /v1/wiki/lifecycle/stats?project_id=...&stale_days=7&critical_days=14&stale_limit=20&space_key=operations` (lifecycle counters + stale page candidates for dashboards/diagnostics; optional `space_key` narrows scope for high-cardinality workspaces; response `meta` includes `searched_scope`, `filters_applied`, and `empty_scope` diagnostics with explanation codes `no_published|all_open_drafts|below_threshold`, details counters, and actionable `suggested_actions` hints)
 - `POST /v1/wiki/lifecycle/telemetry/snapshot` (ingest client-side empty-scope action counters by session; server computes monotonic deltas and updates daily telemetry aggregates)
 - `GET /v1/wiki/lifecycle/telemetry?project_id=...&days=7&action_key=create_page` (7/30/90-day action telemetry summary + daily trend for `empty_scope_action_shown` and `empty_scope_action_applied`; optional `action_key` filter for drill-down)
 - `GET /v1/wiki/routing/metrics?project_id=...&window_days=30` (routing quality counters/rates: precision@1, manual reassign rate, new-page false positives, conflict/ambiguity rates)
