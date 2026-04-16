@@ -738,6 +738,7 @@ class SynapseClient:
         profile: str = "standard",
         space_key: str | None = None,
         publish: bool = True,
+        include_state_snapshot: bool = True,
     ) -> dict[str, Any]:
         actor = str(created_by or "").strip()
         if not actor:
@@ -750,6 +751,7 @@ class SynapseClient:
             "created_by": actor,
             "profile": normalized_profile,
             "publish": bool(publish),
+            "include_state_snapshot": bool(include_state_snapshot),
         }
         if space_key is not None and str(space_key).strip():
             request_payload["space_key"] = str(space_key).strip()
@@ -1009,6 +1011,7 @@ class SynapseClient:
         include_company_operating_context: bool = True,
         include_operational_logic: bool = True,
         include_first_run_starter: bool = True,
+        include_state_snapshot: bool = True,
         max_sources: int = 25,
         max_agents: int = 100,
         max_signals: int = 40,
@@ -1032,12 +1035,72 @@ class SynapseClient:
             "include_company_operating_context": bool(include_company_operating_context),
             "include_operational_logic": bool(include_operational_logic),
             "include_first_run_starter": bool(include_first_run_starter),
+            "include_state_snapshot": bool(include_state_snapshot),
             "max_sources": max(1, min(150, int(max_sources))),
             "max_agents": max(1, min(5000, int(max_agents))),
             "max_signals": max(1, min(200, int(max_signals))),
         }
         return self._request_json(
             "/v1/adoption/agent-wiki-bootstrap",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def get_wiki_state_snapshot(
+        self,
+        *,
+        space_key: str | None = None,
+        max_workstreams: int = 12,
+        max_open_items: int = 25,
+        max_people_watch: int = 15,
+        max_metrics: int = 12,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "max_workstreams": max(1, min(50, int(max_workstreams))),
+            "max_open_items": max(1, min(200, int(max_open_items))),
+            "max_people_watch": max(1, min(100, int(max_people_watch))),
+            "max_metrics": max(1, min(100, int(max_metrics))),
+        }
+        if space_key is not None and str(space_key).strip():
+            params["space_key"] = str(space_key).strip()
+        return self._request_json(
+            "/v1/wiki/state",
+            method="GET",
+            params=params,
+        )
+
+    def sync_wiki_state_snapshot(
+        self,
+        *,
+        updated_by: str,
+        space_key: str | None = None,
+        status: str = "published",
+        max_workstreams: int = 12,
+        max_open_items: int = 25,
+        max_people_watch: int = 15,
+        max_metrics: int = 12,
+    ) -> dict[str, Any]:
+        actor = str(updated_by or "").strip()
+        if not actor:
+            raise ValueError("updated_by is required")
+        normalized_status = str(status or "published").strip().lower() or "published"
+        if normalized_status not in {"draft", "reviewed", "published", "archived"}:
+            raise ValueError("status must be one of: draft, reviewed, published, archived")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": actor,
+            "status": normalized_status,
+            "max_workstreams": max(1, min(50, int(max_workstreams))),
+            "max_open_items": max(1, min(200, int(max_open_items))),
+            "max_people_watch": max(1, min(100, int(max_people_watch))),
+            "max_metrics": max(1, min(100, int(max_metrics))),
+        }
+        if space_key is not None and str(space_key).strip():
+            payload["space_key"] = str(space_key).strip()
+        return self._request_json(
+            "/v1/wiki/state/sync",
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),

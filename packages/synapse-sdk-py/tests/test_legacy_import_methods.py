@@ -186,7 +186,12 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("days"), 21)
 
     def test_run_adoption_first_run_bootstrap_posts_expected_payload(self) -> None:
-        self.client.run_adoption_first_run_bootstrap(created_by="ops_admin", profile="support_ops", publish=True)
+        self.client.run_adoption_first_run_bootstrap(
+            created_by="ops_admin",
+            profile="support_ops",
+            publish=True,
+            include_state_snapshot=False,
+        )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/adoption/first-run/bootstrap")
         self.assertEqual(call["method"], "POST")
@@ -195,6 +200,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("created_by"), "ops_admin")
         self.assertEqual(payload.get("profile"), "support_ops")
         self.assertTrue(payload.get("publish"))
+        self.assertFalse(payload.get("include_state_snapshot"))
 
     def test_apply_adoption_wiki_space_template_posts_expected_payload(self) -> None:
         self.client.apply_adoption_wiki_space_template(
@@ -246,6 +252,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             include_process_playbooks=True,
             include_company_operating_context=True,
             include_operational_logic=True,
+            include_state_snapshot=False,
             max_sources=12,
             max_agents=30,
             max_signals=15,
@@ -263,9 +270,52 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertTrue(payload.get("include_tooling_map"))
         self.assertTrue(payload.get("include_process_playbooks"))
         self.assertTrue(payload.get("include_company_operating_context"))
+        self.assertFalse(payload.get("include_state_snapshot"))
         self.assertEqual(payload.get("max_sources"), 12)
         self.assertEqual(payload.get("max_agents"), 30)
         self.assertEqual(payload.get("max_signals"), 15)
+
+    def test_get_wiki_state_snapshot_scopes_project_and_limits(self) -> None:
+        self.client.get_wiki_state_snapshot(
+            space_key="operations",
+            max_workstreams=9,
+            max_open_items=31,
+            max_people_watch=11,
+            max_metrics=7,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/state")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "operations")
+        self.assertEqual(params.get("max_workstreams"), 9)
+        self.assertEqual(params.get("max_open_items"), 31)
+        self.assertEqual(params.get("max_people_watch"), 11)
+        self.assertEqual(params.get("max_metrics"), 7)
+
+    def test_sync_wiki_state_snapshot_posts_expected_payload(self) -> None:
+        self.client.sync_wiki_state_snapshot(
+            updated_by="ops_admin",
+            space_key="operations",
+            status="published",
+            max_workstreams=10,
+            max_open_items=20,
+            max_people_watch=8,
+            max_metrics=6,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/state/sync")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("space_key"), "operations")
+        self.assertEqual(payload.get("status"), "published")
+        self.assertEqual(payload.get("max_workstreams"), 10)
+        self.assertEqual(payload.get("max_open_items"), 20)
+        self.assertEqual(payload.get("max_people_watch"), 8)
+        self.assertEqual(payload.get("max_metrics"), 6)
 
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(

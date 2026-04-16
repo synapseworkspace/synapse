@@ -230,6 +230,13 @@ class KnowledgeStore(Protocol):
         freshness_days: int,
     ) -> dict[str, Any]: ...
 
+    def get_state_snapshot(
+        self,
+        *,
+        project_id: str,
+        space_key: str | None,
+    ) -> dict[str, Any]: ...
+
     def get_space_policy_adoption_summary(
         self,
         *,
@@ -993,6 +1000,93 @@ class PostgresKnowledgeStore:
             },
         }
 
+    def get_state_snapshot(
+        self,
+        *,
+        project_id: str,
+        space_key: str | None,
+    ) -> dict[str, Any]:
+        normalized_space = _normalize_space_key(space_key) if str(space_key or "").strip() else None
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                sql = """
+                    SELECT
+                      p.id::text,
+                      p.title,
+                      p.slug,
+                      p.page_type,
+                      p.updated_at,
+                      v.version,
+                      v.markdown,
+                      v.created_by,
+                      v.created_at
+                    FROM wiki_pages p
+                    JOIN wiki_page_versions v
+                      ON v.page_id = p.id
+                     AND v.version = p.current_version
+                    WHERE p.project_id = %s
+                      AND p.status = 'published'
+                      AND (
+                        lower(COALESCE(p.page_type, '')) = 'state'
+                        OR lower(p.slug) = 'state'
+                        OR lower(p.slug) LIKE '%%/state'
+                      )
+                """
+                params: list[Any] = [project_id]
+                if normalized_space:
+                    sql += " AND lower(p.slug) LIKE %s"
+                    params.append(f"{normalized_space}/%")
+                sql += """
+                    ORDER BY
+                      CASE WHEN lower(COALESCE(p.page_type, '')) = 'state' THEN 0 ELSE 1 END,
+                      p.updated_at DESC
+                    LIMIT 1
+                """
+                cur.execute(sql, tuple(params))
+                row = cur.fetchone()
+                if row is None:
+                    return {
+                        "project_id": project_id,
+                        "space_key": normalized_space,
+                        "available": False,
+                        "state_page": None,
+                        "summary_markdown": None,
+                    }
+
+        markdown = str(row[6] or "")
+        heading = ""
+        table_rows: list[str] = []
+        summary_rows: list[str] = []
+        for line in markdown.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if not heading and stripped.startswith("#"):
+                heading = stripped.lstrip("#").strip()
+            if stripped.startswith("|") and stripped.count("|") >= 2:
+                table_rows.append(stripped)
+            elif not stripped.startswith("---"):
+                summary_rows.append(stripped)
+        preview_rows = table_rows[:12] if table_rows else summary_rows[:12]
+        summary_markdown = "\n".join(preview_rows).strip() or None
+        return {
+            "project_id": project_id,
+            "space_key": normalized_space,
+            "available": True,
+            "state_page": {
+                "id": str(row[0] or ""),
+                "title": str(row[1] or "Wiki State Snapshot"),
+                "slug": str(row[2] or ""),
+                "page_type": str(row[3] or "state"),
+                "updated_at": _iso(row[4]),
+                "version": int(row[5] or 0),
+                "created_by": str(row[7] or ""),
+                "created_at": _iso(row[8]),
+            },
+            "heading": heading or "Wiki State Snapshot",
+            "summary_markdown": summary_markdown,
+        }
+
     def get_space_policy_adoption_summary(
         self,
         *,
@@ -1238,6 +1332,10 @@ class SynapseKnowledgeRuntime:
         effective_context_policy: RetrievalContextPolicyConfig,
         context_policy_payload: dict[str, Any],
     ) -> dict[str, Any]:
+        state_snapshot = self._store.get_state_snapshot(
+            project_id=project_id,
+            space_key=None,
+        )
         results = [
             build_retrieval_explain_fields(
                 query=normalized_query,
@@ -1280,6 +1378,39 @@ class SynapseKnowledgeRuntime:
         }
         if isinstance(intent_payload.get("explainability"), dict):
             explainability.update(intent_payload["explainability"])
+        snippets = list(intent_payload.get("context_snippets") or [])
+        state_page = state_snapshot.get("state_page") if isinstance(state_snapshot.get("state_page"), dict) else {}
+        state_slug = str(state_page.get("slug") or "").strip()
+        state_title = str(state_page.get("title") or "Wiki State Snapshot").strip() or "Wiki State Snapshot"
+        state_summary = str(state_snapshot.get("summary_markdown") or "").strip()
+        state_snapshot_included = False
+        if bool(state_snapshot.get("available")) and state_slug:
+            already_present = any(str(item.get("page_slug") or "").strip() == state_slug for item in snippets if isinstance(item, dict))
+            if not already_present and state_summary:
+                snippets.insert(
+                    0,
+                    {
+                        "statement_id": f"state:{state_slug}",
+                        "statement_text": state_summary,
+                        "page_slug": state_slug,
+                        "page_title": state_title,
+                        "page_type": "state",
+                        "section_key": "snapshot",
+                        "retrieval_confidence": 1.0,
+                        "intent_rank_score": None,
+                        "provenance": {"source": "state_snapshot", "mode": "step0"},
+                    },
+                )
+                state_snapshot_included = True
+            else:
+                state_snapshot_included = already_present
+        snippets = snippets[:max_context_snippets]
+        explainability["state_snapshot"] = {
+            "included": bool(state_snapshot_included),
+            "available": bool(state_snapshot.get("available")),
+            "slug": state_slug or None,
+            "updated_at": state_page.get("updated_at"),
+        }
         return {
             "project_id": project_id,
             "query": normalized_query,
@@ -1287,7 +1418,7 @@ class SynapseKnowledgeRuntime:
             "policy_filtered_out": filtered_out,
             "context_injection": {
                 "intent": explainability.get("intent", retrieval_intent),
-                "snippets": intent_payload.get("context_snippets") or [],
+                "snippets": snippets,
             },
             "explainability": explainability,
         }
@@ -1441,6 +1572,23 @@ class SynapseKnowledgeRuntime:
                 role=normalized_role,
                 max_items_per_section=normalized_items,
                 freshness_days=normalized_freshness,
+            ),
+        )
+
+    def get_state_snapshot(
+        self,
+        *,
+        project_id: str,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_space = _normalize_space_key(space_key) if isinstance(space_key, str) and space_key.strip() else None
+        return self._cached_tool_call(
+            project_id=project_id,
+            tool_name="get_state_snapshot",
+            args={"space_key": normalized_space},
+            compute=lambda: self._store.get_state_snapshot(
+                project_id=project_id,
+                space_key=normalized_space,
             ),
         )
 

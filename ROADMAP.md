@@ -107,7 +107,7 @@ Execution order for this track:
 
 ## OOTB Quality Stage II (April 2026, post field feedback)
 
-Status: `in_progress`
+Status: `done`
 
 Goal:
 - после clean deploy + one-step bootstrap давать полезную, не зашумленную wiki без ручного SQL/policy-tuning;
@@ -867,8 +867,38 @@ Checklist:
 5. `done` Release playbook refresh for adoption ops:
    - align `getting-started`, `adoption-existing-memory`, and `self-hosted-deployment` with the new CLI-first operator flow.
 
+## Step-0 Snapshot & Agent-Wiki Schema (April 2026)
+
+Status: `done`
+
+Goal:
+- сделать `state`-snapshot первым классом в Synapse (не просто markdown-файл рядом);
+- стандартизировать агент-читаемый wiki schema (`summary/status/last_updated`, backlinks, staleness, decisions log);
+- дать OOTB Step-0 retrieval flow: сначала snapshot, потом точечный добор контекста.
+
+Checklist:
+1. `done` State Snapshot API:
+   - `GET /v1/wiki/state` (сборка snapshot на лету из wiki/tasks/agent signals);
+   - `POST /v1/wiki/state/sync` (upsert `state` page в space).
+2. `done` MCP Step-0 native support:
+   - добавить `get_state_snapshot` tool;
+   - при `search_knowledge` приоритизировать state snippet в `context_injection`.
+3. `done` Bootstrap integration:
+   - включить `state` page в first-run/bootstrap flows как обязательную core страницу.
+4. `done` Schema contracts:
+   - enforce frontmatter contract (`summary/status/last_updated`) + backlinks для knowledge page types;
+   - quality warnings при нарушении контракта.
+5. `done` Staleness and decisions baseline:
+   - авто-check stale меток для `index`/space listing;
+   - обязательный `decisions/log` seed в bootstrap pack.
+6. `done` SDK + docs:
+   - SDK helpers for state snapshot (`get/sync`);
+   - docs/playbooks “Step 0 = state snapshot first”.
+
 ## Recent Updates
 
+- 2026-04-17: Completed Step-0 state snapshot runtime plumbing (`GET /v1/wiki/state`, `POST /v1/wiki/state/sync`, MCP `get_state_snapshot` tool), added retrieval-time Step-0 snippet injection (`explainability.state_snapshot`) and test coverage for MCP tool registry/runtime cache + state snippet context behavior.
+- 2026-04-17: Finished Step-0 bootstrap/schema rollout end-to-end: first-run and agent bootstrap now seed `state` + `decisions-log` pages, bootstrap markdown is normalized to schema contract (`frontmatter: summary/status/last_updated` + backlinks + decisions log for process pages), `/v1/wiki/pages` now exposes stale-age markers in listing responses, and Python/TypeScript SDKs ship state snapshot helpers (`get/sync`) with updated docs.
 - 2026-04-10: Improved OOTB runtime agent discovery without explicit registry integration: added payload-based runtime `agent_id` inference (`events.agent_id` + `payload.agent_id` + metadata/agent fields) to capability matrix and source-usage mapping, and updated throughput `agents_active` metric to use the same normalized runtime identity filter so bootstrap pages stop defaulting to `runtime discovery pending` in mixed integrations.
 - 2026-04-09: Fixed field-reported regressions from production adoption: `/v1/adoption/kpi` no longer references non-existent `wiki_page_versions.project_id` (now uses `wiki_page_versions -> wiki_pages.project_id` join), and bootstrap page insert now rewrites internal wiki links when `policy_space_fallback` reroutes slugs across spaces (prevents broken `/wiki/operations/...` links after fallback to `logistics`); added self-host integration regression coverage in `scripts/integration_legacy_sync_queue_processing.py`.
 - 2026-04-09: Completed `Release trust (P0)` hardening for OSS publish reliability: added strict pre-publish registry collision gate (`prepublish-version-guard` + `--require-version-absent`), strengthened post-publish registry trust checks (`--require-latest-match`), introduced reusable install smoke verifiers (`scripts/check_python_package_install_smoke.py`, `scripts/check_npm_package_install_smoke.mjs`) wired into both artifact and registry install matrix jobs, added one-command multi-package version bump utility (`scripts/bump_release_version.py`), and upgraded RC dress rehearsal to assert exact installed versions + CLI availability.

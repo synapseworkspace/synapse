@@ -73,6 +73,19 @@ Success criteria:
 - script exits `0`;
 - output contains `[selfhost-acceptance] success`.
 
+## Step 0 First (State Snapshot)
+
+Before deep retrieval, generate/sync the compressed project state page:
+
+```bash
+curl -fsS "http://localhost:8080/v1/wiki/state?project_id=omega_demo&space_key=operations"
+curl -fsS -X POST "http://localhost:8080/v1/wiki/state/sync" \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"omega_demo","updated_by":"ops_admin","space_key":"operations","status":"published"}'
+```
+
+This creates/updates `/wiki/operations/state` and MCP retrieval injects it as Step-0 context snippet automatically.
+
 ## Path 2: Local UI + Core Services
 
 Start API + worker + MCP + Postgres:

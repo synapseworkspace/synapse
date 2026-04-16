@@ -13,6 +13,9 @@ Implemented tools:
 4. `explain_conflicts`
 5. `get_open_tasks`
 6. `get_task_details`
+7. `get_onboarding_pack`
+8. `get_state_snapshot`
+9. `get_space_policy_adoption_summary`
 
 `search_knowledge` supports graph hint `related_entity_key`:
 - runtime builds an in-query undirected entity graph from `wiki_pages.metadata.related_entities`.
@@ -25,6 +28,7 @@ Implemented tools:
   - `score_breakdown.lexical_components.*` (token overlap + exact/phrase match signals),
   - `retrieval_confidence` with `confidence_breakdown.*`,
   - `context_policy` (`mode`, `eligible`, `blocked_by`, thresholds).
+- response context injection now prepends Step-0 state snippet when available (`explainability.state_snapshot`).
 
 Operator diagnostics endpoint in API:
 - `GET /v1/mcp/retrieval/explain?project_id=...&q=...&related_entity_key=...`

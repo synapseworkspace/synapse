@@ -30,6 +30,20 @@ synapse.flush()
 
 `flush()` is loss-safe: if delivery fails, events are restored back to the in-memory queue.
 
+## Step-0 State Snapshot Helpers
+
+```python
+# Preview compressed state snapshot for MCP priming
+state = synapse.get_wiki_state_snapshot(space_key="operations")
+
+# Persist/update state page in wiki (`operations/state`)
+synapse.sync_wiki_state_snapshot(
+    updated_by="ops_admin",
+    space_key="operations",
+    status="published",
+)
+```
+
 ## Graceful Degradation Modes
 
 `SynapseConfig.degradation_mode` (or `synapse.set_degradation_mode(...)`) controls behavior when transport is unavailable:

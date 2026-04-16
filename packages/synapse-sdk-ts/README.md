@@ -32,6 +32,18 @@ await synapse.flush();
 
 `flush()` is loss-safe: if delivery fails, events are returned back to the in-memory queue.
 
+## Step-0 State Snapshot Helpers
+
+```ts
+const state = await synapse.getWikiStateSnapshot({ spaceKey: "operations" });
+
+await synapse.syncWikiStateSnapshot({
+  updatedBy: "ops_admin",
+  spaceKey: "operations",
+  status: "published"
+});
+```
+
 ## Graceful Degradation Modes
 
 `degradationMode` in config (or `synapse.setDegradationMode(...)`) defines behavior when transport fails:

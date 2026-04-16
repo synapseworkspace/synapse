@@ -737,6 +737,7 @@ export class SynapseClient {
     profile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
     spaceKey?: string;
     publish?: boolean;
+    includeStateSnapshot?: boolean;
     idempotencyKey?: string;
   }): Promise<Record<string, unknown>> {
     const createdBy = String(options.createdBy ?? "").trim();
@@ -751,7 +752,8 @@ export class SynapseClient {
       project_id: this.projectId,
       created_by: createdBy,
       profile: profileRaw,
-      publish: options.publish ?? true
+      publish: options.publish ?? true,
+      include_state_snapshot: options.includeStateSnapshot ?? true
     };
     if (asOptionalString(options.spaceKey) !== null) {
       payload.space_key = String(options.spaceKey).trim();
@@ -947,6 +949,7 @@ export class SynapseClient {
     includeCompanyOperatingContext?: boolean;
     includeOperationalLogic?: boolean;
     includeFirstRunStarter?: boolean;
+    includeStateSnapshot?: boolean;
     maxSources?: number;
     maxAgents?: number;
     maxSignals?: number;
@@ -974,6 +977,7 @@ export class SynapseClient {
         include_company_operating_context: options.includeCompanyOperatingContext ?? true,
         include_operational_logic: options.includeOperationalLogic ?? true,
         include_first_run_starter: options.includeFirstRunStarter ?? true,
+        include_state_snapshot: options.includeStateSnapshot ?? true,
         max_sources: normalizeInt(options.maxSources ?? 25, 1, 150),
         max_agents: normalizeInt(options.maxAgents ?? 100, 1, 5000),
         max_signals: normalizeInt(options.maxSignals ?? 40, 1, 200)
@@ -988,6 +992,60 @@ export class SynapseClient {
       params: {
         project_id: this.projectId
       }
+    });
+  }
+
+  async getWikiStateSnapshot(options: {
+    spaceKey?: string;
+    maxWorkstreams?: number;
+    maxOpenItems?: number;
+    maxPeopleWatch?: number;
+    maxMetrics?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/state", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        max_workstreams: normalizeInt(options.maxWorkstreams ?? 12, 1, 50),
+        max_open_items: normalizeInt(options.maxOpenItems ?? 25, 1, 200),
+        max_people_watch: normalizeInt(options.maxPeopleWatch ?? 15, 1, 100),
+        max_metrics: normalizeInt(options.maxMetrics ?? 12, 1, 100)
+      }
+    });
+  }
+
+  async syncWikiStateSnapshot(options: {
+    updatedBy: string;
+    spaceKey?: string;
+    status?: "draft" | "reviewed" | "published" | "archived" | string;
+    maxWorkstreams?: number;
+    maxOpenItems?: number;
+    maxPeopleWatch?: number;
+    maxMetrics?: number;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const status = String(options.status ?? "published").trim().toLowerCase() || "published";
+    if (!["draft", "reviewed", "published", "archived"].includes(status)) {
+      throw new Error("status must be one of: draft, reviewed, published, archived");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/state/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        status,
+        max_workstreams: normalizeInt(options.maxWorkstreams ?? 12, 1, 50),
+        max_open_items: normalizeInt(options.maxOpenItems ?? 25, 1, 200),
+        max_people_watch: normalizeInt(options.maxPeopleWatch ?? 15, 1, 100),
+        max_metrics: normalizeInt(options.maxMetrics ?? 12, 1, 100)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
   }
 

@@ -49,7 +49,12 @@ MCP runtime server that exposes published Synapse knowledge to agent frameworks.
   - `fresh_changes`
 - Optional parameters: `role`, `max_items_per_section`, `freshness_days`.
 
-8. `get_space_policy_adoption_summary`
+8. `get_state_snapshot`
+- Returns latest published Step-0 state snapshot page (`page_type=state` or `*/state` slug).
+- Designed for fast runtime priming before deeper retrieval (`search_knowledge`).
+- Optional parameter: `space_key`.
+
+9. `get_space_policy_adoption_summary`
 - Governance summary for one wiki space:
   - `total_updates`, `unique_actors`, `top_actor`, `top_actor_updates`,
   - `avg_update_interval_days`,

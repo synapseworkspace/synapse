@@ -945,6 +945,7 @@ class AdoptionFirstRunBootstrapRequest(BaseModel):
     profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops)$")
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
     publish: bool = True
+    include_state_snapshot: bool = True
 
 
 class AdoptionWikiSpaceTemplateApplyRequest(BaseModel):
@@ -999,6 +1000,7 @@ class AdoptionAgentWikiBootstrapRequest(BaseModel):
     include_process_playbooks: bool = True
     include_company_operating_context: bool = True
     include_first_run_starter: bool = True
+    include_state_snapshot: bool = True
     max_sources: int = Field(default=25, ge=1, le=150)
     max_agents: int = Field(default=100, ge=1, le=5000)
     max_signals: int = Field(default=40, ge=1, le=200)
@@ -1056,6 +1058,17 @@ class WikiProcessSimulationRequest(BaseModel):
     proposed_markdown: str = Field(min_length=1, max_length=200000)
     baseline_markdown: str | None = Field(default=None, max_length=200000)
     sample_limit: int = Field(default=12, ge=1, le=50)
+
+
+class WikiStateSnapshotSyncRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    status: str = Field(default="published", pattern="^(draft|reviewed|published|archived)$")
+    max_workstreams: int = Field(default=12, ge=1, le=50)
+    max_open_items: int = Field(default=25, ge=1, le=200)
+    max_people_watch: int = Field(default=15, ge=1, le=100)
+    max_metrics: int = Field(default=12, ge=1, le=100)
 
 
 class AgentDirectoryRegisterRequest(BaseModel):
@@ -6630,6 +6643,528 @@ def _build_wiki_onboarding_pack(
             "fresh_changes": fresh_changes[:section_limit],
         },
         "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _build_wiki_state_snapshot(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    max_workstreams: int = 12,
+    max_open_items: int = 25,
+    max_people_watch: int = 15,
+    max_metrics: int = 12,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    workstreams_limit = max(1, min(50, int(max_workstreams)))
+    open_items_limit = max(1, min(200, int(max_open_items)))
+    people_limit = max(1, min(100, int(max_people_watch)))
+    metrics_limit = max(1, min(100, int(max_metrics)))
+
+    def _fmt_date(value: Any) -> str:
+        if isinstance(value, datetime):
+            return value.astimezone(UTC).strftime("%d.%m.%Y")
+        return "n/a"
+
+    def _fmt_iso(value: Any) -> str | None:
+        if isinstance(value, datetime):
+            return value.astimezone(UTC).isoformat()
+        return None
+
+    def _cell(value: Any, *, max_len: int = 180) -> str:
+        text = str(value or "").replace("\n", " ").replace("|", "\\|").strip()
+        if not text:
+            return "—"
+        if len(text) > max_len:
+            return f"{text[: max_len - 1]}…"
+        return text
+
+    has_tasks = _public_table_exists(conn, "synapse_tasks")
+    has_profiles = _public_table_exists(conn, "agent_directory_profiles")
+    has_claims = _public_table_exists(conn, "claims")
+    with conn.cursor() as cur:
+        has_drafts = _wiki_feature_table_exists(cur, "public.wiki_draft_changes")
+
+        workstream_rows: list[dict[str, Any]] = []
+        if has_drafts:
+            workstream_sql = """
+                SELECT
+                  p.title,
+                  p.slug,
+                  p.page_type,
+                  p.updated_at,
+                  COALESCE(d.pending_review, 0)::int AS pending_review
+                FROM wiki_pages p
+                LEFT JOIN LATERAL (
+                  SELECT COUNT(*)::int AS pending_review
+                  FROM wiki_draft_changes d
+                  WHERE d.page_id = p.id
+                    AND d.project_id = p.project_id
+                    AND d.status = 'pending_review'
+                ) d ON TRUE
+                WHERE p.project_id = %s
+                  AND p.status = 'published'
+                  AND lower(COALESCE(p.page_type, '')) <> 'state'
+            """
+        else:
+            workstream_sql = """
+                SELECT
+                  p.title,
+                  p.slug,
+                  p.page_type,
+                  p.updated_at,
+                  0::int AS pending_review
+                FROM wiki_pages p
+                WHERE p.project_id = %s
+                  AND p.status = 'published'
+                  AND lower(COALESCE(p.page_type, '')) <> 'state'
+            """
+        workstream_params: list[Any] = [project_id]
+        if normalized_space:
+            workstream_sql += " AND lower(p.slug) LIKE %s"
+            workstream_params.append(f"{normalized_space}/%")
+        workstream_sql += """
+                ORDER BY p.updated_at DESC
+                LIMIT %s
+            """
+        workstream_params.append(workstreams_limit)
+        cur.execute(workstream_sql, tuple(workstream_params))
+        for row in cur.fetchall() or []:
+            updated_at = row[3] if isinstance(row[3], datetime) else None
+            age_days = (
+                int((now - updated_at).total_seconds() // 86400)
+                if isinstance(updated_at, datetime)
+                else 999
+            )
+            pending_review = int(row[4] or 0)
+            watch = "OK"
+            if age_days >= 7:
+                watch = "STALE"
+            if pending_review > 0:
+                watch = "REVIEW" if watch == "OK" else f"{watch}+REVIEW"
+            workstream_rows.append(
+                {
+                    "title": _cell(row[0], max_len=80),
+                    "slug": str(row[1] or ""),
+                    "page_type": str(row[2] or "operations"),
+                    "last_signal": _fmt_date(updated_at),
+                    "watch": watch,
+                    "updated_at": _fmt_iso(updated_at),
+                }
+            )
+
+        critical_rows: list[dict[str, Any]] = []
+        urgent_rows: list[dict[str, Any]] = []
+        high_rows: list[dict[str, Any]] = []
+        open_items_rows: list[dict[str, Any]] = []
+
+        if has_tasks:
+            cur.execute(
+                """
+                SELECT
+                  title,
+                  assignee,
+                  status,
+                  priority,
+                  due_at,
+                  created_at
+                FROM synapse_tasks
+                WHERE project_id = %s
+                  AND status IN ('todo', 'in_progress', 'blocked')
+                ORDER BY
+                  CASE priority
+                    WHEN 'critical' THEN 0
+                    WHEN 'high' THEN 1
+                    WHEN 'normal' THEN 2
+                    ELSE 3
+                  END,
+                  created_at ASC
+                LIMIT %s
+                """,
+                (project_id, open_items_limit),
+            )
+            for row in cur.fetchall() or []:
+                due_at = row[4] if isinstance(row[4], datetime) else None
+                created_at = row[5] if isinstance(row[5], datetime) else None
+                days_open = (
+                    max(0, int((now - created_at).total_seconds() // 86400))
+                    if isinstance(created_at, datetime)
+                    else 0
+                )
+                status = str(row[2] or "todo")
+                priority = str(row[3] or "normal").lower()
+                owner = str(row[1] or "unassigned").strip() or "unassigned"
+                item = {
+                    "item": _cell(row[0], max_len=100),
+                    "owner": _cell(owner, max_len=42),
+                    "status": _cell(status, max_len=24),
+                    "days_open": days_open,
+                    "deadline": _fmt_date(due_at),
+                }
+                open_items_rows.append(item)
+                if priority == "critical" or (isinstance(due_at, datetime) and due_at <= now + timedelta(hours=24)):
+                    critical_rows.append(item)
+                elif priority == "high" or (isinstance(due_at, datetime) and due_at <= now + timedelta(days=7)):
+                    urgent_rows.append(item)
+                else:
+                    high_rows.append(item)
+        elif has_drafts:
+            cur.execute(
+                """
+                SELECT p.title, d.created_at
+                FROM wiki_draft_changes d
+                JOIN wiki_pages p ON p.id = d.page_id
+                WHERE d.project_id = %s
+                  AND d.status = 'pending_review'
+                ORDER BY d.created_at ASC
+                LIMIT %s
+                """,
+                (project_id, open_items_limit),
+            )
+            for row in cur.fetchall() or []:
+                created_at = row[1] if isinstance(row[1], datetime) else None
+                days_open = (
+                    max(0, int((now - created_at).total_seconds() // 86400))
+                    if isinstance(created_at, datetime)
+                    else 0
+                )
+                item = {
+                    "item": _cell(row[0], max_len=100),
+                    "owner": "review_queue",
+                    "status": "pending_review",
+                    "days_open": days_open,
+                    "deadline": "—",
+                }
+                open_items_rows.append(item)
+                if days_open >= 3:
+                    urgent_rows.append(item)
+                else:
+                    high_rows.append(item)
+
+        experiments_rows: list[dict[str, Any]] = []
+        cur.execute(
+            """
+            SELECT title, slug, updated_at
+            FROM wiki_pages
+            WHERE project_id = %s
+              AND status = 'published'
+              AND lower(COALESCE(page_type, '')) LIKE 'experiment%%'
+            ORDER BY updated_at DESC
+            LIMIT 20
+            """,
+            (project_id,),
+        )
+        for row in cur.fetchall() or []:
+            experiments_rows.append(
+                {
+                    "experiment": _cell(row[0], max_len=90),
+                    "status": "Active",
+                    "signal": _fmt_date(row[2]),
+                    "slug": str(row[1] or ""),
+                }
+            )
+
+        people_rows: list[dict[str, Any]] = []
+        if has_profiles:
+            cur.execute(
+                """
+                SELECT
+                  display_name,
+                  role,
+                  status,
+                  last_seen_at
+                FROM agent_directory_profiles
+                WHERE project_id = %s
+                  AND status IN ('active', 'idle')
+                ORDER BY
+                  CASE status WHEN 'active' THEN 0 ELSE 1 END,
+                  last_seen_at DESC NULLS LAST
+                LIMIT %s
+                """,
+                (project_id, people_limit),
+            )
+            for row in cur.fetchall() or []:
+                people_rows.append(
+                    {
+                        "person": _cell(row[0], max_len=60),
+                        "role": _cell(row[1] or "agent", max_len=50),
+                        "status": _cell(row[2] or "active", max_len=24),
+                        "signal": _fmt_date(row[3]),
+                    }
+                )
+        else:
+            cur.execute(
+                """
+                SELECT
+                  lower(COALESCE(v.created_by, 'unknown')) AS actor,
+                  COUNT(*)::int AS updates_total,
+                  MAX(v.created_at) AS last_update
+                FROM wiki_page_versions v
+                JOIN wiki_pages p ON p.id = v.page_id
+                WHERE p.project_id = %s
+                GROUP BY lower(COALESCE(v.created_by, 'unknown'))
+                ORDER BY updates_total DESC, actor ASC
+                LIMIT %s
+                """,
+                (project_id, people_limit),
+            )
+            for row in cur.fetchall() or []:
+                people_rows.append(
+                    {
+                        "person": _cell(row[0], max_len=60),
+                        "role": "contributor",
+                        "status": f"updates:{int(row[1] or 0)}",
+                        "signal": _fmt_date(row[2]),
+                    }
+                )
+
+        metrics_rows: list[dict[str, Any]] = []
+        if has_claims:
+            cur.execute(
+                """
+                SELECT
+                  COALESCE(NULLIF(trim(COALESCE(c.category, '')), ''), 'metric') AS category_label,
+                  c.claim_text,
+                  c.updated_at
+                FROM claims c
+                WHERE c.project_id = %s
+                  AND (
+                    lower(COALESCE(c.category, '')) LIKE '%%metric%%'
+                    OR lower(COALESCE(c.category, '')) LIKE '%%kpi%%'
+                    OR lower(COALESCE(c.category, '')) LIKE '%%sla%%'
+                    OR lower(COALESCE(c.category, '')) LIKE '%%target%%'
+                    OR lower(COALESCE(c.claim_text, '')) ~ '[0-9]+'
+                  )
+                ORDER BY c.updated_at DESC
+                LIMIT %s
+                """,
+                (project_id, metrics_limit),
+            )
+            seen_metric_keys: set[str] = set()
+            for row in cur.fetchall() or []:
+                category_label = str(row[0] or "metric").strip() or "metric"
+                claim_text = str(row[1] or "").strip()
+                if not claim_text:
+                    continue
+                metric_key = f"{category_label}:{claim_text[:80].lower()}"
+                if metric_key in seen_metric_keys:
+                    continue
+                seen_metric_keys.add(metric_key)
+                metric_match = re.search(r"([0-9]+(?:[.,][0-9]+)?%?)", claim_text)
+                metric_value = metric_match.group(1) if metric_match else claim_text[:42]
+                metrics_rows.append(
+                    {
+                        "metric": _cell(category_label, max_len=50),
+                        "value": _cell(metric_value, max_len=42),
+                        "date": _fmt_date(row[2]),
+                        "signal": _cell(claim_text, max_len=120),
+                    }
+                )
+                if len(metrics_rows) >= metrics_limit:
+                    break
+
+    target_slug = _space_slug(normalized_space, "state") if normalized_space else "state"
+    frontmatter_space = normalized_space or "global"
+    lines = [
+        "---",
+        f"last_updated: {now.astimezone(UTC).isoformat()}",
+        "generated_by: synapse_state_snapshot",
+        f"space_key: {frontmatter_space}",
+        "---",
+        "",
+        "# Wiki State Snapshot",
+        "",
+        "> Single-file compressed state for Step 0 context injection.",
+        "> Regenerated by Synapse from published knowledge and operational signals.",
+        "",
+        "## CRITICAL (act within 24h)",
+        "",
+        "| Item | Owner | Deadline |",
+        "|---|---|---|",
+    ]
+    if critical_rows:
+        lines.extend([f"| {_cell(item['item'])} | {_cell(item['owner'])} | {_cell(item['deadline'])} |" for item in critical_rows[:12]])
+    else:
+        lines.append("| — | — | — |")
+
+    lines.extend(
+        [
+            "",
+            "## URGENT",
+            "",
+            "| Item | Owner | Status |",
+            "|---|---|---|",
+        ]
+    )
+    if urgent_rows:
+        lines.extend([f"| {_cell(item['item'])} | {_cell(item['owner'])} | {_cell(item['status'])} |" for item in urgent_rows[:12]])
+    else:
+        lines.append("| — | — | — |")
+
+    lines.extend(
+        [
+            "",
+            "## HIGH",
+            "",
+            "| Item | Owner | Status |",
+            "|---|---|---|",
+        ]
+    )
+    if high_rows:
+        lines.extend([f"| {_cell(item['item'])} | {_cell(item['owner'])} | {_cell(item['status'])} |" for item in high_rows[:12]])
+    else:
+        lines.append("| — | — | — |")
+
+    lines.extend(
+        [
+            "",
+            "## Workstream Status",
+            "",
+            "| Workstream | Type | Last Signal | Watch |",
+            "|---|---|---|---|",
+        ]
+    )
+    if workstream_rows:
+        lines.extend(
+            [
+                f"| {_cell(item['title'])} | {_cell(item['page_type'])} | {_cell(item['last_signal'])} | {_cell(item['watch'])} |"
+                for item in workstream_rows
+            ]
+        )
+    else:
+        lines.append("| — | — | — | — |")
+
+    lines.extend(
+        [
+            "",
+            "## Open Items",
+            "",
+            "| Item | Owner | Status | Days Open |",
+            "|---|---|---|---|",
+        ]
+    )
+    if open_items_rows:
+        lines.extend(
+            [
+                f"| {_cell(item['item'])} | {_cell(item['owner'])} | {_cell(item['status'])} | {int(item['days_open'])} |"
+                for item in open_items_rows[:open_items_limit]
+            ]
+        )
+    else:
+        lines.append("| — | — | — | 0 |")
+
+    lines.extend(
+        [
+            "",
+            "## Active Experiments",
+            "",
+            "| Experiment | Status | Signal |",
+            "|---|---|---|",
+        ]
+    )
+    if experiments_rows:
+        lines.extend([f"| {_cell(item['experiment'])} | {_cell(item['status'])} | {_cell(item['signal'])} |" for item in experiments_rows])
+    else:
+        lines.append("| — | — | — |")
+
+    lines.extend(
+        [
+            "",
+            "## People Watch List",
+            "",
+            "| Person | Role | Status | Signal |",
+            "|---|---|---|---|",
+        ]
+    )
+    if people_rows:
+        lines.extend(
+            [f"| {_cell(item['person'])} | {_cell(item['role'])} | {_cell(item['status'])} | {_cell(item['signal'])} |" for item in people_rows]
+        )
+    else:
+        lines.append("| — | — | — | — |")
+
+    lines.extend(
+        [
+            "",
+            "## Key Metrics (last known)",
+            "",
+            "| Metric | Value | Date |",
+            "|---|---|---|",
+        ]
+    )
+    if metrics_rows:
+        lines.extend([f"| {_cell(item['metric'])} | {_cell(item['value'])} | {_cell(item['date'])} |" for item in metrics_rows])
+    else:
+        lines.append("| — | — | — |")
+
+    markdown = "\n".join(lines).rstrip() + "\n"
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space or None,
+        "target_slug": target_slug,
+        "generated_at": now.astimezone(UTC).isoformat(),
+        "markdown": markdown,
+        "sections": {
+            "critical_total": len(critical_rows),
+            "urgent_total": len(urgent_rows),
+            "high_total": len(high_rows),
+            "workstreams_total": len(workstream_rows),
+            "open_items_total": len(open_items_rows),
+            "experiments_total": len(experiments_rows),
+            "people_watch_total": len(people_rows),
+            "metrics_total": len(metrics_rows),
+        },
+    }
+
+
+def _sync_wiki_state_snapshot_page(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str,
+    space_key: str | None = None,
+    status: str = "published",
+    max_workstreams: int = 12,
+    max_open_items: int = 25,
+    max_people_watch: int = 15,
+    max_metrics: int = 12,
+) -> dict[str, Any]:
+    snapshot = _build_wiki_state_snapshot(
+        conn,
+        project_id=project_id,
+        space_key=space_key,
+        max_workstreams=max_workstreams,
+        max_open_items=max_open_items,
+        max_people_watch=max_people_watch,
+        max_metrics=max_metrics,
+    )
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    state_slug = str(snapshot.get("target_slug") or (_space_slug(normalized_space, "state") if normalized_space else "state"))
+    entity_key = f"{normalized_space or 'global'}_state_snapshot"
+    markdown = str(snapshot.get("markdown") or "").strip()
+    if not markdown:
+        raise HTTPException(status_code=500, detail={"code": "state_snapshot_empty"})
+
+    with conn.cursor() as cur:
+        page_sync = _upsert_wiki_page_system(
+            cur,
+            project_id=project_id,
+            actor=str(updated_by or "synapse_state_sync").strip() or "synapse_state_sync",
+            slug=state_slug,
+            title="Wiki State Snapshot",
+            page_type="state",
+            entity_key=entity_key,
+            markdown=markdown,
+            status=str(status or "published").strip().lower(),
+            change_summary="Synced Step-0 wiki state snapshot",
+        )
+    return {
+        "project_id": project_id,
+        "state_page_slug": state_slug,
+        "state": snapshot,
+        "page_sync": page_sync,
     }
 
 
@@ -19695,6 +20230,7 @@ def list_wiki_pages(
     offset: int = Query(default=0, ge=0, le=50000),
     sort_by: str = Query(default="activity"),
     sort_dir: str = Query(default="desc"),
+    stale_days: int = Query(default=21, ge=1, le=365),
 ) -> dict[str, Any]:
     normalized_status = str(status or "").strip().lower()
     if normalized_status and normalized_status not in {"draft", "reviewed", "published", "archived"}:
@@ -19709,6 +20245,8 @@ def list_wiki_pages(
     normalized_offset = max(0, int(offset))
     normalized_sort_by = str(sort_by or "activity").strip().lower()
     normalized_sort_dir = str(sort_dir or "desc").strip().lower()
+    normalized_stale_days = max(1, int(stale_days))
+    normalized_stale_critical_days = max(normalized_stale_days + 1, normalized_stale_days * 2)
     if normalized_sort_dir not in {"asc", "desc"}:
         raise HTTPException(status_code=422, detail="wiki_page_sort_dir_invalid")
     direction_sql = "ASC" if normalized_sort_dir == "asc" else "DESC"
@@ -19814,23 +20352,44 @@ def list_wiki_pages(
             )
             rows = cur.fetchall()
 
-    pages = [
-        {
-            "id": row[0],
-            "title": row[1],
-            "slug": row[2],
-            "entity_key": row[3],
-            "page_type": row[4],
-            "status": row[5],
-            "current_version": int(row[6]) if row[6] is not None else None,
-            "created_at": row[7].isoformat() if row[7] is not None else None,
-            "updated_at": row[8].isoformat() if row[8] is not None else None,
-            "draft_count": int(row[9]),
-            "open_draft_count": int(row[10]),
-            "latest_draft_at": row[11].isoformat() if row[11] is not None else None,
-        }
-        for row in rows
-    ]
+    now = datetime.now(UTC)
+    pages: list[dict[str, Any]] = []
+    stale_warning_total = 0
+    stale_critical_total = 0
+    for row in rows:
+        created_at = row[7] if isinstance(row[7], datetime) else None
+        updated_at = row[8] if isinstance(row[8], datetime) else None
+        last_activity = updated_at or created_at
+        stale_age_days: int | None = None
+        stale_warning = False
+        stale_critical = False
+        if isinstance(last_activity, datetime):
+            stale_age_days = max(0, int((now - last_activity.astimezone(UTC)).total_seconds() // 86400))
+            stale_warning = stale_age_days >= normalized_stale_days
+            stale_critical = stale_age_days >= normalized_stale_critical_days
+        if stale_warning:
+            stale_warning_total += 1
+        if stale_critical:
+            stale_critical_total += 1
+        pages.append(
+            {
+                "id": row[0],
+                "title": row[1],
+                "slug": row[2],
+                "entity_key": row[3],
+                "page_type": row[4],
+                "status": row[5],
+                "current_version": int(row[6]) if row[6] is not None else None,
+                "created_at": created_at.isoformat() if created_at is not None else None,
+                "updated_at": updated_at.isoformat() if updated_at is not None else None,
+                "draft_count": int(row[9]),
+                "open_draft_count": int(row[10]),
+                "latest_draft_at": row[11].isoformat() if row[11] is not None else None,
+                "stale_age_days": stale_age_days,
+                "stale_warning": bool(stale_warning),
+                "stale_critical": bool(stale_critical),
+            }
+        )
     return {
         "pages": pages,
         "meta": {
@@ -19845,9 +20404,16 @@ def list_wiki_pages(
                 "offset": normalized_offset,
                 "sort_by": normalized_sort_by,
                 "sort_dir": normalized_sort_dir,
+                "stale_days": normalized_stale_days,
             },
             "total": total,
             "returned": len(pages),
+            "stale_summary": {
+                "stale_days": normalized_stale_days,
+                "critical_days": normalized_stale_critical_days,
+                "warning_total": int(stale_warning_total),
+                "critical_total": int(stale_critical_total),
+            },
         },
     }
 
@@ -21043,6 +21609,51 @@ def get_wiki_onboarding_pack(
             max_items_per_section=max_items_per_section,
             freshness_days=freshness_days,
         )
+
+
+@app.get("/v1/wiki/state")
+def get_wiki_state_snapshot(
+    project_id: str,
+    space_key: str | None = Query(default=None),
+    max_workstreams: int = Query(default=12, ge=1, le=50),
+    max_open_items: int = Query(default=25, ge=1, le=200),
+    max_people_watch: int = Query(default=15, ge=1, le=100),
+    max_metrics: int = Query(default=12, ge=1, le=100),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _build_wiki_state_snapshot(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            max_workstreams=max_workstreams,
+            max_open_items=max_open_items,
+            max_people_watch=max_people_watch,
+            max_metrics=max_metrics,
+        )
+
+
+@app.post("/v1/wiki/state/sync", response_model=None)
+def sync_wiki_state_snapshot(payload: WikiStateSnapshotSyncRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+
+    with get_conn() as conn:
+        result = _sync_wiki_state_snapshot_page(
+            conn,
+            project_id=normalized_project,
+            updated_by=str(payload.updated_by or "synapse_state_sync"),
+            space_key=payload.space_key,
+            status=payload.status,
+            max_workstreams=int(payload.max_workstreams),
+            max_open_items=int(payload.max_open_items),
+            max_people_watch=int(payload.max_people_watch),
+            max_metrics=int(payload.max_metrics),
+        )
+    return {"status": "ok", **result}
 
 
 @app.get("/v1/wiki/pages/{slug}")
@@ -26762,7 +27373,199 @@ def _space_slug(space_key: str, leaf: str) -> str:
     return _normalize_wiki_slug(normalized_leaf, normalized_leaf)
 
 
-def _build_first_run_starter_pages(profile: str, *, space_key: str | None = None) -> list[dict[str, str]]:
+_WIKI_SCHEMA_FRONTMATTER_REQUIRED = ("summary", "status", "last_updated")
+_WIKI_SCHEMA_DECISION_REQUIRED_PAGE_TYPES = {"agent_profile", "process", "runbook", "policy", "operations", "data_map"}
+
+
+def _parse_markdown_frontmatter(markdown: str) -> tuple[dict[str, str], str, bool]:
+    text = str(markdown or "")
+    if not text.startswith("---\n"):
+        return {}, text, False
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text, False
+    closing_index = -1
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            closing_index = index
+            break
+    if closing_index <= 0:
+        return {}, text, False
+    fields: dict[str, str] = {}
+    for raw in lines[1:closing_index]:
+        line = raw.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        normalized_key = str(key or "").strip().lower()
+        normalized_value = str(value or "").strip().strip('"').strip("'")
+        if normalized_key:
+            fields[normalized_key] = normalized_value
+    body = "\n".join(lines[closing_index + 1 :]).lstrip("\n")
+    return fields, body, True
+
+
+def _yaml_scalar(value: Any) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if not text:
+        return '""'
+    if re.fullmatch(r"[A-Za-z0-9_.:/+-]+", text):
+        return text
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _render_markdown_frontmatter(fields: dict[str, Any]) -> str:
+    normalized: dict[str, Any] = {}
+    for key, value in fields.items():
+        normalized_key = str(key or "").strip().lower()
+        if not normalized_key:
+            continue
+        normalized[normalized_key] = value
+    ordered_keys: list[str] = list(_WIKI_SCHEMA_FRONTMATTER_REQUIRED)
+    for key in sorted(normalized.keys()):
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+    lines = ["---"]
+    for key in ordered_keys:
+        if key not in normalized:
+            continue
+        lines.append(f"{key}: {_yaml_scalar(normalized[key])}")
+    lines.append("---")
+    return "\n".join(lines) + "\n\n"
+
+
+def _extract_markdown_backlinks(markdown: str) -> list[str]:
+    text = str(markdown or "")
+    links = re.findall(r"\[[^\]]+\]\((/wiki/[^\)\s]+)\)", text)
+    wikilinks = re.findall(r"\[\[([^\]]+)\]\]", text)
+    combined = [str(item or "").strip() for item in [*links, *wikilinks] if str(item or "").strip()]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in combined:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _evaluate_wiki_schema_contract(
+    *,
+    markdown: str,
+    page_type: str,
+    slug: str,
+) -> dict[str, Any]:
+    frontmatter, body, has_frontmatter = _parse_markdown_frontmatter(markdown)
+    normalized_type = str(page_type or "").strip().lower()
+    normalized_slug = _normalize_wiki_slug(str(slug or ""), str(slug or "page"))
+    missing_frontmatter = [key for key in _WIKI_SCHEMA_FRONTMATTER_REQUIRED if not str(frontmatter.get(key) or "").strip()]
+    backlinks = _extract_markdown_backlinks(body)
+    decisions_section_present = "## decisions log" in body.lower() or "## decision log" in body.lower()
+    is_state_page = normalized_type == "state" or normalized_slug.endswith("/state") or normalized_slug == "state"
+    is_decisions_page = normalized_slug.endswith("/decisions-log") or normalized_slug == "decisions-log"
+    needs_backlinks = not is_state_page
+    needs_decisions_log = normalized_type in _WIKI_SCHEMA_DECISION_REQUIRED_PAGE_TYPES and not is_decisions_page and not is_state_page
+    missing_markers: list[str] = []
+    if missing_frontmatter:
+        missing_markers.extend([f"frontmatter:{key}" for key in missing_frontmatter])
+    if needs_backlinks and not backlinks:
+        missing_markers.append("backlinks")
+    if needs_decisions_log and not decisions_section_present:
+        missing_markers.append("decisions_log")
+    return {
+        "has_frontmatter": bool(has_frontmatter),
+        "frontmatter": frontmatter,
+        "missing_frontmatter": missing_frontmatter,
+        "backlinks_count": len(backlinks),
+        "backlinks": backlinks[:8],
+        "needs_backlinks": bool(needs_backlinks),
+        "has_decisions_log": bool(decisions_section_present),
+        "needs_decisions_log": bool(needs_decisions_log),
+        "missing_markers": missing_markers,
+        "passed": len(missing_markers) == 0,
+    }
+
+
+def _apply_wiki_schema_contract(
+    *,
+    markdown: str,
+    title: str,
+    page_type: str,
+    slug: str,
+    status: str,
+    generated_at: datetime,
+) -> str:
+    original = str(markdown or "").strip()
+    frontmatter, body, _ = _parse_markdown_frontmatter(original)
+    text_body = body if body.strip() else original
+    heading_match = re.search(r"^#\s+(.+)$", text_body, flags=re.MULTILINE)
+    heading = str(heading_match.group(1) if heading_match else title or slug).strip()
+    summary = str(frontmatter.get("summary") or "").strip()
+    if not summary:
+        summary = f"{heading} knowledge page for operational agent context."
+    normalized_status = str(frontmatter.get("status") or status or "active").strip().lower() or "active"
+    last_updated = str(frontmatter.get("last_updated") or "").strip() or generated_at.astimezone(UTC).isoformat()
+
+    normalized_slug = _normalize_wiki_slug(str(slug or ""), str(slug or "page"))
+    normalized_page_type = str(page_type or "").strip().lower()
+    space_key = _normalize_space_key(_wiki_space_key_from_slug(normalized_slug), default="")
+    state_path = _space_slug(space_key, "state") if space_key else "state"
+    backlinks = _extract_markdown_backlinks(text_body)
+
+    decisions_section_present = "## decisions log" in text_body.lower() or "## decision log" in text_body.lower()
+    is_state_page = normalized_page_type == "state" or normalized_slug == "state" or normalized_slug.endswith("/state")
+    is_decisions_page = normalized_slug.endswith("/decisions-log") or normalized_slug == "decisions-log"
+    needs_backlinks = not is_state_page
+    needs_decisions_log = normalized_page_type in _WIKI_SCHEMA_DECISION_REQUIRED_PAGE_TYPES and not decisions_section_present and not is_decisions_page and not is_state_page
+
+    enriched_body = text_body.rstrip()
+    if needs_backlinks and not backlinks:
+        enriched_body += (
+            "\n\n## Backlinks\n"
+            f"- [Wiki State Snapshot](/wiki/{state_path})\n"
+        )
+    if needs_decisions_log:
+        enriched_body += (
+            "\n\n## Decisions Log\n"
+            f"- {generated_at.astimezone(UTC).date().isoformat()} — Bootstrap seed created; validate owner, SLA, and escalation path.\n"
+        )
+
+    metadata = dict(frontmatter)
+    metadata["summary"] = summary
+    metadata["status"] = normalized_status
+    metadata["last_updated"] = last_updated
+    metadata["schema_contract"] = "synapse_wiki_v1"
+    metadata["page_type"] = normalized_page_type or "operations"
+    metadata["slug"] = normalized_slug
+
+    return _render_markdown_frontmatter(metadata) + enriched_body.strip() + "\n"
+
+
+def _build_decisions_log_seed_page(space_key: str) -> dict[str, str]:
+    normalized_space = _normalize_space_key(space_key, default="operations")
+    return {
+        "title": "Decisions Log",
+        "slug": _space_slug(normalized_space, "decisions-log"),
+        "page_type": "process",
+        "markdown": (
+            "# Decisions Log\n\n"
+            "## How To Use\n"
+            "- Capture high-impact process/policy decisions with date, owner, and rationale.\n"
+            "- Link every decision to affected playbooks and rollback criteria.\n\n"
+            "## Seed Entries\n"
+            f"- {datetime.now(UTC).date().isoformat()} — Bootstrap baseline published. Owner: ops_manager. Scope: core wiki onboarding pack.\n"
+        ),
+    }
+
+
+def _build_first_run_starter_pages(
+    profile: str,
+    *,
+    space_key: str | None = None,
+    include_decisions_log: bool = True,
+) -> list[dict[str, str]]:
     space = _normalize_space_key(space_key or "", default="")
     if not space:
         default_space_by_profile = {
@@ -26881,6 +27684,8 @@ def _build_first_run_starter_pages(profile: str, *, space_key: str | None = None
                 ),
             }
         )
+    if include_decisions_log:
+        pages.append(_build_decisions_log_seed_page(space))
     return pages
 
 
@@ -26900,6 +27705,7 @@ def _insert_bootstrap_pages(
         *,
         page_type: str,
         title: str,
+        slug: str,
         markdown: str,
     ) -> dict[str, Any]:
         text = str(markdown or "")
@@ -26956,6 +27762,12 @@ def _insert_bootstrap_pages(
                 min_facts=6,
             )
             missing_required.extend(list(capability_contract.get("missing_sections") or []))
+        schema_contract = _evaluate_wiki_schema_contract(
+            markdown=text,
+            page_type=page_type,
+            slug=slug,
+        )
+        missing_required.extend(list(schema_contract.get("missing_markers") or []))
         min_words_by_type = {
             "agent_profile": 120,
             "data_map": 80,
@@ -26981,9 +27793,11 @@ def _insert_bootstrap_pages(
         )
         if capability_contract is not None:
             publish_ready = bool(publish_ready and capability_contract.get("passed"))
+        publish_ready = bool(publish_ready and schema_contract.get("passed"))
         return {
             "page_type": str(page_type or "operations"),
             "title": str(title or ""),
+            "slug": str(slug or ""),
             "words": len(words),
             "headings": len(heading_lines),
             "bullets": len(bullet_lines),
@@ -26995,6 +27809,7 @@ def _insert_bootstrap_pages(
             "quality_score": quality_score,
             "publish_ready": publish_ready,
             "capability_contract": capability_contract,
+            "schema_contract": schema_contract,
         }
 
     def _rewrite_wiki_space_links(markdown_value: str, *, from_space_key: str, to_space_key: str) -> str:
@@ -27074,7 +27889,15 @@ def _insert_bootstrap_pages(
             title = str(spec.get("title") or "").strip()
             slug = _normalize_wiki_slug(str(spec.get("slug") or title), title)
             page_type = str(spec.get("page_type") or "operations").strip().lower() or "operations"
-            markdown = str(spec.get("markdown") or f"# {title}\n").rstrip() + "\n"
+            raw_markdown = str(spec.get("markdown") or f"# {title}\n")
+            markdown = _apply_wiki_schema_contract(
+                markdown=raw_markdown,
+                title=title,
+                page_type=page_type,
+                slug=slug,
+                status=requested_status,
+                generated_at=datetime.now(UTC),
+            )
             space_key = _wiki_space_key_from_slug(slug)
             original_space_key = space_key
             entity_key = slug
@@ -27165,6 +27988,7 @@ def _insert_bootstrap_pages(
             quality_assessment = _assess_bootstrap_page_quality(
                 page_type=page_type,
                 title=title,
+                slug=slug,
                 markdown=markdown,
             )
             if status == "published":
@@ -28806,13 +29630,16 @@ def _build_agent_wiki_bootstrap_pages(
     include_process_playbooks: bool,
     include_company_operating_context: bool,
     include_first_run_starter: bool,
+    include_state_snapshot: bool,
     max_sources: int,
     max_agents: int,
     max_signals: int,
 ) -> list[dict[str, str]]:
     pages: list[dict[str, str]] = []
     if include_first_run_starter:
-        pages.extend(_build_first_run_starter_pages("standard", space_key=space_key))
+        pages.extend(_build_first_run_starter_pages("standard", space_key=space_key, include_decisions_log=True))
+    else:
+        pages.append(_build_decisions_log_seed_page(space_key))
     with conn.cursor() as cur:
         if include_data_sources_catalog:
             pages.extend(
@@ -28876,6 +29703,24 @@ def _build_agent_wiki_bootstrap_pages(
                     max_days=min(14, max(3, int(max_signals // 4) or 7)),
                 )
             )
+    if include_state_snapshot:
+        state_preview = _build_wiki_state_snapshot(
+            conn,
+            project_id=project_id,
+            space_key=space_key,
+            max_workstreams=min(50, max(6, max_signals)),
+            max_open_items=min(200, max(10, max_signals * 2)),
+            max_people_watch=min(100, max(8, max_agents)),
+            max_metrics=min(100, max(6, max_signals)),
+        )
+        pages.append(
+            {
+                "title": "Wiki State Snapshot",
+                "slug": str(state_preview.get("target_slug") or _space_slug(space_key, "state")),
+                "page_type": "state",
+                "markdown": str(state_preview.get("markdown") or "# Wiki State Snapshot\n"),
+            }
+        )
     deduped: list[dict[str, str]] = []
     seen_slugs: set[str] = set()
     for spec in pages:
@@ -28961,13 +29806,18 @@ def _agent_wiki_bootstrap_dod(
     has_process = any("operational-logic-map" in slug or "runbook" in slug for slug in scope)
     has_tooling_map = any(slug.endswith("/tooling-map") or slug == "tooling-map" for slug in scope)
     has_company_context = any(slug.endswith("/company-operating-context") or slug == "company-operating-context" for slug in scope)
+    has_state_snapshot = any(slug.endswith("/state") or slug == "state" for slug in scope)
+    has_decisions_log = any(slug.endswith("/decisions-log") or slug == "decisions-log" for slug in scope)
     return {
         "agent_page": bool(has_agent),
         "data_sources_page": bool(has_data_sources),
         "operational_process_page": bool(has_process),
         "tooling_map_page": bool(has_tooling_map),
         "company_operating_context_page": bool(has_company_context),
+        "state_snapshot_page": bool(has_state_snapshot),
+        "decisions_log_page": bool(has_decisions_log),
         "published_minimum_ready": bool(has_agent and has_data_sources and has_process and has_tooling_map and has_company_context),
+        "step0_baseline_ready": bool(has_state_snapshot and has_decisions_log),
         "pages_total": len(scope),
     }
 
@@ -28982,6 +29832,8 @@ def _is_core_bootstrap_page_slug(slug: str) -> bool:
         "operational-logic-map",
         "company-operating-context",
         "data-sources-catalog",
+        "state",
+        "decisions-log",
     }
     return leaf in core_leaves
 
@@ -29025,6 +29877,8 @@ def _build_agent_wiki_bootstrap_quality_report(
         plan_by_slug[slug] = page
 
     core_planned_slugs = sorted([slug for slug in plan_by_slug.keys() if _is_core_bootstrap_page_slug(slug)])
+    state_planned_slugs = sorted([slug for slug in plan_by_slug.keys() if slug.endswith("/state") or slug == "state"])
+    decisions_planned_slugs = sorted([slug for slug in plan_by_slug.keys() if slug.endswith("/decisions-log") or slug == "decisions-log"])
     status_by_slug: dict[str, str] = {}
     quality_by_slug: dict[str, dict[str, Any]] = {}
     created_rows = list((page_result or {}).get("created") or [])
@@ -29070,6 +29924,12 @@ def _build_agent_wiki_bootstrap_quality_report(
             "published_slugs": core_published,
             "reviewed_slugs": core_reviewed,
             "missing_slugs": core_missing,
+        },
+        "step0": {
+            "state_planned": state_planned_slugs,
+            "state_published": [slug for slug in state_planned_slugs if status_by_slug.get(slug) == "published"],
+            "decisions_planned": decisions_planned_slugs,
+            "decisions_published": [slug for slug in decisions_planned_slugs if status_by_slug.get(slug) == "published"],
         },
         "placeholder_ratio_core": float(placeholder_ratio),
         "quality_findings": {
@@ -29146,8 +30006,26 @@ def _build_project_wiki_quality_report_from_rows(
     token_total = 0
     placeholder_hits_total = 0
     thin_pages: list[dict[str, Any]] = []
+    schema_rows: list[dict[str, Any]] = []
     for row in core_rows:
         markdown = str(row.get("markdown") or "")
+        page_type = str(row.get("page_type") or "operations")
+        slug = str(row.get("slug") or "")
+        schema_contract = _evaluate_wiki_schema_contract(
+            markdown=markdown,
+            page_type=page_type,
+            slug=slug,
+        )
+        schema_rows.append(
+            {
+                "slug": slug,
+                "page_type": page_type,
+                "passed": bool(schema_contract.get("passed")),
+                "missing_markers": list(schema_contract.get("missing_markers") or []),
+                "backlinks_count": int(schema_contract.get("backlinks_count") or 0),
+                "missing_frontmatter": list(schema_contract.get("missing_frontmatter") or []),
+            }
+        )
         words = re.findall(r"[a-zа-я0-9_]+", markdown.lower())
         token_total += len(words)
         for token in _BOOTSTRAP_PLACEHOLDER_TOKENS:
@@ -29163,6 +30041,9 @@ def _build_project_wiki_quality_report_from_rows(
             )
 
     placeholder_ratio = round(float(placeholder_hits_total) / float(max(1, token_total)), 4)
+    schema_passed_total = len([item for item in schema_rows if bool(item.get("passed"))])
+    schema_coverage_ratio = round(float(schema_passed_total) / float(max(1, len(schema_rows))), 4)
+    schema_missing_samples = [item for item in schema_rows if not bool(item.get("passed"))][:10]
 
     open_drafts_total = len(open_drafts)
     daily_summary_open_rows = [row for row in open_drafts if bool(row.get("is_daily_summary_like"))]
@@ -29232,6 +30113,15 @@ def _build_project_wiki_quality_report_from_rows(
                 "samples": thin_pages[:8],
             }
         )
+    if schema_missing_samples:
+        warnings.append(
+            {
+                "code": "schema_contract_core_incomplete",
+                "severity": "warning",
+                "coverage_ratio": float(schema_coverage_ratio),
+                "samples": schema_missing_samples,
+            }
+        )
 
     return {
         "project_id": project_id,
@@ -29253,6 +30143,12 @@ def _build_project_wiki_quality_report_from_rows(
             "placeholder_ratio_core": float(placeholder_ratio),
             "placeholder_hits_core": int(placeholder_hits_total),
             "core_word_count_total": int(token_total),
+        },
+        "schema_contract": {
+            "coverage_ratio_core": float(schema_coverage_ratio),
+            "passed_pages": int(schema_passed_total),
+            "core_pages_total": int(len(schema_rows)),
+            "missing_samples": schema_missing_samples,
         },
         "draft_noise": {
             "open_drafts_total": int(open_drafts_total),
@@ -29660,6 +30556,7 @@ def execute_adoption_sync_preset(
                         created_by=updated_by,
                         profile=payload.starter_profile,
                         publish=True,
+                        include_state_snapshot=True,
                     )
                 )
 
@@ -29788,6 +30685,7 @@ def run_adoption_agent_wiki_bootstrap(
                 include_process_playbooks=bool(payload.include_process_playbooks),
                 include_company_operating_context=bool(payload.include_company_operating_context),
                 include_first_run_starter=bool(payload.include_first_run_starter),
+                include_state_snapshot=bool(payload.include_state_snapshot),
                 max_sources=int(payload.max_sources),
                 max_agents=int(payload.max_agents),
                 max_signals=int(payload.max_signals),
@@ -29829,6 +30727,7 @@ def run_adoption_agent_wiki_bootstrap(
                         "publish": bool(payload.publish),
                         "bootstrap_publish_core": bool(payload.bootstrap_publish_core),
                         "space_key": space_key,
+                        "include_state_snapshot": bool(payload.include_state_snapshot),
                     },
                 },
                 "definition_of_done": _agent_wiki_bootstrap_dod(pages=plan_pages),
@@ -29891,6 +30790,14 @@ def run_adoption_agent_wiki_bootstrap(
                     plan_pages=plan_pages,
                     page_result=page_result,
                 )
+                if bool(payload.include_state_snapshot):
+                    response["state_snapshot"] = _sync_wiki_state_snapshot_page(
+                        conn,
+                        project_id=project_id,
+                        updated_by=actor,
+                        space_key=space_key,
+                        status=requested_status,
+                    )
 
             mark_request_completed(
                 conn,
@@ -29912,7 +30819,11 @@ def run_adoption_agent_wiki_bootstrap(
 
 @app.post("/v1/adoption/first-run/bootstrap")
 def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) -> dict[str, Any]:
-    pages = _build_first_run_starter_pages(payload.profile, space_key=payload.space_key)
+    pages = _build_first_run_starter_pages(
+        payload.profile,
+        space_key=payload.space_key,
+        include_decisions_log=True,
+    )
     requested_status = "published" if payload.publish else "reviewed"
     with get_conn() as conn:
         page_result = _insert_bootstrap_pages(
@@ -29925,6 +30836,15 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
             policy_space_fallback_enabled=True,
             policy_space_fallback_candidates=[payload.space_key or "", "logistics", "general"],
         )
+        state_sync_payload: dict[str, Any] | None = None
+        if bool(payload.include_state_snapshot):
+            state_sync_payload = _sync_wiki_state_snapshot_page(
+                conn,
+                project_id=payload.project_id,
+                updated_by=payload.created_by,
+                space_key=payload.space_key,
+                status=requested_status,
+            )
     if int((page_result.get("summary") or {}).get("created") or 0) <= 0 and int(
         (page_result.get("summary") or {}).get("skipped") or 0
     ) > 0:
@@ -29943,8 +30863,10 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
         "project_id": payload.project_id,
         "profile": payload.profile,
         "space_key": _normalize_space_key(payload.space_key or "", default=""),
+        "include_state_snapshot": bool(payload.include_state_snapshot),
         "requested_status": requested_status,
         **page_result,
+        "state_snapshot": state_sync_payload if bool(payload.include_state_snapshot) else None,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 

@@ -166,6 +166,22 @@ def create_mcp_server(runtime: SynapseKnowledgeRuntime | None = None) -> Any:
         )
 
     @server.tool(
+        name="get_state_snapshot",
+        description=(
+            "Return the latest published Step-0 state snapshot page "
+            "(compressed wiki state for fast runtime context priming)."
+        ),
+    )
+    def get_state_snapshot(
+        project_id: str,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        return runtime_impl.get_state_snapshot(
+            project_id=project_id,
+            space_key=space_key,
+        )
+
+    @server.tool(
         name="get_space_policy_adoption_summary",
         description=(
             "Summarize governance adoption for one wiki space (who updates policy, cadence, checklist usage, "
