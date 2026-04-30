@@ -7,7 +7,7 @@ name = "synapse-api"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-  "fastapi>=0.116.0",
+  "fastapi>=0.136.1",
   "uvicorn>=0.35.0",
   "pydantic>=2.10.0",
   "psycopg[binary]>=3.2.0",
