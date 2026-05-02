@@ -51,6 +51,7 @@ import CoreWorkspaceTopBar from "./components/core/CoreWorkspaceTopBar";
 
 type DraftStatus = "pending_review" | "blocked_conflict" | "approved" | "rejected";
 type PublishMode = "human_required" | "conditional" | "auto_publish";
+type DraftRecommendationFilter = "all" | "approve_first" | "review_with_context" | "needs_human_caution" | "needs_more_bundle_evidence";
 
 type DraftSummary = {
   id: string;
@@ -1886,6 +1887,15 @@ function humanizeRecommendation(recommendation: string | null | undefined): stri
   return normalized.replace(/_/g, " ");
 }
 
+function draftPassesDefaultBundleGuard(draft: DraftSummary): boolean {
+  const compiler = draft.gatekeeper?.compiler_v2;
+  const bundleStatus = String(draft.bundle?.bundle_status || "").trim().toLowerCase();
+  const support = Number(draft.bundle?.support_count ?? compiler?.bundle_support ?? 0);
+  if (bundleStatus === "ready" && support >= 1) return true;
+  if (compiler?.promotion_ready_from_bundle && support >= 2) return true;
+  return false;
+}
+
 function isOpenReviewDraft(draft: DraftSummary): boolean {
   return draft.status === "pending_review" || draft.status === "blocked_conflict";
 }
@@ -2232,6 +2242,7 @@ export default function App() {
   const [selectedViewId, setSelectedViewId] = useState<string | null>(null);
   const [pinnedPageSlugs, setPinnedPageSlugs] = useState<string[]>([]);
   const [reviewQueuePreset, setReviewQueuePreset] = useState<ReviewQueuePresetKey>("open_queue");
+  const [draftRecommendationFilter, setDraftRecommendationFilter] = useState<DraftRecommendationFilter>("all");
   const [reviewSlaHours, setReviewSlaHours] = useState(24);
   const [bulkSelectedDraftIds, setBulkSelectedDraftIds] = useState<string[]>([]);
   const [bulkForceApprove, setBulkForceApprove] = useState(false);
@@ -2849,12 +2860,18 @@ export default function App() {
       drafts.filter((item) => {
         if (selectedPageSlug && item.page.slug !== selectedPageSlug) return false;
         if (selectedSpaceKey && pageGroupKey(item.page.slug) !== selectedSpaceKey) return false;
+        if (
+          draftRecommendationFilter !== "all" &&
+          String(item.bundle_priority?.recommendation || "").trim().toLowerCase() !== draftRecommendationFilter
+        ) {
+          return false;
+        }
         const draftNeedle = draftFilter.trim().toLowerCase();
         if (!draftNeedle) return true;
         const haystack = `${item.page.title || ""} ${item.page.slug || ""} ${item.decision} ${item.section_key || ""}`.toLowerCase();
         return haystack.includes(draftNeedle);
       }),
-    [draftFilter, drafts, selectedPageSlug, selectedSpaceKey],
+    [draftFilter, draftRecommendationFilter, drafts, selectedPageSlug, selectedSpaceKey],
   );
 
   const visibleDrafts = useMemo(() => {
@@ -2901,6 +2918,14 @@ export default function App() {
   const selectedIndex = useMemo(
     () => (selectedDraftId ? visibleDrafts.findIndex((item) => item.id === selectedDraftId) : -1),
     [visibleDrafts, selectedDraftId],
+  );
+
+  const safeBulkApproveSkippedCount = useMemo(
+    () =>
+      visibleDrafts.filter(
+        (item) => isOpenReviewDraft(item) && !item.has_open_conflict && !draftPassesDefaultBundleGuard(item),
+      ).length,
+    [visibleDrafts],
   );
 
   const openPageOrder = useMemo(() => {
@@ -9622,6 +9647,26 @@ export default function App() {
                               ))}
                             </Group>
                             <Group gap={6} wrap="wrap">
+                              {(
+                                [
+                                  { key: "all", label: "all" },
+                                  { key: "approve_first", label: "approve first" },
+                                  { key: "review_with_context", label: "review with context" },
+                                  { key: "needs_human_caution", label: "human caution" },
+                                ] as Array<{ key: DraftRecommendationFilter; label: string }>
+                              ).map((item) => (
+                                <Button
+                                  key={`draft-rec-filter-${item.key}`}
+                                  size="compact-xs"
+                                  variant={draftRecommendationFilter === item.key ? "filled" : "light"}
+                                  color={draftRecommendationFilter === item.key ? recommendationColor(item.key) : "gray"}
+                                  onClick={() => setDraftRecommendationFilter(item.key)}
+                                >
+                                  {item.label}
+                                </Button>
+                              ))}
+                            </Group>
+                            <Group gap={6} wrap="wrap">
                               {Object.entries(draftQueueSummary.bundle_statuses || {}).map(([key, count]) => (
                                 <Badge key={`bundle-status-${key}`} size="xs" variant="light" color={key === "ready" ? "teal" : key === "candidate" ? "blue" : "gray"}>
                                   {key.replace(/_/g, " ")} {count}
@@ -9631,6 +9676,11 @@ export default function App() {
                             <Text size="xs" c="dimmed">
                               Ready bundle support total: {draftQueueSummary.ready_bundle_support_total}. Queue is ranked by durable bundle maturity before raw draft recency.
                             </Text>
+                            {safeBulkApproveSkippedCount > 0 ? (
+                              <Text size="xs" c="dimmed">
+                                Safe bulk approve would skip {safeBulkApproveSkippedCount} weaker draft{safeBulkApproveSkippedCount === 1 ? "" : "s"} in the current scope.
+                              </Text>
+                            ) : null}
                           </Stack>
                         </Paper>
                       ) : null}
