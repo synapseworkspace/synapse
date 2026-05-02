@@ -299,6 +299,61 @@ DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "доступ",
     ],
     "high_signal_min_keyword_hits": 1,
+    "knowledge_like_keywords": [
+        "capability",
+        "responsibility",
+        "role",
+        "agent profile",
+        "tool",
+        "tooling",
+        "approval",
+        "guardrail",
+        "allowed action",
+        "scheduler",
+        "scheduled task",
+        "cron",
+        "data source",
+        "source of truth",
+        "table",
+        "schema",
+        "field",
+        "column",
+        "freshness",
+        "owner",
+        "decision",
+        "decided",
+        "approved",
+        "rejected",
+        "handoff",
+        "workflow",
+        "runbook",
+        "playbook",
+        "escalation",
+        "sla",
+        "restriction",
+        "constraint",
+        "integration",
+        "model routing",
+        "fallback model",
+        "capability profile",
+        "источник данных",
+        "схема",
+        "поле",
+        "колонк",
+        "владелец",
+        "решение",
+        "одобр",
+        "отклон",
+        "расписан",
+        "расписание",
+        "ограничен",
+        "интеграц",
+        "роль",
+        "ответствен",
+    ],
+    "knowledge_like_min_hits": 2,
+    "knowledge_like_min_score": 0.28,
+    "knowledge_like_bundle_min_support": 2,
     "claims_floor_min_events": 120,
     "claims_floor_alert_after_minutes": 20,
     "claims_floor_min_conversion_ratio": 0.01,
@@ -800,6 +855,8 @@ class WikiSynthesisEngine:
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
         self._gatekeeper_config_has_publish_columns_cache: bool | None = None
         self._gatekeeper_config_has_routing_policy_column_cache: bool | None = None
+        self._evidence_bundles_table_exists_cache: bool | None = None
+        self._evidence_bundle_claim_links_table_exists_cache: bool | None = None
         self._routing_feedback_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._page_context_cache: dict[str, tuple[float, str]] = {}
         self.routing_feedback_cache_ttl_sec = max(
@@ -1900,9 +1957,16 @@ class WikiSynthesisEngine:
             claim,
             gate_tier=gate.tier,
             assertion_class=assertion_class,
+            gate_features=gate.features,
             valid_from=valid_from,
             valid_to=valid_to,
             temporal_source=temporal_source,
+        )
+        self._upsert_evidence_bundle(
+            conn,
+            claim=claim,
+            gate=gate,
+            observed_at=valid_from or claim.observed_at,
         )
 
         if gate.tier == "operational_memory":
@@ -2137,6 +2201,8 @@ class WikiSynthesisEngine:
         knowledge_like_signal = bool(
             has_durable_signal
             or has_high_signal_route
+            or bool(features.get("has_knowledge_like_signal"))
+            or bool(features.get("knowledge_dimensions"))
             or assertion_class in {"policy", "process", "preference", "incident"}
             or category_hint in {"access", "process", "customer", "incident"}
         )
@@ -2212,6 +2278,7 @@ class WikiSynthesisEngine:
         *,
         gate_tier: str,
         assertion_class: str,
+        gate_features: dict[str, Any] | None,
         valid_from: datetime | None,
         valid_to: datetime | None,
         temporal_source: str,
@@ -2228,6 +2295,22 @@ class WikiSynthesisEngine:
         }
         if claim.metadata:
             metadata["claim_metadata"] = dict(claim.metadata)
+        feature_summary = gate_features if isinstance(gate_features, dict) else {}
+        compiler_v2 = {
+            "ingestion_classification": str(feature_summary.get("ingestion_classification") or "").strip().lower() or None,
+            "knowledge_dimensions": list(feature_summary.get("knowledge_dimensions") or []),
+            "knowledge_like_score": float(feature_summary.get("knowledge_like_score") or 0.0),
+            "suggested_page_type": str(feature_summary.get("suggested_page_type") or "").strip().lower() or None,
+            "bundle_key": str(feature_summary.get("bundle_key") or "").strip() or None,
+            "bundle_support": int(feature_summary.get("bundle_support") or 0),
+            "promotion_ready_from_bundle": bool(feature_summary.get("promotion_ready_from_bundle")),
+            "has_knowledge_like_signal": bool(feature_summary.get("has_knowledge_like_signal")),
+        }
+        metadata["compiler_v2"] = {
+            key: value
+            for key, value in compiler_v2.items()
+            if value not in (None, "", [], {})
+        }
         if decision_context:
             metadata["operator_decision"] = decision_context
             ticket_ids = decision_context.get("ticket_ids")
@@ -2366,6 +2449,162 @@ class WikiSynthesisEngine:
                 (status, self._jsonb(metadata_patch), claim_id),
             )
 
+    def _evidence_bundles_table_exists(self, conn) -> bool:
+        if self._evidence_bundles_table_exists_cache is not None:
+            return self._evidence_bundles_table_exists_cache
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.evidence_bundles')")
+            row = cur.fetchone()
+        self._evidence_bundles_table_exists_cache = bool(row and row[0] is not None)
+        return self._evidence_bundles_table_exists_cache
+
+    def _evidence_bundle_claim_links_table_exists(self, conn) -> bool:
+        if self._evidence_bundle_claim_links_table_exists_cache is not None:
+            return self._evidence_bundle_claim_links_table_exists_cache
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.evidence_bundle_claim_links')")
+            row = cur.fetchone()
+        self._evidence_bundle_claim_links_table_exists_cache = bool(row and row[0] is not None)
+        return self._evidence_bundle_claim_links_table_exists_cache
+
+    def _upsert_evidence_bundle(
+        self,
+        conn,
+        *,
+        claim: ClaimInput,
+        gate: GatekeeperDecision,
+        observed_at: datetime | None,
+    ) -> None:
+        if not self._evidence_bundles_table_exists(conn):
+            return
+        features = gate.features if isinstance(gate.features, dict) else {}
+        bundle_key = str(features.get("bundle_key") or "").strip()
+        if not bundle_key:
+            return
+        knowledge_dimensions = [str(item).strip() for item in (features.get("knowledge_dimensions") or []) if str(item).strip()]
+        suggested_page_type = str(features.get("suggested_page_type") or "").strip().lower() or None
+        ingestion_classification = str(features.get("ingestion_classification") or "").strip().lower() or None
+        source_ids = self._extract_source_ids(claim.evidence)
+        source_systems = self._extract_source_systems(claim.evidence)
+        source_types = self._extract_source_types(claim.evidence)
+        evidence_count = len(claim.evidence)
+        source_diversity = int(features.get("source_diversity") or len(source_ids) or len(source_systems) or 0)
+        repeated_count = int(features.get("repeated_count") or 0)
+        bundle_support = int(features.get("bundle_support") or 0)
+        quality_score = float(features.get("knowledge_like_score") or gate.score or 0.0)
+        bundle_type = (knowledge_dimensions[0] if knowledge_dimensions else str(features.get("assertion_class") or "fact")).strip() or "fact"
+        normalized_observed_at = self._ensure_utc(observed_at) if observed_at else datetime.now(timezone.utc)
+        bundle_status = "observed"
+        if gate.tier == "golden_candidate" or bool(features.get("promotion_ready_from_bundle")):
+            bundle_status = "ready"
+        elif gate.tier == "insight_candidate" or bool(features.get("has_knowledge_like_signal")):
+            bundle_status = "candidate"
+        if gate.tier == "operational_memory" and not bool(features.get("has_knowledge_like_signal")):
+            bundle_status = "suppressed"
+        metadata = {
+            "claim_category": claim.category,
+            "claim_entity_key": claim.entity_key,
+            "knowledge_dimensions": knowledge_dimensions,
+            "source_ids": source_ids[:20],
+            "source_systems": source_systems[:20],
+            "source_types": source_types[:20],
+            "ingestion_classification": ingestion_classification,
+            "assertion_class": str(features.get("assertion_class") or "").strip().lower() or None,
+            "last_gate_tier": gate.tier,
+            "latest_claim_id": str(claim.id),
+            "promotion_ready_from_bundle": bool(features.get("promotion_ready_from_bundle")),
+            "has_knowledge_like_signal": bool(features.get("has_knowledge_like_signal")),
+        }
+        metadata = {key: value for key, value in metadata.items() if value not in (None, "", [], {})}
+        bundle_id = uuid.uuid4()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO evidence_bundles (
+                  id,
+                  project_id,
+                  bundle_key,
+                  bundle_type,
+                  suggested_page_type,
+                  entity_key,
+                  bundle_status,
+                  support_count,
+                  repeated_claims,
+                  source_diversity,
+                  evidence_count,
+                  first_seen_at,
+                  last_seen_at,
+                  latest_claim_at,
+                  quality_score,
+                  metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, bundle_key) DO UPDATE
+                SET bundle_type = EXCLUDED.bundle_type,
+                    suggested_page_type = EXCLUDED.suggested_page_type,
+                    entity_key = EXCLUDED.entity_key,
+                    bundle_status = CASE
+                      WHEN evidence_bundles.bundle_status = 'ready' THEN evidence_bundles.bundle_status
+                      WHEN EXCLUDED.bundle_status = 'ready' THEN EXCLUDED.bundle_status
+                      WHEN EXCLUDED.bundle_status = 'candidate' AND evidence_bundles.bundle_status = 'observed' THEN EXCLUDED.bundle_status
+                      WHEN EXCLUDED.bundle_status = 'suppressed' AND evidence_bundles.bundle_status IN ('observed', 'suppressed') THEN EXCLUDED.bundle_status
+                      ELSE evidence_bundles.bundle_status
+                    END,
+                    support_count = GREATEST(evidence_bundles.support_count, EXCLUDED.support_count),
+                    repeated_claims = GREATEST(evidence_bundles.repeated_claims, EXCLUDED.repeated_claims),
+                    source_diversity = GREATEST(evidence_bundles.source_diversity, EXCLUDED.source_diversity),
+                    evidence_count = GREATEST(evidence_bundles.evidence_count, EXCLUDED.evidence_count),
+                    first_seen_at = LEAST(COALESCE(evidence_bundles.first_seen_at, EXCLUDED.first_seen_at), EXCLUDED.first_seen_at),
+                    last_seen_at = GREATEST(COALESCE(evidence_bundles.last_seen_at, EXCLUDED.last_seen_at), EXCLUDED.last_seen_at),
+                    latest_claim_at = GREATEST(COALESCE(evidence_bundles.latest_claim_at, EXCLUDED.latest_claim_at), EXCLUDED.latest_claim_at),
+                    quality_score = GREATEST(COALESCE(evidence_bundles.quality_score, 0), EXCLUDED.quality_score),
+                    metadata = COALESCE(evidence_bundles.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                (
+                    bundle_id,
+                    claim.project_id,
+                    bundle_key,
+                    bundle_type,
+                    suggested_page_type,
+                    claim.entity_key,
+                    bundle_status,
+                    max(bundle_support, evidence_count, 1),
+                    max(repeated_count, 0),
+                    max(source_diversity, 0),
+                    max(evidence_count, 0),
+                    normalized_observed_at,
+                    normalized_observed_at,
+                    normalized_observed_at,
+                    max(0.0, min(1.0, quality_score)),
+                    self._jsonb(metadata),
+                ),
+            )
+            row = cur.fetchone()
+            if row is None or not self._evidence_bundle_claim_links_table_exists(conn):
+                return
+            resolved_bundle_id = row[0]
+            cur.execute(
+                """
+                INSERT INTO evidence_bundle_claim_links (
+                  bundle_id,
+                  claim_id,
+                  project_id,
+                  relationship,
+                  created_at
+                )
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (bundle_id, claim_id) DO NOTHING
+                """,
+                (
+                    resolved_bundle_id,
+                    claim.id,
+                    claim.project_id,
+                    "supporting_claim" if gate.tier != "operational_memory" else "suppressed_claim",
+                ),
+            )
+
     def _upsert_wiki_claim_link(
         self,
         conn,
@@ -2489,6 +2728,10 @@ class WikiSynthesisEngine:
         durable_signal_keywords = list(routing_policy.get("durable_signal_keywords", []))
         high_signal_route_keywords = list(routing_policy.get("high_signal_route_keywords", []))
         high_signal_min_keyword_hits = int(routing_policy.get("high_signal_min_keyword_hits", 1))
+        knowledge_like_keywords = list(routing_policy.get("knowledge_like_keywords", []))
+        knowledge_like_min_hits = int(routing_policy.get("knowledge_like_min_hits", 2))
+        knowledge_like_min_score = float(routing_policy.get("knowledge_like_min_score", 0.28))
+        knowledge_like_bundle_min_support = int(routing_policy.get("knowledge_like_bundle_min_support", 2))
         operational_stream_keywords = list(routing_policy.get("operational_stream_keywords", []))
         daily_summary_keywords = list(routing_policy.get("daily_summary_keywords", []))
         pii_sensitive_keywords = list(routing_policy.get("pii_sensitive_keywords", []))
@@ -2553,6 +2796,30 @@ class WikiSynthesisEngine:
             "звонить",
         }
         has_preference_signal = bool(token_set & preference_words)
+        metadata_haystack = ""
+        if isinstance(claim.metadata, dict) and claim.metadata:
+            try:
+                metadata_haystack = self._normalize_text(json.dumps(claim.metadata, ensure_ascii=False))
+            except Exception:
+                metadata_haystack = self._normalize_text(str(claim.metadata))
+        evidence_haystack_parts: list[str] = []
+        for evidence in claim.evidence:
+            if not isinstance(evidence, dict):
+                continue
+            for key in ("source_system", "source_type", "tool_name", "namespace", "source_id", "content", "summary"):
+                value = evidence.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, (dict, list)):
+                    try:
+                        evidence_haystack_parts.append(json.dumps(value, ensure_ascii=False))
+                    except Exception:
+                        evidence_haystack_parts.append(str(value))
+                else:
+                    evidence_haystack_parts.append(str(value))
+        evidence_haystack = self._normalize_text(" ".join(evidence_haystack_parts))
+        knowledge_haystack = " ".join(item for item in (text, metadata_haystack, evidence_haystack) if item)
+        knowledge_token_set = set(self._tokens(knowledge_haystack))
         process_words = {
             "process",
             "procedure",
@@ -2576,6 +2843,73 @@ class WikiSynthesisEngine:
             "эскалация",
         }
         has_process_signal = bool(token_set & process_words)
+        capability_words = {
+            "capability",
+            "capabilities",
+            "responsibility",
+            "responsibilities",
+            "role",
+            "roles",
+            "tool",
+            "tools",
+            "approval",
+            "guardrail",
+            "allowed",
+            "scheduler",
+            "scheduled",
+            "cron",
+            "integration",
+            "model",
+            "routing",
+            "fallback",
+            "роль",
+            "ответствен",
+            "интеграц",
+            "одобр",
+            "ограничен",
+        }
+        has_capability_signal = bool(knowledge_token_set & capability_words)
+        data_source_words = {
+            "data",
+            "source",
+            "sources",
+            "table",
+            "schema",
+            "field",
+            "fields",
+            "column",
+            "columns",
+            "sheet",
+            "database",
+            "db",
+            "api",
+            "freshness",
+            "owner",
+            "dataset",
+            "источник",
+            "данных",
+            "схема",
+            "поле",
+            "колонк",
+            "владелец",
+        }
+        has_data_source_signal = bool(knowledge_token_set & data_source_words)
+        decision_words = {
+            "decision",
+            "decided",
+            "approved",
+            "rejected",
+            "resolved",
+            "outcome",
+            "exception",
+            "branch",
+            "решение",
+            "одобр",
+            "отклон",
+            "результат",
+            "исключени",
+        }
+        has_decision_signal = bool(knowledge_token_set & decision_words)
         high_priority_words = {
             "blocked",
             "outage",
@@ -2597,6 +2931,18 @@ class WikiSynthesisEngine:
             "карантин",
         }
         has_high_priority_signal = bool(token_set & high_priority_words)
+        knowledge_dimensions: list[str] = []
+        if has_policy_signal:
+            knowledge_dimensions.append("policy")
+        if has_process_signal:
+            knowledge_dimensions.append("process")
+        if has_capability_signal:
+            knowledge_dimensions.append("capability")
+        if has_data_source_signal:
+            knowledge_dimensions.append("data_source")
+        if has_decision_signal:
+            knowledge_dimensions.append("decision")
+        knowledge_dimensions = list(dict.fromkeys(knowledge_dimensions))
         category_hint = self._category_to_page_type(claim.category)
         normalized_category = self._normalize_text(claim.category)
         normalized_entity_key = self._normalize_text(claim.entity_key)
@@ -2621,6 +2967,30 @@ class WikiSynthesisEngine:
             if item
         )
         classification_token_set = set(self._tokens(classification_haystack))
+        metadata_haystack = ""
+        if isinstance(claim.metadata, dict) and claim.metadata:
+            try:
+                metadata_haystack = self._normalize_text(json.dumps(claim.metadata, ensure_ascii=False))
+            except Exception:
+                metadata_haystack = self._normalize_text(str(claim.metadata))
+        evidence_haystack_parts: list[str] = []
+        for evidence in claim.evidence:
+            if not isinstance(evidence, dict):
+                continue
+            for key in ("source_system", "source_type", "tool_name", "namespace", "source_id", "content", "summary"):
+                value = evidence.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, (dict, list)):
+                    try:
+                        evidence_haystack_parts.append(json.dumps(value, ensure_ascii=False))
+                    except Exception:
+                        evidence_haystack_parts.append(str(value))
+                else:
+                    evidence_haystack_parts.append(str(value))
+        evidence_haystack = self._normalize_text(" ".join(evidence_haystack_parts))
+        knowledge_haystack = " ".join(item for item in (classification_haystack, metadata_haystack, evidence_haystack) if item)
+        knowledge_token_set = set(self._tokens(knowledge_haystack))
         high_signal_route_hits: list[str] = []
         for raw_keyword in high_signal_route_keywords:
             keyword = str(raw_keyword or "").strip().lower()
@@ -2635,6 +3005,19 @@ class WikiSynthesisEngine:
             if len(high_signal_route_hits) >= 24:
                 break
         has_high_signal_route = len(high_signal_route_hits) >= max(1, high_signal_min_keyword_hits)
+        knowledge_like_hits: list[str] = []
+        for raw_keyword in knowledge_like_keywords:
+            keyword = str(raw_keyword or "").strip().lower()
+            if not keyword:
+                continue
+            if any(ch in keyword for ch in (" ", "_", "-", "/", ":")):
+                matched = keyword in knowledge_haystack
+            else:
+                matched = keyword in knowledge_token_set
+            if matched and keyword not in knowledge_like_hits:
+                knowledge_like_hits.append(keyword)
+            if len(knowledge_like_hits) >= 32:
+                break
         blocked_by_category = any(keyword in normalized_category for keyword in blocked_category_keywords if keyword)
         blocked_by_source_system = any(
             self._keyword_matches_identifier(system, keyword)
@@ -2733,6 +3116,29 @@ class WikiSynthesisEngine:
             or durable_signal_hits >= min_durable_signal_hits
             or has_high_signal_route
         )
+        bundle_support = repeated_count + max(0, source_diversity - 1) + max(0, evidence_count - 1)
+        knowledge_like_score = 0.0
+        if has_policy_signal:
+            knowledge_like_score += 0.28
+        if has_process_signal:
+            knowledge_like_score += 0.24
+        if has_capability_signal:
+            knowledge_like_score += 0.18
+        if has_data_source_signal:
+            knowledge_like_score += 0.18
+        if has_decision_signal:
+            knowledge_like_score += 0.12
+        knowledge_like_score += min(0.2, len(knowledge_like_hits) * 0.025)
+        if bundle_support >= knowledge_like_bundle_min_support:
+            knowledge_like_score += min(0.2, bundle_support * 0.05)
+        knowledge_like_score = round(max(0.0, min(1.0, knowledge_like_score)), 4)
+        has_knowledge_like_signal = bool(
+            knowledge_dimensions
+            or len(knowledge_like_hits) >= max(1, knowledge_like_min_hits)
+            or knowledge_like_score >= knowledge_like_min_score
+        )
+        if has_knowledge_like_signal:
+            has_durable_signal = True
         has_daily_summary_noise = bool(
             daily_summary_hits
             and not has_policy_signal
@@ -2763,6 +3169,7 @@ class WikiSynthesisEngine:
             and repeated_count == 0
             and source_diversity <= 1
             and not has_durable_signal
+            and not has_knowledge_like_signal
             and (is_short or has_operational_pattern or category_hint == "general")
         )
         pii_regex_hits = bool(
@@ -2798,9 +3205,28 @@ class WikiSynthesisEngine:
             routing_hard_block = True
         is_single_source_one_off = (
             not has_durable_signal
+            and not has_knowledge_like_signal
             and repeated_count == 0
             and source_diversity <= 1
             and evidence_count <= 2
+        )
+        if "capability" in knowledge_dimensions:
+            suggested_page_type = "agent_profile"
+        elif "data_source" in knowledge_dimensions:
+            suggested_page_type = "data_map"
+        elif "process" in knowledge_dimensions:
+            suggested_page_type = "process"
+        elif "decision" in knowledge_dimensions:
+            suggested_page_type = "decision_log"
+        elif "policy" in knowledge_dimensions or category_hint == "access":
+            suggested_page_type = "policy"
+        else:
+            suggested_page_type = category_hint
+        bundle_key_dimension = knowledge_dimensions[0] if knowledge_dimensions else assertion_class
+        bundle_key = f"{bundle_key_dimension}:{self._slugify(claim.entity_key) or self._slugify(claim.category) or 'general'}"
+        promotion_ready_from_bundle = bool(
+            has_knowledge_like_signal
+            and bundle_support >= knowledge_like_bundle_min_support
         )
 
         score = 0.35
@@ -2808,6 +3234,8 @@ class WikiSynthesisEngine:
             score += 0.2
         if has_durable_signal and not has_policy_signal:
             score += 0.12
+        if has_knowledge_like_signal and not has_policy_signal and not has_process_signal:
+            score += 0.08
         if evidence_count >= 2:
             score += 0.2
         if repeated_count >= 1:
@@ -2838,9 +3266,15 @@ class WikiSynthesisEngine:
         elif has_policy_signal and (evidence_count >= 2 or repeated_count >= 1):
             tier = "golden_candidate"
             rationale = "policy-like fact with multi-signal support"
+        elif promotion_ready_from_bundle and knowledge_like_score >= max(knowledge_like_min_score, 0.34):
+            tier = "golden_candidate"
+            rationale = "bundle-supported knowledge pattern reached reusable documentation threshold"
         elif repeated_count >= 2:
             tier = "golden_candidate"
             rationale = "repeated claim pattern reached promotion threshold"
+        elif has_knowledge_like_signal and not looks_like_runtime_noise:
+            tier = "insight_candidate"
+            rationale = "knowledge-like signal detected for reusable wiki synthesis"
         else:
             tier = "insight_candidate"
             rationale = "informative fact requires moderation before promotion"
@@ -2890,11 +3324,21 @@ class WikiSynthesisEngine:
                     "has_operational_pattern": has_operational_pattern,
                     "has_policy_signal": has_policy_signal,
                     "has_process_signal": has_process_signal,
+                    "has_capability_signal": has_capability_signal,
+                    "has_data_source_signal": has_data_source_signal,
+                    "has_decision_signal": has_decision_signal,
                     "has_preference_signal": has_preference_signal,
                     "has_recent_open_conflict": has_recent_open_conflict,
                     "heuristic_score": score,
                     "heuristic_tier": tier,
                     "assertion_class": assertion_class,
+                    "knowledge_dimensions": knowledge_dimensions,
+                    "knowledge_like_hits": knowledge_like_hits,
+                    "knowledge_like_score": knowledge_like_score,
+                    "suggested_page_type": suggested_page_type,
+                    "bundle_key": bundle_key,
+                    "bundle_support": bundle_support,
+                    "promotion_ready_from_bundle": promotion_ready_from_bundle,
                     "routing_hard_block": routing_hard_block,
                     "insufficient_support": insufficient_support,
                     "blocked_by_category": blocked_by_category,
@@ -2985,10 +3429,21 @@ class WikiSynthesisEngine:
             "has_operational_pattern": has_operational_pattern,
             "has_policy_signal": has_policy_signal,
             "has_process_signal": has_process_signal,
+            "has_capability_signal": has_capability_signal,
+            "has_data_source_signal": has_data_source_signal,
+            "has_decision_signal": has_decision_signal,
             "has_preference_signal": has_preference_signal,
             "has_high_priority_signal": has_high_priority_signal,
             "has_override_signal": has_override_signal,
             "has_recent_open_conflict": has_recent_open_conflict,
+            "knowledge_dimensions": knowledge_dimensions,
+            "knowledge_like_hits": knowledge_like_hits,
+            "knowledge_like_score": knowledge_like_score,
+            "has_knowledge_like_signal": has_knowledge_like_signal,
+            "suggested_page_type": suggested_page_type,
+            "bundle_key": bundle_key,
+            "bundle_support": bundle_support,
+            "promotion_ready_from_bundle": promotion_ready_from_bundle,
             "assertion_class": assertion_class,
             "publish_mode_by_assertion_class": publish_mode_by_assertion_class,
             "gatekeeper_min_sources_for_golden": config.min_sources_for_golden,
@@ -3198,6 +3653,11 @@ class WikiSynthesisEngine:
             fallback=list(base["high_signal_route_keywords"]),
             limit=128,
         )
+        normalized["knowledge_like_keywords"] = self._normalize_policy_keyword_list(
+            value.get("knowledge_like_keywords"),
+            fallback=list(base["knowledge_like_keywords"]),
+            limit=160,
+        )
         normalized["ingestion_classification_default_deny_classes"] = self._normalize_policy_keyword_list(
             value.get("ingestion_classification_default_deny_classes"),
             fallback=list(base["ingestion_classification_default_deny_classes"]),
@@ -3288,6 +3748,23 @@ class WikiSynthesisEngine:
         except Exception:
             high_signal_min_hits = int(base["high_signal_min_keyword_hits"])
         normalized["high_signal_min_keyword_hits"] = max(1, min(20, high_signal_min_hits))
+        try:
+            knowledge_like_min_hits = int(value.get("knowledge_like_min_hits", int(base["knowledge_like_min_hits"])))
+        except Exception:
+            knowledge_like_min_hits = int(base["knowledge_like_min_hits"])
+        normalized["knowledge_like_min_hits"] = max(1, min(20, knowledge_like_min_hits))
+        try:
+            knowledge_like_min_score = float(value.get("knowledge_like_min_score", float(base["knowledge_like_min_score"])))
+        except Exception:
+            knowledge_like_min_score = float(base["knowledge_like_min_score"])
+        normalized["knowledge_like_min_score"] = max(0.0, min(1.0, knowledge_like_min_score))
+        try:
+            knowledge_like_bundle_min_support = int(
+                value.get("knowledge_like_bundle_min_support", int(base["knowledge_like_bundle_min_support"]))
+            )
+        except Exception:
+            knowledge_like_bundle_min_support = int(base["knowledge_like_bundle_min_support"])
+        normalized["knowledge_like_bundle_min_support"] = max(1, min(20, knowledge_like_bundle_min_support))
         try:
             claims_floor_min_events = int(value.get("claims_floor_min_events", int(base["claims_floor_min_events"])))
         except Exception:

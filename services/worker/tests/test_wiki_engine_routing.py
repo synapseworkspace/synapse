@@ -499,6 +499,67 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertIn(decision.tier, {"insight_candidate", "golden_candidate"})
         self.assertEqual(str(decision.features.get("assertion_class")), "process")
 
+    def test_gatekeeper_detects_capability_knowledge_signal(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="dispatch_bot",
+            category="operations",
+            claim_text="Dispatch bot role: can reroute deliveries with maps_router but needs approval for address override.",
+            evidence=[
+                {
+                    "source_type": "tool_result",
+                    "source_id": "runtime_note_11",
+                    "tool_name": "chat_runtime",
+                    "source_system": "runtime_memory",
+                }
+            ],
+            metadata={"allowed_actions": ["reroute_delivery"], "approval_rules": ["address override requires approval"]},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["runtime_note_11"],
+            has_recent_open_conflict=False,
+        )
+        self.assertEqual(decision.tier, "insight_candidate")
+        self.assertTrue(bool(decision.features.get("has_knowledge_like_signal")))
+        self.assertIn("capability", list(decision.features.get("knowledge_dimensions") or []))
+        self.assertEqual(str(decision.features.get("suggested_page_type")), "agent_profile")
+
+    def test_gatekeeper_detects_data_source_knowledge_signal(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="orders_api",
+            category="operations",
+            claim_text="orders_api is the source of truth for dispatch planning; key fields are order_id, route_id, sla_minutes; owner ops_analytics.",
+            evidence=[
+                {
+                    "source_type": "tool_result",
+                    "source_id": "schema_note_42",
+                    "tool_name": "runtime_memory",
+                    "source_system": "sdk_monitor",
+                }
+            ],
+            metadata={"namespace": "data_sources", "owner": "ops_analytics"},
+        )
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["schema_note_42"],
+            has_recent_open_conflict=False,
+        )
+        self.assertEqual(decision.tier, "insight_candidate")
+        self.assertTrue(bool(decision.features.get("has_knowledge_like_signal")))
+        self.assertIn("data_source", list(decision.features.get("knowledge_dimensions") or []))
+        self.assertEqual(str(decision.features.get("suggested_page_type")), "data_map")
+        self.assertTrue(str(decision.features.get("bundle_key") or "").startswith("data_source:"))
+
     def test_process_section_resolution_prefers_steps(self) -> None:
         section_key, section_heading, created_new = self.engine._resolve_section(
             page_type="process",
@@ -679,6 +740,39 @@ class WikiEngineRoutingTests(unittest.TestCase):
         )
         self.assertTrue(bool(result.get("blocked")))
         self.assertIn(str(result.get("reason")), {"operational_stream_pre_draft_filter", "event_payload_pre_draft_filter"})
+
+    def test_pre_draft_noise_filter_keeps_operational_claim_with_knowledge_dimensions(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="orders_api",
+            category="operations",
+            claim_text="orders_api source of truth for dispatch planning, owner ops_analytics, key fields order_id and sla_minutes.",
+            evidence=[],
+            metadata={},
+        )
+        gate = GatekeeperDecision(
+            tier="insight_candidate",
+            score=0.62,
+            rationale="knowledge-like data source note",
+            features={
+                "assertion_class": "fact",
+                "ingestion_classification": "operational_stream",
+                "has_event_stream_shape": False,
+                "has_durable_signal": False,
+                "has_policy_signal": False,
+                "has_process_signal": False,
+                "has_knowledge_like_signal": True,
+                "knowledge_dimensions": ["data_source"],
+            },
+        )
+        result = self.engine._evaluate_pre_draft_noise_filter(
+            claim=claim,
+            gate=gate,
+            routing_policy=self.engine._normalize_gatekeeper_routing_policy(None),
+        )
+        self.assertFalse(bool(result.get("blocked")))
+        self.assertTrue(bool(result.get("knowledge_like_signal")))
 
     def test_gatekeeper_daily_summary_stream_is_demoted(self) -> None:
         claim = ClaimInput(

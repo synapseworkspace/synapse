@@ -151,6 +151,36 @@ class AgentProfile:
 
 
 @dataclass
+class AgentReflectionInsight:
+    claim_text: str
+    category: str | None = None
+    confidence: float | None = None
+    temporary: bool = False
+    evidence: list[EvidenceRef] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AgentReflection:
+    agent_id: str
+    reflected_by: str
+    task_id: str | None = None
+    session_id: str | None = None
+    trace_id: str | None = None
+    outcome: str | None = None
+    summary: str | None = None
+    learned_rules: list[str] = field(default_factory=list)
+    decisions_made: list[str] = field(default_factory=list)
+    tools_used: list[str] = field(default_factory=list)
+    data_sources_used: list[str] = field(default_factory=list)
+    follow_up_actions: list[str] = field(default_factory=list)
+    uncertainties: list[str] = field(default_factory=list)
+    insights: list[AgentReflectionInsight] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    observed_at: str | None = None
+
+
+@dataclass
 class WikiDraftBulkReviewFilter:
     statuses: list[WikiDraftStatus] | None = None
     category: str | None = None

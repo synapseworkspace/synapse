@@ -4,7 +4,13 @@ import unittest
 from typing import Any
 
 from synapse_sdk.client import Synapse
-from synapse_sdk.types import MemoryBackfillRecord, SynapseConfig, WikiDraftBulkReviewFilter
+from synapse_sdk.types import (
+    AgentReflection,
+    AgentReflectionInsight,
+    MemoryBackfillRecord,
+    SynapseConfig,
+    WikiDraftBulkReviewFilter,
+)
 
 
 class _DummyTransport:
@@ -184,6 +190,46 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["method"], "GET")
         self.assertEqual(call["params"].get("project_id"), "omega_demo")
         self.assertEqual(call["params"].get("days"), 21)
+
+    def test_get_adoption_knowledge_gaps_is_project_scoped(self) -> None:
+        self.client.get_adoption_knowledge_gaps(days=12, max_items_per_bucket=6)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/knowledge-gaps")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+        self.assertEqual(call["params"].get("days"), 12)
+        self.assertEqual(call["params"].get("max_items_per_bucket"), 6)
+
+    def test_submit_agent_reflection_posts_expected_payload(self) -> None:
+        self.client.submit_agent_reflection(
+            AgentReflection(
+                agent_id="dispatch_bot",
+                reflected_by="dispatch_bot",
+                task_id="task-1",
+                summary="Learned new gated-access escalation rule.",
+                learned_rules=["If gated access fails for 15 minutes, escalate to on-call."],
+                decisions_made=["Approved reroute after warehouse confirmation."],
+                tools_used=["maps_router"],
+                data_sources_used=["orders_api"],
+                insights=[
+                    AgentReflectionInsight(
+                        claim_text="Dispatch bot can reroute deliveries but cannot change billing state.",
+                        category="capability",
+                        confidence=0.88,
+                    )
+                ],
+            )
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/reflections")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("agent_id"), "dispatch_bot")
+        self.assertEqual(payload.get("reflected_by"), "dispatch_bot")
+        self.assertEqual(payload.get("tools_used"), ["maps_router"])
+        self.assertEqual(payload.get("data_sources_used"), ["orders_api"])
+        self.assertEqual(len(payload.get("insights") or []), 1)
 
     def test_run_adoption_first_run_bootstrap_posts_expected_payload(self) -> None:
         self.client.run_adoption_first_run_bootstrap(
@@ -430,6 +476,27 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(params.get("daily_summary_draft_ratio_max"), 0.15)
         self.assertEqual(params.get("min_core_published"), 7)
 
+    def test_get_adoption_wiki_richness_benchmark_is_project_scoped(self) -> None:
+        self.client.get_adoption_wiki_richness_benchmark(
+            days=18,
+            placeholder_ratio_max=0.07,
+            daily_summary_draft_ratio_max=0.12,
+            min_core_published=8,
+            min_contract_pass_ratio=0.75,
+            min_average_page_score=0.66,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/wiki-richness/benchmark")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("days"), 18)
+        self.assertEqual(params.get("placeholder_ratio_max"), 0.07)
+        self.assertEqual(params.get("daily_summary_draft_ratio_max"), 0.12)
+        self.assertEqual(params.get("min_core_published"), 8)
+        self.assertEqual(params.get("min_contract_pass_ratio"), 0.75)
+        self.assertEqual(params.get("min_average_page_score"), 0.66)
+
     def test_get_adoption_rejection_diagnostics_is_project_scoped(self) -> None:
         self.client.get_adoption_rejection_diagnostics(days=11, sample_limit=7)
         call = self.client.calls[-1]
@@ -468,6 +535,25 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         params = call["params"]
         self.assertEqual(params.get("project_id"), "omega_demo")
         self.assertEqual(params.get("stale_after_hours"), 72)
+
+    def test_get_wiki_lifecycle_stats_supports_page_type_aware_mode(self) -> None:
+        self.client.get_wiki_lifecycle_stats(
+            stale_days=9,
+            critical_days=18,
+            stale_limit=15,
+            space_key="operations",
+            page_type_aware=False,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/lifecycle/stats")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "operations")
+        self.assertEqual(params.get("stale_days"), 9)
+        self.assertEqual(params.get("critical_days"), 18)
+        self.assertEqual(params.get("stale_limit"), 15)
+        self.assertFalse(params.get("page_type_aware"))
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ from synapse_sdk.extractors import ExtractedInsight, Extractor, InsightContext, 
 from synapse_sdk.synthesizers import SynthesisContext, Synthesizer, default_synthesizers
 from synapse_sdk.transports.http import HttpTransport
 from synapse_sdk.types import (
+    AgentReflection,
+    AgentReflectionInsight,
     AgentProfile,
     AdoptionMode,
     BootstrapMemoryInput,
@@ -665,6 +667,22 @@ class SynapseClient:
             },
         )
 
+    def get_adoption_knowledge_gaps(
+        self,
+        *,
+        days: int = 14,
+        max_items_per_bucket: int = 8,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/knowledge-gaps",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "max_items_per_bucket": max(1, min(50, int(max_items_per_bucket))),
+            },
+        )
+
     def get_adoption_policy_calibration_quick_loop(self, *, days: int = 14) -> dict[str, Any]:
         return self._request_json(
             "/v1/adoption/policy-calibration/quick-loop",
@@ -1154,6 +1172,30 @@ class SynapseClient:
             },
         )
 
+    def get_adoption_wiki_richness_benchmark(
+        self,
+        *,
+        days: int = 14,
+        placeholder_ratio_max: float = 0.10,
+        daily_summary_draft_ratio_max: float = 0.20,
+        min_core_published: int = 6,
+        min_contract_pass_ratio: float = 0.80,
+        min_average_page_score: float = 0.72,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/wiki-richness/benchmark",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "placeholder_ratio_max": max(0.0, min(1.0, float(placeholder_ratio_max))),
+                "daily_summary_draft_ratio_max": max(0.0, min(1.0, float(daily_summary_draft_ratio_max))),
+                "min_core_published": max(1, min(50, int(min_core_published))),
+                "min_contract_pass_ratio": max(0.0, min(1.0, float(min_contract_pass_ratio))),
+                "min_average_page_score": max(0.0, min(1.0, float(min_average_page_score))),
+            },
+        )
+
     def get_adoption_rejection_diagnostics(
         self,
         *,
@@ -1600,6 +1642,7 @@ class SynapseClient:
         critical_days: int = 45,
         stale_limit: int = 20,
         space_key: str | None = None,
+        page_type_aware: bool = True,
     ) -> dict[str, Any]:
         normalized_stale_days = max(1, min(365, int(stale_days)))
         normalized_critical_days = max(normalized_stale_days, min(365, int(critical_days)))
@@ -1609,6 +1652,7 @@ class SynapseClient:
             "stale_days": normalized_stale_days,
             "critical_days": normalized_critical_days,
             "stale_limit": normalized_stale_limit,
+            "page_type_aware": bool(page_type_aware),
         }
         if space_key is not None and str(space_key).strip():
             params["space_key"] = _normalize_space_key(str(space_key))
@@ -1692,6 +1736,55 @@ class SynapseClient:
         }
         return self._request_json(
             "/v1/agents/register",
+            method="POST",
+            payload=payload,
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def submit_agent_reflection(
+        self,
+        reflection: AgentReflection,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        insights_payload: list[dict[str, Any]] = []
+        for item in reflection.insights:
+            insight = item if isinstance(item, AgentReflectionInsight) else AgentReflectionInsight(**dict(item))
+            insights_payload.append(
+                {
+                    "claim_text": str(insight.claim_text or "").strip(),
+                    "category": str(insight.category).strip() if insight.category is not None else None,
+                    "confidence": float(insight.confidence) if isinstance(insight.confidence, (int, float)) else None,
+                    "temporary": bool(insight.temporary),
+                    "evidence": [asdict(evidence) if is_dataclass(evidence) else dict(evidence) for evidence in insight.evidence],
+                    "metadata": dict(insight.metadata),
+                }
+            )
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "agent_id": str(reflection.agent_id or "").strip(),
+            "reflected_by": str(reflection.reflected_by or "").strip(),
+            "task_id": str(reflection.task_id).strip() if reflection.task_id is not None else None,
+            "session_id": str(reflection.session_id).strip() if reflection.session_id is not None else None,
+            "trace_id": str(reflection.trace_id).strip() if reflection.trace_id is not None else None,
+            "outcome": str(reflection.outcome).strip() if reflection.outcome is not None else None,
+            "summary": str(reflection.summary).strip() if reflection.summary is not None else None,
+            "learned_rules": [str(item).strip() for item in reflection.learned_rules if str(item).strip()],
+            "decisions_made": [str(item).strip() for item in reflection.decisions_made if str(item).strip()],
+            "tools_used": [str(item).strip() for item in reflection.tools_used if str(item).strip()],
+            "data_sources_used": [str(item).strip() for item in reflection.data_sources_used if str(item).strip()],
+            "follow_up_actions": [str(item).strip() for item in reflection.follow_up_actions if str(item).strip()],
+            "uncertainties": [str(item).strip() for item in reflection.uncertainties if str(item).strip()],
+            "insights": insights_payload,
+            "metadata": dict(reflection.metadata),
+            "observed_at": str(reflection.observed_at).strip() if reflection.observed_at is not None else None,
+        }
+        if not payload["agent_id"]:
+            raise ValueError("reflection.agent_id is required")
+        if not payload["reflected_by"]:
+            raise ValueError("reflection.reflected_by is required")
+        return self._request_json(
+            "/v1/agents/reflections",
             method="POST",
             payload=payload,
             idempotency_key=idempotency_key or str(uuid4()),

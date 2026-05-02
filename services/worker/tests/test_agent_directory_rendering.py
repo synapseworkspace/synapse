@@ -6,8 +6,16 @@ import unittest
 try:
     import services.api.app.main as _api_main
     from services.api.app.main import (
+        AgentReflectionSubmitRequest,
+        _bootstrap_page_importance,
+        _build_agent_reflection_claim_payloads,
+        _build_data_sources_catalog_pages,
         _build_agent_capability_bootstrap_page,
+        _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
+        _build_project_wiki_richness_benchmark_from_rows,
+        _page_type_freshness_thresholds,
+        _prepend_bootstrap_publish_notice,
         _build_runtime_agent_capability_matrix,
         _collect_agent_source_usage,
         _build_project_wiki_quality_report_from_rows,
@@ -30,8 +38,16 @@ try:
     )
 except Exception:  # pragma: no cover
     _api_main = None
+    AgentReflectionSubmitRequest = None
+    _bootstrap_page_importance = None
+    _build_agent_reflection_claim_payloads = None
+    _build_data_sources_catalog_pages = None
     _build_agent_capability_bootstrap_page = None
+    _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
+    _build_project_wiki_richness_benchmark_from_rows = None
+    _page_type_freshness_thresholds = None
+    _prepend_bootstrap_publish_notice = None
     _build_runtime_agent_capability_matrix = None
     _collect_agent_source_usage = None
     _build_project_wiki_quality_report_from_rows = None
@@ -55,9 +71,17 @@ except Exception:  # pragma: no cover
 
 @unittest.skipIf(
     _normalize_agent_directory_items is None
+    or _bootstrap_page_importance is None
+    or _build_data_sources_catalog_pages is None
     or _build_agent_capability_bootstrap_page is None
+    or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
+    or _build_project_wiki_richness_benchmark_from_rows is None
+    or _page_type_freshness_thresholds is None
+    or _build_agent_reflection_claim_payloads is None
+    or _prepend_bootstrap_publish_notice is None
     or _build_project_wiki_quality_report_from_rows is None
+    or AgentReflectionSubmitRequest is None
     or _build_agent_provenance_activity is None
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
@@ -270,6 +294,11 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
                     "tools": ["maps_router", "fleet_registry"],
                     "data_sources": ["orders_api", "warehouse_access_rules"],
                     "limits": ["Operates under role-specific runbooks and approval guardrails."],
+                    "scheduled_tasks": ["refresh dispatch queue (0 * * * *)"],
+                    "standing_orders": ["Escalate route blockers within 15m"],
+                    "source_bindings": ["orders_api -> dispatch planner"],
+                    "integrations": ["Slack", "Postgres"],
+                    "model_routing": ["primary: gpt-4.1", "fallback: gpt-4o-mini"],
                     "confidence": 0.88,
                     "last_success_at": "2026-04-10T00:00:00+00:00",
                     "evidence": [],
@@ -302,6 +331,10 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
             self.assertTrue(bool(contract.get("passed")))
             self.assertEqual(list(contract.get("missing_sections") or []), [])
             self.assertGreaterEqual(int(contract.get("facts_count") or 0), 6)
+            self.assertIn("Scheduled tasks: refresh dispatch queue", markdown)
+            self.assertIn("Standing orders / processes: Escalate route blockers within 15m", markdown)
+            self.assertIn("Source bindings: orders_api -> dispatch planner", markdown)
+            self.assertIn("Model routing / failover: primary: gpt-4.1", markdown)
         finally:
             _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
             _api_main._build_runtime_agent_capability_matrix = original_runtime_matrix
@@ -339,6 +372,142 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertGreaterEqual(int(report["core_pages"]["planned"]), 2)
         self.assertGreaterEqual(int(report["core_pages"]["published"]), 1)
         self.assertGreaterEqual(int(report["core_pages"]["reviewed"]), 1)
+        self.assertIn("page_importance", report)
+        self.assertIn("priority_backlog", report["core_pages"])
+        self.assertEqual(report["core_pages"]["priority_backlog"][0]["slug"], "operations/data-sources-catalog")
+
+    def test_agent_capability_bootstrap_page_uses_bundle_signals(self) -> None:
+        assert _api_main is not None
+
+        class _BundleAwareCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM evidence_bundles b" in text:
+                    self.mode = "bundles"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "bundles":
+                    return [
+                        (
+                            "bundle-1",
+                            "capability:dispatch_bot",
+                            "capability",
+                            "agent_profile",
+                            "dispatch_bot",
+                            "ready",
+                            3,
+                            1,
+                            2,
+                            2,
+                            0.88,
+                            datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+                            {"claim_entity_key": "dispatch_bot"},
+                            [
+                                {
+                                    "claim_text": "Dispatch bot can reroute deliveries but needs approval for address override.",
+                                    "category": "operations",
+                                    "metadata": {},
+                                }
+                            ],
+                        )
+                    ]
+                return []
+
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_runtime_matrix = _api_main._build_runtime_agent_capability_matrix
+        original_get_orgchart = _api_main.get_agent_orgchart
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: False
+            _api_main._build_runtime_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "dispatch_bot",
+                    "display_name": "Dispatch Bot",
+                    "team": "Dispatch",
+                    "role": "Coordinator",
+                    "status": "active",
+                    "confidence": 0.82,
+                    "typical_actions": ["reroute delivery"],
+                    "escalation_rules": ["address override requires approval"],
+                    "tools": ["maps_router"],
+                    "data_sources": ["orders_api"],
+                    "limits": ["cannot change billing"],
+                    "scenario_examples": ["route blocker"],
+                }
+            ]
+            _api_main.get_agent_orgchart = lambda **kwargs: {
+                "nodes": [
+                    {
+                        "agent_id": "dispatch_bot",
+                        "display_name": "Dispatch Bot",
+                        "team": "Dispatch",
+                        "role": "Coordinator",
+                        "status": "active",
+                        "profile_slug": "agents/dispatch_bot",
+                    }
+                ],
+                "edges": [],
+                "teams": [{"team": "Dispatch", "agents_total": 1}],
+            }
+            _api_main._wiki_feature_table_exists = lambda cur, table: table in {
+                "public.evidence_bundles",
+                "public.evidence_bundle_claim_links",
+                "public.claims",
+            }
+            pages = _build_agent_capability_bootstrap_page(
+                _BundleAwareCursor(),
+                project_id="omega_demo",
+                space_key="operations",
+                max_agents=10,
+            )
+        finally:
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_runtime_agent_capability_matrix = original_runtime_matrix
+            _api_main.get_agent_orgchart = original_get_orgchart
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("## Bundle Signals", markdown)
+        self.assertIn("capability:dispatch_bot", markdown)
+        self.assertIn("Bundle evidence: ready 1 / candidate 0", markdown)
+        self.assertIn("Dispatch bot can reroute deliveries", markdown)
+
+    def test_bootstrap_page_importance_prioritizes_core_onboarding_pages(self) -> None:
+        agent_page = _bootstrap_page_importance(
+            slug="operations/agent-capability-profile",
+            page_type="agent_profile",
+        )
+        digest_page = _bootstrap_page_importance(
+            slug="operations/daily-operations-digest",
+            page_type="operations",
+        )
+        self.assertGreater(int(agent_page["priority"]), int(digest_page["priority"]))
+        self.assertEqual(agent_page["label"], "critical")
+
+    def test_bootstrap_publish_notice_makes_forced_core_publish_explicit(self) -> None:
+        markdown = "# Agent Capability Profile\n\n## Orgchart\n- dispatch_bot\n"
+        notice = _prepend_bootstrap_publish_notice(
+            markdown,
+            title="Agent Capability Profile",
+            importance=_bootstrap_page_importance(
+                slug="operations/agent-capability-profile",
+                page_type="agent_profile",
+            ),
+            quality_assessment={
+                "quality_score": 0.44,
+                "missing_required_markers": ["## Capability Matrix"],
+                "placeholder_hits": ["runtime discovery pending"],
+            },
+        )
+        self.assertIn("Bootstrap note:", notice)
+        self.assertIn("high-priority onboarding knowledge", notice)
+        self.assertIn("Missing signals to enrich next: ## Capability Matrix.", notice)
+        self.assertIn("Placeholder-like content still present: runtime discovery pending.", notice)
 
     def test_daily_summary_draft_detector_uses_gatekeeper_and_text_signals(self) -> None:
         by_feature = _is_daily_summary_like_draft_row(
@@ -432,6 +601,206 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertTrue(bool(checks.get("core_required_pages_present")))
         self.assertTrue(bool(checks.get("core_publish_coverage")))
         self.assertFalse(bool(checks.get("daily_summary_open_draft_ratio")))
+
+    def test_project_wiki_richness_benchmark_detects_thin_bootstrap_pages(self) -> None:
+        published_pages = [
+            {
+                "slug": "operations/agent-capability-profile",
+                "title": "Agent Capability Profile",
+                "page_type": "agent_profile",
+                "markdown": "# Agent Capability Profile\n\n## Orgchart\n- runtime discovery pending\n",
+            },
+            {
+                "slug": "operations/data-sources-catalog",
+                "title": "Data Sources Catalog",
+                "page_type": "data_map",
+                "markdown": "# Data Sources Catalog\n\n## Governance\n- n/a\n",
+            },
+            {
+                "slug": "operations/tooling-map",
+                "title": "Tooling Map",
+                "page_type": "operations",
+                "markdown": "# Tooling Map\n\n## Registry\n- n/a\n",
+            },
+            {
+                "slug": "operations/process-playbooks",
+                "title": "Process Playbooks",
+                "page_type": "runbook",
+                "markdown": "# Process Playbooks\n\n## Playbook Index\n- pending\n",
+            },
+            {
+                "slug": "operations/company-operating-context",
+                "title": "Company Operating Context",
+                "page_type": "operations",
+                "markdown": "# Company Operating Context\n\n## Snapshot\n- pending\n",
+            },
+            {
+                "slug": "operations/operational-logic-map",
+                "title": "Operational Logic Map",
+                "page_type": "operations",
+                "markdown": "# Operational Logic Map\n\n## Signal -> Action\n- pending\n",
+            },
+        ]
+        benchmark = _build_project_wiki_richness_benchmark_from_rows(
+            project_id="omega_demo",
+            published_pages=published_pages,
+            open_drafts=[],
+            window_days=14,
+            placeholder_ratio_max=0.10,
+            daily_summary_draft_ratio_max=0.20,
+            min_core_published=6,
+            min_contract_pass_ratio=0.80,
+            min_average_page_score=0.72,
+        )
+        self.assertFalse(bool(benchmark.get("pass")))
+        self.assertFalse(bool((benchmark.get("checks") or {}).get("page_contract_pass_ratio")))
+        self.assertLess(float((benchmark.get("scores") or {}).get("average_page_score") or 0.0), 0.72)
+
+    def test_project_wiki_richness_benchmark_passes_for_grounded_core_pages(self) -> None:
+        published_pages = [
+            {
+                "slug": "operations/agent-capability-profile",
+                "title": "Agent Capability Profile",
+                "page_type": "agent_profile",
+                "markdown": (
+                    "# Agent Capability Profile\n\n## Orgchart\n- Dispatch Bot (`dispatch_bot`) | Dispatch | Coordinator | active | [Open](/wiki/agents/dispatch_bot)\n\n"
+                    "## Capability Matrix\n- Dispatch Bot routes deliveries and escalates access blockers.\n\n"
+                    "## Capability Signals\n- Runtime actions and tool use are captured.\n\n"
+                    "## Handoffs\n- Dispatch -> Billing for approval-sensitive reroutes.\n\n"
+                    "### Dispatch Bot (`dispatch_bot`)\n"
+                    "- Team / Role: Dispatch / Coordinator\n"
+                    "- Typical actions: reroute delivery; resolve access blockers\n"
+                    "- Escalation rules: escalate after 15 minutes\n"
+                    "- Toolset: maps_router, ticketing\n"
+                    "- Data sources: orders_api, warehouse_access_rules\n"
+                    "- Constraints: cannot change billing\n"
+                    "- Scenario examples: route blocker near gated site\n"
+                ),
+            },
+            {
+                "slug": "operations/data-sources-catalog",
+                "title": "Data Sources Catalog",
+                "page_type": "data_map",
+                "markdown": (
+                    "# Data Sources Catalog\n\n"
+                    "| Source | Type | Location | Owner | Freshness | Key Fields | Used By Agents | Capability / Process Impact |\n"
+                    "|---|---|---|---|---|---|---|---|\n"
+                    "| [orders_api](/wiki/operations/source-orders-api) | postgres_sql | `orders` | ops_manager | 5m | order_id, customer_id | dispatch_bot | Dispatch escalation |\n\n"
+                    "## Durable Source Signals\n- orders_api drives dispatch escalation and reroute decisions.\n\n"
+                    "## Governance\n- Validate ownership and freshness before promotion.\n"
+                ),
+            },
+            {
+                "slug": "operations/tooling-map",
+                "title": "Tooling Map",
+                "page_type": "operations",
+                "markdown": "# Tooling Map\n\n## Registry\n| Tool | Used By Agents | Purpose / Scenario | Guardrails |\n|---|---|---|---|\n| `maps_router` | dispatch_bot | reroute delivery | approval for billing-affecting changes |\n\n## Governance\n- Policy-backed execution only.\n",
+            },
+            {
+                "slug": "operations/process-playbooks",
+                "title": "Process Playbooks",
+                "page_type": "runbook",
+                "markdown": (
+                    "# Process Playbooks\n\n## Playbook Index\n| Playbook | Area | Trigger | Escalation |\n|---|---|---|---|\n| Dispatch Escalation | `operations` | gated access failure | notify on-call |\n\n"
+                    "## Canonical Runbooks\n\n### 1. Dispatch Escalation\n"
+                    "- Purpose: keep deliveries moving when access rules fail\n"
+                    "- Trigger: gated access failure persists for 15 minutes\n"
+                    "- Inputs: orders_api; warehouse_access_rules\n"
+                    "- Steps:\n  - confirm access rule\n  - attempt approved reroute\n"
+                    "- Exceptions:\n  - if billing impact exists, request approval\n"
+                    "- Outputs: reroute plan and incident note\n"
+                    "- Escalation: notify on-call in #ops-escalation\n"
+                    "- Tools used: maps_router, ticketing\n"
+                    "- Source evidence: claims + bundle evidence\n\n"
+                    "## How To Use\n1. Validate inputs.\n2. Follow sequence.\n3. Escalate on low confidence.\n"
+                ),
+            },
+            {
+                "slug": "operations/company-operating-context",
+                "title": "Company Operating Context",
+                "page_type": "operations",
+                "markdown": (
+                    "# Company Operating Context\n\n## Snapshot\n- B2B logistics with gated access workflows.\n"
+                    "## Team Topology\n- Dispatch, Billing, Warehouse Ops.\n"
+                    "## Data Backbone\n- orders_api, warehouse_access_rules, ticketing.\n"
+                    "## Core Operating Principles\n- Escalate low-confidence changes.\n- Prefer policy-backed execution.\n- Protect billing-sensitive actions.\n"
+                ),
+            },
+            {
+                "slug": "operations/operational-logic-map",
+                "title": "Operational Logic Map",
+                "page_type": "operations",
+                "markdown": "# Operational Logic Map\n\n## Signal -> Action\n- Access issue signal maps to reroute attempt and on-call escalation.\n## Escalation Rules\n- Notify dispatch lead after 15 minutes.\n",
+            },
+        ]
+        benchmark = _build_project_wiki_richness_benchmark_from_rows(
+            project_id="omega_demo",
+            published_pages=published_pages,
+            open_drafts=[],
+            window_days=14,
+            placeholder_ratio_max=0.10,
+            daily_summary_draft_ratio_max=0.20,
+            min_core_published=6,
+            min_contract_pass_ratio=0.60,
+            min_average_page_score=0.50,
+        )
+        self.assertTrue(bool(benchmark.get("pass")))
+        self.assertTrue(bool((benchmark.get("checks") or {}).get("page_contract_pass_ratio")))
+
+    def test_agent_reflection_claim_builder_emits_rules_decisions_and_capability_summary(self) -> None:
+        payload = AgentReflectionSubmitRequest(
+            project_id="omega_demo",
+            agent_id="dispatch_bot",
+            reflected_by="dispatch_bot",
+            task_id="task-1",
+            summary="Handled gated access blocker and learned new escalation rule.",
+            learned_rules=["If gated access fails for 15 minutes, escalate to on-call dispatch owner."],
+            decisions_made=["Approved reroute via alternate loading bay after warehouse confirmation."],
+            tools_used=["maps_router"],
+            data_sources_used=["orders_api"],
+            follow_up_actions=["Document alternate loading bay fallback."],
+            insights=[
+                {
+                    "claim_text": "Dispatch bot can reroute deliveries but cannot override billing.",
+                    "category": "capability",
+                    "confidence": 0.88,
+                    "temporary": False,
+                    "evidence": [],
+                    "metadata": {},
+                }
+            ],
+        )
+        claims = _build_agent_reflection_claim_payloads(
+            payload,
+            observed_at=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+        )
+        categories = [str(item.get("category") or "") for item in claims]
+        self.assertIn("process", categories)
+        self.assertIn("decision", categories)
+        self.assertTrue(any(str((item.get("metadata") or {}).get("reflection_kind") or "") == "capability_summary" for item in claims))
+
+    def test_page_type_freshness_thresholds_prefer_semantic_defaults(self) -> None:
+        policy = _page_type_freshness_thresholds(
+            page_type="policy",
+            fallback_stale_days=10,
+            fallback_critical_days=20,
+            page_type_aware=True,
+        )
+        data_map = _page_type_freshness_thresholds(
+            page_type="data_map",
+            fallback_stale_days=10,
+            fallback_critical_days=20,
+            page_type_aware=True,
+        )
+        global_mode = _page_type_freshness_thresholds(
+            page_type="policy",
+            fallback_stale_days=10,
+            fallback_critical_days=20,
+            page_type_aware=False,
+        )
+        self.assertEqual(policy["stale_days"], 3)
+        self.assertEqual(data_map["stale_days"], 14)
+        self.assertEqual(global_mode["stale_days"], 10)
 
     def test_runtime_agent_sql_expr_and_filter_include_payload_fallbacks(self) -> None:
         expr = _runtime_agent_id_sql_expr(table_alias="e")
@@ -534,6 +903,357 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("runtime_agent_id", combined_sql)
         self.assertIn("payload->>'agent_id'", combined_sql)
         self.assertIn("payload#>>'{metadata,agent_id}'", combined_sql)
+
+    def test_collect_agent_source_usage_keeps_capability_and_process_hints(self) -> None:
+        assert _api_main is not None
+
+        class _ProfileUsageCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM agent_directory_profiles" in text:
+                    self.mode = "profiles"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "profiles":
+                    return [
+                        (
+                            "dispatch_bot",
+                            ["orders_api"],
+                            ["Plans dispatch routes"],
+                            ["maps_router"],
+                            {
+                                "scenarios": ["dispatch route planning"],
+                                "processes": ["Dispatch escalation"],
+                                "allowed_actions": ["reroute_delivery"],
+                            },
+                        )
+                    ]
+                return []
+
+        cursor = _ProfileUsageCursor()
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._wiki_feature_table_exists = lambda cur, table: table == "public.agent_directory_profiles"
+            usage = _collect_agent_source_usage(cursor, project_id="omega_demo")
+        finally:
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        bucket = usage["orders_api"]
+        self.assertIn("dispatch_bot", bucket["agents"])
+        self.assertIn("Plans dispatch routes", bucket["capabilities"])
+        self.assertIn("reroute_delivery", bucket["actions"])
+        self.assertIn("Dispatch escalation", bucket["processes"])
+        self.assertIn("maps_router", bucket["tools"])
+
+    def test_data_sources_catalog_pages_include_capability_and_process_impact(self) -> None:
+        assert _api_main is not None
+
+        class _CatalogCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM legacy_import_sources" in text:
+                    self.mode = "sources"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "sources":
+                    return [
+                        (
+                            "postgres_sql",
+                            "orders_api",
+                            {
+                                "sql_dsn_env": "ORDERS_DSN",
+                                "sql_table": "orders",
+                                "sql_mapping": {
+                                    "source_id_field": "id",
+                                    "entity_key_field": "customer_id",
+                                    "content_field": "summary",
+                                },
+                            },
+                            "ops_manager",
+                            datetime(2026, 4, 10, 10, 0, tzinfo=UTC),
+                            datetime(2026, 4, 10, 10, 0, tzinfo=UTC),
+                        )
+                    ]
+                return []
+
+        cursor = _CatalogCursor()
+        original_table_exists = _api_main._legacy_import_sources_table_exists_from_cursor
+        original_collect_usage = _api_main._collect_agent_source_usage
+        try:
+            _api_main._legacy_import_sources_table_exists_from_cursor = lambda cur: True
+            _api_main._collect_agent_source_usage = lambda cur, project_id: {
+                "orders_api": {
+                    "agents": {"dispatch_bot"},
+                    "scenarios": {"dispatch via maps_router"},
+                    "capabilities": {"Plans dispatch routes"},
+                    "actions": {"reroute_delivery"},
+                    "processes": {"Dispatch escalation"},
+                    "tools": {"maps_router"},
+                }
+            }
+            pages = _build_data_sources_catalog_pages(
+                cursor,
+                project_id="omega_demo",
+                space_key="operations",
+                max_sources=10,
+            )
+        finally:
+            _api_main._legacy_import_sources_table_exists_from_cursor = original_table_exists
+            _api_main._collect_agent_source_usage = original_collect_usage
+
+        self.assertGreaterEqual(len(pages), 2)
+        catalog_markdown = str(pages[0].get("markdown") or "")
+        detail_markdown = str(pages[1].get("markdown") or "")
+        self.assertIn("Capability / Process Impact", catalog_markdown)
+        self.assertIn("Dispatch escalation", catalog_markdown)
+        self.assertIn("Capabilities: Plans dispatch routes", detail_markdown)
+        self.assertIn("Actions: reroute_delivery", detail_markdown)
+        self.assertIn("Process impact: Dispatch escalation", detail_markdown)
+
+    def test_data_sources_catalog_pages_use_bundle_signals(self) -> None:
+        assert _api_main is not None
+
+        class _BundleCatalogCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM legacy_import_sources" in text:
+                    self.mode = "sources"
+                elif "FROM evidence_bundles b" in text:
+                    self.mode = "bundles"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "sources":
+                    return [
+                        (
+                            "postgres_sql",
+                            "orders_api",
+                            {
+                                "sql_dsn_env": "ORDERS_DSN",
+                                "sql_table": "orders",
+                            },
+                            "ops_manager",
+                            datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+                            datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+                        )
+                    ]
+                if self.mode == "bundles":
+                    return [
+                        (
+                            "bundle-source-1",
+                            "data_source:orders_api",
+                            "data_source",
+                            "data_map",
+                            "orders_api",
+                            "ready",
+                            4,
+                            2,
+                            2,
+                            3,
+                            0.91,
+                            datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+                            {
+                                "source_system": "orders_api",
+                                "processes": ["Dispatch escalation"],
+                                "capabilities": ["Plan dispatch routes"],
+                            },
+                            [
+                                {
+                                    "claim_text": "Orders API drives dispatch escalation when access windows change.",
+                                    "category": "process",
+                                    "metadata": {},
+                                }
+                            ],
+                        )
+                    ]
+                return []
+
+        cursor = _BundleCatalogCursor()
+        original_table_exists = _api_main._legacy_import_sources_table_exists_from_cursor
+        original_collect_usage = _api_main._collect_agent_source_usage
+        original_wiki_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._legacy_import_sources_table_exists_from_cursor = lambda cur: True
+            _api_main._collect_agent_source_usage = lambda cur, project_id: {}
+            _api_main._wiki_feature_table_exists = lambda cur, table: table in {
+                "public.evidence_bundles",
+                "public.evidence_bundle_claim_links",
+                "public.claims",
+            }
+            pages = _build_data_sources_catalog_pages(
+                cursor,
+                project_id="omega_demo",
+                space_key="operations",
+                max_sources=10,
+            )
+        finally:
+            _api_main._legacy_import_sources_table_exists_from_cursor = original_table_exists
+            _api_main._collect_agent_source_usage = original_collect_usage
+            _api_main._wiki_feature_table_exists = original_wiki_table_exists
+
+        self.assertGreaterEqual(len(pages), 2)
+        catalog_markdown = str(pages[0].get("markdown") or "")
+        detail_markdown = str(pages[1].get("markdown") or "")
+        self.assertIn("## Durable Source Signals", catalog_markdown)
+        self.assertIn("data_source:orders_api", catalog_markdown)
+        self.assertIn("Dispatch escalation", detail_markdown)
+        self.assertIn("Bundle coverage: ready 1 / candidate 0", detail_markdown)
+        self.assertIn("Orders API drives dispatch escalation", detail_markdown)
+
+    def test_process_playbooks_bootstrap_page_renders_runbook_sections(self) -> None:
+        assert _api_main is not None
+
+        class _ProcessCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                if "FROM claims" in str(sql):
+                    self.mode = "claims"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "claims":
+                    return [
+                        (
+                            "When yard access changes, reroute delivery and verify SLA after dispatch update.",
+                            "process",
+                            {
+                                "process_triplet": {
+                                    "trigger": "yard access changes",
+                                    "action": "reroute delivery and notify dispatch",
+                                    "outcome": "sla verified after dispatch update",
+                                    "confidence": 0.91,
+                                },
+                                "source_system": "ops_kb_sync",
+                                "linked_ticket_ids": ["OPS-42"],
+                                "resolution_outcome": "resolved",
+                                "tool_name": "maps_router",
+                            },
+                            [
+                                {
+                                    "source_id": "ops_kb_items:42",
+                                    "source_system": "ops_kb_sync",
+                                    "tool_name": "maps_router",
+                                }
+                            ],
+                        )
+                    ]
+                return []
+
+        cursor = _ProcessCursor()
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._wiki_feature_table_exists = lambda cur, table: table == "public.claims"
+            pages = _build_process_playbooks_bootstrap_page(
+                cursor,
+                project_id="omega_demo",
+                space_key="operations",
+                max_signals=10,
+            )
+        finally:
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("## Canonical Runbooks", markdown)
+        self.assertIn("- Purpose:", markdown)
+        self.assertIn("- Inputs:", markdown)
+        self.assertIn("- Steps:", markdown)
+        self.assertIn("- Exceptions:", markdown)
+        self.assertIn("- Outputs:", markdown)
+        self.assertIn("- Tools used: maps_router", markdown)
+        self.assertIn("- Source evidence: ops_kb_sync", markdown)
+
+    def test_process_playbooks_bootstrap_page_uses_evidence_bundles(self) -> None:
+        assert _api_main is not None
+
+        class _BundleProcessCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM evidence_bundles b" in text:
+                    self.mode = "bundles"
+                elif "FROM claims" in text:
+                    self.mode = "claims"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "bundles":
+                    return [
+                        (
+                            "bundle-22",
+                            "process:yard_access",
+                            "process",
+                            "process",
+                            "yard_access",
+                            "ready",
+                            4,
+                            2,
+                            2,
+                            3,
+                            0.91,
+                            datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+                            {"source_systems": ["ops_kb_sync"], "claim_entity_key": "yard_access"},
+                            [
+                                {
+                                    "claim_text": "When yard access changes, reroute delivery and verify SLA after dispatch update.",
+                                    "category": "process",
+                                    "metadata": {
+                                        "process_triplet": {
+                                            "trigger": "yard access changes",
+                                            "action": "reroute delivery and notify dispatch",
+                                            "outcome": "sla verified after dispatch update",
+                                            "confidence": 0.91,
+                                        },
+                                        "tool_name": "maps_router",
+                                    },
+                                }
+                            ],
+                        )
+                    ]
+                if self.mode == "claims":
+                    return []
+                return []
+
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._wiki_feature_table_exists = lambda cur, table: table in {
+                "public.evidence_bundles",
+                "public.evidence_bundle_claim_links",
+                "public.claims",
+            }
+            pages = _build_process_playbooks_bootstrap_page(
+                _BundleProcessCursor(),
+                project_id="omega_demo",
+                space_key="operations",
+                max_signals=10,
+            )
+        finally:
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("Yard Access Playbook", markdown)
+        self.assertIn("bundle_support=4", markdown)
+        self.assertIn("bundle_status=ready", markdown)
+        self.assertIn("- Tools used: maps_router", markdown)
 
 
 if __name__ == "__main__":

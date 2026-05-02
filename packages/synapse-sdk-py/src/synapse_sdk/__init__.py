@@ -41,6 +41,8 @@ from synapse_sdk.integrations import (
     monitor_openclaw_runtime,
 )
 from synapse_sdk.types import (
+    AgentReflection,
+    AgentReflectionInsight,
     AgentProfile,
     AdoptionMode,
     Claim,
@@ -75,6 +77,8 @@ __all__ = [
     "TaskLink",
     "WikiDraftBulkReviewFilter",
     "AgentProfile",
+    "AgentReflection",
+    "AgentReflectionInsight",
     "SynapseTransportError",
     "MCPContextHelper",
     "MCPToolCaller",

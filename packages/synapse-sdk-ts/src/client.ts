@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { HttpTransport } from "./transports/http.js";
 import { buildOpenClawBootstrapOptions } from "./openclaw.js";
 import type {
+  AgentReflectionInput,
   AttachBootstrapMemoryOptions,
   AgentProfileInput,
   AttachOptions,
@@ -668,6 +669,20 @@ export class SynapseClient {
     });
   }
 
+  async getAdoptionKnowledgeGaps(options: {
+    days?: number;
+    maxItemsPerBucket?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/knowledge-gaps", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        max_items_per_bucket: normalizeInt(options.maxItemsPerBucket ?? 8, 1, 50)
+      }
+    });
+  }
+
   async getAdoptionPolicyCalibrationQuickLoop(options: {
     days?: number;
   } = {}): Promise<Record<string, unknown>> {
@@ -1095,6 +1110,40 @@ export class SynapseClient {
     });
   }
 
+  async getAdoptionWikiRichnessBenchmark(options: {
+    days?: number;
+    placeholderRatioMax?: number;
+    dailySummaryDraftRatioMax?: number;
+    minCorePublished?: number;
+    minContractPassRatio?: number;
+    minAveragePageScore?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    const placeholderRatioMax = Number.isFinite(options.placeholderRatioMax)
+      ? Number(options.placeholderRatioMax)
+      : 0.1;
+    const dailySummaryDraftRatioMax = Number.isFinite(options.dailySummaryDraftRatioMax)
+      ? Number(options.dailySummaryDraftRatioMax)
+      : 0.2;
+    const minContractPassRatio = Number.isFinite(options.minContractPassRatio)
+      ? Number(options.minContractPassRatio)
+      : 0.8;
+    const minAveragePageScore = Number.isFinite(options.minAveragePageScore)
+      ? Number(options.minAveragePageScore)
+      : 0.72;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/wiki-richness/benchmark", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        placeholder_ratio_max: Math.max(0, Math.min(1, placeholderRatioMax)),
+        daily_summary_draft_ratio_max: Math.max(0, Math.min(1, dailySummaryDraftRatioMax)),
+        min_core_published: normalizeInt(options.minCorePublished ?? 6, 1, 50),
+        min_contract_pass_ratio: Math.max(0, Math.min(1, minContractPassRatio)),
+        min_average_page_score: Math.max(0, Math.min(1, minAveragePageScore))
+      }
+    });
+  }
+
   async getAdoptionRejectionDiagnostics(options: {
     days?: number;
     sampleLimit?: number;
@@ -1506,6 +1555,7 @@ export class SynapseClient {
     criticalDays?: number;
     staleLimit?: number;
     spaceKey?: string;
+    pageTypeAware?: boolean;
   } = {}): Promise<Record<string, unknown>> {
     const staleDays = normalizeInt(options.staleDays ?? 21, 1, 365);
     const criticalDays = normalizeInt(options.criticalDays ?? 45, staleDays, 365);
@@ -1517,7 +1567,8 @@ export class SynapseClient {
         stale_days: staleDays,
         critical_days: criticalDays,
         stale_limit: staleLimit,
-        space_key: asOptionalString(options.spaceKey) ? normalizeWikiSpaceKey(String(options.spaceKey)) : undefined
+        space_key: asOptionalString(options.spaceKey) ? normalizeWikiSpaceKey(String(options.spaceKey)) : undefined,
+        page_type_aware: options.pageTypeAware ?? true
       }
     });
   }
@@ -1591,6 +1642,52 @@ export class SynapseClient {
         ensure_scaffold: profile.ensureScaffold ?? true,
         include_daily_report_stub: profile.includeDailyReportStub ?? true,
         last_seen_at: profile.lastSeenAt ?? new Date().toISOString()
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async submitAgentReflection(
+    reflection: AgentReflectionInput,
+    options: {
+      idempotencyKey?: string;
+    } = {}
+  ): Promise<Record<string, unknown>> {
+    const agentId = asOptionalString(reflection.agentId);
+    const reflectedBy = asOptionalString(reflection.reflectedBy);
+    if (!agentId) {
+      throw new Error("reflection.agentId is required");
+    }
+    if (!reflectedBy) {
+      throw new Error("reflection.reflectedBy is required");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/agents/reflections", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        agent_id: agentId,
+        reflected_by: reflectedBy,
+        task_id: asOptionalString(reflection.taskId) ?? null,
+        session_id: asOptionalString(reflection.sessionId) ?? null,
+        trace_id: asOptionalString(reflection.traceId) ?? null,
+        outcome: asOptionalString(reflection.outcome) ?? null,
+        summary: asOptionalString(reflection.summary) ?? null,
+        learned_rules: (reflection.learnedRules ?? []).map((item) => String(item).trim()).filter(Boolean),
+        decisions_made: (reflection.decisionsMade ?? []).map((item) => String(item).trim()).filter(Boolean),
+        tools_used: (reflection.toolsUsed ?? []).map((item) => String(item).trim()).filter(Boolean),
+        data_sources_used: (reflection.dataSourcesUsed ?? []).map((item) => String(item).trim()).filter(Boolean),
+        follow_up_actions: (reflection.followUpActions ?? []).map((item) => String(item).trim()).filter(Boolean),
+        uncertainties: (reflection.uncertainties ?? []).map((item) => String(item).trim()).filter(Boolean),
+        insights: (reflection.insights ?? []).map((item) => ({
+          claim_text: String(item.claimText ?? "").trim(),
+          category: asOptionalString(item.category) ?? null,
+          confidence: typeof item.confidence === "number" ? clamp(item.confidence, 0, 1) : null,
+          temporary: item.temporary ?? false,
+          evidence: item.evidence ?? [],
+          metadata: item.metadata ?? {}
+        })),
+        metadata: reflection.metadata ?? {},
+        observed_at: asOptionalString(reflection.observedAt) ?? null
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });

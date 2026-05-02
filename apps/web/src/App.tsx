@@ -838,6 +838,40 @@ type AdoptionPipelineVisibilityPayload = {
   }>;
 };
 
+type AdoptionEvidenceBundleItem = {
+  id: string;
+  bundle_key: string;
+  bundle_type: string;
+  suggested_page_type: string;
+  entity_key: string;
+  bundle_status: string;
+  support_count: number;
+  repeated_claims: number;
+  source_diversity: number;
+  evidence_count: number;
+  quality_score: number;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  latest_claim_at?: string | null;
+  linked_claims?: number;
+  metadata?: Record<string, unknown>;
+  sample_claims?: Array<{
+    claim_text?: string;
+    category?: string;
+    metadata?: Record<string, unknown>;
+  }>;
+};
+
+type AdoptionEvidenceBundlesPayload = {
+  bundles: AdoptionEvidenceBundleItem[];
+  filters?: {
+    project_id?: string;
+    bundle_status?: string | null;
+    bundle_type?: string | null;
+    limit?: number;
+  };
+};
+
 type AdoptionRejectionDiagnosticsPayload = {
   project_id: string;
   window_days: number;
@@ -1165,6 +1199,12 @@ type WikiSpaceNode = {
   page_count: number;
   open_count: number;
   latest_draft_at: string | null;
+};
+
+type SpaceRecoveryNotice = {
+  from: string | null;
+  to: string;
+  reason: "missing_space" | "empty_published_space";
 };
 
 type WikiTreeNode = {
@@ -2101,6 +2141,7 @@ export default function App() {
       ? `${PAGE_EDIT_DRAFT_STORAGE_PREFIX}${projectId.trim()}:${selectedPageSlug}`
       : null;
   const [selectedSpaceKey, setSelectedSpaceKey] = useState<string | null>(null);
+  const [spaceRecoveryNotice, setSpaceRecoveryNotice] = useState<SpaceRecoveryNotice | null>(null);
   const [pageFilter, setPageFilter] = useState("");
   const [draftFilter] = useState("");
   const [openPagesOnly, setOpenPagesOnly] = useState(false);
@@ -2134,6 +2175,8 @@ export default function App() {
   const [bootstrapProfileResult, setBootstrapProfileResult] = useState<AdoptionBootstrapProfileApplyPayload | null>(null);
   const [adoptionPipeline, setAdoptionPipeline] = useState<AdoptionPipelineVisibilityPayload | null>(null);
   const [adoptionPipelineLoading, setAdoptionPipelineLoading] = useState(false);
+  const [adoptionEvidenceBundles, setAdoptionEvidenceBundles] = useState<AdoptionEvidenceBundlesPayload | null>(null);
+  const [adoptionEvidenceBundlesLoading, setAdoptionEvidenceBundlesLoading] = useState(false);
   const [adoptionRejections, setAdoptionRejections] = useState<AdoptionRejectionDiagnosticsPayload | null>(null);
   const [adoptionRejectionsLoading, setAdoptionRejectionsLoading] = useState(false);
   const [, setLoadingBootstrapRecommendation] = useState(false);
@@ -2306,6 +2349,7 @@ export default function App() {
   const previousSelectedPageSlugRef = useRef<string | null>(null);
   const lifecycleSuggestionSeenRef = useRef<Record<string, string>>({});
   const lifecycleEmptyScopeSeenRef = useRef<Record<string, string>>({});
+  const autoSpaceRecoverySeenRef = useRef<Record<string, string>>({});
   const effectiveUiMode: UiMode = CAN_ACCESS_ADVANCED_MODE ? uiMode : "core";
   const showExpertModerationControls = effectiveUiMode === "advanced" || (CAN_ACCESS_ADVANCED_MODE && coreExpertControls);
   const requiresAuthSession =
@@ -2440,6 +2484,57 @@ export default function App() {
     });
   }, [pageNodes]);
 
+  const spaceContentStats = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        pageCount: number;
+        openCount: number;
+        publishedCount: number;
+        reviewedCount: number;
+        draftLikeCount: number;
+        latestActivityAt: string | null;
+      }
+    >();
+    for (const page of pageNodes) {
+      const key = pageGroupKey(page.slug);
+      const current =
+        map.get(key) || {
+          key,
+          pageCount: 0,
+          openCount: 0,
+          publishedCount: 0,
+          reviewedCount: 0,
+          draftLikeCount: 0,
+          latestActivityAt: null,
+        };
+      current.pageCount += 1;
+      current.openCount += page.open_count;
+      if (page.status === "published") current.publishedCount += 1;
+      if (page.status === "reviewed") current.reviewedCount += 1;
+      if (page.status === "draft") current.draftLikeCount += 1;
+      const activityAt = page.latest_draft_at || page.updated_at || page.created_at || null;
+      if (activityTimestampMs(activityAt) > activityTimestampMs(current.latestActivityAt)) {
+        current.latestActivityAt = activityAt;
+      }
+      map.set(key, current);
+    }
+    const ranked = [...map.values()].sort((a, b) => {
+      if (a.publishedCount !== b.publishedCount) return b.publishedCount - a.publishedCount;
+      if (a.openCount !== b.openCount) return b.openCount - a.openCount;
+      if (a.pageCount !== b.pageCount) return b.pageCount - a.pageCount;
+      const activityDelta = activityTimestampMs(b.latestActivityAt) - activityTimestampMs(a.latestActivityAt);
+      if (activityDelta !== 0) return activityDelta;
+      return a.key.localeCompare(b.key);
+    });
+    return {
+      byKey: map,
+      preferred: ranked[0] ?? null,
+      ranked,
+    };
+  }, [pageNodes]);
+
   const lifecycleSpaceChips = useMemo(() => {
     if (!wikiLifecycleStats) return [] as Array<{ key: string; title: string; staleCount: number; criticalCount: number }>;
     const counts = new Map<string, { key: string; title: string; staleCount: number; criticalCount: number }>();
@@ -2464,6 +2559,38 @@ export default function App() {
       return a.title.localeCompare(b.title);
     });
   }, [spaceNodes, wikiLifecycleStats]);
+
+  const adoptionBundleSummary = useMemo(() => {
+    const bundles = adoptionEvidenceBundles?.bundles || [];
+    const counts = {
+      total: bundles.length,
+      ready: 0,
+      candidate: 0,
+      observed: 0,
+      suppressed: 0,
+    };
+    const pageTypes = new Map<string, number>();
+    for (const bundle of bundles) {
+      const status = String(bundle.bundle_status || "").trim().toLowerCase();
+      if (status === "ready") counts.ready += 1;
+      else if (status === "candidate") counts.candidate += 1;
+      else if (status === "observed") counts.observed += 1;
+      else if (status === "suppressed") counts.suppressed += 1;
+      const pageType = String(bundle.suggested_page_type || "operations").trim().toLowerCase() || "operations";
+      pageTypes.set(pageType, Number(pageTypes.get(pageType) || 0) + 1);
+    }
+    const topPageTypes = [...pageTypes.entries()]
+      .map(([key, count]) => ({ key, count }))
+      .sort((a, b) => {
+        if (a.count !== b.count) return b.count - a.count;
+        return a.key.localeCompare(b.key);
+      })
+      .slice(0, 4);
+    return {
+      ...counts,
+      topPageTypes,
+    };
+  }, [adoptionEvidenceBundles]);
 
   const lifecycleVisibleStalePages = useMemo(() => {
     if (!wikiLifecycleStats) return [] as WikiLifecycleStatsPayload["stale_pages"];
@@ -4043,6 +4170,26 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadAdoptionEvidenceBundles = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setAdoptionEvidenceBundles(null);
+      return;
+    }
+    setAdoptionEvidenceBundlesLoading(true);
+    try {
+      const payload = await apiFetch<AdoptionEvidenceBundlesPayload>(
+        apiUrl,
+        `/v1/adoption/evidence-bundles?project_id=${encodeURIComponent(project)}&limit=40`,
+      );
+      setAdoptionEvidenceBundles(payload);
+    } catch {
+      setAdoptionEvidenceBundles(null);
+    } finally {
+      setAdoptionEvidenceBundlesLoading(false);
+    }
+  }, [apiUrl, projectId]);
+
   const loadAdoptionRejections = useCallback(async () => {
     const project = projectId.trim();
     if (!project) {
@@ -4226,6 +4373,7 @@ export default function App() {
         await loadLegacyImportSources();
         await loadBootstrapRecommendation();
         await loadAdoptionPipelineVisibility();
+        await loadAdoptionEvidenceBundles();
         await loadAdoptionKpi();
         await loadPolicyQuickLoop();
       } catch (error) {
@@ -4240,6 +4388,7 @@ export default function App() {
     },
     [
       apiUrl,
+      loadAdoptionEvidenceBundles,
       loadAdoptionKpi,
       loadAdoptionPipelineVisibility,
       loadBootstrapRecommendation,
@@ -4716,6 +4865,43 @@ export default function App() {
 
   useEffect(() => {
     const project = projectId.trim();
+    const preferred = spaceContentStats.preferred;
+    if (!project || !preferred || pageNodes.length === 0) return;
+    if (!selectedSpaceKey) return;
+
+    const current = spaceContentStats.byKey.get(selectedSpaceKey) || null;
+    let reason: SpaceRecoveryNotice["reason"] | null = null;
+    if (!current) {
+      reason = "missing_space";
+    } else if (
+      current.publishedCount <= 0
+      && preferred.publishedCount > 0
+      && preferred.key !== selectedSpaceKey
+    ) {
+      reason = "empty_published_space";
+    }
+    if (!reason) return;
+
+    const signature = `${project}:${selectedSpaceKey || "none"}:${preferred.key}:${reason}`;
+    if (autoSpaceRecoverySeenRef.current[project] === signature) return;
+    autoSpaceRecoverySeenRef.current[project] = signature;
+
+    setSelectedSpaceKey(preferred.key);
+    if (!selectedPageSlug || pageGroupKey(selectedPageSlug) !== preferred.key) {
+      const nextPage = pageNodes.find((item) => pageGroupKey(item.slug) === preferred.key)?.slug || null;
+      if (nextPage) {
+        setSelectedPageSlug(nextPage);
+      }
+    }
+    setSpaceRecoveryNotice({
+      from: selectedSpaceKey,
+      to: preferred.key,
+      reason,
+    });
+  }, [pageNodes, projectId, selectedPageSlug, selectedSpaceKey, spaceContentStats]);
+
+  useEffect(() => {
+    const project = projectId.trim();
     if (!project || !selectedPageSlug) return;
     try {
       window.localStorage.setItem(`${LAST_PAGE_STORAGE_PREFIX}${project}`, selectedPageSlug);
@@ -4897,6 +5083,7 @@ export default function App() {
       setLegacySources([]);
       setBootstrapRecommendation(null);
       setAdoptionPipeline(null);
+      setAdoptionEvidenceBundles(null);
       setAdoptionRejections(null);
       setAdoptionKpi(null);
       setPolicyQuickLoop(null);
@@ -4908,12 +5095,14 @@ export default function App() {
     void loadLegacyImportSources();
     void loadBootstrapRecommendation();
     void loadAdoptionPipelineVisibility();
+    void loadAdoptionEvidenceBundles();
     void loadAdoptionRejections();
     void loadAdoptionKpi();
     void loadPolicyQuickLoop();
     void loadEnterpriseReadiness();
   }, [
     loadAdoptionImportConnectors,
+    loadAdoptionEvidenceBundles,
     loadAdoptionKpi,
     loadAdoptionPipelineVisibility,
     loadAdoptionRejections,
@@ -5582,7 +5771,15 @@ export default function App() {
         setBootstrapProfileLoading(false);
       }
     },
-    [apiUrl, applyRecommendedBootstrapPreset, loadAdoptionPipelineVisibility, loadBootstrapRecommendation, projectId, reviewer],
+    [
+      apiUrl,
+      applyRecommendedBootstrapPreset,
+      loadAdoptionEvidenceBundles,
+      loadAdoptionPipelineVisibility,
+      loadBootstrapRecommendation,
+      projectId,
+      reviewer,
+    ],
   );
 
   const runRecommendedBootstrapPreview = useCallback(async () => {
@@ -5668,6 +5865,7 @@ export default function App() {
         }
         await loadLegacyImportSources();
         await loadAdoptionPipelineVisibility();
+        await loadAdoptionEvidenceBundles();
         await loadAdoptionRejections();
         await loadAdoptionKpi();
         await loadPolicyQuickLoop();
@@ -5685,6 +5883,7 @@ export default function App() {
     },
     [
       apiUrl,
+      loadAdoptionEvidenceBundles,
       loadAdoptionKpi,
       loadAdoptionPipelineVisibility,
       loadAdoptionRejections,
@@ -5738,6 +5937,7 @@ export default function App() {
         }
         await loadWikiPages();
         await loadAdoptionPipelineVisibility();
+        await loadAdoptionEvidenceBundles();
       } catch (error) {
         notifications.show({
           color: "red",
@@ -5748,7 +5948,7 @@ export default function App() {
         setRunningAgentWikiBootstrap(false);
       }
     },
-    [apiUrl, loadAdoptionPipelineVisibility, loadWikiPages, projectId, reviewer],
+    [apiUrl, loadAdoptionEvidenceBundles, loadAdoptionPipelineVisibility, loadWikiPages, projectId, reviewer],
   );
 
   const runFirstRunStarterBootstrap = useCallback(async () => {
@@ -7884,6 +8084,22 @@ export default function App() {
             Checking UI/API consistency…
           </Text>
         ) : null}
+        {spaceRecoveryNotice ? (
+          <Alert
+            variant="light"
+            color="blue"
+            icon={<IconArrowsShuffle size={16} />}
+            title="Wiki scope adjusted"
+            mx="md"
+            mt="sm"
+            withCloseButton
+            onClose={() => setSpaceRecoveryNotice(null)}
+          >
+            {spaceRecoveryNotice.reason === "missing_space"
+              ? `Saved space "${spaceRecoveryNotice.from || "unknown"}" had no pages here, so Synapse opened "${spaceRecoveryNotice.to}" instead.`
+              : `Current space "${spaceRecoveryNotice.from || "unknown"}" had no published wiki pages, so Synapse opened richer space "${spaceRecoveryNotice.to}".`}
+          </Alert>
+        ) : null}
 
         <Box className="confluence-layout">
           <CoreWorkspaceLeftRail
@@ -8575,6 +8791,27 @@ export default function App() {
                             <Button
                               size="xs"
                               variant="light"
+                              color="indigo"
+                              loading={adoptionEvidenceBundlesLoading}
+                              onClick={() => void loadAdoptionEvidenceBundles()}
+                            >
+                              Refresh bundles
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              onClick={() => {
+                                document.getElementById("operations-bundles-panel")?.scrollIntoView({
+                                  behavior: "smooth",
+                                  block: "start",
+                                });
+                              }}
+                            >
+                              View bundles
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="light"
                               color="blue"
                               loading={loadingAdoptionKpi}
                               onClick={() => void loadAdoptionKpi()}
@@ -8785,6 +9022,116 @@ export default function App() {
                               Pipeline visibility is unavailable for current project yet.
                             </Text>
                           )}
+                          <Paper withBorder p="xs" radius="md" id="operations-bundles-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Text size="sm" fw={700}>
+                                  Knowledge bundles
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="indigo"
+                                  loading={adoptionEvidenceBundlesLoading}
+                                  onClick={() => void loadAdoptionEvidenceBundles()}
+                                >
+                                  Refresh
+                                </Button>
+                              </Group>
+                              {adoptionEvidenceBundles && (adoptionEvidenceBundles.bundles || []).length > 0 ? (
+                                <>
+                                  <Group gap={6} wrap="wrap">
+                                    <Badge size="xs" variant="light" color="teal">
+                                      ready {adoptionBundleSummary.ready}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="blue">
+                                      candidate {adoptionBundleSummary.candidate}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      observed {adoptionBundleSummary.observed}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="red">
+                                      suppressed {adoptionBundleSummary.suppressed}
+                                    </Badge>
+                                  </Group>
+                                  <Text size="xs" c="dimmed">
+                                    Durable knowledge clusters that can ground wiki pages before raw events become drafts.
+                                    Top suggested pages:{" "}
+                                    {adoptionBundleSummary.topPageTypes.length > 0
+                                      ? adoptionBundleSummary.topPageTypes.map((item) => `${item.key} (${item.count})`).join(", ")
+                                      : "n/a"}
+                                    .
+                                  </Text>
+                                  <Stack gap={6}>
+                                    {(adoptionEvidenceBundles.bundles || []).slice(0, 8).map((bundle) => {
+                                      const preview = Array.isArray(bundle.sample_claims)
+                                        ? bundle.sample_claims
+                                            .map((item) => String(item?.claim_text || "").trim())
+                                            .find((item) => item.length > 0) || ""
+                                        : "";
+                                      return (
+                                        <Paper key={`bundle-preview-${bundle.id}`} withBorder p="xs" radius="md">
+                                          <Stack gap={4}>
+                                            <Group justify="space-between" align="center" wrap="wrap">
+                                              <Group gap={6} wrap="wrap">
+                                                <Text size="xs" fw={700}>
+                                                  {bundle.bundle_key}
+                                                </Text>
+                                                <Badge
+                                                  size="xs"
+                                                  variant="light"
+                                                  color={
+                                                    bundle.bundle_status === "ready"
+                                                      ? "teal"
+                                                      : bundle.bundle_status === "candidate"
+                                                        ? "blue"
+                                                        : bundle.bundle_status === "suppressed"
+                                                          ? "red"
+                                                          : "gray"
+                                                  }
+                                                >
+                                                  {bundle.bundle_status}
+                                                </Badge>
+                                                <Badge size="xs" variant="light" color="gray">
+                                                  {bundle.bundle_type}
+                                                </Badge>
+                                              </Group>
+                                              <Group gap={6} wrap="wrap">
+                                                <Badge size="xs" variant="light" color="gray">
+                                                  support {bundle.support_count}
+                                                </Badge>
+                                                <Badge size="xs" variant="light" color="gray">
+                                                  page {bundle.suggested_page_type}
+                                                </Badge>
+                                              </Group>
+                                            </Group>
+                                            <Text size="xs" c="dimmed">
+                                              entity {bundle.entity_key || "n/a"} • evidence {bundle.evidence_count} • linked claims{" "}
+                                              {bundle.linked_claims ?? 0} • quality {Math.round(Number(bundle.quality_score || 0) * 100)}%
+                                            </Text>
+                                            {preview ? (
+                                              <Text size="xs">
+                                                {preview.length > 220 ? `${preview.slice(0, 220)}…` : preview}
+                                              </Text>
+                                            ) : (
+                                              <Text size="xs" c="dimmed">
+                                                No preview claim linked yet; bundle metadata exists but sample evidence is still thin.
+                                              </Text>
+                                            )}
+                                          </Stack>
+                                        </Paper>
+                                      );
+                                    })}
+                                  </Stack>
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  No durable bundles surfaced yet. If events exist but bundles stay empty, the system is still seeing mostly
+                                  operational flow instead of reusable knowledge.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
                           <Paper withBorder p="xs" radius="md" id="operations-wiki-quality-panel">
                             <Stack gap={6}>
                               <Group justify="space-between" align="center" wrap="wrap">

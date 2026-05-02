@@ -496,6 +496,34 @@ export interface AgentProfileInput {
   lastSeenAt?: string;
 }
 
+export interface AgentReflectionInsightInput {
+  claimText: string;
+  category?: string;
+  confidence?: number;
+  temporary?: boolean;
+  evidence?: EvidenceRef[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentReflectionInput {
+  agentId: string;
+  reflectedBy: string;
+  taskId?: string;
+  sessionId?: string;
+  traceId?: string;
+  outcome?: string;
+  summary?: string;
+  learnedRules?: string[];
+  decisionsMade?: string[];
+  toolsUsed?: string[];
+  dataSourcesUsed?: string[];
+  followUpActions?: string[];
+  uncertainties?: string[];
+  insights?: AgentReflectionInsightInput[];
+  metadata?: Record<string, unknown>;
+  observedAt?: string;
+}
+
 export type WikiSpacePolicyMode = "open" | "owners_only";
 export type WikiPublishChecklistPreset = "none" | "ops_standard" | "policy_strict";
 

@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-04-10
+Last updated: 2026-05-02
 Owner: Core team
 
 ## Правило актуальности
@@ -43,6 +43,96 @@ Owner: Core team
 16. Agent Directory & Operations Intelligence (AI orgchart, agent folders, daily worklogs, provenance).
 17. Public Launch & Positioning (package publication, onboarding KPI, Cognitive State Layer messaging).
 18. Field adoption hardening (knowledge ingest lane, bootstrap profile, rejection diagnostics, project reset, self-host defaults).
+19. Knowledge Compiler v2 (evidence bundles, durable knowledge synthesis, reflection/debrief, page-type compilers).
+
+## Knowledge Compiler v2 (May 2026)
+
+Status: `in_progress`
+
+Goal:
+- перестать думать в модели `одно событие -> один draft`;
+- сделать Synapse компилятором корпоративного знания, а не приемником agent memory/event stream;
+- гарантировать, что в wiki попадают facts, processes, data docs, agent capabilities, decisions, а не raw operational flow.
+
+Principles:
+- `evidence first`: все сырые наблюдения живут сначала в evidence layer, а не в wiki.
+- `bundle before publish`: знания синтезируются из bundle/cluster наблюдений, а не из одиночных событий.
+- `page-type aware`: у каждого типа wiki-страницы свой extraction/synthesis contract.
+- `durable + reusable + actionable`: в wiki попадает только то, что переживет сессию и поможет другому агенту/оператору.
+- `reflection over raw logs`: Synapse должен уметь не только читать логи, но и собирать post-task reflection/debrief сигналы от агентов.
+
+Phase 1 (Architecture Reset)
+1. `in_progress` Evidence layer as first-class model:
+   - выделить явный слой `evidence` / `episodes` / `observations` отдельно от `claims` и `drafts`;
+   - хранить source shape, freshness, volatility, PII risk, transactionality, and confidence separately from wiki intent.
+2. `in_progress` Knowledge candidate bundles:
+   - добавить сущность bundle (`entity/process/topic/source-group`) с агрегатами `repeated_count`, `independent_sources`, `first_seen`, `last_seen`, `volatility`, `suggested_page_type`;
+   - перевести promotion logic from event-level to bundle-level.
+3. `planned` Universal knowledge taxonomy v2:
+   - закрепить canonical classes: `operational`, `episodic`, `semantic`, `procedural`;
+   - внутри wiki compiler normalized targets: `fact`, `process_playbook`, `data_source_doc`, `agent_profile`, `decision_log`, `incident_pattern`.
+4. `in_progress` Negative routing by default:
+   - explicit hard-block families before draft stage: snapshots, telemetry, payload blobs, PII-heavy records, transient state deltas, heartbeats.
+
+Phase 2 (Signal Extraction)
+5. `in_progress` Durable knowledge scoring v2:
+   - заменить текущий преимущественно event-centric scoring на composite score from durability, reusability, actionability, and scope.
+6. `in_progress` Process extraction compiler:
+   - отдельный compiler for `trigger -> condition -> action -> escalation -> verification`, not generic fact extraction.
+7. `in_progress` Data-source documentation compiler:
+   - строить knowledge pages из connector metadata + observed runtime usage patterns (`who reads this`, `which fields matter`, `what breaks if stale`).
+8. `in_progress` Agent capability synthesis v2:
+   - собирать capability profile из static config/prompt/tools/policies + runtime evidence + worklogs, а не только из runtime traces.
+9. `in_progress` Decision-log compiler:
+   - выделять decisions отдельно от discussion; обязательные source/date/outcome fields; compress many small updates into chronological decisions.
+10. `in_progress` Rich agent passport bootstrap:
+   - capability/profile page must assemble from `agent config`, `system prompt`, `tool registry`, `allowed actions`, `approval/guardrail rules`, `data-source bindings`, `scheduled tasks`, `model routing/failover`, and runtime evidence;
+   - eliminate default `runtime discovery pending`/`n/a` outcome for first-run core pages when static discovery is available.
+11. `in_progress` Source -> agent -> capability -> process graph:
+   - build first-class linkage showing which sources feed which agent capabilities and which capabilities feed which process decisions/actions;
+   - use this graph as both wiki content and synthesis input.
+
+Phase 3 (Reflection & Learning Loops)
+12. `in_progress` Post-task reflection/debrief contract:
+   - SDK/API contract for agent self-report after task/session: `what changed`, `what rule was learned`, `temporary vs durable`, `who else should know`, `confidence`, `evidence`.
+13. `in_progress` Query-gap driven knowledge creation:
+   - использовать retrieval misses, repeated escalations, frequent re-queries, and repeated operator overrides как сигнал на создание/обновление wiki knowledge.
+14. `planned` Human-guided synthesis prompts:
+   - режим targeted follow-up questions от Synapse к агенту/оператору only when evidence bundle is promising but incomplete.
+
+Phase 4 (Wiki Output Quality)
+15. `in_progress` Page-type compilers + hard schemas:
+   - у каждой core page family свой required structure and validation contract; raw payload text should fail schema by design.
+16. `in_progress` Enrichment pass before publish:
+   - короткие/шаблонные/placeholder-heavy pages не публикуются сразу, а идут в enrichment pass with missing-fields diagnostics.
+17. `in_progress` Knowledge freshness semantics:
+   - page-level volatility/staleness rules by page type (`policy`, `process`, `data source`, `agent profile`) instead of one global stale heuristic.
+18. `planned` Signal-to-noise audit dashboard:
+   - surface `% evidence rejected`, `% bundles promoted`, `% published by page type`, placeholder ratio, and top noisy source families.
+19. `in_progress` Importance-aware publishing:
+   - bias publish priority toward onboarding-critical page families (`agent capabilities`, `process playbooks`, `data sources`, `company operating context`) ahead of secondary technical pages;
+   - allow core pages to publish with explicit block-level warnings (`inferred`, `low_confidence`, `needs_runtime_confirmation`) instead of staying hidden or overly shallow.
+20. `in_progress` Richness regression benchmark:
+   - evaluate not just page existence but content density, placeholder ratio, tool-name coverage, source-binding coverage, process-step completeness, and source-to-process linkage;
+   - maintain a golden bootstrap dataset and release benchmark for “useful wiki richness”.
+
+Phase 5 (First-Run Product UX)
+21. `done` Smart default space selection:
+   - if useful content lands outside `general`, auto-select the richest published space or show a prominent “more content exists here” CTA.
+22. `done` Self-healing persisted workspace state:
+   - if saved browser state points to empty scope while another space has published content, reset or offer one-click recovery instead of showing an apparently empty wiki.
+23. `in_progress` Wiki quality report v2:
+   - post-bootstrap report must explain not only coverage but also `why useful pages stayed in reviewed/draft`, `which signals were missing`, and `which page families remain weak`.
+24. `planned` Opinionated AI-employee-org bootstrap:
+   - first-run pack for agent-driven orgs: `Agent Profile`, `Tool Catalog`, `Data Sources`, `Process Playbooks`, `Escalation Rules`, `Scheduled Tasks`, `HITL Rules`, `Integrations Map`.
+
+Definition of done for this track:
+- fresh integrations no longer produce order/payload-like wiki pages by default;
+- first useful wiki output comes from compiled bundles, not direct event promotion;
+- process pages read like instructions, data pages read like source contracts, agent pages read like real capability profiles;
+- teams can explain why a page exists in terms of bundled evidence, not isolated raw logs;
+- clean self-host bootstrap lands the user in the space with the richest useful content by default;
+- release quality is measured by richness/completeness, not only by slug creation or page count.
 
 ## Real-World Adoption Backlog (April 2026)
 
@@ -897,6 +987,16 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-05-02: Extended `Knowledge Compiler v2` beyond page compilers: Synapse now exposes `/v1/adoption/knowledge-gaps` to surface repeated agent questions, escalation patterns, candidate bundles, and core-page enrichment gaps; freshness semantics are now page-type aware (`policy/process/runbook/agent_profile/data_map/decision_log`) in wiki listing/lifecycle endpoints instead of one global stale threshold; and SDK adoption helpers now expose both richness benchmark and knowledge-gap diagnostics.
+- 2026-05-02: Implemented the next `Knowledge Compiler v2` production slice: publish-time enrichment now rehydrates thin/placeholder-heavy pages from canonical compilers before publish, hard page-type schema contracts were expanded for agent/data/process/decision pages, a new `decision-log` compiler and `/v1/agents/reflections` debrief contract landed, both SDKs gained first-class reflection submission methods, and `/v1/adoption/wiki-richness/benchmark` now measures useful wiki density beyond simple page existence.
+- 2026-05-02: Made bootstrap synthesis bundle-aware: `Process Playbooks` and `Agent Capability Profile` now consume first-class `evidence_bundles` (status/support/sample claims), so core wiki pages can be grounded by durable knowledge clusters instead of only raw claims or runtime matrix fallbacks.
+- 2026-05-02: Extended bundle-aware synthesis into `Data Sources Catalog`: source pages now pull durable source/process/capability signals from `evidence_bundles`, and Operations UI can inspect bundle health (`ready/candidate/suppressed`, preview evidence, suggested page types) without digging through raw drafts.
+- 2026-05-02: Introduced first-class `evidence bundles` storage scaffolding: added Postgres bundle/link tables, worker-side bundle upsert from gatekeeper/compiler signals, persisted `compiler_v2` bundle hints into claim metadata, and shipped a read API (`/v1/adoption/evidence-bundles`) so integrations can inspect durable knowledge clusters separately from drafts/pages.
+- 2026-05-02: Pushed `Knowledge Compiler v2` deeper into worker routing: gatekeeper now detects generic knowledge-like dimensions (`policy/process/capability/data_source/decision`), emits bundle-style hints (`bundle_key`, `bundle_support`, `suggested_page_type`), preserves knowledge-like operational notes from premature pre-draft blocking, and strengthens default negative routing for payload/event noise before it reaches wiki drafts.
+- 2026-05-02: Landed the next `Knowledge Compiler v2` implementation slice: bootstrap now applies importance-aware publishing metadata and explicit warning blocks for force-published core pages, quality reports expose page importance / priority backlog / published-with-warning states, and self-host wiki UI auto-recovers from empty or stale saved spaces by switching to the richest published space.
+- 2026-05-02: Started `Knowledge Compiler v2` implementation with richer bootstrap synthesis: agent capability pages now begin consuming broader static passport signals (scheduled tasks, standing orders/processes, source bindings, model routing/failover, integrations), and data-source catalog pages now surface stronger `source -> agent -> capability/process` linkage instead of only loose usage hints.
+- 2026-05-02: Expanded `Knowledge Compiler v2` using fresh field feedback from a real integration: added rich agent passport bootstrap, canonical `source -> agent -> capability -> process` linkage, importance-aware core-page publishing with explicit low-confidence warnings, richness regression benchmarks/golden dataset, and first-run UX fixes for wrong default wiki space / stale persisted workspace state.
+- 2026-05-02: Added new roadmap track `Knowledge Compiler v2` to fix the product’s core knowledge-selection model: Synapse should promote bundled durable knowledge from evidence (`facts/processes/data docs/agent capabilities/decisions`) instead of generating wiki drafts directly from raw runtime memory or event-like operational flow.
 - 2026-04-17: Hardened Step-0 to full production defaults: retrieval now follows enforced `state-first` protocol (`phase0 snapshot -> phase1 targeted pages`), wiki write-paths (`POST/PUT /v1/wiki/pages`) now normalize and enforce schema contract/frontmatter automatically, publish quality gate now requires decision-focused content with chronological/source-attributed decision entries, typed skeleton sections added for `workstream/person/experiment/metric`, and stale defaults shifted to `7/14` days.
 - 2026-04-17: Completed Step-0 state snapshot runtime plumbing (`GET /v1/wiki/state`, `POST /v1/wiki/state/sync`, MCP `get_state_snapshot` tool), added retrieval-time Step-0 snippet injection (`explainability.state_snapshot`) and test coverage for MCP tool registry/runtime cache + state snippet context behavior.
 - 2026-04-17: Finished Step-0 bootstrap/schema rollout end-to-end: first-run and agent bootstrap now seed `state` + `decisions-log` pages, bootstrap markdown is normalized to schema contract (`frontmatter: summary/status/last_updated` + backlinks + decisions log for process pages), `/v1/wiki/pages` now exposes stale-age markers in listing responses, and Python/TypeScript SDKs ship state snapshot helpers (`get/sync`) with updated docs.
