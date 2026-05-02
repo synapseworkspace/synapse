@@ -24778,6 +24778,7 @@ def list_wiki_drafts(
     drafts = _list_wiki_drafts_with_metadata(project_id=project_id, statuses=statuses, limit=limit)
     return {
         "drafts": drafts,
+        "queue_summary": _summarize_draft_queue(drafts),
         "filters": {
             "project_id": project_id,
             "status": status,
@@ -25028,6 +25029,55 @@ def _draft_passes_default_bundle_guard_for_approve(draft: dict[str, Any]) -> boo
     if bool(compiler_v2.get("promotion_ready_from_bundle")) and support >= 2:
         return True
     return False
+
+
+def _summarize_draft_queue(drafts: list[dict[str, Any]]) -> dict[str, Any]:
+    recommendation_counts: dict[str, int] = {}
+    bundle_status_counts: dict[str, int] = {}
+    suggested_page_type_counts: dict[str, int] = {}
+    ready_support_total = 0
+    top_items: list[dict[str, Any]] = []
+    for item in drafts:
+        bundle_priority = item.get("bundle_priority") if isinstance(item.get("bundle_priority"), dict) else {}
+        bundle = item.get("bundle") if isinstance(item.get("bundle"), dict) else {}
+        compiler_v2 = (
+            ((item.get("gatekeeper") or {}).get("compiler_v2"))
+            if isinstance(item.get("gatekeeper"), dict)
+            else {}
+        )
+        recommendation = str(bundle_priority.get("recommendation") or "review").strip().lower()
+        recommendation_counts[recommendation] = int(recommendation_counts.get(recommendation, 0)) + 1
+        bundle_status = str(bundle.get("bundle_status") or "draft_only").strip().lower()
+        bundle_status_counts[bundle_status] = int(bundle_status_counts.get(bundle_status, 0)) + 1
+        suggested_page_type = str(compiler_v2.get("suggested_page_type") or "unknown").strip().lower()
+        suggested_page_type_counts[suggested_page_type] = int(suggested_page_type_counts.get(suggested_page_type, 0)) + 1
+        if bundle_status == "ready":
+            ready_support_total += int(bundle.get("support_count") or 0)
+
+    for item in drafts[:8]:
+        bundle_priority = item.get("bundle_priority") if isinstance(item.get("bundle_priority"), dict) else {}
+        page = item.get("page") if isinstance(item.get("page"), dict) else {}
+        claim = item.get("claim") if isinstance(item.get("claim"), dict) else {}
+        top_items.append(
+            {
+                "draft_id": str(item.get("id") or ""),
+                "page_slug": str(page.get("slug") or ""),
+                "page_type": str(page.get("page_type") or ""),
+                "claim_category": str(claim.get("category") or ""),
+                "recommendation": str(bundle_priority.get("recommendation") or "review"),
+                "score": float(bundle_priority.get("score") or 0.0),
+                "reason": str(bundle_priority.get("reason") or ""),
+            }
+        )
+
+    return {
+        "drafts_total": len(drafts),
+        "recommendations": recommendation_counts,
+        "bundle_statuses": bundle_status_counts,
+        "suggested_page_types": suggested_page_type_counts,
+        "ready_bundle_support_total": ready_support_total,
+        "top_recommended": top_items,
+    }
 
 
 def _list_wiki_drafts_with_metadata(
@@ -25366,10 +25416,18 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
     )
 
     matched: list[dict[str, Any]] = []
+    skipped_by_bundle_guard: list[dict[str, Any]] = []
     for item in drafts:
         if _draft_matches_bulk_filter(item, filter_config):
             if payload.action == "approve" and not bool(payload.force) and bundle_guard_defaulted:
                 if not _draft_passes_default_bundle_guard_for_approve(item):
+                    skipped_by_bundle_guard.append(
+                        {
+                            "draft_id": str(item.get("id") or ""),
+                            "bundle_priority": item.get("bundle_priority"),
+                            "bundle": item.get("bundle"),
+                        }
+                    )
                     continue
             matched.append(item)
         if len(matched) >= int(payload.limit):
@@ -25385,9 +25443,11 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
                 "matched": len(matched),
                 "limit": int(payload.limit),
                 "bundle_guard_defaulted": bundle_guard_defaulted,
+                "skipped_by_bundle_guard": len(skipped_by_bundle_guard),
             },
             "filters": payload.filter.model_dump(mode="json"),
             "items": matched,
+            "bundle_guard_preview": skipped_by_bundle_guard[:12],
             "generated_at": datetime.now(UTC).isoformat(),
         }
 
@@ -25443,9 +25503,11 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
             "failed": failed,
             "limit": int(payload.limit),
             "bundle_guard_defaulted": bundle_guard_defaulted,
+            "skipped_by_bundle_guard": len(skipped_by_bundle_guard),
         },
         "filters": payload.filter.model_dump(mode="json"),
         "results": results,
+        "bundle_guard_preview": skipped_by_bundle_guard[:12],
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -25770,6 +25832,7 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
         },
         "bundle": bundle_context,
         "bundle_priority": bundle_priority,
+        "recommended_action": str(bundle_priority.get("recommendation") or "review"),
         "conflicts": conflicts,
         "moderation_actions": moderation_actions,
     }

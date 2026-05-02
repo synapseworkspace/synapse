@@ -20,6 +20,7 @@ try:
         _bundle_promotion_scope_for_page_type,
         _draft_bundle_priority,
         _draft_passes_default_bundle_guard_for_approve,
+        _summarize_draft_queue,
         _build_first_run_starter_pages,
         _page_type_freshness_thresholds,
         _prepend_bootstrap_publish_notice,
@@ -60,6 +61,7 @@ except Exception:  # pragma: no cover
     _bundle_promotion_scope_for_page_type = None
     _draft_bundle_priority = None
     _draft_passes_default_bundle_guard_for_approve = None
+    _summarize_draft_queue = None
     _build_first_run_starter_pages = None
     _page_type_freshness_thresholds = None
     _prepend_bootstrap_publish_notice = None
@@ -99,6 +101,7 @@ except Exception:  # pragma: no cover
     or _bundle_promotion_scope_for_page_type is None
     or _draft_bundle_priority is None
     or _draft_passes_default_bundle_guard_for_approve is None
+    or _summarize_draft_queue is None
     or _build_first_run_starter_pages is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
@@ -1513,6 +1516,35 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertTrue(_draft_passes_default_bundle_guard_for_approve(ready_draft))
         self.assertFalse(_draft_passes_default_bundle_guard_for_approve(candidate_draft))
         self.assertTrue(_draft_passes_default_bundle_guard_for_approve(promoted_candidate))
+
+    def test_summarize_draft_queue_groups_recommendations_and_statuses(self) -> None:
+        assert _summarize_draft_queue is not None
+
+        summary = _summarize_draft_queue(
+            [
+                {
+                    "id": "d1",
+                    "page": {"slug": "operations/process-1", "page_type": "process"},
+                    "claim": {"category": "process"},
+                    "bundle_priority": {"recommendation": "approve_first", "score": 4.2, "reason": "bundle=ready"},
+                    "bundle": {"bundle_status": "ready", "support_count": 3},
+                    "gatekeeper": {"compiler_v2": {"suggested_page_type": "process"}},
+                },
+                {
+                    "id": "d2",
+                    "page": {"slug": "operations/source-1", "page_type": "data_map"},
+                    "claim": {"category": "data_source"},
+                    "bundle_priority": {"recommendation": "review_with_context", "score": 2.1, "reason": "bundle=candidate"},
+                    "bundle": {"bundle_status": "candidate", "support_count": 1},
+                    "gatekeeper": {"compiler_v2": {"suggested_page_type": "data_map"}},
+                },
+            ]
+        )
+        self.assertEqual(summary["drafts_total"], 2)
+        self.assertEqual(summary["recommendations"]["approve_first"], 1)
+        self.assertEqual(summary["bundle_statuses"]["ready"], 1)
+        self.assertEqual(summary["suggested_page_types"]["process"], 1)
+        self.assertEqual(summary["ready_bundle_support_total"], 3)
 
     def test_process_playbooks_bootstrap_page_renders_runbook_sections(self) -> None:
         assert _api_main is not None
