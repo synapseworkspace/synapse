@@ -4245,6 +4245,7 @@ _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
 _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _PUBLIC_TABLE_EXISTS_CACHE: dict[str, bool] = {}
+_CLAIMS_HAS_EVIDENCE_COLUMN_CACHE: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
 _ADOPTION_PROJECT_RESET_DEFAULT_SCOPES = ["events", "claims", "drafts", "wiki", "backfill"]
 _ADOPTION_PROJECT_RESET_SCOPE_ORDER = ["drafts", "wiki", "claims", "events", "backfill", "tasks", "agents"]
@@ -5918,6 +5919,25 @@ def _adoption_project_resets_table_exists(conn) -> bool:
     return exists
 
 
+def _claims_have_evidence_column(conn) -> bool:
+    global _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE
+    if _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE is not None:
+        return _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'claims'
+              AND column_name = 'evidence'
+            LIMIT 1
+            """
+        )
+        _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE = cur.fetchone() is not None
+    return _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE
+
+
 def _adoption_project_reset_scope_plan() -> dict[str, list[dict[str, Any]]]:
     return {
         "drafts": [
@@ -5984,6 +6004,34 @@ def _adoption_project_reset_scope_plan() -> dict[str, list[dict[str, Any]]]:
         ],
         "claims": [
             {
+                "table_key": "evidence_records",
+                "required_tables": ["evidence_records"],
+                "count_sql": "SELECT COUNT(*) FROM evidence_records WHERE project_id = %s",
+                "delete_sql": "DELETE FROM evidence_records WHERE project_id = %s",
+            },
+            {
+                "table_key": "evidence_bundle_claim_links",
+                "required_tables": ["evidence_bundle_claim_links", "evidence_bundles"],
+                "count_sql": """
+                    SELECT COUNT(*)
+                    FROM evidence_bundle_claim_links l
+                    JOIN evidence_bundles b ON b.id = l.bundle_id
+                    WHERE b.project_id = %s
+                """,
+                "delete_sql": """
+                    DELETE FROM evidence_bundle_claim_links l
+                    USING evidence_bundles b
+                    WHERE l.bundle_id = b.id
+                      AND b.project_id = %s
+                """,
+            },
+            {
+                "table_key": "evidence_bundles",
+                "required_tables": ["evidence_bundles"],
+                "count_sql": "SELECT COUNT(*) FROM evidence_bundles WHERE project_id = %s",
+                "delete_sql": "DELETE FROM evidence_bundles WHERE project_id = %s",
+            },
+            {
                 "table_key": "claim_proposals",
                 "required_tables": ["claim_proposals"],
                 "count_sql": "SELECT COUNT(*) FROM claim_proposals WHERE project_id = %s",
@@ -6032,6 +6080,28 @@ def _adoption_project_reset_scope_plan() -> dict[str, list[dict[str, Any]]]:
                 "required_tables": ["memory_backfill_batches"],
                 "count_sql": "SELECT COUNT(*) FROM memory_backfill_batches WHERE project_id = %s",
                 "delete_sql": "DELETE FROM memory_backfill_batches WHERE project_id = %s",
+            },
+            {
+                "table_key": "legacy_import_sync_runs",
+                "required_tables": ["legacy_import_sync_runs"],
+                "count_sql": "SELECT COUNT(*) FROM legacy_import_sync_runs WHERE project_id = %s",
+                "delete_sql": "DELETE FROM legacy_import_sync_runs WHERE project_id = %s",
+            },
+            {
+                "table_key": "legacy_import_source_fingerprints",
+                "required_tables": ["legacy_import_source_fingerprints", "legacy_import_sources"],
+                "count_sql": """
+                    SELECT COUNT(*)
+                    FROM legacy_import_source_fingerprints f
+                    JOIN legacy_import_sources s ON s.id = f.source_id
+                    WHERE s.project_id = %s
+                """,
+                "delete_sql": """
+                    DELETE FROM legacy_import_source_fingerprints f
+                    USING legacy_import_sources s
+                    WHERE f.source_id = s.id
+                      AND s.project_id = %s
+                """,
             },
         ],
         "tasks": [
@@ -24935,6 +25005,177 @@ def _redact_evidence_excerpt_if_needed(*, pii_level: str, excerpt: str | None) -
     return excerpt
 
 
+def _proposal_evidence_source_shape(evidence: dict[str, Any]) -> str:
+    source_type = str(evidence.get("source_type") or "").strip().lower()
+    snippet = str(evidence.get("snippet") or "").strip()
+    if source_type == "file":
+        return "document"
+    if source_type == "tool_output":
+        return "structured_record" if snippet.startswith("{") or snippet.startswith("[") else "tool_summary"
+    if source_type in {"dialog", "human_note"}:
+        return "conversation"
+    if source_type in {"external_event", "knowledge_ingest"}:
+        return "event_payload" if snippet.startswith("{") or snippet.startswith("[") else "event_summary"
+    return "unknown"
+
+
+def _proposal_evidence_volatility(
+    *,
+    source_shape: str,
+    ingestion_classification: str,
+    category: str,
+) -> str:
+    if ingestion_classification == "pii_sensitive_stream":
+        return "ephemeral"
+    if ingestion_classification == "operational_stream" or source_shape == "event_payload":
+        return "ephemeral"
+    normalized_category = str(category or "").strip().lower()
+    if normalized_category in {"policy", "process", "runbook", "access", "incident"}:
+        return "durable"
+    return "session"
+
+
+def _proposal_evidence_pii_level(metadata: dict[str, Any], evidence: dict[str, Any]) -> str:
+    if str(metadata.get("ingestion_classification") or "").strip().lower() == "pii_sensitive_stream":
+        return "high"
+    snippet = str(evidence.get("snippet") or "").strip().lower()
+    if "@" in snippet or re.search(r"\+\d[\d\-\s()]{6,}", snippet):
+        return "possible"
+    return "none"
+
+
+def _proposal_evidence_transactionality(*, source_shape: str, category: str) -> str:
+    normalized_category = str(category or "").strip().lower()
+    if any(token in normalized_category for token in ("order", "invoice", "ticket", "shipment", "delivery", "snapshot")):
+        return "transactional"
+    if normalized_category in {"policy", "process", "runbook", "access", "incident"}:
+        return "policy"
+    if source_shape in {"tool_summary", "event_summary", "conversation"}:
+        return "aggregate"
+    return "unknown"
+
+
+def _proposal_evidence_ledger_records(
+    cur: Any,
+    *,
+    project_id: str,
+    limit: int,
+    source_shape: str | None = None,
+    volatility_class: str | None = None,
+    pii_level: str | None = None,
+    evidence_role: str | None = None,
+    ingestion_classification: str | None = None,
+    knowledge_taxonomy_class: str | None = None,
+    normalized_target_type: str | None = None,
+    bundle_status: str | None = None,
+) -> list[dict[str, Any]]:
+    if not _public_table_exists(cur.connection, "claim_proposals"):
+        return []
+    def _coerce_iso_datetime(value: Any, fallback: Any) -> str | None:
+        candidate = value if value is not None else fallback
+        if isinstance(candidate, datetime):
+            return candidate.isoformat()
+        text = str(candidate or "").strip()
+        return text or None
+    cur.execute(
+        """
+        SELECT claim_id::text, claim_payload, status, created_at, updated_at
+        FROM claim_proposals
+        WHERE project_id = %s
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT %s
+        """,
+        (project_id, max(1, min(400, int(limit) * 4))),
+    )
+    rows = cur.fetchall() or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        claim_id = row[0]
+        payload = row[1] if isinstance(row[1], dict) else {}
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        compiler_v2 = metadata.get("compiler_v2") if isinstance(metadata.get("compiler_v2"), dict) else {}
+        evidence_items = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+        if not evidence_items:
+            evidence_items = [{"source_type": "external_event", "source_id": f"proposal:{claim_id}", "snippet": payload.get("claim_text")}]
+        for idx, evidence in enumerate(evidence_items):
+            if not isinstance(evidence, dict):
+                continue
+            normalized_source_shape = _proposal_evidence_source_shape(evidence)
+            normalized_ingestion = str(metadata.get("ingestion_classification") or "").strip().lower() or "unknown"
+            normalized_category = str(payload.get("category") or "").strip()
+            normalized_volatility = _proposal_evidence_volatility(
+                source_shape=normalized_source_shape,
+                ingestion_classification=normalized_ingestion,
+                category=normalized_category,
+            )
+            normalized_pii = _proposal_evidence_pii_level(metadata, evidence)
+            normalized_role = "suppressed" if row[2] == "failed" else "supporting"
+            normalized_taxonomy = str(compiler_v2.get("knowledge_taxonomy_class") or "").strip().lower() or None
+            normalized_target = str(compiler_v2.get("normalized_target_type") or "").strip().lower() or None
+            normalized_bundle_status = "candidate" if row[2] in {"queued", "processing"} else "observed"
+            record = {
+                "id": f"proposal:{claim_id}:{idx + 1}",
+                "claim_id": claim_id,
+                "bundle_key": str(compiler_v2.get("bundle_key") or "").strip() or None,
+                "event_id": str(metadata.get("event_id") or "").strip() or None,
+                "entity_key": str(payload.get("entity_key") or "").strip(),
+                "category": normalized_category,
+                "source_type": str(evidence.get("source_type") or "external_event").strip().lower() or "external_event",
+                "source_id": str(evidence.get("source_id") or f"proposal:{claim_id}:{idx + 1}").strip(),
+                "source_system": str(
+                    evidence.get("source_system")
+                    or metadata.get("source_system")
+                    or metadata.get("source")
+                    or ""
+                ).strip().lower() or None,
+                "source_shape": normalized_source_shape,
+                "volatility_class": normalized_volatility,
+                "pii_level": normalized_pii,
+                "transactionality": _proposal_evidence_transactionality(
+                    source_shape=normalized_source_shape,
+                    category=normalized_category,
+                ),
+                "ingestion_classification": normalized_ingestion,
+                "knowledge_taxonomy_class": normalized_taxonomy,
+                "normalized_target_type": normalized_target,
+                "evidence_role": normalized_role,
+                "content_excerpt": _redact_evidence_excerpt_if_needed(
+                    pii_level=normalized_pii,
+                    excerpt=str(evidence.get("snippet") or payload.get("claim_text") or "").strip()[:320] or None,
+                ),
+                "observed_at": _coerce_iso_datetime(payload.get("observed_at"), row[4]),
+                "metadata": {
+                    "fallback_source": "claim_proposals",
+                    "proposal_status": row[2],
+                    "claim_metadata": metadata,
+                },
+                "bundle_status": normalized_bundle_status if not bundle_status else str(bundle_status).strip().lower(),
+                "bundle_quality_score": 0.0,
+            }
+            filters = {
+                "source_shape": source_shape,
+                "volatility_class": volatility_class,
+                "pii_level": pii_level,
+                "evidence_role": evidence_role,
+                "ingestion_classification": ingestion_classification,
+                "knowledge_taxonomy_class": knowledge_taxonomy_class,
+                "normalized_target_type": normalized_target_type,
+                "bundle_status": bundle_status,
+            }
+            keep = True
+            for key, expected in filters.items():
+                if expected is None or not str(expected).strip():
+                    continue
+                if str(record.get(key) or "").strip().lower() != str(expected).strip().lower():
+                    keep = False
+                    break
+            if keep:
+                out.append(record)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 @app.get("/v1/adoption/evidence-ledger")
 def list_adoption_evidence_ledger(
     project_id: str,
@@ -24949,73 +25190,103 @@ def list_adoption_evidence_ledger(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     rows: list[tuple[Any, ...]] = []
+    fallback_records: list[dict[str, Any]] = []
     with get_conn() as conn:
         with conn.cursor() as cur:
             if not _wiki_feature_table_exists(cur, "public.evidence_records"):
-                return JSONResponse(status_code=503, content={"error": "evidence_ledger_unavailable"})
-            has_bundles = _wiki_feature_table_exists(cur, "public.evidence_bundles")
-            where_parts = ["er.project_id = %s"]
-            params: list[Any] = [project_id]
-            for field_name, raw_value in (
-                ("er.source_shape", source_shape),
-                ("er.volatility_class", volatility_class),
-                ("er.pii_level", pii_level),
-                ("er.evidence_role", evidence_role),
-                ("er.ingestion_classification", ingestion_classification),
-                ("er.knowledge_taxonomy_class", knowledge_taxonomy_class),
-                ("er.normalized_target_type", normalized_target_type),
-            ):
-                normalized = str(raw_value or "").strip().lower()
-                if normalized:
-                    where_parts.append(f"{field_name} = %s")
-                    params.append(normalized)
-            normalized_bundle_status = str(bundle_status or "").strip().lower()
-            if normalized_bundle_status and has_bundles:
-                where_parts.append("COALESCE(b.bundle_status, 'unbundled') = %s")
-                params.append(normalized_bundle_status)
-            join_sql = (
-                "LEFT JOIN evidence_bundles b ON b.project_id = er.project_id AND b.bundle_key = er.bundle_key"
-                if has_bundles
-                else ""
-            )
-            cur.execute(
-                f"""
-                SELECT
-                  er.id::text,
-                  er.claim_id::text,
-                  er.bundle_key,
-                  er.event_id,
-                  er.entity_key,
-                  er.category,
-                  er.source_type,
-                  er.source_id,
-                  er.source_system,
-                  er.source_shape,
-                  er.volatility_class,
-                  er.pii_level,
-                  er.transactionality,
-                  er.ingestion_classification,
-                  er.knowledge_taxonomy_class,
-                  er.normalized_target_type,
-                  er.evidence_role,
-                  er.content_excerpt,
-                  er.observed_at,
-                  er.metadata,
-                  COALESCE(b.bundle_status, 'unbundled') AS bundle_status,
-                  COALESCE(b.quality_score, 0) AS bundle_quality_score
-                FROM evidence_records er
-                {join_sql}
-                WHERE {' AND '.join(where_parts)}
-                ORDER BY
-                  er.observed_at DESC NULLS LAST,
-                  er.created_at DESC
-                LIMIT %s
-                """,
-                tuple([*params, int(limit)]),
-            )
-            rows = cur.fetchall() or []
+                fallback_records = _proposal_evidence_ledger_records(
+                    cur,
+                    project_id=project_id,
+                    source_shape=source_shape,
+                    volatility_class=volatility_class,
+                    pii_level=pii_level,
+                    evidence_role=evidence_role,
+                    ingestion_classification=ingestion_classification,
+                    knowledge_taxonomy_class=knowledge_taxonomy_class,
+                    normalized_target_type=normalized_target_type,
+                    bundle_status=bundle_status,
+                    limit=int(limit),
+                )
+                if not fallback_records:
+                    return JSONResponse(status_code=503, content={"error": "evidence_ledger_unavailable"})
+            else:
+                has_bundles = _wiki_feature_table_exists(cur, "public.evidence_bundles")
+                where_parts = ["er.project_id = %s"]
+                params: list[Any] = [project_id]
+                for field_name, raw_value in (
+                    ("er.source_shape", source_shape),
+                    ("er.volatility_class", volatility_class),
+                    ("er.pii_level", pii_level),
+                    ("er.evidence_role", evidence_role),
+                    ("er.ingestion_classification", ingestion_classification),
+                    ("er.knowledge_taxonomy_class", knowledge_taxonomy_class),
+                    ("er.normalized_target_type", normalized_target_type),
+                ):
+                    normalized = str(raw_value or "").strip().lower()
+                    if normalized:
+                        where_parts.append(f"{field_name} = %s")
+                        params.append(normalized)
+                normalized_bundle_status = str(bundle_status or "").strip().lower()
+                if normalized_bundle_status and has_bundles:
+                    where_parts.append("COALESCE(b.bundle_status, 'unbundled') = %s")
+                    params.append(normalized_bundle_status)
+                join_sql = (
+                    "LEFT JOIN evidence_bundles b ON b.project_id = er.project_id AND b.bundle_key = er.bundle_key"
+                    if has_bundles
+                    else ""
+                )
+                cur.execute(
+                    f"""
+                    SELECT
+                      er.id::text,
+                      er.claim_id::text,
+                      er.bundle_key,
+                      er.event_id,
+                      er.entity_key,
+                      er.category,
+                      er.source_type,
+                      er.source_id,
+                      er.source_system,
+                      er.source_shape,
+                      er.volatility_class,
+                      er.pii_level,
+                      er.transactionality,
+                      er.ingestion_classification,
+                      er.knowledge_taxonomy_class,
+                      er.normalized_target_type,
+                      er.evidence_role,
+                      er.content_excerpt,
+                      er.observed_at,
+                      er.metadata,
+                      COALESCE(b.bundle_status, 'unbundled') AS bundle_status,
+                      COALESCE(b.quality_score, 0) AS bundle_quality_score
+                    FROM evidence_records er
+                    {join_sql}
+                    WHERE {' AND '.join(where_parts)}
+                    ORDER BY
+                      er.observed_at DESC NULLS LAST,
+                      er.created_at DESC
+                    LIMIT %s
+                    """,
+                    tuple([*params, int(limit)]),
+                )
+                rows = cur.fetchall() or []
+                if not rows:
+                    fallback_records = _proposal_evidence_ledger_records(
+                        cur,
+                        project_id=project_id,
+                        source_shape=source_shape,
+                        volatility_class=volatility_class,
+                        pii_level=pii_level,
+                        evidence_role=evidence_role,
+                        ingestion_classification=ingestion_classification,
+                        knowledge_taxonomy_class=knowledge_taxonomy_class,
+                        normalized_target_type=normalized_target_type,
+                        bundle_status=bundle_status,
+                        limit=int(limit),
+                    )
 
-    records = [
+    records = fallback_records if fallback_records else [
         {
             "id": row[0],
             "claim_id": row[1],
@@ -25082,50 +25353,66 @@ def get_adoption_evidence_ledger_stats(
     days: int = Query(default=30, ge=1, le=365),
 ) -> dict[str, Any]:
     observed_after = datetime.now(UTC) - timedelta(days=int(days))
+    rows: list[tuple[Any, ...]] = []
+    total_row: tuple[Any, ...] = (0, 0, 0, 0)
+    fallback_records: list[dict[str, Any]] = []
     with get_conn() as conn:
         with conn.cursor() as cur:
             if not _wiki_feature_table_exists(cur, "public.evidence_records"):
-                return JSONResponse(status_code=503, content={"error": "evidence_ledger_unavailable"})
-            has_bundles = _wiki_feature_table_exists(cur, "public.evidence_bundles")
-            bundle_join = (
-                "LEFT JOIN evidence_bundles b ON b.project_id = er.project_id AND b.bundle_key = er.bundle_key"
-                if has_bundles
-                else ""
-            )
-            cur.execute(
-                f"""
-                SELECT
-                  COALESCE(er.source_shape, 'unknown') AS source_shape,
-                  COALESCE(er.volatility_class, 'unknown') AS volatility_class,
-                  COALESCE(er.pii_level, 'unknown') AS pii_level,
-                  COALESCE(er.evidence_role, 'unknown') AS evidence_role,
-                  COALESCE(er.knowledge_taxonomy_class, 'unknown') AS knowledge_taxonomy_class,
-                  COALESCE(er.source_system, 'unknown') AS source_system,
-                  COALESCE({ 'b.bundle_status' if has_bundles else "'unbundled'" }, 'unbundled') AS bundle_status,
-                  COUNT(*)::int
-                FROM evidence_records er
-                {bundle_join}
-                WHERE er.project_id = %s
-                  AND COALESCE(er.observed_at, er.created_at) >= %s
-                GROUP BY 1, 2, 3, 4, 5, 6, 7
-                """,
-                (project_id, observed_after),
-            )
-            rows = cur.fetchall() or []
-            cur.execute(
-                """
-                SELECT
-                  COUNT(*)::int,
-                  COUNT(*) FILTER (WHERE pii_level = 'high')::int,
-                  COUNT(*) FILTER (WHERE volatility_class IN ('durable', 'authoritative'))::int,
-                  COUNT(*) FILTER (WHERE evidence_role = 'suppressed')::int
-                FROM evidence_records
-                WHERE project_id = %s
-                  AND COALESCE(observed_at, created_at) >= %s
-                """,
-                (project_id, observed_after),
-            )
-            total_row = cur.fetchone() or (0, 0, 0, 0)
+                fallback_records = _proposal_evidence_ledger_records(
+                    cur,
+                    project_id=project_id,
+                    limit=200,
+                )
+                if not fallback_records:
+                    return JSONResponse(status_code=503, content={"error": "evidence_ledger_unavailable"})
+            else:
+                has_bundles = _wiki_feature_table_exists(cur, "public.evidence_bundles")
+                bundle_join = (
+                    "LEFT JOIN evidence_bundles b ON b.project_id = er.project_id AND b.bundle_key = er.bundle_key"
+                    if has_bundles
+                    else ""
+                )
+                cur.execute(
+                    f"""
+                    SELECT
+                      COALESCE(er.source_shape, 'unknown') AS source_shape,
+                      COALESCE(er.volatility_class, 'unknown') AS volatility_class,
+                      COALESCE(er.pii_level, 'unknown') AS pii_level,
+                      COALESCE(er.evidence_role, 'unknown') AS evidence_role,
+                      COALESCE(er.knowledge_taxonomy_class, 'unknown') AS knowledge_taxonomy_class,
+                      COALESCE(er.source_system, 'unknown') AS source_system,
+                      COALESCE({ 'b.bundle_status' if has_bundles else "'unbundled'" }, 'unbundled') AS bundle_status,
+                      COUNT(*)::int
+                    FROM evidence_records er
+                    {bundle_join}
+                    WHERE er.project_id = %s
+                      AND COALESCE(er.observed_at, er.created_at) >= %s
+                    GROUP BY 1, 2, 3, 4, 5, 6, 7
+                    """,
+                    (project_id, observed_after),
+                )
+                rows = cur.fetchall() or []
+                cur.execute(
+                    """
+                    SELECT
+                      COUNT(*)::int,
+                      COUNT(*) FILTER (WHERE pii_level = 'high')::int,
+                      COUNT(*) FILTER (WHERE volatility_class IN ('durable', 'authoritative'))::int,
+                      COUNT(*) FILTER (WHERE evidence_role = 'suppressed')::int
+                    FROM evidence_records
+                    WHERE project_id = %s
+                      AND COALESCE(observed_at, created_at) >= %s
+                    """,
+                    (project_id, observed_after),
+                )
+                total_row = cur.fetchone() or (0, 0, 0, 0)
+                if not rows and int(total_row[0] or 0) == 0:
+                    fallback_records = _proposal_evidence_ledger_records(
+                        cur,
+                        project_id=project_id,
+                        limit=200,
+                    )
 
     breakdowns: dict[str, dict[str, int]] = {
         "source_shapes": {},
@@ -25136,24 +25423,42 @@ def get_adoption_evidence_ledger_stats(
         "source_systems": {},
         "bundle_statuses": {},
     }
-    for row in rows:
-        source_shape, volatility_cls, pii_cls, evidence_role_value, taxonomy_cls, source_system_value, bundle_status_value, count = row
-        mapping = (
-            ("source_shapes", source_shape),
-            ("volatility_classes", volatility_cls),
-            ("pii_levels", pii_cls),
-            ("evidence_roles", evidence_role_value),
-            ("knowledge_taxonomy_classes", taxonomy_cls),
-            ("source_systems", source_system_value),
-            ("bundle_statuses", bundle_status_value),
-        )
-        for bucket, key in mapping:
-            breakdowns[bucket][str(key or "unknown")] = int(breakdowns[bucket].get(str(key or "unknown"), 0)) + int(count or 0)
-
-    total_records = int(total_row[0] or 0)
-    high_pii_records = int(total_row[1] or 0)
-    durable_records = int(total_row[2] or 0)
-    suppressed_records = int(total_row[3] or 0)
+    if fallback_records:
+        for record in fallback_records:
+            mapping = (
+                ("source_shapes", record.get("source_shape")),
+                ("volatility_classes", record.get("volatility_class")),
+                ("pii_levels", record.get("pii_level")),
+                ("evidence_roles", record.get("evidence_role")),
+                ("knowledge_taxonomy_classes", record.get("knowledge_taxonomy_class")),
+                ("source_systems", record.get("source_system")),
+                ("bundle_statuses", record.get("bundle_status")),
+            )
+            for bucket, key in mapping:
+                normalized_key = str(key or "unknown")
+                breakdowns[bucket][normalized_key] = int(breakdowns[bucket].get(normalized_key, 0)) + 1
+        total_records = len(fallback_records)
+        high_pii_records = sum(1 for item in fallback_records if str(item.get("pii_level") or "") == "high")
+        durable_records = sum(1 for item in fallback_records if str(item.get("volatility_class") or "") in {"durable", "authoritative"})
+        suppressed_records = sum(1 for item in fallback_records if str(item.get("evidence_role") or "") == "suppressed")
+    else:
+        for row in rows:
+            source_shape, volatility_cls, pii_cls, evidence_role_value, taxonomy_cls, source_system_value, bundle_status_value, count = row
+            mapping = (
+                ("source_shapes", source_shape),
+                ("volatility_classes", volatility_cls),
+                ("pii_levels", pii_cls),
+                ("evidence_roles", evidence_role_value),
+                ("knowledge_taxonomy_classes", taxonomy_cls),
+                ("source_systems", source_system_value),
+                ("bundle_statuses", bundle_status_value),
+            )
+            for bucket, key in mapping:
+                breakdowns[bucket][str(key or "unknown")] = int(breakdowns[bucket].get(str(key or "unknown"), 0)) + int(count or 0)
+        total_records = int(total_row[0] or 0)
+        high_pii_records = int(total_row[1] or 0)
+        durable_records = int(total_row[2] or 0)
+        suppressed_records = int(total_row[3] or 0)
     return {
         "project_id": project_id,
         "window_days": int(days),
@@ -32015,9 +32320,10 @@ def _build_process_playbooks_bootstrap_page(
         limit=max(12, min(120, int(max_signals) * 4)),
     )
     if _wiki_feature_table_exists(cur, "public.claims"):
+        evidence_select_sql = "evidence" if _claims_have_evidence_column(cur.connection) else "'[]'::jsonb AS evidence"
         cur.execute(
-            """
-            SELECT claim_text, category, metadata, evidence
+            f"""
+            SELECT claim_text, category, metadata, {evidence_select_sql}
             FROM claims
             WHERE project_id = %s
               AND status <> 'rejected'
@@ -36617,6 +36923,21 @@ def get_adoption_rejection_diagnostics(
         "examples": examples,
         "suggested_policy_knobs": suggestions,
     }
+
+
+@app.get("/v1/adoption/rejections")
+def get_adoption_rejections_alias(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    sample_limit: int = Query(default=5, ge=1, le=25),
+) -> dict[str, Any]:
+    response = get_adoption_rejection_diagnostics(
+        project_id=project_id,
+        days=days,
+        sample_limit=sample_limit,
+    )
+    response["alias"] = "/v1/adoption/rejections/diagnostics"
+    return response
 
 
 @app.get("/v1/adoption/rejections/why")

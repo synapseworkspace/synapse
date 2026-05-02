@@ -1,0 +1,2 @@
+ALTER TABLE claims
+ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb;

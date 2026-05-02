@@ -850,6 +850,7 @@ class WikiSynthesisEngine:
         self.gatekeeper_llm_timeout_ms = max(200, gatekeeper_llm_timeout_ms)
         self._llm_classifier = llm_classifier or OpenAIGatekeeperClassifier()
         self._claims_has_fingerprint_column_cache: bool | None = None
+        self._claims_has_evidence_column_cache: bool | None = None
         self._backfill_batches_have_decision_counters_cache: bool | None = None
         self._backfill_batches_have_reason_counters_cache: bool | None = None
         self._gatekeeper_config_has_llm_columns_cache: bool | None = None
@@ -2338,67 +2339,135 @@ class WikiSynthesisEngine:
             status = "rejected"
             metadata["gatekeeper"] = "operational_memory"
         if self._claims_has_fingerprint_column(conn):
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO claims (
-                      id, project_id, entity_key, category, claim_text, status, claim_fingerprint, valid_from, valid_to, metadata
+            if self._claims_has_evidence_column(conn):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO claims (
+                          id, project_id, entity_key, category, claim_text, status, claim_fingerprint, valid_from, valid_to, metadata, evidence
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET entity_key = EXCLUDED.entity_key,
+                            category = EXCLUDED.category,
+                            claim_text = EXCLUDED.claim_text,
+                            status = EXCLUDED.status,
+                            claim_fingerprint = EXCLUDED.claim_fingerprint,
+                            valid_from = EXCLUDED.valid_from,
+                            valid_to = EXCLUDED.valid_to,
+                            metadata = EXCLUDED.metadata,
+                            evidence = EXCLUDED.evidence,
+                            updated_at = NOW()
+                        """,
+                        (
+                            claim.id,
+                            claim.project_id,
+                            claim.entity_key,
+                            claim.category,
+                            claim.claim_text,
+                            status,
+                            fingerprint,
+                            valid_from,
+                            valid_to,
+                            self._jsonb(metadata),
+                            self._jsonb(claim.evidence),
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE
-                    SET entity_key = EXCLUDED.entity_key,
-                        category = EXCLUDED.category,
-                        claim_text = EXCLUDED.claim_text,
-                        status = EXCLUDED.status,
-                        claim_fingerprint = EXCLUDED.claim_fingerprint,
-                        valid_from = EXCLUDED.valid_from,
-                        valid_to = EXCLUDED.valid_to,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = NOW()
-                    """,
-                    (
-                        claim.id,
-                        claim.project_id,
-                        claim.entity_key,
-                        claim.category,
-                        claim.claim_text,
-                        status,
-                        fingerprint,
-                        valid_from,
-                        valid_to,
-                        self._jsonb(metadata),
-                    ),
-                )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO claims (
+                          id, project_id, entity_key, category, claim_text, status, claim_fingerprint, valid_from, valid_to, metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET entity_key = EXCLUDED.entity_key,
+                            category = EXCLUDED.category,
+                            claim_text = EXCLUDED.claim_text,
+                            status = EXCLUDED.status,
+                            claim_fingerprint = EXCLUDED.claim_fingerprint,
+                            valid_from = EXCLUDED.valid_from,
+                            valid_to = EXCLUDED.valid_to,
+                            metadata = EXCLUDED.metadata,
+                            updated_at = NOW()
+                        """,
+                        (
+                            claim.id,
+                            claim.project_id,
+                            claim.entity_key,
+                            claim.category,
+                            claim.claim_text,
+                            status,
+                            fingerprint,
+                            valid_from,
+                            valid_to,
+                            self._jsonb(metadata),
+                        ),
+                    )
         else:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO claims (
-                      id, project_id, entity_key, category, claim_text, status, valid_from, valid_to, metadata
+            if self._claims_has_evidence_column(conn):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO claims (
+                          id, project_id, entity_key, category, claim_text, status, valid_from, valid_to, metadata, evidence
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET entity_key = EXCLUDED.entity_key,
+                            category = EXCLUDED.category,
+                            claim_text = EXCLUDED.claim_text,
+                            status = EXCLUDED.status,
+                            valid_from = EXCLUDED.valid_from,
+                            valid_to = EXCLUDED.valid_to,
+                            metadata = EXCLUDED.metadata,
+                            evidence = EXCLUDED.evidence,
+                            updated_at = NOW()
+                        """,
+                        (
+                            claim.id,
+                            claim.project_id,
+                            claim.entity_key,
+                            claim.category,
+                            claim.claim_text,
+                            status,
+                            valid_from,
+                            valid_to,
+                            self._jsonb(metadata),
+                            self._jsonb(claim.evidence),
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE
-                    SET entity_key = EXCLUDED.entity_key,
-                        category = EXCLUDED.category,
-                        claim_text = EXCLUDED.claim_text,
-                        status = EXCLUDED.status,
-                        valid_from = EXCLUDED.valid_from,
-                        valid_to = EXCLUDED.valid_to,
-                        metadata = EXCLUDED.metadata,
-                        updated_at = NOW()
-                    """,
-                    (
-                        claim.id,
-                        claim.project_id,
-                        claim.entity_key,
-                        claim.category,
-                        claim.claim_text,
-                        status,
-                        valid_from,
-                        valid_to,
-                        self._jsonb(metadata),
-                    ),
-                )
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO claims (
+                          id, project_id, entity_key, category, claim_text, status, valid_from, valid_to, metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                        SET entity_key = EXCLUDED.entity_key,
+                            category = EXCLUDED.category,
+                            claim_text = EXCLUDED.claim_text,
+                            status = EXCLUDED.status,
+                            valid_from = EXCLUDED.valid_from,
+                            valid_to = EXCLUDED.valid_to,
+                            metadata = EXCLUDED.metadata,
+                            updated_at = NOW()
+                        """,
+                        (
+                            claim.id,
+                            claim.project_id,
+                            claim.entity_key,
+                            claim.category,
+                            claim.claim_text,
+                            status,
+                            valid_from,
+                            valid_to,
+                            self._jsonb(metadata),
+                        ),
+                    )
 
     def _gatekeeper_decide(
         self,
@@ -6029,6 +6098,23 @@ class WikiSynthesisEngine:
             )
             self._claims_has_fingerprint_column_cache = cur.fetchone() is not None
         return self._claims_has_fingerprint_column_cache
+
+    def _claims_has_evidence_column(self, conn) -> bool:
+        if self._claims_has_evidence_column_cache is not None:
+            return self._claims_has_evidence_column_cache
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'claims'
+                  AND column_name = 'evidence'
+                LIMIT 1
+                """
+            )
+            self._claims_has_evidence_column_cache = cur.fetchone() is not None
+        return self._claims_has_evidence_column_cache
 
     def debug_explain_claim(self, claim_payload: dict[str, Any]) -> str:
         """Small helper for local debugging and observability."""
