@@ -345,6 +345,7 @@ class DraftApproveRequest(BaseModel):
     section_edits: list[DraftSectionEdit] | None = Field(default=None, max_length=25)
     note: str | None = Field(default=None, max_length=4000)
     force: bool = False
+    run_bundle_promotion_after_approve: bool = True
 
 
 class DraftRejectRequest(BaseModel):
@@ -419,6 +420,9 @@ class WikiAutoPublishRunRequest(BaseModel):
     limit_per_project: int = Field(default=50, ge=1, le=500)
     reviewed_by: str = Field(default="synapse_autopublisher", min_length=1, max_length=256)
     dry_run: bool = False
+    run_bundle_promotion_after_apply: bool = True
+    bundle_promotion_space_key: str | None = Field(default="operations", min_length=1, max_length=256)
+    bundle_promotion_bootstrap_publish_core: bool = True
 
 
 class RetrievalFeedbackWriteRequest(BaseModel):
@@ -454,6 +458,9 @@ class WikiBootstrapApproveRunRequest(BaseModel):
     allow_large_batch: bool = False
     require_trusted_sources_on_apply: bool = True
     dry_run: bool = True
+    run_bundle_promotion_after_apply: bool = True
+    bundle_promotion_space_key: str | None = Field(default="operations", min_length=1, max_length=256)
+    bundle_promotion_bootstrap_publish_core: bool = True
 
 
 class SourceOwnershipRuleUpsert(BaseModel):
@@ -26107,6 +26114,16 @@ def approve_wiki_draft(
                     "structured_edits_applied": len(structured_section_edits),
                     "decision": final_decision,
                 }
+                if bool(payload.run_bundle_promotion_after_approve):
+                    response["bundle_promotion"] = _run_inline_bundle_promotion(
+                        conn,
+                        project_id=project_id,
+                        updated_by=payload.reviewed_by,
+                        space_key=_wiki_space_key_from_slug(str(page_slug or "")),
+                        requested_status="published",
+                        bootstrap_publish_core=True,
+                        page_type_scope=str(page_type or ""),
+                    )
                 if source_ownership_advisories > 0:
                     response["source_ownership_advisories"] = source_ownership_advisories
             mark_request_completed(
@@ -26678,6 +26695,17 @@ def run_wiki_auto_publish(payload: WikiAutoPublishRunRequest) -> dict[str, Any]:
                 "items": items,
             }
         )
+        if bool(payload.run_bundle_promotion_after_apply) and not bool(payload.dry_run) and approved > 0:
+            with get_conn() as promotion_conn:
+                project_results[-1]["bundle_promotion"] = _run_inline_bundle_promotion(
+                    promotion_conn,
+                    project_id=project_id,
+                    updated_by=payload.reviewed_by,
+                    space_key=str(payload.bundle_promotion_space_key or "operations"),
+                    requested_status="published",
+                    bootstrap_publish_core=bool(payload.bundle_promotion_bootstrap_publish_core),
+                    page_type_scope=None,
+                )
         total_scanned += scanned
         total_eligible += eligible
         total_approved += approved
@@ -26920,6 +26948,17 @@ def run_wiki_bootstrap_approve(payload: WikiBootstrapApproveRunRequest) -> dict[
         "items": items,
         "generated_at": datetime.now(UTC).isoformat(),
     }
+    if bool(payload.run_bundle_promotion_after_apply):
+        with get_conn() as conn:
+            response["bundle_promotion"] = _run_inline_bundle_promotion(
+                conn,
+                project_id=payload.project_id,
+                updated_by=payload.reviewed_by,
+                space_key=str(payload.bundle_promotion_space_key or "operations"),
+                requested_status="published",
+                bootstrap_publish_core=bool(payload.bundle_promotion_bootstrap_publish_core),
+                page_type_scope=None,
+            )
     if source_ownership_advisories > 0:
         response["source_ownership_advisories"] = source_ownership_advisories
     return response
@@ -32829,6 +32868,86 @@ def _build_bundle_promotion_summary(
         "suppressed_total": int(status_counts.get("suppressed", 0)),
         "top_page_types": top_page_types,
         "top_taxonomy_classes": top_taxonomy_classes,
+    }
+
+
+def _bundle_promotion_scope_for_page_type(page_type: str | None) -> dict[str, bool]:
+    normalized = str(page_type or "").strip().lower()
+    scope = {
+        "include_data_sources_catalog": False,
+        "include_agent_capability_profile": False,
+        "include_process_playbooks": False,
+        "include_decisions_log": False,
+        "include_company_operating_context": False,
+        "include_operational_logic_map": False,
+    }
+    if normalized == "agent_profile":
+        scope["include_agent_capability_profile"] = True
+        scope["include_company_operating_context"] = True
+    elif normalized == "data_map":
+        scope["include_data_sources_catalog"] = True
+        scope["include_company_operating_context"] = True
+    elif normalized in {"process", "runbook", "policy"}:
+        scope["include_process_playbooks"] = True
+        scope["include_operational_logic_map"] = True
+        scope["include_decisions_log"] = True
+        scope["include_company_operating_context"] = True
+    elif normalized == "decision_log":
+        scope["include_decisions_log"] = True
+        scope["include_process_playbooks"] = True
+        scope["include_operational_logic_map"] = True
+    else:
+        for key in scope.keys():
+            scope[key] = True
+    return scope
+
+
+def _run_inline_bundle_promotion(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str,
+    space_key: str,
+    requested_status: str = "published",
+    bootstrap_publish_core: bool = True,
+    page_type_scope: str | None = None,
+    max_sources: int = 20,
+    max_agents: int = 12,
+    max_signals: int = 50,
+) -> dict[str, Any]:
+    with conn.cursor() as cur:
+        scope = _bundle_promotion_scope_for_page_type(page_type_scope)
+        plan_pages = _build_bundle_promotion_pages(
+            cur,
+            project_id=project_id,
+            space_key=_normalize_space_key(space_key or "", default="operations"),
+            include_data_sources_catalog=bool(scope.get("include_data_sources_catalog")),
+            include_agent_capability_profile=bool(scope.get("include_agent_capability_profile")),
+            include_process_playbooks=bool(scope.get("include_process_playbooks")),
+            include_decisions_log=bool(scope.get("include_decisions_log")),
+            include_company_operating_context=bool(scope.get("include_company_operating_context")),
+            include_operational_logic_map=bool(scope.get("include_operational_logic_map")),
+            max_sources=int(max_sources),
+            max_agents=int(max_agents),
+            max_signals=int(max_signals),
+        )
+    upsert = _upsert_compiler_pages(
+        conn,
+        project_id=project_id,
+        updated_by=updated_by,
+        profile="bundle_promotion_inline",
+        pages=plan_pages,
+        requested_status=requested_status,
+        bootstrap_publish_core=bool(bootstrap_publish_core),
+    )
+    return {
+        "scope": {
+            "space_key": _normalize_space_key(space_key or "", default="operations"),
+            "page_type_scope": str(page_type_scope or "").strip().lower() or None,
+            **_bundle_promotion_scope_for_page_type(page_type_scope),
+        },
+        "plan": {"pages_total": len(plan_pages)},
+        **upsert,
     }
 
 

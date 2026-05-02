@@ -17,6 +17,7 @@ try:
         _build_human_guided_synthesis_prompts,
         _build_adoption_signal_noise_audit,
         _build_adoption_signal_noise_stability_monitor,
+        _bundle_promotion_scope_for_page_type,
         _build_first_run_starter_pages,
         _page_type_freshness_thresholds,
         _prepend_bootstrap_publish_notice,
@@ -53,6 +54,7 @@ except Exception:  # pragma: no cover
     _build_human_guided_synthesis_prompts = None
     _build_adoption_signal_noise_audit = None
     _build_adoption_signal_noise_stability_monitor = None
+    _bundle_promotion_scope_for_page_type = None
     _build_first_run_starter_pages = None
     _page_type_freshness_thresholds = None
     _prepend_bootstrap_publish_notice = None
@@ -88,6 +90,7 @@ except Exception:  # pragma: no cover
     or _build_human_guided_synthesis_prompts is None
     or _build_adoption_signal_noise_audit is None
     or _build_adoption_signal_noise_stability_monitor is None
+    or _bundle_promotion_scope_for_page_type is None
     or _build_first_run_starter_pages is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
@@ -114,6 +117,15 @@ except Exception:  # pragma: no cover
     "api agent directory helpers unavailable",
 )
 class AgentDirectoryRenderingTests(unittest.TestCase):
+    def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
+        scope = _bundle_promotion_scope_for_page_type("process")
+        self.assertFalse(scope["include_data_sources_catalog"])
+        self.assertFalse(scope["include_agent_capability_profile"])
+        self.assertTrue(scope["include_process_playbooks"])
+        self.assertTrue(scope["include_decisions_log"])
+        self.assertTrue(scope["include_company_operating_context"])
+        self.assertTrue(scope["include_operational_logic_map"])
+
     def test_normalize_agent_items_dedupes_and_trims(self) -> None:
         values = [" Escalate billing issues ", "escalate billing issues", "", "Handle VIP"]
         normalized = _normalize_agent_directory_items(values, limit=10)
