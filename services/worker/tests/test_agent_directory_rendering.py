@@ -28,6 +28,7 @@ try:
         _compute_agent_capability_confidence,
         _derive_runtime_agent_responsibilities,
         _derive_runtime_agent_role,
+        _draft_matches_bulk_filter,
         _evaluate_agent_capability_bootstrap_contract,
         _is_daily_summary_like_draft_row,
         _normalize_agent_directory_items,
@@ -65,6 +66,7 @@ except Exception:  # pragma: no cover
     _compute_agent_capability_confidence = None
     _derive_runtime_agent_responsibilities = None
     _derive_runtime_agent_role = None
+    _draft_matches_bulk_filter = None
     _evaluate_agent_capability_bootstrap_contract = None
     _is_daily_summary_like_draft_row = None
     _normalize_agent_directory_items = None
@@ -101,6 +103,7 @@ except Exception:  # pragma: no cover
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
     or _derive_runtime_agent_role is None
+    or _draft_matches_bulk_filter is None
     or _evaluate_agent_capability_bootstrap_contract is None
     or _is_daily_summary_like_draft_row is None
     or _render_agent_capability_matrix_markdown is None
@@ -1407,6 +1410,48 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Dispatch escalation", detail_markdown)
         self.assertIn("Bundle coverage: ready 1 / candidate 0", detail_markdown)
         self.assertIn("Orders API drives dispatch escalation", detail_markdown)
+        self.assertIn("## Reliability & Risk", detail_markdown)
+        self.assertIn("Stale risk:", detail_markdown)
+        self.assertIn("Downstream decisions:", detail_markdown)
+
+    def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
+        assert _draft_matches_bulk_filter is not None
+        assert _api_main is not None
+
+        draft = {
+            "confidence": 0.92,
+            "has_open_conflict": False,
+            "page": {"status": "reviewed", "page_type": "process"},
+            "claim": {"category": "process"},
+            "gatekeeper": {
+                "tier": "golden_candidate",
+                "assertion_class": "process_rule",
+                "compiler_v2": {
+                    "suggested_page_type": "process",
+                    "knowledge_dimensions": ["process", "procedural"],
+                },
+            },
+            "bundle": {
+                "bundle_key": "process:dispatch_escalation",
+                "bundle_status": "ready",
+                "support_count": 4,
+            },
+            "evidence": {"source_systems": ["ops_kb_sync"], "connectors": ["postgres_sql"], "source_types": ["knowledge"]},
+            "risk": {"level": "medium"},
+        }
+        filter_config = _api_main.DraftBulkReviewFilter(
+            suggested_page_type="process",
+            bundle_status="ready",
+            knowledge_dimension="process",
+            min_bundle_support=3,
+            require_bundle_ready=True,
+        )
+        self.assertTrue(_draft_matches_bulk_filter(draft, filter_config))
+        failing_filter = _api_main.DraftBulkReviewFilter(
+            bundle_status="candidate",
+            require_bundle_ready=True,
+        )
+        self.assertFalse(_draft_matches_bulk_filter(draft, failing_filter))
 
     def test_process_playbooks_bootstrap_page_renders_runbook_sections(self) -> None:
         assert _api_main is not None

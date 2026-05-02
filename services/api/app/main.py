@@ -365,10 +365,20 @@ class DraftBulkReviewFilter(BaseModel):
     connector_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
     page_type: str | None = Field(default=None, max_length=128)
     page_type_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    suggested_page_type: str | None = Field(default=None, max_length=128)
+    suggested_page_type_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
     assertion_class: str | None = Field(default=None, max_length=64)
     assertion_class_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
     tier: str | None = Field(default=None, max_length=64)
     tier_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    bundle_status: str | None = Field(default=None, max_length=64)
+    bundle_status_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    bundle_key: str | None = Field(default=None, max_length=256)
+    bundle_key_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    knowledge_dimension: str | None = Field(default=None, max_length=64)
+    knowledge_dimension_mode: str = Field(default="exact", pattern="^(exact|prefix|regex|contains)$")
+    min_bundle_support: int | None = Field(default=None, ge=0, le=100000)
+    require_bundle_ready: bool = False
     min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     max_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     min_risk_level: str | None = Field(default=None, pattern="^(low|medium|high)$")
@@ -25053,6 +25063,13 @@ def _list_wiki_drafts_with_metadata(
             )
             rows = cur.fetchall() or []
 
+    bundle_keys = {
+        str((row[18] if isinstance(row[18], dict) else {}).get("bundle_key") or "").strip()
+        for row in rows
+        if str((row[18] if isinstance(row[18], dict) else {}).get("bundle_key") or "").strip()
+    }
+    bundle_context_by_key = _load_bundle_context_by_keys(project_id=project_id, bundle_keys=bundle_keys)
+
     drafts: list[dict[str, Any]] = []
     for row in rows:
         features = row[18] if isinstance(row[18], dict) else {}
@@ -25067,6 +25084,8 @@ def _list_wiki_drafts_with_metadata(
             claim_text=claim_text,
             routing_policy=routing_policy,
         )
+        bundle_key = str(features.get("bundle_key") or "").strip()
+        bundle_context = bundle_context_by_key.get(bundle_key) if bundle_key else None
         drafts.append(
             {
                 "id": row[0],
@@ -25107,6 +25126,7 @@ def _list_wiki_drafts_with_metadata(
                         "promotion_ready_from_bundle": bool(features.get("promotion_ready_from_bundle")),
                     },
                 },
+                "bundle": bundle_context,
                 "evidence": {
                     "source_systems": [str(item) for item in (row[19] or []) if str(item).strip()],
                     "connectors": [str(item) for item in (row[20] or []) if str(item).strip()],
@@ -25153,6 +25173,13 @@ def _draft_matches_bulk_filter(draft: dict[str, Any], filter_config: DraftBulkRe
         return False
 
     gatekeeper = draft.get("gatekeeper") if isinstance(draft.get("gatekeeper"), dict) else {}
+    compiler_v2 = gatekeeper.get("compiler_v2") if isinstance(gatekeeper.get("compiler_v2"), dict) else {}
+    if filter_config.suggested_page_type and not _match_text_filter(
+        str(compiler_v2.get("suggested_page_type") or ""),
+        str(filter_config.suggested_page_type),
+        str(filter_config.suggested_page_type_mode),
+    ):
+        return False
     if filter_config.assertion_class and not _match_text_filter(
         str(gatekeeper.get("assertion_class") or ""),
         str(filter_config.assertion_class),
@@ -25165,6 +25192,13 @@ def _draft_matches_bulk_filter(draft: dict[str, Any], filter_config: DraftBulkRe
         str(filter_config.tier_mode),
     ):
         return False
+    if filter_config.knowledge_dimension:
+        dimensions = [str(item) for item in (compiler_v2.get("knowledge_dimensions") or []) if str(item).strip()]
+        if not any(
+            _match_text_filter(value, str(filter_config.knowledge_dimension), str(filter_config.knowledge_dimension_mode))
+            for value in dimensions
+        ):
+            return False
 
     evidence = draft.get("evidence") if isinstance(draft.get("evidence"), dict) else {}
     source_system_values = [str(item) for item in (evidence.get("source_systems") or []) if str(item).strip()]
@@ -25181,6 +25215,24 @@ def _draft_matches_bulk_filter(draft: dict[str, Any], filter_config: DraftBulkRe
             for value in connector_values
         ):
             return False
+
+    bundle = draft.get("bundle") if isinstance(draft.get("bundle"), dict) else {}
+    if filter_config.bundle_status and not _match_text_filter(
+        str(bundle.get("bundle_status") or ""),
+        str(filter_config.bundle_status),
+        str(filter_config.bundle_status_mode),
+    ):
+        return False
+    if filter_config.bundle_key and not _match_text_filter(
+        str(bundle.get("bundle_key") or ""),
+        str(filter_config.bundle_key),
+        str(filter_config.bundle_key_mode),
+    ):
+        return False
+    if filter_config.min_bundle_support is not None and int(bundle.get("support_count") or 0) < int(filter_config.min_bundle_support):
+        return False
+    if bool(filter_config.require_bundle_ready) and str(bundle.get("bundle_status") or "").strip().lower() != "ready":
+        return False
 
     risk = draft.get("risk") if isinstance(draft.get("risk"), dict) else {}
     risk_level = str(risk.get("level") or "").strip().lower()
@@ -25506,6 +25558,8 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
     llm_confidence_raw = gatekeeper_features_dict.get("llm_confidence")
     llm_confidence = float(llm_confidence_raw) if isinstance(llm_confidence_raw, (int, float)) else None
     llm_applied = bool(gatekeeper_features_dict.get("llm_applied"))
+    bundle_key = str(gatekeeper_features_dict.get("bundle_key") or "").strip()
+    bundle_context = _load_bundle_context_by_keys(project_id=project_id, bundle_keys={bundle_key}).get(bundle_key) if bundle_key else None
 
     return {
         "draft": {
@@ -25586,6 +25640,7 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
                 "blocked_by_source_id": bool(gatekeeper_features_dict.get("blocked_by_source_id")),
             },
         },
+        "bundle": bundle_context,
         "conflicts": conflicts,
         "moderation_actions": moderation_actions,
     }
@@ -30587,6 +30642,18 @@ def _build_data_sources_catalog_pages(
         _add(metadata.get("sources"))
         return tokens
 
+    def _source_stale_risk_label(freshness_label: str, *, bundle_ready: int, used_by_count: int) -> str:
+        normalized = str(freshness_label or "").strip().lower()
+        if "never synced" in normalized or "failed" in normalized:
+            return "critical - source has no trustworthy recent sync"
+        if "stale" in normalized and used_by_count >= 1:
+            return "high - stale source can mislead active agent workflows"
+        if "today" in normalized or "hours" in normalized:
+            return "low - source freshness is within expected operating window"
+        if bundle_ready >= 2 and used_by_count >= 2:
+            return "medium - durable knowledge depends on this source; verify freshness before policy promotion"
+        return "medium - monitor freshness and confirm owner for durable wiki synthesis"
+
     pages: list[dict[str, str]] = []
     if not _legacy_import_sources_table_exists_from_cursor(cur):
         return pages
@@ -30704,6 +30771,7 @@ def _build_data_sources_catalog_pages(
         bundle_candidate = sum(1 for bundle in bundle_matches if str(bundle.get("bundle_status") or "") == "candidate")
         bundle_insights: list[str] = []
         bundle_process_hints: list[str] = []
+        bundle_decision_hints: list[str] = []
         bundle_process_seen: set[str] = set()
         for bundle in bundle_matches[:4]:
             metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
@@ -30713,6 +30781,8 @@ def _build_data_sources_catalog_pages(
                 claim_text = str(sample_entry.get("claim_text") or "").strip()
                 if claim_text:
                     bundle_insights.append(claim_text[:180])
+                    if str(sample_entry.get("category") or "").strip().lower() == "decision":
+                        bundle_decision_hints.append(claim_text[:180])
                     break
             for candidate in (
                 metadata.get("process_name"),
@@ -30741,6 +30811,16 @@ def _build_data_sources_catalog_pages(
         impact_summary = process_summary if process_summary != "n/a" else capability_summary
         if impact_summary == "n/a":
             impact_summary = bundle_signal_summary
+        downstream_decisions = "; ".join(bundle_decision_hints[:2]) if bundle_decision_hints else "n/a"
+        stale_risk = _source_stale_risk_label(freshness, bundle_ready=bundle_ready, used_by_count=len(used_by))
+        human_review_boundary = (
+            "Require human review before publishing policy/process pages driven by this source."
+            if "critical" in stale_risk or "high" in stale_risk or bundle_candidate > 0
+            else "Autonomous synthesis is acceptable until bundle confidence drops or freshness degrades."
+        )
+        ownership_posture = (
+            "single owner confirmed" if owner not in {"unknown", "n/a"} else "owner missing - add accountable maintainer"
+        )
 
         source_slug_leaf = _source_ref_slug(source_type, source_ref)
         source_slug = _space_slug(space_key, f"source-{source_slug_leaf}")
@@ -30780,7 +30860,14 @@ def _build_data_sources_catalog_pages(
                             else "- Bundle coverage: no durable source bundle linked yet."
                         ),
                         *([f"- Bundle process/capability hints: {'; '.join(bundle_process_hints[:3])}"] if bundle_process_hints else []),
+                        *([f"- Downstream decisions: {downstream_decisions}"] if downstream_decisions != "n/a" else []),
                         *([f"- Evidence preview: {'; '.join(bundle_insights[:2])}"] if bundle_insights else []),
+                        "",
+                        "## Reliability & Risk",
+                        f"- Stale risk: {stale_risk}",
+                        f"- Ownership posture: {ownership_posture}",
+                        f"- Human review boundary: {human_review_boundary}",
+                        f"- Dependent agents: {used_by_agents}",
                         "",
                         "## Operational Notes",
                         "- Verify ownership and freshness before allowing auto-publish for policy/process pages.",
@@ -30810,6 +30897,10 @@ def _build_data_sources_catalog_pages(
             )
     table_lines.extend(
         [
+            "",
+            "## Source Governance",
+            "- Prefer sources with explicit owner + recent freshness for policy/process synthesis.",
+            "- If a source contributes to downstream decisions, publish wiki changes with warnings unless the freshness/owner posture is healthy.",
             "",
             "## Governance",
             "- High-signal knowledge (policy/process/runbook) can be promoted to published wiki pages.",
@@ -30930,6 +31021,81 @@ def _load_evidence_bundles_for_bootstrap(
             }
         )
     return bundles
+
+
+def _load_bundle_context_by_keys(
+    *,
+    project_id: str,
+    bundle_keys: set[str] | list[str],
+) -> dict[str, dict[str, Any]]:
+    normalized_keys = [str(item).strip() for item in bundle_keys if str(item).strip()]
+    if not normalized_keys:
+        return {}
+    context: dict[str, dict[str, Any]] = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.evidence_bundles"):
+                return {}
+            has_links = _wiki_feature_table_exists(cur, "public.evidence_bundle_claim_links")
+            has_claims = _wiki_feature_table_exists(cur, "public.claims")
+            sample_claims_sql = "'[]'::jsonb AS sample_claims"
+            if has_links and has_claims:
+                sample_claims_sql = """
+                COALESCE((
+                  SELECT jsonb_agg(
+                    jsonb_build_object(
+                      'claim_text', picked.claim_text,
+                      'category', picked.category
+                    )
+                  )
+                  FROM (
+                    SELECT c.claim_text, c.category
+                    FROM evidence_bundle_claim_links l
+                    JOIN claims c ON c.id = l.claim_id
+                    WHERE l.bundle_id = b.id
+                    ORDER BY c.updated_at DESC, c.created_at DESC
+                    LIMIT 2
+                  ) picked
+                ), '[]'::jsonb) AS sample_claims
+                """
+            cur.execute(
+                f"""
+                SELECT
+                  b.bundle_key,
+                  b.bundle_type,
+                  b.suggested_page_type,
+                  b.entity_key,
+                  b.bundle_status,
+                  b.support_count,
+                  b.source_diversity,
+                  b.evidence_count,
+                  b.quality_score,
+                  b.metadata,
+                  {sample_claims_sql}
+                FROM evidence_bundles b
+                WHERE b.project_id = %s
+                  AND b.bundle_key = ANY(%s::text[])
+                """,
+                (project_id, normalized_keys),
+            )
+            for row in (cur.fetchall() or []):
+                metadata = row[9] if isinstance(row[9], dict) else {}
+                sample_claims = row[10] if isinstance(row[10], list) else []
+                context[str(row[0] or "")] = {
+                    "bundle_key": str(row[0] or ""),
+                    "bundle_type": str(row[1] or ""),
+                    "suggested_page_type": str(row[2] or ""),
+                    "entity_key": str(row[3] or ""),
+                    "bundle_status": str(row[4] or ""),
+                    "support_count": int(row[5] or 0),
+                    "source_diversity": int(row[6] or 0),
+                    "evidence_count": int(row[7] or 0),
+                    "quality_score": float(row[8] or 0.0),
+                    "knowledge_taxonomy_class": str(metadata.get("knowledge_taxonomy_class") or "") or None,
+                    "normalized_target_type": str(metadata.get("normalized_target_type") or "") or None,
+                    "sample_claims": sample_claims,
+                }
+    return context
 
 
 def _build_agent_capability_bootstrap_page(
