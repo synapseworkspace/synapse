@@ -931,6 +931,10 @@ export class SynapseClient {
       include_role_template: options.includeRoleTemplate ?? false,
       role_template_key: asOptionalString(options.roleTemplateKey)?.toLowerCase() ?? undefined,
       role_template_space_key: asOptionalString(options.roleTemplateSpaceKey) ?? undefined,
+      run_bundle_promotion: options.runBundlePromotion ?? true,
+      bundle_promotion_space_key: normalizeWikiSpaceKey(options.bundlePromotionSpaceKey ?? "operations"),
+      bundle_promotion_publish: options.bundlePromotionPublish ?? true,
+      bundle_promotion_bootstrap_publish_core: options.bundlePromotionBootstrapPublishCore ?? true,
       sync_processor_lookback_minutes: normalizeInt(options.syncProcessorLookbackMinutes ?? 30, 1, 1440),
       fail_on_sync_processor_unavailable: options.failOnSyncProcessorUnavailable ?? false,
       auto_apply_safe_mode_on_critical: options.autoApplySafeModeOnCritical ?? true

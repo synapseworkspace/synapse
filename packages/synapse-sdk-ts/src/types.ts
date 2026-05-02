@@ -163,6 +163,10 @@ export interface AdoptionSyncPresetExecuteOptions {
   includeRoleTemplate?: boolean;
   roleTemplateKey?: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
   roleTemplateSpaceKey?: string;
+  runBundlePromotion?: boolean;
+  bundlePromotionSpaceKey?: string;
+  bundlePromotionPublish?: boolean;
+  bundlePromotionBootstrapPublishCore?: boolean;
   syncProcessorLookbackMinutes?: number;
   failOnSyncProcessorUnavailable?: boolean;
   autoApplySafeModeOnCritical?: boolean;

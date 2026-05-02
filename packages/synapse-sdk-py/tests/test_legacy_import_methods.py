@@ -321,6 +321,10 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             dry_run=False,
             include_role_template=True,
             role_template_key="logistics_ops",
+            run_bundle_promotion=True,
+            bundle_promotion_space_key="logistics",
+            bundle_promotion_publish=True,
+            bundle_promotion_bootstrap_publish_core=True,
             sync_processor_lookback_minutes=45,
             fail_on_sync_processor_unavailable=True,
             auto_apply_safe_mode_on_critical=False,
@@ -334,6 +338,10 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("role_template_key"), "logistics_ops")
+        self.assertTrue(payload.get("run_bundle_promotion"))
+        self.assertEqual(payload.get("bundle_promotion_space_key"), "logistics")
+        self.assertTrue(payload.get("bundle_promotion_publish"))
+        self.assertTrue(payload.get("bundle_promotion_bootstrap_publish_core"))
         self.assertEqual(payload.get("sync_processor_lookback_minutes"), 45)
         self.assertTrue(payload.get("fail_on_sync_processor_unavailable"))
         self.assertFalse(payload.get("auto_apply_safe_mode_on_critical"))

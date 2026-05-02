@@ -923,6 +923,10 @@ class SynapseClient:
         include_role_template: bool = False,
         role_template_key: str | None = None,
         role_template_space_key: str | None = None,
+        run_bundle_promotion: bool = True,
+        bundle_promotion_space_key: str = "operations",
+        bundle_promotion_publish: bool = True,
+        bundle_promotion_bootstrap_publish_core: bool = True,
         sync_processor_lookback_minutes: int = 30,
         fail_on_sync_processor_unavailable: bool = False,
         auto_apply_safe_mode_on_critical: bool = True,
@@ -954,6 +958,10 @@ class SynapseClient:
                 if role_template_space_key is not None and str(role_template_space_key).strip()
                 else None
             ),
+            "run_bundle_promotion": bool(run_bundle_promotion),
+            "bundle_promotion_space_key": _normalize_space_key(bundle_promotion_space_key or "operations"),
+            "bundle_promotion_publish": bool(bundle_promotion_publish),
+            "bundle_promotion_bootstrap_publish_core": bool(bundle_promotion_bootstrap_publish_core),
             "sync_processor_lookback_minutes": max(1, min(1440, int(sync_processor_lookback_minutes))),
             "fail_on_sync_processor_unavailable": bool(fail_on_sync_processor_unavailable),
             "auto_apply_safe_mode_on_critical": bool(auto_apply_safe_mode_on_critical),

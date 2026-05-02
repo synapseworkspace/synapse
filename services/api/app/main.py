@@ -972,6 +972,10 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     include_role_template: bool = False
     role_template_key: str | None = Field(default=None, pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    run_bundle_promotion: bool = True
+    bundle_promotion_space_key: str | None = Field(default="operations", min_length=1, max_length=256)
+    bundle_promotion_publish: bool = True
+    bundle_promotion_bootstrap_publish_core: bool = True
     sync_processor_lookback_minutes: int = Field(default=30, ge=1, le=1440)
     fail_on_sync_processor_unavailable: bool = False
     auto_apply_safe_mode_on_critical: bool = True
@@ -34468,6 +34472,19 @@ def execute_adoption_sync_preset(
                         space_key=payload.role_template_space_key,
                         publish=True,
                     )
+                )
+            if payload.run_bundle_promotion:
+                response["bundle_promotion"] = run_adoption_bundle_promotion(
+                    AdoptionBundlePromotionRunRequest(
+                        project_id=project_id,
+                        updated_by=updated_by,
+                        dry_run=bool(payload.dry_run),
+                        confirm_project_id=project_id if not payload.dry_run else None,
+                        publish=bool(payload.bundle_promotion_publish),
+                        bootstrap_publish_core=bool(payload.bundle_promotion_bootstrap_publish_core),
+                        space_key=str(payload.bundle_promotion_space_key or "operations"),
+                    ),
+                    idempotency_key=None,
                 )
             pipeline_visibility: dict[str, Any] | None = None
             rejection_diagnostics: dict[str, Any] | None = None
