@@ -244,6 +244,7 @@ Enterprise shortcut (single API call):
 - `GET /v1/adoption/wiki-quality/report` provides a hard OOTB quality gate (`core coverage`, `placeholder ratio`, `daily-summary draft ratio`) for release/onboarding checks.
 - `GET /v1/adoption/wiki-richness/benchmark` scores useful wiki density instead of only slug existence.
 - `GET /v1/adoption/knowledge-gaps` shows where the wiki is still missing durable answers, grounded process detail, or source-backed structure.
+- `POST /v1/adoption/knowledge-gaps/tasks/sync` turns those gaps into deduplicated Synapse tasks so missing knowledge enters the execution loop.
 - `GET /v1/adoption/signal-noise/audit` gives operators one compact view of rejection pressure, bundle promotion, weak page families, missing signals, and noisy source families.
 - `GET /v1/adoption/stability-monitor` turns those signals into an operator-ready health state and records the safe-mode recommendation/apply loop in audit history.
 - `GET /v1/adoption/synthesis-prompts` generates targeted follow-up questions for agents/operators from candidate bundles, repeated unanswered questions, and weak pages.
@@ -255,6 +256,9 @@ Knowledge Compiler diagnostics flow:
 synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
 curl "http://localhost:8080/v1/adoption/wiki-richness/benchmark?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/knowledge-gaps?project_id=omega_demo"
+curl -X POST "http://localhost:8080/v1/adoption/knowledge-gaps/tasks/sync" \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"omega_demo","created_by":"ops_admin","dry_run":true}'
 curl "http://localhost:8080/v1/adoption/signal-noise/audit?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/stability-monitor?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/synthesis-prompts?project_id=omega_demo"

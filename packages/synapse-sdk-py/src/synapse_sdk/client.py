@@ -683,6 +683,47 @@ class SynapseClient:
             },
         )
 
+    def sync_adoption_knowledge_gap_tasks(
+        self,
+        *,
+        created_by: str,
+        updated_by: str | None = None,
+        assignee: str | None = None,
+        dry_run: bool = True,
+        confirm_project_id: str | None = None,
+        days: int = 14,
+        limit_per_kind: int = 6,
+        include_candidate_bundles: bool = True,
+        include_page_enrichment_gaps: bool = True,
+        include_unresolved_questions: bool = True,
+        include_repeated_escalations: bool = True,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        actor = str(created_by or "").strip()
+        if not actor:
+            raise ValueError("created_by is required")
+        return self._request_json(
+            "/v1/adoption/knowledge-gaps/tasks/sync",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "created_by": actor,
+                "updated_by": str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None,
+                "assignee": str(assignee).strip() if assignee is not None and str(assignee).strip() else None,
+                "dry_run": bool(dry_run),
+                "confirm_project_id": (
+                    self._config.project_id if not dry_run and confirm_project_id is None else confirm_project_id
+                ),
+                "days": max(1, min(90, int(days))),
+                "limit_per_kind": max(1, min(25, int(limit_per_kind))),
+                "include_candidate_bundles": bool(include_candidate_bundles),
+                "include_page_enrichment_gaps": bool(include_page_enrichment_gaps),
+                "include_unresolved_questions": bool(include_unresolved_questions),
+                "include_repeated_escalations": bool(include_repeated_escalations),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
     def get_adoption_signal_noise_audit(
         self,
         *,

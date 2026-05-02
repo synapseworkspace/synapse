@@ -1005,6 +1005,21 @@ class AdoptionSafeModeRecommendRequest(BaseModel):
     days: int = Field(default=14, ge=1, le=90)
 
 
+class AdoptionKnowledgeGapTaskSyncRequest(BaseModel):
+    project_id: str
+    created_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+    assignee: str | None = Field(default=None, min_length=1, max_length=256)
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    days: int = Field(default=14, ge=1, le=90)
+    limit_per_kind: int = Field(default=6, ge=1, le=25)
+    include_candidate_bundles: bool = True
+    include_page_enrichment_gaps: bool = True
+    include_unresolved_questions: bool = True
+    include_repeated_escalations: bool = True
+
+
 class AdoptionAgentWikiBootstrapRequest(BaseModel):
     project_id: str
     updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
@@ -33940,6 +33955,300 @@ def _build_human_guided_synthesis_prompts(
     }
 
 
+def _build_knowledge_gap_task_specs(
+    *,
+    gap_report: dict[str, Any],
+    created_by: str,
+    assignee: str | None,
+    limit_per_kind: int,
+    include_candidate_bundles: bool,
+    include_page_enrichment_gaps: bool,
+    include_unresolved_questions: bool,
+    include_repeated_escalations: bool,
+) -> list[dict[str, Any]]:
+    project_id = str(gap_report.get("project_id") or "").strip()
+    specs: list[dict[str, Any]] = []
+
+    def _append(spec: dict[str, Any]) -> None:
+        gap_key = str(spec.get("gap_key") or "").strip()
+        if not gap_key:
+            return
+        specs.append(
+            {
+                "project_id": project_id,
+                "title": str(spec.get("title") or "").strip(),
+                "description": str(spec.get("description") or "").strip() or None,
+                "status": "todo",
+                "priority": str(spec.get("priority") or "normal").strip().lower() or "normal",
+                "source": "system",
+                "assignee": str(assignee or "").strip() or None,
+                "entity_key": str(spec.get("entity_key") or "").strip() or None,
+                "category": "knowledge_gap",
+                "created_by": created_by,
+                "updated_by": created_by,
+                "metadata": {
+                    "knowledge_gap_key": gap_key,
+                    "knowledge_gap_kind": str(spec.get("kind") or "").strip(),
+                    "knowledge_gap_payload": spec.get("payload") if isinstance(spec.get("payload"), dict) else {},
+                },
+            }
+        )
+
+    if include_candidate_bundles:
+        for item in (gap_report.get("candidate_knowledge_bundles") or [])[:limit_per_kind]:
+            if not isinstance(item, dict):
+                continue
+            bundle_key = str(item.get("bundle_key") or "").strip()
+            if not bundle_key:
+                continue
+            suggested = str(item.get("suggested_page_type") or "operations").strip() or "operations"
+            entity_key = str(item.get("entity_key") or "").strip() or None
+            _append(
+                {
+                    "gap_key": f"candidate_bundle:{bundle_key}",
+                    "kind": "candidate_bundle",
+                    "title": f"Promote durable knowledge bundle: {bundle_key}",
+                    "description": (
+                        f"Bundle `{bundle_key}` has support_count={int(item.get('support_count') or 0)} "
+                        f"and should be compiled into `{suggested}` documentation."
+                    ),
+                    "priority": "high" if str(item.get("bundle_status") or "") == "ready" else "normal",
+                    "entity_key": entity_key,
+                    "payload": item,
+                }
+            )
+
+    if include_page_enrichment_gaps:
+        for item in (gap_report.get("page_enrichment_gaps") or [])[:limit_per_kind]:
+            if not isinstance(item, dict):
+                continue
+            slug = str(item.get("slug") or "").strip()
+            if not slug:
+                continue
+            missing = [str(section).strip() for section in (item.get("missing_sections") or []) if str(section).strip()]
+            _append(
+                {
+                    "gap_key": f"page_enrichment:{slug}",
+                    "kind": "page_enrichment",
+                    "title": f"Enrich wiki page: {slug}",
+                    "description": (
+                        f"Page `{slug}` is below richness threshold "
+                        f"(score={float(item.get('score') or 0.0):.2f}). "
+                        f"Missing sections: {', '.join(missing[:6]) or 'durable facts'}."
+                    ),
+                    "priority": "high",
+                    "entity_key": slug,
+                    "payload": item,
+                }
+            )
+
+    if include_unresolved_questions:
+        for item in (gap_report.get("unresolved_agent_questions") or [])[:limit_per_kind]:
+            if not isinstance(item, dict):
+                continue
+            question = str(item.get("question") or "").strip()
+            if not question:
+                continue
+            question_key = _slugify_segment(question)[:120] or "question"
+            _append(
+                {
+                    "gap_key": f"unresolved_question:{question_key}",
+                    "kind": "unresolved_question",
+                    "title": f"Answer repeated agent question",
+                    "description": (
+                        f"Agents asked this question {int(item.get('count') or 0)} times: {question}"
+                    ),
+                    "priority": "normal",
+                    "entity_key": question_key,
+                    "payload": item,
+                }
+            )
+
+    if include_repeated_escalations:
+        for item in (gap_report.get("repeated_escalations") or [])[:limit_per_kind]:
+            if not isinstance(item, dict):
+                continue
+            escalation = str(item.get("escalation") or "").strip()
+            if not escalation:
+                continue
+            escalation_key = _slugify_segment(escalation)[:120] or "escalation"
+            _append(
+                {
+                    "gap_key": f"repeated_escalation:{escalation_key}",
+                    "kind": "repeated_escalation",
+                    "title": "Codify repeated escalation pattern",
+                    "description": (
+                        f"Escalation repeated {int(item.get('count') or 0)} times: {escalation}"
+                    ),
+                    "priority": "high",
+                    "entity_key": escalation_key,
+                    "payload": item,
+                }
+            )
+
+    return specs
+
+
+def _upsert_knowledge_gap_tasks(
+    conn,
+    *,
+    project_id: str,
+    specs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    with conn.cursor() as cur:
+        for spec in specs:
+            metadata = spec.get("metadata") if isinstance(spec.get("metadata"), dict) else {}
+            gap_key = str(metadata.get("knowledge_gap_key") or "").strip()
+            if not gap_key:
+                continue
+            cur.execute(
+                """
+                SELECT
+                  id::text,
+                  title,
+                  description,
+                  status,
+                  priority,
+                  assignee,
+                  entity_key,
+                  category,
+                  metadata,
+                  created_by,
+                  updated_by,
+                  created_at,
+                  updated_at
+                FROM synapse_tasks
+                WHERE project_id = %s
+                  AND COALESCE(metadata->>'knowledge_gap_key', '') = %s
+                ORDER BY
+                  CASE status
+                    WHEN 'todo' THEN 0
+                    WHEN 'in_progress' THEN 1
+                    WHEN 'blocked' THEN 2
+                    WHEN 'done' THEN 3
+                    ELSE 4
+                  END,
+                  updated_at DESC
+                LIMIT 1
+                """,
+                (project_id, gap_key),
+            )
+            row = cur.fetchone()
+            if row is None:
+                task_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO synapse_tasks (
+                      id, project_id, title, description, status, priority, source, assignee,
+                      entity_key, category, due_at, metadata, created_by, updated_by, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, NOW(), NOW())
+                    """,
+                    (
+                        task_id,
+                        project_id,
+                        spec["title"],
+                        spec.get("description"),
+                        spec.get("status") or "todo",
+                        spec.get("priority") or "normal",
+                        spec.get("source") or "system",
+                        spec.get("assignee"),
+                        spec.get("entity_key"),
+                        spec.get("category"),
+                        Jsonb(metadata),
+                        spec.get("created_by"),
+                        spec.get("updated_by") or spec.get("created_by"),
+                    ),
+                )
+                _insert_task_event(
+                    cur,
+                    task_id=task_id,
+                    project_id=project_id,
+                    event_type="created",
+                    actor=str(spec.get("created_by") or "system"),
+                    payload={"reason": "knowledge_gap_sync", "knowledge_gap_key": gap_key},
+                )
+                created.append({"task_id": str(task_id), "knowledge_gap_key": gap_key, "title": spec["title"]})
+                continue
+
+            existing = _serialize_task_row(row)
+            if str(existing.get("status") or "") not in _TASK_ACTIVE_STATUSES:
+                skipped.append(
+                    {
+                        "task_id": str(existing.get("id") or ""),
+                        "knowledge_gap_key": gap_key,
+                        "reason": f"existing_task_closed:{existing.get('status')}",
+                    }
+                )
+                continue
+
+            changed: dict[str, Any] = {}
+            for key in ("title", "description", "priority", "assignee", "entity_key", "category"):
+                if existing.get(key) != spec.get(key):
+                    changed[key] = {"from": existing.get(key), "to": spec.get(key)}
+            if existing.get("metadata") != metadata:
+                changed["metadata"] = {"from": existing.get("metadata"), "to": metadata}
+            if not changed:
+                skipped.append(
+                    {
+                        "task_id": str(existing.get("id") or ""),
+                        "knowledge_gap_key": gap_key,
+                        "reason": "no_change",
+                    }
+                )
+                continue
+            cur.execute(
+                """
+                UPDATE synapse_tasks
+                SET title = %s,
+                    description = %s,
+                    priority = %s,
+                    assignee = %s,
+                    entity_key = %s,
+                    category = %s,
+                    metadata = %s,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND project_id = %s
+                """,
+                (
+                    spec["title"],
+                    spec.get("description"),
+                    spec.get("priority") or "normal",
+                    spec.get("assignee"),
+                    spec.get("entity_key"),
+                    spec.get("category"),
+                    Jsonb(metadata),
+                    spec.get("updated_by") or spec.get("created_by"),
+                    UUID(str(existing.get("id"))),
+                    project_id,
+                ),
+            )
+            _insert_task_event(
+                cur,
+                task_id=UUID(str(existing.get("id"))),
+                project_id=project_id,
+                event_type="updated",
+                actor=str(spec.get("updated_by") or spec.get("created_by") or "system"),
+                payload={"reason": "knowledge_gap_sync", "changes": changed, "knowledge_gap_key": gap_key},
+            )
+            updated.append({"task_id": str(existing.get("id") or ""), "knowledge_gap_key": gap_key, "title": spec["title"]})
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "summary": {
+            "created": len(created),
+            "updated": len(updated),
+            "skipped": len(skipped),
+        },
+    }
+
+
 def _build_adoption_signal_noise_audit(
     *,
     project_id: str,
@@ -36142,6 +36451,97 @@ def get_adoption_knowledge_gaps(
         days=int(days),
         max_items_per_bucket=int(max_items_per_bucket),
     )
+
+
+@app.post("/v1/adoption/knowledge-gaps/tasks/sync", response_model=None)
+def sync_adoption_knowledge_gap_tasks(
+    payload: AdoptionKnowledgeGapTaskSyncRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm = str(payload.confirm_project_id or "").strip()
+        if confirm != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    gap_report = _build_adoption_knowledge_gap_report(
+        project_id=project_id,
+        days=int(payload.days),
+        max_items_per_bucket=int(payload.limit_per_kind),
+    )
+    specs = _build_knowledge_gap_task_specs(
+        gap_report=gap_report,
+        created_by=str(payload.created_by or "").strip() or "ops_admin",
+        assignee=str(payload.assignee or "").strip() or None,
+        limit_per_kind=int(payload.limit_per_kind),
+        include_candidate_bundles=bool(payload.include_candidate_bundles),
+        include_page_enrichment_gaps=bool(payload.include_page_enrichment_gaps),
+        include_unresolved_questions=bool(payload.include_unresolved_questions),
+        include_repeated_escalations=bool(payload.include_repeated_escalations),
+    )
+    response: dict[str, Any] = {
+        "status": "ok",
+        "project_id": project_id,
+        "dry_run": bool(payload.dry_run),
+        "selection": {
+            "days": int(payload.days),
+            "limit_per_kind": int(payload.limit_per_kind),
+            "include_candidate_bundles": bool(payload.include_candidate_bundles),
+            "include_page_enrichment_gaps": bool(payload.include_page_enrichment_gaps),
+            "include_unresolved_questions": bool(payload.include_unresolved_questions),
+            "include_repeated_escalations": bool(payload.include_repeated_escalations),
+        },
+        "summary": {
+            "task_specs_total": len(specs),
+        },
+        "task_specs": specs if bool(payload.dry_run) else specs[:20],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if bool(payload.dry_run):
+        response["next_action"] = "rerun_with_dry_run=false_and_confirm_project_id"
+        return response
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/adoption/knowledge-gaps/tasks/sync",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        try:
+            with conn.transaction():
+                upsert = _upsert_knowledge_gap_tasks(
+                    conn,
+                    project_id=project_id,
+                    specs=specs,
+                )
+            response.update(upsert)
+            response["summary"].update(upsert.get("summary") or {})
+            mark_request_completed(
+                conn,
+                endpoint="/v1/adoption/knowledge-gaps/tasks/sync",
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint="/v1/adoption/knowledge-gaps/tasks/sync",
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
 
 
 @app.get("/v1/adoption/signal-noise/audit")

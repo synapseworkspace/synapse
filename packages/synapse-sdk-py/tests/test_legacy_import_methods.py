@@ -200,6 +200,33 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("days"), 12)
         self.assertEqual(call["params"].get("max_items_per_bucket"), 6)
 
+    def test_sync_adoption_knowledge_gap_tasks_posts_expected_payload(self) -> None:
+        self.client.sync_adoption_knowledge_gap_tasks(
+            created_by="ops_admin",
+            updated_by="ops_admin",
+            assignee="wiki_editor",
+            dry_run=False,
+            days=10,
+            limit_per_kind=4,
+            include_candidate_bundles=True,
+            include_page_enrichment_gaps=True,
+            include_unresolved_questions=False,
+            include_repeated_escalations=True,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/knowledge-gaps/tasks/sync")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("created_by"), "ops_admin")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("assignee"), "wiki_editor")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("days"), 10)
+        self.assertEqual(payload.get("limit_per_kind"), 4)
+        self.assertFalse(payload.get("include_unresolved_questions"))
+
     def test_get_adoption_signal_noise_audit_is_project_scoped(self) -> None:
         self.client.get_adoption_signal_noise_audit(days=9, max_items_per_bucket=4)
         call = self.client.calls[-1]

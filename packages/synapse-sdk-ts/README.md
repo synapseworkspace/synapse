@@ -77,6 +77,10 @@ This gives Synapse a structured debrief channel instead of relying only on raw l
 
 ```ts
 const gaps = await synapse.getAdoptionKnowledgeGaps({ days: 14 });
+const gapTasks = await synapse.syncAdoptionKnowledgeGapTasks({
+  createdBy: "ops_admin",
+  dryRun: true
+});
 const audit = await synapse.getAdoptionSignalNoiseAudit({ days: 14 });
 const monitor = await synapse.getAdoptionStabilityMonitor({ days: 14 });
 const prompts = await synapse.getAdoptionSynthesisPrompts({ days: 14, maxItems: 8 });
@@ -94,6 +98,7 @@ These helpers make it easier to evaluate whether the wiki is actually becoming u
 - signal vs noise and dominant noisy source families,
 - current stability state and whether safe mode should be recommended or has already been applied,
 - missing durable knowledge,
+- preview/apply backlog tasks for the missing knowledge,
 - targeted follow-up questions,
 - preview/apply refresh of core wiki pages from durable bundles,
 - richness / completeness benchmark.

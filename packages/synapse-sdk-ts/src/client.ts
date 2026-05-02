@@ -683,6 +683,45 @@ export class SynapseClient {
     });
   }
 
+  async syncAdoptionKnowledgeGapTasks(options: {
+    createdBy: string;
+    updatedBy?: string;
+    assignee?: string;
+    dryRun?: boolean;
+    confirmProjectId?: string;
+    days?: number;
+    limitPerKind?: number;
+    includeCandidateBundles?: boolean;
+    includePageEnrichmentGaps?: boolean;
+    includeUnresolvedQuestions?: boolean;
+    includeRepeatedEscalations?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const createdBy = String(options.createdBy ?? "").trim();
+    if (!createdBy) {
+      throw new Error("createdBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/knowledge-gaps/tasks/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        created_by: createdBy,
+        updated_by: asOptionalString(options.updatedBy) ?? undefined,
+        assignee: asOptionalString(options.assignee) ?? undefined,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? (asOptionalString(options.confirmProjectId) ?? undefined) : (asOptionalString(options.confirmProjectId) ?? this.projectId),
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        limit_per_kind: normalizeInt(options.limitPerKind ?? 6, 1, 25),
+        include_candidate_bundles: options.includeCandidateBundles ?? true,
+        include_page_enrichment_gaps: options.includePageEnrichmentGaps ?? true,
+        include_unresolved_questions: options.includeUnresolvedQuestions ?? true,
+        include_repeated_escalations: options.includeRepeatedEscalations ?? true
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async getAdoptionSignalNoiseAudit(options: {
     days?: number;
     maxItemsPerBucket?: number;

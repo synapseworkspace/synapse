@@ -81,6 +81,10 @@ This powers post-task learning without forcing raw runtime logs directly into th
 
 ```python
 gaps = synapse.get_adoption_knowledge_gaps(days=14)
+gap_tasks = synapse.sync_adoption_knowledge_gap_tasks(
+    created_by="ops_admin",
+    dry_run=True,
+)
 audit = synapse.get_adoption_signal_noise_audit(days=14)
 monitor = synapse.get_adoption_stability_monitor(days=14)
 prompts = synapse.get_adoption_synthesis_prompts(days=14, max_items=8)
@@ -98,6 +102,7 @@ Use these together to inspect:
 - signal vs noise and which source families are still dominating,
 - whether the project is currently healthy / watch / critical and if safe mode should be recommended,
 - where useful knowledge is still missing,
+- how to turn those missing knowledge gaps into deduplicated actionable tasks,
 - which follow-up questions Synapse recommends asking,
 - how Synapse would refresh core wiki pages from durable bundles before you apply it,
 - and whether your published wiki is actually rich enough to be useful.
