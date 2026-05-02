@@ -107,7 +107,7 @@ Phase 4 (Wiki Output Quality)
    - короткие/шаблонные/placeholder-heavy pages не публикуются сразу, а идут в enrichment pass with missing-fields diagnostics.
 17. `in_progress` Knowledge freshness semantics:
    - page-level volatility/staleness rules by page type (`policy`, `process`, `data source`, `agent profile`) instead of one global stale heuristic.
-18. `planned` Signal-to-noise audit dashboard:
+18. `done` Signal-to-noise audit dashboard:
    - surface `% evidence rejected`, `% bundles promoted`, `% published by page type`, placeholder ratio, and top noisy source families.
 19. `in_progress` Importance-aware publishing:
    - bias publish priority toward onboarding-critical page families (`agent capabilities`, `process playbooks`, `data sources`, `company operating context`) ahead of secondary technical pages;
@@ -121,9 +121,9 @@ Phase 5 (First-Run Product UX)
    - if useful content lands outside `general`, auto-select the richest published space or show a prominent “more content exists here” CTA.
 22. `done` Self-healing persisted workspace state:
    - if saved browser state points to empty scope while another space has published content, reset or offer one-click recovery instead of showing an apparently empty wiki.
-23. `in_progress` Wiki quality report v2:
+23. `done` Wiki quality report v2:
    - post-bootstrap report must explain not only coverage but also `why useful pages stayed in reviewed/draft`, `which signals were missing`, and `which page families remain weak`.
-24. `planned` Opinionated AI-employee-org bootstrap:
+24. `done` Opinionated AI-employee-org bootstrap:
    - first-run pack for agent-driven orgs: `Agent Profile`, `Tool Catalog`, `Data Sources`, `Process Playbooks`, `Escalation Rules`, `Scheduled Tasks`, `HITL Rules`, `Integrations Map`.
 
 Definition of done for this track:
@@ -987,6 +987,7 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-05-02: Closed the next first-run quality loop in `Knowledge Compiler v2`: Synapse now ships `/v1/adoption/signal-noise/audit` for a compact operator-facing view of evidence rejection, bundle promotion, published/reviewed page mix, weak page families, missing signals, and noisy source families; `wiki-quality/report` now explains reviewed core backlog and missing synthesis signals instead of only pass/fail counters; Operations UI renders this as a `Knowledge Compiler Health` panel; and first-run/template bootstrap now includes an opinionated `AI Employee Org` pack (`Tool Catalog`, `Scheduled Tasks`, `Human-in-the-Loop Rules`, `Integrations Map`, `Escalation Rules`, `Agent Directory Index`).
 - 2026-05-02: Advanced `Knowledge Compiler v2` with explicit taxonomy and guided synthesis support: worker routing now stamps bundles/claims with `knowledge_taxonomy_class` (`operational / episodic / semantic / procedural`) and normalized target types, evidence-bundle API exposes those fields, and Synapse now ships `/v1/adoption/synthesis-prompts` to generate targeted follow-up questions from candidate bundles, repeated agent questions, and page-enrichment gaps. This closes the first production slice of human-guided synthesis instead of leaving gaps as raw diagnostics only.
 - 2026-05-02: Extended `Knowledge Compiler v2` beyond page compilers: Synapse now exposes `/v1/adoption/knowledge-gaps` to surface repeated agent questions, escalation patterns, candidate bundles, and core-page enrichment gaps; freshness semantics are now page-type aware (`policy/process/runbook/agent_profile/data_map/decision_log`) in wiki listing/lifecycle endpoints instead of one global stale threshold; and SDK adoption helpers now expose both richness benchmark and knowledge-gap diagnostics.
 - 2026-05-02: Implemented the next `Knowledge Compiler v2` production slice: publish-time enrichment now rehydrates thin/placeholder-heavy pages from canonical compilers before publish, hard page-type schema contracts were expanded for agent/data/process/decision pages, a new `decision-log` compiler and `/v1/agents/reflections` debrief contract landed, both SDKs gained first-class reflection submission methods, and `/v1/adoption/wiki-richness/benchmark` now measures useful wiki density beyond simple page existence.

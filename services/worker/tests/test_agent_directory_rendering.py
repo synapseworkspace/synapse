@@ -15,6 +15,8 @@ try:
         _build_agent_wiki_bootstrap_quality_report,
         _build_project_wiki_richness_benchmark_from_rows,
         _build_human_guided_synthesis_prompts,
+        _build_adoption_signal_noise_audit,
+        _build_first_run_starter_pages,
         _page_type_freshness_thresholds,
         _prepend_bootstrap_publish_notice,
         _build_runtime_agent_capability_matrix,
@@ -48,6 +50,8 @@ except Exception:  # pragma: no cover
     _build_agent_wiki_bootstrap_quality_report = None
     _build_project_wiki_richness_benchmark_from_rows = None
     _build_human_guided_synthesis_prompts = None
+    _build_adoption_signal_noise_audit = None
+    _build_first_run_starter_pages = None
     _page_type_freshness_thresholds = None
     _prepend_bootstrap_publish_notice = None
     _build_runtime_agent_capability_matrix = None
@@ -80,6 +84,8 @@ except Exception:  # pragma: no cover
     or _build_agent_wiki_bootstrap_quality_report is None
     or _build_project_wiki_richness_benchmark_from_rows is None
     or _build_human_guided_synthesis_prompts is None
+    or _build_adoption_signal_noise_audit is None
+    or _build_first_run_starter_pages is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
     or _prepend_bootstrap_publish_notice is None
@@ -852,6 +858,156 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         summary = prompts.get("summary") if isinstance(prompts.get("summary"), dict) else {}
         by_type = summary.get("by_type") if isinstance(summary.get("by_type"), dict) else {}
         self.assertEqual(int(by_type.get("bundle_follow_up") or 0), 1)
+
+    def test_quality_report_v2_surfaces_reviewed_backlog_and_missing_signals(self) -> None:
+        report = _build_project_wiki_quality_report_from_rows(
+            project_id="omega_demo",
+            published_pages=[
+                {
+                    "slug": "operations/agent-capability-profile",
+                    "title": "Agent Capability Profile",
+                    "page_type": "agent_profile",
+                    "markdown": "# Agent Capability Profile\n\n## Orgchart\n- Dispatch Bot\n\n## Capability Matrix\n- Routes deliveries.\n\n## Capability Signals\n- Uses maps_router.\n\n## Handoffs\n- Billing handoff.",
+                }
+            ],
+            open_drafts=[],
+            reviewed_pages=[
+                {
+                    "slug": "operations/process-playbooks",
+                    "title": "Process Playbooks",
+                    "page_type": "runbook",
+                    "markdown": "# Process Playbooks\n\n## Playbook Index\n- pending\n",
+                    "metadata": {
+                        "bootstrap_quality_gate": {
+                            "quality_score": 0.31,
+                            "publish_warning": "missing_process_structure",
+                            "missing_required_markers": ["steps", "exceptions", "escalation"],
+                            "placeholder_hits": ["pending"],
+                        }
+                    },
+                }
+            ],
+            window_days=14,
+            placeholder_ratio_max=0.10,
+            daily_summary_draft_ratio_max=0.20,
+            min_core_published=1,
+        )
+        self.assertEqual(int(report.get("core_pages", {}).get("reviewed_total") or 0), 1)
+        self.assertTrue(bool(report.get("reviewed_core_backlog")))
+        self.assertTrue(any(str(item.get("signal") or "") == "steps" for item in (report.get("signals_missing") or [])))
+        self.assertTrue(any(str(item.get("page_type") or "") == "runbook" for item in (report.get("weak_page_families") or [])))
+
+    def test_first_run_ai_employee_org_profile_includes_agent_org_pages(self) -> None:
+        pages = _build_first_run_starter_pages("ai_employee_org", space_key="operations", include_decisions_log=True)
+        slugs = {str(item.get("slug") or "") for item in pages}
+        self.assertIn("operations/tool-catalog", slugs)
+        self.assertIn("operations/scheduled-tasks", slugs)
+        self.assertIn("operations/human-in-the-loop-rules", slugs)
+        self.assertIn("operations/integrations-map", slugs)
+        self.assertIn("operations/escalation-rules", slugs)
+
+    def test_signal_noise_audit_aggregates_quality_and_bundle_health(self) -> None:
+        assert _api_main is not None
+        original_pipeline = _api_main.get_adoption_pipeline_visibility
+        original_quality = _api_main._build_project_wiki_quality_report
+        original_benchmark = _api_main._build_project_wiki_richness_benchmark
+        original_gap_report = _api_main._build_adoption_knowledge_gap_report
+        original_rejections = _api_main.get_adoption_rejection_diagnostics
+        original_get_conn = _api_main.get_conn
+        original_table_exists = _api_main._wiki_feature_table_exists
+        original_public_exists = _api_main._public_table_exists
+        try:
+            _api_main.get_adoption_pipeline_visibility = lambda **kwargs: {
+                "pipeline": {"accepted": 100, "events": 50, "claims": 12, "drafts": 4, "pages": 3},
+                "signal_noise_ratio": {"signal_claims_per_event": 0.24},
+                "extraction": {"drop_reasons": [{"reason": "event_like_low_signal", "count": 40}]},
+                "warnings": [],
+                "bottleneck": {"from_stage": "events", "to_stage": "claims"},
+                "rejected_event_like": 60,
+                "stages": [],
+                "conversions": {},
+            }
+            _api_main._build_project_wiki_quality_report = lambda **kwargs: {
+                "quality": {"pass": False, "checks": {"core_publish_coverage": False}},
+                "content_quality": {"placeholder_ratio_core": 0.12},
+                "weak_page_families": [{"page_type": "runbook", "count": 2}],
+                "signals_missing": [{"signal": "steps", "count": 2}],
+                "reviewed_core_backlog": [{"slug": "operations/process-playbooks"}],
+            }
+            _api_main._build_project_wiki_richness_benchmark = lambda **kwargs: {
+                "pass": False,
+                "checks": {"average_page_score": False},
+                "scores": {"average_page_score": 0.41},
+            }
+            _api_main._build_adoption_knowledge_gap_report = lambda **kwargs: {
+                "candidate_knowledge_bundles": [{"bundle_key": "process:dispatch"}],
+                "page_enrichment_gaps": [{"slug": "operations/process-playbooks"}],
+                "unresolved_agent_questions": [{"question": "When to escalate?"}],
+            }
+            _api_main.get_adoption_rejection_diagnostics = lambda **kwargs: {
+                "top_blocked_patterns": {
+                    "source_types": [{"key": "external_event", "count": 20}],
+                    "source_systems": [{"key": "wand_sheet", "count": 10}],
+                    "tool_names": [{"key": "memory_backfill", "count": 8}],
+                },
+                "top_preclaim_drop_reasons": [{"key": "event_like_low_signal", "count": 40}],
+            }
+
+            class _Cursor:
+                def __init__(self) -> None:
+                    self.mode = "none"
+                def execute(self, sql: str, params=None) -> None:
+                    text = str(sql)
+                    if "FROM evidence_bundles" in text:
+                        self.mode = "bundles"
+                    elif "FROM wiki_pages" in text:
+                        self.mode = "pages"
+                    else:
+                        self.mode = "none"
+                def fetchall(self):
+                    if self.mode == "bundles":
+                        return [
+                            ("ready", "procedural", "process_playbook", 3),
+                            ("candidate", "semantic", "agent_profile", 2),
+                        ]
+                    if self.mode == "pages":
+                        return [
+                            ("runbook", "published", 2),
+                            ("agent_profile", "reviewed", 1),
+                        ]
+                    return []
+                def __enter__(self):
+                    return self
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            class _Conn:
+                def cursor(self):
+                    return _Cursor()
+                def __enter__(self):
+                    return self
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            _api_main.get_conn = lambda: _Conn()
+            _api_main._wiki_feature_table_exists = lambda cur, table: True
+            _api_main._public_table_exists = lambda conn, table: True
+
+            audit = _build_adoption_signal_noise_audit(project_id="omega_demo", days=14, max_items_per_bucket=4)
+        finally:
+            _api_main.get_adoption_pipeline_visibility = original_pipeline
+            _api_main._build_project_wiki_quality_report = original_quality
+            _api_main._build_project_wiki_richness_benchmark = original_benchmark
+            _api_main._build_adoption_knowledge_gap_report = original_gap_report
+            _api_main.get_adoption_rejection_diagnostics = original_rejections
+            _api_main.get_conn = original_get_conn
+            _api_main._wiki_feature_table_exists = original_table_exists
+            _api_main._public_table_exists = original_public_exists
+
+        self.assertIn("summary", audit)
+        self.assertEqual(int(audit.get("bundles", {}).get("total") or 0), 5)
+        self.assertTrue(bool(audit.get("quality", {}).get("report", {}).get("weak_page_families")))
+        self.assertTrue(bool(audit.get("top_noisy_source_families", {}).get("source_types")))
 
     def test_runtime_agent_sql_expr_and_filter_include_payload_fallbacks(self) -> None:
         expr = _runtime_agent_id_sql_expr(table_alias="e")

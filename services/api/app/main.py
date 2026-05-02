@@ -942,7 +942,7 @@ class WikiPageCreateRequest(BaseModel):
 class AdoptionFirstRunBootstrapRequest(BaseModel):
     project_id: str
     created_by: str = Field(default="bootstrap_wizard", min_length=1, max_length=256)
-    profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
     publish: bool = True
     include_state_snapshot: bool = True
@@ -951,7 +951,7 @@ class AdoptionFirstRunBootstrapRequest(BaseModel):
 class AdoptionWikiSpaceTemplateApplyRequest(BaseModel):
     project_id: str
     updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
-    template_key: str = Field(pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    template_key: str = Field(pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
     publish: bool = True
 
@@ -968,9 +968,9 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     queue_enabled_sources: bool = True
     run_bootstrap_approve: bool = True
     include_starter_pages: bool = True
-    starter_profile: str = Field(default="support_ops", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    starter_profile: str = Field(default="support_ops", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     include_role_template: bool = False
-    role_template_key: str | None = Field(default=None, pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops)$")
+    role_template_key: str | None = Field(default=None, pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
     sync_processor_lookback_minutes: int = Field(default=30, ge=1, le=1440)
     fail_on_sync_processor_unavailable: bool = False
@@ -28401,6 +28401,7 @@ def _build_first_run_starter_pages(
             "logistics_ops": "logistics",
             "sales_ops": "sales",
             "compliance_ops": "compliance",
+            "ai_employee_org": "operations",
         }
         space = default_space_by_profile.get(profile, "operations")
     pages: list[dict[str, str]] = [
@@ -28510,6 +28511,81 @@ def _build_first_run_starter_pages(
                     "- Review cadence and exception workflow.\n"
                 ),
             }
+        )
+    if profile == "ai_employee_org":
+        pages.extend(
+            [
+                {
+                    "title": "Tool Catalog",
+                    "slug": _space_slug(space, "tool-catalog"),
+                    "page_type": "operations",
+                    "markdown": (
+                        "# Tool Catalog\n\n"
+                        "## Registered Tools\n"
+                        "- Tool name, purpose, and owning agent.\n\n"
+                        "## Guardrails\n"
+                        "- Approval boundaries, rate limits, and unsafe actions.\n\n"
+                        "## Failure Modes\n"
+                        "- Known failure cases and recovery workflow.\n"
+                    ),
+                },
+                {
+                    "title": "Scheduled Tasks",
+                    "slug": _space_slug(space, "scheduled-tasks"),
+                    "page_type": "operations",
+                    "markdown": (
+                        "# Scheduled Tasks\n\n"
+                        "## Cron / Automations\n"
+                        "- Recurring jobs, trigger cadence, and owning agent.\n\n"
+                        "## Output Contracts\n"
+                        "- Which pages, tasks, or systems each automation updates.\n\n"
+                        "## Escalation\n"
+                        "- What to do if the scheduled task misses SLA.\n"
+                    ),
+                },
+                {
+                    "title": "Human-in-the-Loop Rules",
+                    "slug": _space_slug(space, "human-in-the-loop-rules"),
+                    "page_type": "policy",
+                    "markdown": (
+                        "# Human-in-the-Loop Rules\n\n"
+                        "## Approval Boundaries\n"
+                        "- Which actions require explicit human approval.\n\n"
+                        "## Escalation Triggers\n"
+                        "- Risk, ambiguity, or policy conditions that force handoff.\n\n"
+                        "## Override Logging\n"
+                        "- How human overrides are recorded and reused.\n"
+                    ),
+                },
+                {
+                    "title": "Integrations Map",
+                    "slug": _space_slug(space, "integrations-map"),
+                    "page_type": "operations",
+                    "markdown": (
+                        "# Integrations Map\n\n"
+                        "## Connected Systems\n"
+                        "- APIs, queues, docs, databases, and external services.\n\n"
+                        "## Data Flow\n"
+                        "- Which agent reads/writes each integration.\n\n"
+                        "## Reliability Notes\n"
+                        "- Freshness, fallback, and outage behavior.\n"
+                    ),
+                },
+                {
+                    "title": "Escalation Rules",
+                    "slug": _space_slug(space, "escalation-rules"),
+                    "page_type": "policy",
+                    "markdown": (
+                        "# Escalation Rules\n\n"
+                        "## Trigger Conditions\n"
+                        "- When agents must escalate instead of acting autonomously.\n\n"
+                        "## Owners & Channels\n"
+                        "- Who gets paged and where.\n\n"
+                        "## Resolution Expectations\n"
+                        "- SLA, rollback, and follow-up capture requirements.\n"
+                    ),
+                },
+            ]
         )
     if include_decisions_log:
         pages.append(_build_decisions_log_seed_page(space))
@@ -29426,6 +29502,13 @@ def _wiki_space_template_catalog() -> list[dict[str, Any]]:
             "description": "Control catalog, evidence workflow, and audit readiness.",
             "policy": {"write_mode": "owners_only", "comment_mode": "owners_only", "review_assignment_required": True},
         },
+        {
+            "template_key": "ai_employee_org",
+            "label": "AI Employee Org",
+            "default_space_key": "operations",
+            "description": "Opinionated bootstrap for agent-driven organizations: profiles, tools, tasks, HITL, and integrations.",
+            "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+        },
     ]
 
 
@@ -29501,6 +29584,71 @@ def _build_role_template_pages(template_key: str, *, space_key: str | None = Non
                 "slug": _space_slug(space, "sales-to-support-handoff"),
                 "page_type": "runbook",
                 "markdown": "# Sales-to-Support Handoff\n\n## Required Context\n- Contract scope, commitments, and success criteria.\n",
+            },
+        ]
+    if template_key == "ai_employee_org":
+        return [
+            {
+                "title": "Agent Directory Index",
+                "slug": _space_slug(space, "agent-directory-index"),
+                "page_type": "agent_profile",
+                "markdown": (
+                    "# Agent Directory Index\n\n"
+                    "## Agent Roster\n"
+                    "- Each connected agent, role, status, and owning team.\n\n"
+                    "## Capability Coverage\n"
+                    "- Which workstreams are automated, assisted, or human-only.\n\n"
+                    "## Handoff Topology\n"
+                    "- Where agents hand off to other agents or humans.\n"
+                ),
+            },
+            {
+                "title": "Tool Catalog",
+                "slug": _space_slug(space, "tool-catalog"),
+                "page_type": "operations",
+                "markdown": (
+                    "# Tool Catalog\n\n"
+                    "## Registered Tools\n"
+                    "- Tool, owner, purpose, and safety boundary.\n\n"
+                    "## Guardrails\n"
+                    "- Rate limits, approval rules, and rollback path.\n"
+                ),
+            },
+            {
+                "title": "Scheduled Tasks",
+                "slug": _space_slug(space, "scheduled-tasks"),
+                "page_type": "operations",
+                "markdown": (
+                    "# Scheduled Tasks\n\n"
+                    "## Automation Calendar\n"
+                    "- Recurring jobs, cadence, and owning agent.\n\n"
+                    "## Failure Handling\n"
+                    "- SLA, retry, and escalation path.\n"
+                ),
+            },
+            {
+                "title": "Human-in-the-Loop Rules",
+                "slug": _space_slug(space, "human-in-the-loop-rules"),
+                "page_type": "policy",
+                "markdown": (
+                    "# Human-in-the-Loop Rules\n\n"
+                    "## Approval Boundaries\n"
+                    "- Which actions require human sign-off.\n\n"
+                    "## Override Logging\n"
+                    "- How overrides are captured and fed back into Synapse.\n"
+                ),
+            },
+            {
+                "title": "Integrations Map",
+                "slug": _space_slug(space, "integrations-map"),
+                "page_type": "operations",
+                "markdown": (
+                    "# Integrations Map\n\n"
+                    "## Systems\n"
+                    "- APIs, DBs, docs, queues, and external SaaS.\n\n"
+                    "## Data Flow\n"
+                    "- Which agents consume or mutate which integration.\n"
+                ),
             },
         ]
     return [
@@ -32212,11 +32360,13 @@ def _build_project_wiki_quality_report_from_rows(
     project_id: str,
     published_pages: list[dict[str, Any]],
     open_drafts: list[dict[str, Any]],
+    reviewed_pages: list[dict[str, Any]] | None = None,
     window_days: int,
     placeholder_ratio_max: float,
     daily_summary_draft_ratio_max: float,
     min_core_published: int,
 ) -> dict[str, Any]:
+    reviewed_pages = list(reviewed_pages or [])
     pages_by_slug: dict[str, dict[str, Any]] = {}
     for row in published_pages:
         slug = _normalize_wiki_slug(str(row.get("slug") or ""), str(row.get("title") or "page"))
@@ -32230,6 +32380,18 @@ def _build_project_wiki_quality_report_from_rows(
     core_rows = [row for row in pages_by_slug.values() if str(row.get("leaf") or "") in _BOOTSTRAP_CORE_REQUIRED_LEAVES]
     core_leaves_published = {str(row.get("leaf") or "") for row in core_rows}
     core_missing_required = sorted(list(_BOOTSTRAP_CORE_REQUIRED_LEAVES - core_leaves_published))
+    reviewed_core_rows: list[dict[str, Any]] = []
+    for row in reviewed_pages:
+        slug = _normalize_wiki_slug(str(row.get("slug") or ""), str(row.get("title") or "page"))
+        if not slug:
+            continue
+        leaf = slug.split("/")[-1]
+        if leaf not in _BOOTSTRAP_CORE_REQUIRED_LEAVES:
+            continue
+        item = dict(row)
+        item["slug"] = slug
+        item["leaf"] = leaf
+        reviewed_core_rows.append(item)
 
     token_total = 0
     placeholder_hits_total = 0
@@ -32283,6 +32445,58 @@ def _build_project_wiki_quality_report_from_rows(
         "daily_summary_open_draft_ratio_max": float(max(0.0, min(1.0, daily_summary_draft_ratio_max))),
         "min_core_published": int(max(1, min(50, min_core_published))),
     }
+
+    reviewed_reason_counter: dict[str, int] = {}
+    weak_family_counter: dict[str, int] = {}
+    missing_signal_counter: dict[str, int] = {}
+    reviewed_core_backlog: list[dict[str, Any]] = []
+
+    def _bump(counter: dict[str, int], key: str | None) -> None:
+        text = str(key or "").strip()
+        if not text:
+            return
+        counter[text] = int(counter.get(text, 0)) + 1
+
+    for row in reviewed_core_rows:
+        page_type = str(row.get("page_type") or "operations").strip().lower() or "operations"
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        bootstrap_quality_gate = (
+            metadata.get("bootstrap_quality_gate") if isinstance(metadata.get("bootstrap_quality_gate"), dict) else {}
+        )
+        reason = str(bootstrap_quality_gate.get("publish_warning") or "quality_gate").strip().lower() or "quality_gate"
+        quality_score = float(bootstrap_quality_gate.get("quality_score") or 0.0)
+        missing_required_markers = [
+            str(item).strip()
+            for item in (bootstrap_quality_gate.get("missing_required_markers") or [])
+            if str(item).strip()
+        ]
+        placeholder_hits = [
+            str(item).strip()
+            for item in (bootstrap_quality_gate.get("placeholder_hits") or [])
+            if str(item).strip()
+        ]
+        _bump(reviewed_reason_counter, reason)
+        _bump(weak_family_counter, page_type)
+        for marker in missing_required_markers:
+            _bump(missing_signal_counter, marker)
+        for hit in placeholder_hits:
+            _bump(missing_signal_counter, f"placeholder:{hit}")
+        reviewed_core_backlog.append(
+            {
+                "slug": str(row.get("slug") or ""),
+                "title": str(row.get("title") or ""),
+                "page_type": page_type,
+                "reason": reason,
+                "quality_score": quality_score,
+                "missing_required_markers": missing_required_markers,
+                "placeholder_hits": placeholder_hits,
+            }
+        )
+
+    for item in schema_missing_samples:
+        for marker in list(item.get("missing_markers") or []):
+            _bump(missing_signal_counter, str(marker))
+        _bump(weak_family_counter, str(item.get("page_type") or "operations"))
 
     checks = {
         "core_required_pages_present": bool(len(core_missing_required) == 0),
@@ -32350,6 +32564,28 @@ def _build_project_wiki_quality_report_from_rows(
                 "samples": schema_missing_samples,
             }
         )
+    if reviewed_core_backlog:
+        warnings.append(
+            {
+                "code": "reviewed_core_backlog",
+                "severity": "warning",
+                "count": len(reviewed_core_backlog),
+                "samples": reviewed_core_backlog[:8],
+            }
+        )
+
+    weak_page_families = [
+        {"page_type": key, "count": int(value)}
+        for key, value in sorted(weak_family_counter.items(), key=lambda item: (-item[1], item[0]))[:10]
+    ]
+    missing_signals = [
+        {"signal": key, "count": int(value)}
+        for key, value in sorted(missing_signal_counter.items(), key=lambda item: (-item[1], item[0]))[:12]
+    ]
+    reviewed_reason_summary = [
+        {"reason": key, "count": int(value)}
+        for key, value in sorted(reviewed_reason_counter.items(), key=lambda item: (-item[1], item[0]))[:10]
+    ]
 
     return {
         "project_id": project_id,
@@ -32364,6 +32600,8 @@ def _build_project_wiki_quality_report_from_rows(
             "required_leaves": sorted(list(_BOOTSTRAP_CORE_REQUIRED_LEAVES)),
             "published_total": len(core_rows),
             "published_slugs": sorted([str(row.get("slug") or "") for row in core_rows]),
+            "reviewed_total": len(reviewed_core_rows),
+            "reviewed_slugs": sorted([str(row.get("slug") or "") for row in reviewed_core_rows]),
             "missing_required_leaves": core_missing_required,
             "thin_pages": thin_pages[:25],
         },
@@ -32391,6 +32629,10 @@ def _build_project_wiki_quality_report_from_rows(
                 for item in daily_summary_open_rows[:8]
             ],
         },
+        "reviewed_core_backlog": reviewed_core_backlog[:25],
+        "reviewed_reason_summary": reviewed_reason_summary,
+        "weak_page_families": weak_page_families,
+        "signals_missing": missing_signals,
         "warnings": warnings,
     }
 
@@ -32400,6 +32642,7 @@ def _build_project_wiki_richness_benchmark_from_rows(
     project_id: str,
     published_pages: list[dict[str, Any]],
     open_drafts: list[dict[str, Any]],
+    reviewed_pages: list[dict[str, Any]] | None = None,
     window_days: int,
     placeholder_ratio_max: float,
     daily_summary_draft_ratio_max: float,
@@ -32411,6 +32654,7 @@ def _build_project_wiki_richness_benchmark_from_rows(
         project_id=project_id,
         published_pages=published_pages,
         open_drafts=open_drafts,
+        reviewed_pages=reviewed_pages,
         window_days=window_days,
         placeholder_ratio_max=placeholder_ratio_max,
         daily_summary_draft_ratio_max=daily_summary_draft_ratio_max,
@@ -32572,9 +32816,10 @@ def _load_project_wiki_quality_rows(
     *,
     project_id: str,
     days: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     published_pages: list[dict[str, Any]] = []
     open_drafts: list[dict[str, Any]] = []
+    reviewed_pages: list[dict[str, Any]] = []
     cutoff = datetime.now(UTC) - timedelta(days=max(1, int(days)))
 
     with get_conn() as conn:
@@ -32600,27 +32845,31 @@ def _load_project_wiki_quality_rows(
                       p.page_type,
                       p.status,
                       p.updated_at,
-                      {markdown_sql} AS markdown
+                      {markdown_sql} AS markdown,
+                      p.metadata
                     FROM wiki_pages p
                     WHERE p.project_id = %s
-                      AND p.status = 'published'
+                      AND p.status IN ('published', 'reviewed')
                     ORDER BY p.updated_at DESC
                     """,
                     (project_id,),
                 )
                 for row in (cur.fetchall() or []):
-                    published_pages.append(
-                        {
-                            "id": str(row[0] or ""),
-                            "slug": str(row[1] or ""),
-                            "title": str(row[2] or ""),
-                            "entity_key": str(row[3] or ""),
-                            "page_type": str(row[4] or ""),
-                            "status": str(row[5] or ""),
-                            "updated_at": row[6].isoformat() if isinstance(row[6], datetime) else None,
-                            "markdown": str(row[7] or ""),
-                        }
-                    )
+                    item = {
+                        "id": str(row[0] or ""),
+                        "slug": str(row[1] or ""),
+                        "title": str(row[2] or ""),
+                        "entity_key": str(row[3] or ""),
+                        "page_type": str(row[4] or ""),
+                        "status": str(row[5] or ""),
+                        "updated_at": row[6].isoformat() if isinstance(row[6], datetime) else None,
+                        "markdown": str(row[7] or ""),
+                        "metadata": row[8] if isinstance(row[8], dict) else {},
+                    }
+                    if str(row[5] or "") == "reviewed":
+                        reviewed_pages.append(item)
+                    else:
+                        published_pages.append(item)
 
             if has_drafts:
                 gatekeeper_join_sql = (
@@ -32674,7 +32923,7 @@ def _load_project_wiki_quality_rows(
                             ),
                         }
                     )
-    return published_pages, open_drafts
+    return published_pages, open_drafts, reviewed_pages
 
 
 def _build_project_wiki_quality_report(
@@ -32685,7 +32934,7 @@ def _build_project_wiki_quality_report(
     daily_summary_draft_ratio_max: float,
     min_core_published: int,
 ) -> dict[str, Any]:
-    published_pages, open_drafts = _load_project_wiki_quality_rows(
+    published_pages, open_drafts, reviewed_pages = _load_project_wiki_quality_rows(
         project_id=project_id,
         days=days,
     )
@@ -32694,6 +32943,7 @@ def _build_project_wiki_quality_report(
         project_id=project_id,
         published_pages=published_pages,
         open_drafts=open_drafts,
+        reviewed_pages=reviewed_pages,
         window_days=int(max(1, days)),
         placeholder_ratio_max=float(placeholder_ratio_max),
         daily_summary_draft_ratio_max=float(daily_summary_draft_ratio_max),
@@ -32711,7 +32961,7 @@ def _build_project_wiki_richness_benchmark(
     min_contract_pass_ratio: float,
     min_average_page_score: float,
 ) -> dict[str, Any]:
-    published_pages, open_drafts = _load_project_wiki_quality_rows(
+    published_pages, open_drafts, reviewed_pages = _load_project_wiki_quality_rows(
         project_id=project_id,
         days=days,
     )
@@ -32719,6 +32969,7 @@ def _build_project_wiki_richness_benchmark(
         project_id=project_id,
         published_pages=published_pages,
         open_drafts=open_drafts,
+        reviewed_pages=reviewed_pages,
         window_days=int(max(1, days)),
         placeholder_ratio_max=float(placeholder_ratio_max),
         daily_summary_draft_ratio_max=float(daily_summary_draft_ratio_max),
@@ -32734,11 +32985,12 @@ def _build_adoption_knowledge_gap_report(
     days: int,
     max_items_per_bucket: int = 8,
 ) -> dict[str, Any]:
-    published_pages, open_drafts = _load_project_wiki_quality_rows(project_id=project_id, days=days)
+    published_pages, open_drafts, reviewed_pages = _load_project_wiki_quality_rows(project_id=project_id, days=days)
     quality_report = _build_project_wiki_quality_report_from_rows(
         project_id=project_id,
         published_pages=published_pages,
         open_drafts=open_drafts,
+        reviewed_pages=reviewed_pages,
         window_days=int(max(1, days)),
         placeholder_ratio_max=0.10,
         daily_summary_draft_ratio_max=0.20,
@@ -32748,6 +33000,7 @@ def _build_adoption_knowledge_gap_report(
         project_id=project_id,
         published_pages=published_pages,
         open_drafts=open_drafts,
+        reviewed_pages=reviewed_pages,
         window_days=int(max(1, days)),
         placeholder_ratio_max=0.10,
         daily_summary_draft_ratio_max=0.20,
@@ -33053,6 +33306,162 @@ def _build_human_guided_synthesis_prompts(
                 key: int(value)
                 for key, value in sorted(prompt_type_counts.items(), key=lambda item: item[0])
             },
+        },
+    }
+
+
+def _build_adoption_signal_noise_audit(
+    *,
+    project_id: str,
+    days: int,
+    max_items_per_bucket: int = 8,
+) -> dict[str, Any]:
+    pipeline = get_adoption_pipeline_visibility(project_id=project_id, days=days)
+    quality_report = _build_project_wiki_quality_report(
+        project_id=project_id,
+        days=int(days),
+        placeholder_ratio_max=0.10,
+        daily_summary_draft_ratio_max=0.20,
+        min_core_published=6,
+    )
+    richness_benchmark = _build_project_wiki_richness_benchmark(
+        project_id=project_id,
+        days=int(days),
+        placeholder_ratio_max=0.10,
+        daily_summary_draft_ratio_max=0.20,
+        min_core_published=6,
+        min_contract_pass_ratio=0.80,
+        min_average_page_score=0.72,
+    )
+    gap_report = _build_adoption_knowledge_gap_report(
+        project_id=project_id,
+        days=int(days),
+        max_items_per_bucket=max_items_per_bucket,
+    )
+    rejection_diagnostics = get_adoption_rejection_diagnostics(
+        project_id=project_id,
+        days=int(days),
+        sample_limit=min(8, max(3, int(max_items_per_bucket))),
+    )
+
+    bundle_status_counts: dict[str, int] = {}
+    bundle_taxonomy_counts: dict[str, int] = {}
+    bundle_target_type_counts: dict[str, int] = {}
+    page_type_publish_counts: dict[str, int] = {}
+    page_type_reviewed_counts: dict[str, int] = {}
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if _wiki_feature_table_exists(cur, "public.evidence_bundles"):
+                cur.execute(
+                    """
+                    SELECT
+                      bundle_status,
+                      metadata->>'knowledge_taxonomy_class',
+                      metadata->>'normalized_target_type',
+                      COUNT(*)::bigint
+                    FROM evidence_bundles
+                    WHERE project_id = %s
+                    GROUP BY 1, 2, 3
+                    """,
+                    (project_id,),
+                )
+                for row in cur.fetchall() or []:
+                    status_key = str(row[0] or "unknown").strip().lower() or "unknown"
+                    taxonomy_key = str(row[1] or "unknown").strip().lower() or "unknown"
+                    target_key = str(row[2] or "unknown").strip().lower() or "unknown"
+                    count = int(row[3] or 0)
+                    bundle_status_counts[status_key] = int(bundle_status_counts.get(status_key, 0)) + count
+                    bundle_taxonomy_counts[taxonomy_key] = int(bundle_taxonomy_counts.get(taxonomy_key, 0)) + count
+                    bundle_target_type_counts[target_key] = int(bundle_target_type_counts.get(target_key, 0)) + count
+            if _public_table_exists(conn, "wiki_pages"):
+                cur.execute(
+                    """
+                    SELECT page_type, status, COUNT(*)::bigint
+                    FROM wiki_pages
+                    WHERE project_id = %s
+                      AND status IN ('published', 'reviewed')
+                    GROUP BY 1, 2
+                    """,
+                    (project_id,),
+                )
+                for row in cur.fetchall() or []:
+                    page_type = str(row[0] or "operations").strip().lower() or "operations"
+                    status = str(row[1] or "").strip().lower()
+                    count = int(row[2] or 0)
+                    if status == "published":
+                        page_type_publish_counts[page_type] = int(page_type_publish_counts.get(page_type, 0)) + count
+                    elif status == "reviewed":
+                        page_type_reviewed_counts[page_type] = int(page_type_reviewed_counts.get(page_type, 0)) + count
+
+    def _top(counter: dict[str, int], key_name: str, *, limit: int = 8) -> list[dict[str, Any]]:
+        return [
+            {key_name: key, "count": int(value)}
+            for key, value in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
+        ]
+
+    accepted = int((pipeline.get("pipeline") or {}).get("accepted") or 0)
+    rejected_event_like = int(pipeline.get("rejected_event_like") or 0)
+    total_bundles = sum(bundle_status_counts.values())
+    ready_bundles = int(bundle_status_counts.get("ready", 0))
+    published_total = sum(page_type_publish_counts.values())
+    reviewed_total = sum(page_type_reviewed_counts.values())
+
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": {
+            "evidence_rejected_pct": round(float(rejected_event_like) / float(max(1, accepted)), 4),
+            "bundle_promotion_ratio": round(float(ready_bundles) / float(max(1, total_bundles)), 4),
+            "published_pages_total": int(published_total),
+            "reviewed_pages_total": int(reviewed_total),
+            "placeholder_ratio_core": float((quality_report.get("content_quality") or {}).get("placeholder_ratio_core") or 0.0),
+            "quality_pass": bool((quality_report.get("quality") or {}).get("pass")),
+            "richness_pass": bool(richness_benchmark.get("pass")),
+        },
+        "pipeline": {
+            "stages": pipeline.get("stages"),
+            "conversions": pipeline.get("conversions"),
+            "signal_noise_ratio": pipeline.get("signal_noise_ratio"),
+            "extraction": pipeline.get("extraction"),
+            "warnings": pipeline.get("warnings"),
+            "bottleneck": pipeline.get("bottleneck"),
+        },
+        "bundles": {
+            "total": int(total_bundles),
+            "by_status": _top(bundle_status_counts, "status", limit=12),
+            "by_taxonomy_class": _top(bundle_taxonomy_counts, "knowledge_taxonomy_class", limit=12),
+            "by_target_type": _top(bundle_target_type_counts, "normalized_target_type", limit=12),
+        },
+        "publish_mix": {
+            "published_by_page_type": _top(page_type_publish_counts, "page_type", limit=12),
+            "reviewed_by_page_type": _top(page_type_reviewed_counts, "page_type", limit=12),
+        },
+        "quality": {
+            "report": {
+                "pass": bool((quality_report.get("quality") or {}).get("pass")),
+                "checks": (quality_report.get("quality") or {}).get("checks"),
+                "weak_page_families": quality_report.get("weak_page_families"),
+                "signals_missing": quality_report.get("signals_missing"),
+                "reviewed_core_backlog": quality_report.get("reviewed_core_backlog"),
+            },
+            "richness_benchmark": {
+                "pass": bool(richness_benchmark.get("pass")),
+                "checks": richness_benchmark.get("checks"),
+                "scores": richness_benchmark.get("scores"),
+            },
+        },
+        "top_noisy_source_families": {
+            "source_types": ((rejection_diagnostics.get("top_blocked_patterns") or {}).get("source_types") or [])[:8],
+            "source_systems": ((rejection_diagnostics.get("top_blocked_patterns") or {}).get("source_systems") or [])[:8],
+            "tool_names": ((rejection_diagnostics.get("top_blocked_patterns") or {}).get("tool_names") or [])[:8],
+            "drop_reasons": (rejection_diagnostics.get("top_preclaim_drop_reasons") or [])[:8],
+        },
+        "knowledge_gaps": {
+            "candidate_knowledge_bundles": (gap_report.get("candidate_knowledge_bundles") or [])[:max_items_per_bucket],
+            "page_enrichment_gaps": (gap_report.get("page_enrichment_gaps") or [])[:max_items_per_bucket],
+            "unresolved_agent_questions": (gap_report.get("unresolved_agent_questions") or [])[:max_items_per_bucket],
         },
     }
 
@@ -34732,6 +35141,19 @@ def get_adoption_knowledge_gaps(
     max_items_per_bucket: int = Query(default=8, ge=1, le=50),
 ) -> dict[str, Any]:
     return _build_adoption_knowledge_gap_report(
+        project_id=project_id,
+        days=int(days),
+        max_items_per_bucket=int(max_items_per_bucket),
+    )
+
+
+@app.get("/v1/adoption/signal-noise/audit")
+def get_adoption_signal_noise_audit(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    max_items_per_bucket: int = Query(default=8, ge=1, le=50),
+) -> dict[str, Any]:
+    return _build_adoption_signal_noise_audit(
         project_id=project_id,
         days=int(days),
         max_items_per_bucket=int(max_items_per_bucket),

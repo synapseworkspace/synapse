@@ -683,6 +683,20 @@ export class SynapseClient {
     });
   }
 
+  async getAdoptionSignalNoiseAudit(options: {
+    days?: number;
+    maxItemsPerBucket?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/signal-noise/audit", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        max_items_per_bucket: normalizeInt(options.maxItemsPerBucket ?? 8, 1, 50)
+      }
+    });
+  }
+
   async getAdoptionSynthesisPrompts(options: {
     days?: number;
     maxItems?: number;

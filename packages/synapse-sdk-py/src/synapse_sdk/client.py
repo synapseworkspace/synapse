@@ -683,6 +683,22 @@ class SynapseClient:
             },
         )
 
+    def get_adoption_signal_noise_audit(
+        self,
+        *,
+        days: int = 14,
+        max_items_per_bucket: int = 8,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/signal-noise/audit",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "max_items_per_bucket": max(1, min(50, int(max_items_per_bucket))),
+            },
+        )
+
     def get_adoption_synthesis_prompts(
         self,
         *,

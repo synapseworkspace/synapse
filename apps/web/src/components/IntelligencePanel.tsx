@@ -268,6 +268,56 @@ type GatekeeperAlertTarget = {
   updated_at: string;
 };
 
+type AdoptionSignalNoiseAuditPayload = {
+  project_id: string;
+  window_days: number;
+  generated_at: string;
+  summary: {
+    evidence_rejected_pct: number;
+    bundle_promotion_ratio: number;
+    published_pages_total: number;
+    reviewed_pages_total: number;
+    placeholder_ratio_core: number;
+    quality_pass: boolean;
+    richness_pass: boolean;
+  };
+  pipeline: {
+    signal_noise_ratio?: Record<string, number>;
+    bottleneck?: Record<string, unknown> | null;
+    warnings?: Array<Record<string, unknown>>;
+  };
+  bundles: {
+    total: number;
+    by_status: Array<{ status: string; count: number }>;
+    by_taxonomy_class: Array<{ knowledge_taxonomy_class: string; count: number }>;
+    by_target_type: Array<{ normalized_target_type: string; count: number }>;
+  };
+  publish_mix: {
+    published_by_page_type: Array<{ page_type: string; count: number }>;
+    reviewed_by_page_type: Array<{ page_type: string; count: number }>;
+  };
+  quality: {
+    report: {
+      pass: boolean;
+      weak_page_families?: Array<{ page_type: string; count: number }>;
+      signals_missing?: Array<{ signal: string; count: number }>;
+      reviewed_core_backlog?: Array<{ slug: string }>;
+    };
+    richness_benchmark: {
+      pass: boolean;
+      scores?: {
+        average_page_score?: number;
+        contract_pass_ratio?: number;
+      };
+    };
+  };
+  top_noisy_source_families: {
+    source_types: Array<{ key?: string; count: number }>;
+    source_systems: Array<{ key?: string; count: number }>;
+    drop_reasons: Array<{ key?: string; count: number }>;
+  };
+};
+
 type GatekeeperAlertAttempt = {
   id: string;
   run_id: string;
@@ -422,6 +472,7 @@ export default function IntelligencePanel({ apiUrl, projectId, reviewer = "web_u
   const [calibrationRunTrends, setCalibrationRunTrends] = useState<GatekeeperCalibrationRunTrendsPayload | null>(null);
   const [gatekeeperAlertTargets, setGatekeeperAlertTargets] = useState<GatekeeperAlertTarget[]>([]);
   const [gatekeeperAlertAttempts, setGatekeeperAlertAttempts] = useState<GatekeeperAlertAttempt[]>([]);
+  const [signalNoiseAudit, setSignalNoiseAudit] = useState<AdoptionSignalNoiseAuditPayload | null>(null);
   const [gatekeeperTargetChannel, setGatekeeperTargetChannel] = useState<"slack_webhook" | "email_smtp">("slack_webhook");
   const [gatekeeperTargetAddress, setGatekeeperTargetAddress] = useState("");
   const [gatekeeperTargetEnabled, setGatekeeperTargetEnabled] = useState(true);
@@ -446,6 +497,7 @@ export default function IntelligencePanel({ apiUrl, projectId, reviewer = "web_u
       setCalibrationRunTrends(null);
       setGatekeeperAlertTargets([]);
       setGatekeeperAlertAttempts([]);
+      setSignalNoiseAudit(null);
       return;
     }
 
@@ -498,6 +550,10 @@ export default function IntelligencePanel({ apiUrl, projectId, reviewer = "web_u
       apiFetch<{ attempts: GatekeeperAlertAttempt[] }>(
         apiUrl,
         `/v1/gatekeeper/alerts/attempts?project_id=${encodeURIComponent(projectId)}&limit=120`,
+      ),
+      apiFetch<AdoptionSignalNoiseAuditPayload>(
+        apiUrl,
+        `/v1/adoption/signal-noise/audit?project_id=${encodeURIComponent(projectId)}&days=14&max_items_per_bucket=8`,
       ),
     ]);
 
@@ -598,6 +654,13 @@ export default function IntelligencePanel({ apiUrl, projectId, reviewer = "web_u
     } else {
       failures.push("gatekeeper alert attempts");
       setGatekeeperAlertAttempts([]);
+    }
+    const signalNoiseResult = settled[12];
+    if (signalNoiseResult.status === "fulfilled") {
+      setSignalNoiseAudit(signalNoiseResult.value ?? null);
+    } else {
+      failures.push("signal/noise audit");
+      setSignalNoiseAudit(null);
     }
 
     if (failures.length > 0) {
@@ -816,6 +879,30 @@ export default function IntelligencePanel({ apiUrl, projectId, reviewer = "web_u
       })),
     [calibrationPoints],
   );
+  const auditWeakFamilies = signalNoiseAudit?.quality.report.weak_page_families ?? [];
+  const auditSignalsMissing = signalNoiseAudit?.quality.report.signals_missing ?? [];
+  const auditNoisySourceTypes = signalNoiseAudit?.top_noisy_source_families.source_types ?? [];
+  const auditNoisySourceSystems = signalNoiseAudit?.top_noisy_source_families.source_systems ?? [];
+  const auditDropReasons = signalNoiseAudit?.top_noisy_source_families.drop_reasons ?? [];
+  const auditPublishedMix = signalNoiseAudit?.publish_mix.published_by_page_type ?? [];
+  const auditReviewedMix = signalNoiseAudit?.publish_mix.reviewed_by_page_type ?? [];
+  const auditBundleStatus = signalNoiseAudit?.bundles.by_status ?? [];
+  const evidenceRejectedPct =
+    signalNoiseAudit?.summary?.evidence_rejected_pct != null
+      ? signalNoiseAudit.summary.evidence_rejected_pct * 100
+      : null;
+  const bundlePromotionPct =
+    signalNoiseAudit?.summary?.bundle_promotion_ratio != null
+      ? signalNoiseAudit.summary.bundle_promotion_ratio * 100
+      : null;
+  const placeholderRatioPct =
+    signalNoiseAudit?.summary?.placeholder_ratio_core != null
+      ? signalNoiseAudit.summary.placeholder_ratio_core * 100
+      : null;
+  const averagePageScorePct =
+    signalNoiseAudit?.quality?.richness_benchmark?.scores?.average_page_score != null
+      ? signalNoiseAudit.quality.richness_benchmark.scores.average_page_score * 100
+      : null;
 
   return (
     <Paper radius="xl" p="lg" className="intelligence-panel">
@@ -838,6 +925,135 @@ export default function IntelligencePanel({ apiUrl, projectId, reviewer = "web_u
           Refresh Intelligence
         </Button>
       </Group>
+
+      {signalNoiseAudit && (
+        <Paper withBorder radius="lg" p="md" mb="md">
+          <Group justify="space-between" align="center" mb="sm">
+            <div>
+              <Text fw={700}>Knowledge Compiler Health</Text>
+              <Text size="sm" c="dimmed">
+                Signal vs noise, bundle promotion, weak wiki families, and what still needs synthesis.
+              </Text>
+            </div>
+            <Group gap="xs">
+              <Badge variant="light" color={signalNoiseAudit.summary.quality_pass ? "teal" : "yellow"}>
+                quality {signalNoiseAudit.summary.quality_pass ? "pass" : "watch"}
+              </Badge>
+              <Badge variant="light" color={signalNoiseAudit.summary.richness_pass ? "teal" : "yellow"}>
+                richness {signalNoiseAudit.summary.richness_pass ? "pass" : "watch"}
+              </Badge>
+            </Group>
+          </Group>
+
+          <SimpleGrid cols={{ base: 1, md: 2, xl: 4 }} spacing="sm" mb="sm">
+            <Paper withBorder radius="md" p="sm">
+              <Text size="xs" c="dimmed">Evidence rejected</Text>
+              <Title order={4}>{evidenceRejectedPct != null ? `${evidenceRejectedPct.toFixed(1)}%` : "—"}</Title>
+              <Text size="xs" c="dimmed">raw runtime noise filtered before wiki promotion</Text>
+            </Paper>
+            <Paper withBorder radius="md" p="sm">
+              <Text size="xs" c="dimmed">Bundle promotion</Text>
+              <Title order={4}>{bundlePromotionPct != null ? `${bundlePromotionPct.toFixed(1)}%` : "—"}</Title>
+              <Text size="xs" c="dimmed">{signalNoiseAudit.bundles.total} total bundles</Text>
+            </Paper>
+            <Paper withBorder radius="md" p="sm">
+              <Text size="xs" c="dimmed">Placeholder pressure</Text>
+              <Title order={4}>{placeholderRatioPct != null ? `${placeholderRatioPct.toFixed(1)}%` : "—"}</Title>
+              <Text size="xs" c="dimmed">core published wiki placeholder ratio</Text>
+            </Paper>
+            <Paper withBorder radius="md" p="sm">
+              <Text size="xs" c="dimmed">Average page score</Text>
+              <Title order={4}>{averagePageScorePct != null ? `${averagePageScorePct.toFixed(1)}%` : "—"}</Title>
+              <Text size="xs" c="dimmed">richness benchmark for core onboarding pages</Text>
+            </Paper>
+          </SimpleGrid>
+
+          <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="sm">
+            <Paper withBorder radius="md" p="sm">
+              <Text fw={700} size="sm" mb={6}>Weak page families</Text>
+              <Stack gap={6}>
+                {auditWeakFamilies.length === 0 && (
+                  <Text size="sm" c="dimmed">No weak page families detected in current window.</Text>
+                )}
+                {auditWeakFamilies.map((item) => (
+                  <Group key={`weak-family-${item.page_type}`} justify="space-between" align="center">
+                    <Text size="sm">{item.page_type}</Text>
+                    <Badge variant="light" color="yellow">{item.count}</Badge>
+                  </Group>
+                ))}
+              </Stack>
+            </Paper>
+
+            <Paper withBorder radius="md" p="sm">
+              <Text fw={700} size="sm" mb={6}>Missing signals</Text>
+              <Stack gap={6}>
+                {auditSignalsMissing.length === 0 && (
+                  <Text size="sm" c="dimmed">No dominant missing signals detected.</Text>
+                )}
+                {auditSignalsMissing.map((item) => (
+                  <Group key={`missing-signal-${item.signal}`} justify="space-between" align="center">
+                    <Text size="sm">{item.signal}</Text>
+                    <Badge variant="light" color="orange">{item.count}</Badge>
+                  </Group>
+                ))}
+              </Stack>
+            </Paper>
+
+            <Paper withBorder radius="md" p="sm">
+              <Text fw={700} size="sm" mb={6}>Top noisy source families</Text>
+              <Stack gap={6}>
+                {auditNoisySourceTypes.slice(0, 4).map((item) => (
+                  <Group key={`noisy-type-${item.key ?? "unknown"}`} justify="space-between" align="center">
+                    <Text size="sm">{item.key ?? "unknown"}</Text>
+                    <Badge variant="light" color="red">{item.count}</Badge>
+                  </Group>
+                ))}
+                {auditNoisySourceSystems.slice(0, 4).map((item) => (
+                  <Group key={`noisy-system-${item.key ?? "unknown"}`} justify="space-between" align="center">
+                    <Text size="sm">{item.key ?? "unknown"}</Text>
+                    <Badge variant="light" color="grape">{item.count}</Badge>
+                  </Group>
+                ))}
+                {auditNoisySourceTypes.length === 0 && auditNoisySourceSystems.length === 0 && (
+                  <Text size="sm" c="dimmed">No dominant noisy source families detected.</Text>
+                )}
+              </Stack>
+            </Paper>
+
+            <Paper withBorder radius="md" p="sm">
+              <Text fw={700} size="sm" mb={6}>Publish & bundle mix</Text>
+              <Stack gap={6}>
+                {auditPublishedMix.slice(0, 4).map((item) => (
+                  <Group key={`published-mix-${item.page_type}`} justify="space-between" align="center">
+                    <Text size="sm">published: {item.page_type}</Text>
+                    <Badge variant="light" color="teal">{item.count}</Badge>
+                  </Group>
+                ))}
+                {auditReviewedMix.slice(0, 3).map((item) => (
+                  <Group key={`reviewed-mix-${item.page_type}`} justify="space-between" align="center">
+                    <Text size="sm">reviewed: {item.page_type}</Text>
+                    <Badge variant="light" color="yellow">{item.count}</Badge>
+                  </Group>
+                ))}
+                {auditBundleStatus.slice(0, 4).map((item) => (
+                  <Group key={`bundle-status-${item.status}`} justify="space-between" align="center">
+                    <Text size="sm">bundles: {item.status}</Text>
+                    <Badge variant="light" color={item.status === "ready" ? "teal" : item.status === "candidate" ? "blue" : "gray"}>
+                      {item.count}
+                    </Badge>
+                  </Group>
+                ))}
+              </Stack>
+            </Paper>
+          </SimpleGrid>
+
+          {auditDropReasons.length > 0 && (
+            <Text size="xs" c="dimmed" mt="sm">
+              Top drop reasons: {auditDropReasons.slice(0, 4).map((item) => `${item.key ?? "unknown"} (${item.count})`).join(", ")}
+            </Text>
+          )}
+        </Paper>
+      )}
 
       <SimpleGrid cols={{ base: 1, md: 2, lg: 4 }} spacing="sm" mb="md">
         <Paper withBorder radius="lg" p="md" className="metric-card">
