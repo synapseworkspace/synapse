@@ -247,6 +247,7 @@ Enterprise shortcut (single API call):
 - `GET /v1/adoption/signal-noise/audit` gives operators one compact view of rejection pressure, bundle promotion, weak page families, missing signals, and noisy source families.
 - `GET /v1/adoption/stability-monitor` turns those signals into an operator-ready health state and records the safe-mode recommendation/apply loop in audit history.
 - `GET /v1/adoption/synthesis-prompts` generates targeted follow-up questions for agents/operators from candidate bundles, repeated unanswered questions, and weak pages.
+- `POST /v1/adoption/bundle-promotion/run` refreshes core wiki pages directly from durable evidence bundles with a safe `Preview -> Apply` flow.
 
 Knowledge Compiler diagnostics flow:
 
@@ -257,6 +258,9 @@ curl "http://localhost:8080/v1/adoption/knowledge-gaps?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/signal-noise/audit?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/stability-monitor?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/synthesis-prompts?project_id=omega_demo"
+curl -X POST "http://localhost:8080/v1/adoption/bundle-promotion/run" \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"omega_demo","updated_by":"ops_admin","dry_run":true,"publish":true,"bootstrap_publish_core":true,"space_key":"operations"}'
 ```
 
 This gives you a concrete loop:

@@ -725,6 +725,53 @@ export class SynapseClient {
     });
   }
 
+  async runAdoptionBundlePromotion(options: {
+    updatedBy: string;
+    dryRun?: boolean;
+    confirmProjectId?: string;
+    publish?: boolean;
+    bootstrapPublishCore?: boolean;
+    spaceKey?: string;
+    includeDataSourcesCatalog?: boolean;
+    includeAgentCapabilityProfile?: boolean;
+    includeProcessPlaybooks?: boolean;
+    includeDecisionsLog?: boolean;
+    includeCompanyOperatingContext?: boolean;
+    includeOperationalLogicMap?: boolean;
+    maxSources?: number;
+    maxAgents?: number;
+    maxSignals?: number;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const updatedBy = String(options.updatedBy ?? "").trim();
+    if (!updatedBy) {
+      throw new Error("updatedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/bundle-promotion/run", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? (asOptionalString(options.confirmProjectId) ?? undefined) : (asOptionalString(options.confirmProjectId) ?? this.projectId),
+        publish: options.publish ?? true,
+        bootstrap_publish_core: options.bootstrapPublishCore ?? true,
+        space_key: normalizeWikiSpaceKey(options.spaceKey ?? "operations"),
+        include_data_sources_catalog: options.includeDataSourcesCatalog ?? true,
+        include_agent_capability_profile: options.includeAgentCapabilityProfile ?? true,
+        include_process_playbooks: options.includeProcessPlaybooks ?? true,
+        include_decisions_log: options.includeDecisionsLog ?? true,
+        include_company_operating_context: options.includeCompanyOperatingContext ?? true,
+        include_operational_logic_map: options.includeOperationalLogicMap ?? true,
+        max_sources: normalizeInt(options.maxSources ?? 20, 1, 200),
+        max_agents: normalizeInt(options.maxAgents ?? 12, 1, 100),
+        max_signals: normalizeInt(options.maxSignals ?? 50, 1, 500)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async getAdoptionPolicyCalibrationQuickLoop(options: {
     days?: number;
   } = {}): Promise<Record<string, unknown>> {

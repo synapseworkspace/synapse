@@ -227,6 +227,31 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("days"), 10)
         self.assertEqual(call["params"].get("max_items"), 5)
 
+    def test_run_adoption_bundle_promotion_posts_expected_payload(self) -> None:
+        self.client.run_adoption_bundle_promotion(
+            updated_by="ops_admin",
+            dry_run=False,
+            publish=True,
+            bootstrap_publish_core=True,
+            space_key="logistics",
+            max_sources=15,
+            max_agents=9,
+            max_signals=42,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/bundle-promotion/run")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("max_sources"), 15)
+        self.assertEqual(payload.get("max_agents"), 9)
+        self.assertEqual(payload.get("max_signals"), 42)
+        self.assertTrue(payload.get("include_decisions_log"))
+
     def test_submit_agent_reflection_posts_expected_payload(self) -> None:
         self.client.submit_agent_reflection(
             AgentReflection(

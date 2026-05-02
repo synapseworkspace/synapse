@@ -85,6 +85,13 @@ audit = synapse.get_adoption_signal_noise_audit(days=14)
 monitor = synapse.get_adoption_stability_monitor(days=14)
 prompts = synapse.get_adoption_synthesis_prompts(days=14, max_items=8)
 benchmark = synapse.get_adoption_wiki_richness_benchmark(days=14)
+bundle_run = synapse.run_adoption_bundle_promotion(
+    updated_by="ops_admin",
+    dry_run=True,
+    publish=True,
+    bootstrap_publish_core=True,
+    space_key="operations",
+)
 ```
 
 Use these together to inspect:
@@ -92,6 +99,7 @@ Use these together to inspect:
 - whether the project is currently healthy / watch / critical and if safe mode should be recommended,
 - where useful knowledge is still missing,
 - which follow-up questions Synapse recommends asking,
+- how Synapse would refresh core wiki pages from durable bundles before you apply it,
 - and whether your published wiki is actually rich enough to be useful.
 
 ## Graceful Degradation Modes

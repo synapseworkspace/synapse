@@ -1015,6 +1015,25 @@ class AdoptionAgentWikiBootstrapRequest(BaseModel):
     max_signals: int = Field(default=40, ge=1, le=200)
 
 
+class AdoptionBundlePromotionRunRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    publish: bool = False
+    bootstrap_publish_core: bool = True
+    space_key: str | None = Field(default="operations", min_length=1, max_length=256)
+    include_data_sources_catalog: bool = True
+    include_agent_capability_profile: bool = True
+    include_process_playbooks: bool = True
+    include_decisions_log: bool = True
+    include_company_operating_context: bool = True
+    include_operational_logic_map: bool = True
+    max_sources: int = Field(default=25, ge=1, le=150)
+    max_agents: int = Field(default=100, ge=1, le=5000)
+    max_signals: int = Field(default=40, ge=1, le=200)
+
+
 class WikiPageUpdateRequest(BaseModel):
     project_id: str
     updated_by: str = Field(min_length=1, max_length=256)
@@ -32330,6 +32349,485 @@ def _build_agent_wiki_bootstrap_quality_report(
     return report
 
 
+def _build_bundle_promotion_pages(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    include_data_sources_catalog: bool,
+    include_agent_capability_profile: bool,
+    include_process_playbooks: bool,
+    include_decisions_log: bool,
+    include_company_operating_context: bool,
+    include_operational_logic_map: bool,
+    max_sources: int,
+    max_agents: int,
+    max_signals: int,
+) -> list[dict[str, str]]:
+    pages: list[dict[str, str]] = []
+    if include_data_sources_catalog:
+        pages.extend(
+            _build_data_sources_catalog_pages(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_sources=max_sources,
+            )
+        )
+    if include_agent_capability_profile:
+        pages.extend(
+            _build_agent_capability_bootstrap_page(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_agents=max_agents,
+            )
+        )
+    if include_process_playbooks:
+        pages.extend(
+            _build_process_playbooks_bootstrap_page(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_signals=max_signals,
+            )
+        )
+    if include_decisions_log:
+        pages.extend(
+            _build_decisions_log_compiler_page(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_entries=max(16, min(80, int(max_signals))),
+            )
+        )
+    if include_company_operating_context:
+        pages.extend(
+            _build_company_operating_context_bootstrap_page(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_signals=max_signals,
+            )
+        )
+    if include_operational_logic_map:
+        pages.extend(
+            _build_operational_logic_bootstrap_page(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_signals=max_signals,
+            )
+        )
+    return pages
+
+
+def _upsert_compiler_pages(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str,
+    profile: str,
+    pages: list[dict[str, str]],
+    requested_status: str,
+    bootstrap_publish_core: bool,
+) -> dict[str, Any]:
+    created: list[dict[str, Any]] = []
+    updated: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    downgraded_to_reviewed = 0
+    force_published_core_pages = 0
+
+    with conn.cursor() as cur:
+        for spec in pages:
+            title = str(spec.get("title") or "").strip()
+            slug = _normalize_wiki_slug(str(spec.get("slug") or title), title)
+            page_type = str(spec.get("page_type") or "operations").strip().lower() or "operations"
+            markdown = _apply_wiki_schema_contract(
+                markdown=str(spec.get("markdown") or f"# {title}\n"),
+                title=title,
+                page_type=page_type,
+                slug=slug,
+                status=requested_status,
+                generated_at=datetime.now(UTC),
+            )
+            space_key = _wiki_space_key_from_slug(slug)
+            entity_key = slug
+            policy_check = _check_wiki_policy_access(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                actor=updated_by,
+                action="write",
+                page_id=None,
+            )
+            if not policy_check["allowed"]:
+                skipped.append(
+                    {
+                        "slug": slug,
+                        "title": title,
+                        "reason": "wiki_policy_denied",
+                        "detail": str(policy_check.get("reason") or "not_allowed"),
+                    }
+                )
+                continue
+
+            status = requested_status
+            schema_contract = _evaluate_wiki_schema_contract(
+                markdown=markdown,
+                page_type=page_type,
+                slug=slug,
+            )
+            forced_publish_core = False
+            importance = _bootstrap_page_importance(slug=slug, page_type=page_type)
+            if status == "published":
+                guard = _resolve_agent_publish_mode(
+                    cur,
+                    project_id=project_id,
+                    actor=updated_by,
+                    page_type=page_type,
+                )
+                if str(guard.get("mode") or "") == "human_required":
+                    status = "reviewed"
+                    downgraded_to_reviewed += 1
+                elif not bool(schema_contract.get("passed")):
+                    if bootstrap_publish_core and _is_core_bootstrap_page_slug(slug):
+                        markdown = _prepend_bootstrap_publish_notice(
+                            markdown,
+                            title=title,
+                            importance=importance,
+                            quality_assessment={
+                                "publish_warning": "bundle_promotion_core_override",
+                                "missing_required_markers": list(schema_contract.get("missing_markers") or []),
+                                "placeholder_hits": [],
+                                "quality_score": 0.0,
+                                "schema_contract": schema_contract,
+                            },
+                        )
+                        forced_publish_core = True
+                        force_published_core_pages += 1
+                    else:
+                        status = "reviewed"
+                        downgraded_to_reviewed += 1
+
+            cur.execute(
+                """
+                SELECT id, title, slug, entity_key, page_type, status, current_version
+                FROM wiki_pages
+                WHERE project_id = %s
+                  AND slug = %s
+                LIMIT 1
+                """,
+                (project_id, slug),
+            )
+            page_row = cur.fetchone()
+
+            if page_row is None:
+                page_id = uuid4()
+                cur.execute(
+                    """
+                    INSERT INTO wiki_pages (
+                      id, project_id, page_type, title, slug, entity_key, status, current_version, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s)
+                    """,
+                    (
+                        page_id,
+                        project_id,
+                        page_type,
+                        title,
+                        slug,
+                        entity_key,
+                        status,
+                        Jsonb(
+                            {
+                                "source": "bundle_promotion",
+                                "updated_by": updated_by,
+                                "profile": profile,
+                                "compiler_page": True,
+                            }
+                        ),
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO wiki_page_versions (
+                      id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                    )
+                    VALUES (%s, %s, 1, %s, %s, 'human', %s, %s)
+                    """,
+                    (uuid4(), page_id, markdown, Jsonb([]), updated_by, "Created by bundle promotion"),
+                )
+                sections = _extract_sections_from_markdown(markdown)
+                statement_count = 0
+                for index, section in enumerate(sections):
+                    section_key = str(section.get("section_key") or f"section_{index + 1}")
+                    heading = str(section.get("heading") or _section_heading_from_key(section_key))
+                    statements = [str(item).strip() for item in (section.get("statements") or []) if str(item).strip()]
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (page_id, section_key) DO UPDATE
+                        SET heading = EXCLUDED.heading,
+                            order_index = EXCLUDED.order_index,
+                            statement_count = EXCLUDED.statement_count
+                        """,
+                        (page_id, section_key, heading, index, len(statements)),
+                    )
+                    for statement in statements:
+                        statement_count += 1
+                        cur.execute(
+                            """
+                            INSERT INTO wiki_statements (
+                              id, project_id, page_id, section_key, statement_text, normalized_text,
+                              claim_fingerprint, status, metadata, valid_from
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                            """,
+                            (
+                                uuid4(),
+                                project_id,
+                                page_id,
+                                section_key,
+                                statement,
+                                _normalize_statement_text(statement),
+                                _compute_claim_fingerprint(project_id, entity_key, page_type, statement),
+                                Jsonb({"source": "bundle_promotion", "updated_by": updated_by}),
+                            ),
+                        )
+                created.append(
+                    {
+                        "id": str(page_id),
+                        "slug": slug,
+                        "title": title,
+                        "status": status,
+                        "current_version": 1,
+                        "statements": statement_count,
+                        "quality_gate": {
+                            "forced_publish_core": bool(forced_publish_core),
+                            "schema_contract": schema_contract,
+                        },
+                    }
+                )
+                continue
+
+            page_id = page_row[0]
+            existing_title = str(page_row[1] or title).strip() or title
+            existing_slug = str(page_row[2] or slug).strip() or slug
+            existing_entity_key = str(page_row[3] or entity_key).strip() or entity_key
+            current_version = int(page_row[6] or 1)
+            cur.execute(
+                """
+                SELECT markdown
+                FROM wiki_page_versions
+                WHERE page_id = %s
+                  AND version = %s
+                LIMIT 1
+                """,
+                (page_id, current_version),
+            )
+            latest_row = cur.fetchone()
+            latest_markdown = str(latest_row[0] or "") if latest_row is not None else ""
+            if latest_markdown.strip() == markdown.strip() and str(page_row[5] or status).strip() == status and str(page_row[4] or page_type).strip() == page_type:
+                skipped.append({"slug": existing_slug, "title": existing_title, "reason": "no_change"})
+                continue
+
+            next_version = current_version + 1
+            cur.execute(
+                """
+                INSERT INTO wiki_page_versions (
+                  id, page_id, version, markdown, ast_json, source, created_by, change_summary
+                )
+                VALUES (%s, %s, %s, %s, %s, 'human', %s, %s)
+                """,
+                (uuid4(), page_id, next_version, markdown, Jsonb([]), updated_by, "Refreshed by bundle promotion"),
+            )
+            cur.execute(
+                """
+                UPDATE wiki_pages
+                SET title = %s,
+                    page_type = %s,
+                    status = %s,
+                    current_version = %s,
+                    updated_at = NOW(),
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                WHERE id = %s
+                """,
+                (
+                    title or existing_title,
+                    page_type,
+                    status,
+                    next_version,
+                    Jsonb(
+                        {
+                            "source": "bundle_promotion",
+                            "updated_by": updated_by,
+                            "profile": profile,
+                            "compiler_page": True,
+                        }
+                    ),
+                    page_id,
+                ),
+            )
+            cur.execute(
+                """
+                UPDATE wiki_statements
+                SET status = 'superseded',
+                    valid_to = COALESCE(valid_to, NOW()),
+                    updated_at = NOW(),
+                    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+                WHERE page_id = %s
+                  AND status = 'active'
+                """,
+                (Jsonb({"superseded_by": updated_by, "superseded_by_version": next_version}), page_id),
+            )
+            sections = _extract_sections_from_markdown(markdown)
+            statement_count = 0
+            for index, section in enumerate(sections):
+                section_key = str(section.get("section_key") or f"section_{index + 1}").strip() or f"section_{index + 1}"
+                heading = str(section.get("heading") or _section_heading_from_key(section_key)).strip()
+                statements = [str(item).strip() for item in (section.get("statements") or []) if str(item).strip()]
+                cur.execute(
+                    """
+                    INSERT INTO wiki_sections (page_id, section_key, heading, order_index, statement_count)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (page_id, section_key) DO UPDATE
+                    SET heading = EXCLUDED.heading,
+                        order_index = EXCLUDED.order_index,
+                        statement_count = EXCLUDED.statement_count
+                    """,
+                    (page_id, section_key, heading or _section_heading_from_key(section_key), index, len(statements)),
+                )
+                for statement in statements:
+                    statement_count += 1
+                    cur.execute(
+                        """
+                        INSERT INTO wiki_statements (
+                          id, project_id, page_id, section_key, statement_text, normalized_text,
+                          claim_fingerprint, status, metadata, valid_from
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s, NOW())
+                        """,
+                        (
+                            uuid4(),
+                            project_id,
+                            page_id,
+                            section_key,
+                            statement,
+                            _normalize_statement_text(statement),
+                            _compute_claim_fingerprint(project_id, existing_entity_key, page_type, statement),
+                            Jsonb({"source": "bundle_promotion", "updated_by": updated_by, "page_version": next_version}),
+                        ),
+                    )
+            updated.append(
+                {
+                    "id": str(page_id),
+                    "slug": existing_slug,
+                    "title": title or existing_title,
+                    "status": status,
+                    "current_version": next_version,
+                    "statements": statement_count,
+                    "quality_gate": {
+                        "forced_publish_core": bool(forced_publish_core),
+                        "schema_contract": schema_contract,
+                    },
+                }
+            )
+
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "summary": {
+            "created": len(created),
+            "updated": len(updated),
+            "skipped": len(skipped),
+            "published_downgraded_to_reviewed": int(downgraded_to_reviewed),
+            "force_published_core_pages": int(force_published_core_pages),
+        },
+    }
+
+
+def _build_bundle_promotion_summary(
+    cur: Any,
+    *,
+    project_id: str,
+    max_items: int = 8,
+) -> dict[str, Any]:
+    if not _wiki_feature_table_exists(cur, "public.evidence_bundles"):
+        return {
+            "available": False,
+            "bundles_total": 0,
+            "ready_total": 0,
+            "candidate_total": 0,
+            "observed_total": 0,
+            "suppressed_total": 0,
+            "top_page_types": [],
+            "top_taxonomy_classes": [],
+        }
+    cur.execute(
+        """
+        SELECT bundle_status, COUNT(*)::bigint
+        FROM evidence_bundles
+        WHERE project_id = %s
+        GROUP BY 1
+        """,
+        (project_id,),
+    )
+    status_counts: dict[str, int] = {}
+    for row in cur.fetchall() or []:
+        key = str(row[0] or "unknown").strip().lower() or "unknown"
+        status_counts[key] = int(row[1] or 0)
+    cur.execute(
+        """
+        SELECT suggested_page_type, COUNT(*)::bigint
+        FROM evidence_bundles
+        WHERE project_id = %s
+        GROUP BY 1
+        ORDER BY COUNT(*) DESC, suggested_page_type ASC
+        LIMIT %s
+        """,
+        (project_id, int(max_items)),
+    )
+    top_page_types = [
+        {
+            "suggested_page_type": str(row[0] or "operations").strip().lower() or "operations",
+            "count": int(row[1] or 0),
+        }
+        for row in (cur.fetchall() or [])
+    ]
+    cur.execute(
+        """
+        SELECT COALESCE(metadata->>'knowledge_taxonomy_class', 'unknown') AS taxonomy_class, COUNT(*)::bigint
+        FROM evidence_bundles
+        WHERE project_id = %s
+        GROUP BY 1
+        ORDER BY COUNT(*) DESC, taxonomy_class ASC
+        LIMIT %s
+        """,
+        (project_id, int(max_items)),
+    )
+    top_taxonomy_classes = [
+        {
+            "knowledge_taxonomy_class": str(row[0] or "unknown").strip().lower() or "unknown",
+            "count": int(row[1] or 0),
+        }
+        for row in (cur.fetchall() or [])
+    ]
+    bundles_total = sum(status_counts.values())
+    return {
+        "available": True,
+        "bundles_total": int(bundles_total),
+        "ready_total": int(status_counts.get("ready", 0)),
+        "candidate_total": int(status_counts.get("candidate", 0)),
+        "observed_total": int(status_counts.get("observed", 0)),
+        "suppressed_total": int(status_counts.get("suppressed", 0)),
+        "top_page_types": top_page_types,
+        "top_taxonomy_classes": top_taxonomy_classes,
+    }
+
+
 def _is_daily_summary_like_draft_row(
     *,
     page_slug: str | None,
@@ -34216,6 +34714,146 @@ def run_adoption_agent_wiki_bootstrap(
             mark_request_failed(
                 conn,
                 endpoint="/v1/adoption/agent-wiki-bootstrap",
+                idempotency_key=idempotency_key,
+                error_message=str(exc),
+            )
+            raise
+
+
+@app.post("/v1/adoption/bundle-promotion/run", response_model=None)
+def run_adoption_bundle_promotion(
+    payload: AdoptionBundlePromotionRunRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm = str(payload.confirm_project_id or "").strip()
+        if confirm != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    actor = str(payload.updated_by or "").strip() or "ops_admin"
+    space_key = _normalize_space_key(payload.space_key or "", default="operations")
+    requested_status = "published" if bool(payload.publish) else "reviewed"
+
+    with get_conn() as conn:
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint="/v1/adoption/bundle-promotion/run",
+            idempotency_key=idempotency_key,
+            request_payload=payload.model_dump(mode="json"),
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        try:
+            with conn.cursor() as cur:
+                plan_pages = _build_bundle_promotion_pages(
+                    cur,
+                    project_id=project_id,
+                    space_key=space_key,
+                    include_data_sources_catalog=bool(payload.include_data_sources_catalog),
+                    include_agent_capability_profile=bool(payload.include_agent_capability_profile),
+                    include_process_playbooks=bool(payload.include_process_playbooks),
+                    include_decisions_log=bool(payload.include_decisions_log),
+                    include_company_operating_context=bool(payload.include_company_operating_context),
+                    include_operational_logic_map=bool(payload.include_operational_logic_map),
+                    max_sources=int(payload.max_sources),
+                    max_agents=int(payload.max_agents),
+                    max_signals=int(payload.max_signals),
+                )
+                bundle_summary = _build_bundle_promotion_summary(
+                    cur,
+                    project_id=project_id,
+                    max_items=8,
+                )
+            page_preview = [
+                {
+                    "title": str(item.get("title") or ""),
+                    "slug": str(item.get("slug") or ""),
+                    "page_type": str(item.get("page_type") or "operations"),
+                    "words": len(str(item.get("markdown") or "").split()),
+                    "importance": _bootstrap_page_importance(
+                        slug=str(item.get("slug") or ""),
+                        page_type=str(item.get("page_type") or "operations"),
+                    ),
+                }
+                for item in plan_pages
+            ]
+            response: dict[str, Any] = {
+                "status": "ok",
+                "project_id": project_id,
+                "dry_run": bool(payload.dry_run),
+                "space_key": space_key,
+                "requested_status": requested_status,
+                "bootstrap_publish_core": bool(payload.bootstrap_publish_core),
+                "knowledge_compiler": {
+                    "mode": "bundle_level_promotion",
+                    "source": "evidence_bundles",
+                    "summary": bundle_summary,
+                },
+                "plan": {
+                    "pages_total": len(page_preview),
+                    "pages": page_preview,
+                },
+                "preview_apply_flow": {
+                    "step_1": "preview",
+                    "step_2": "apply",
+                    "apply_hint": "rerun this endpoint with dry_run=false and confirm_project_id",
+                    "apply_payload_template": {
+                        "project_id": project_id,
+                        "updated_by": actor,
+                        "dry_run": False,
+                        "confirm_project_id": project_id,
+                        "publish": bool(payload.publish),
+                        "bootstrap_publish_core": bool(payload.bootstrap_publish_core),
+                        "space_key": space_key,
+                    },
+                },
+                "quality_report": _build_agent_wiki_bootstrap_quality_report(
+                    plan_pages=plan_pages,
+                    page_result=None,
+                ),
+                "generated_at": datetime.now(UTC).isoformat(),
+            }
+            if bool(payload.dry_run):
+                response["next_action"] = "rerun_with_dry_run=false_and_confirm_project_id"
+            else:
+                page_result = _upsert_compiler_pages(
+                    conn,
+                    project_id=project_id,
+                    updated_by=actor,
+                    profile="bundle_promotion",
+                    pages=plan_pages,
+                    requested_status=requested_status,
+                    bootstrap_publish_core=bool(payload.bootstrap_publish_core),
+                )
+                response.update(page_result)
+                merged_page_result = {
+                    "created": [*(page_result.get("created") or []), *(page_result.get("updated") or [])],
+                    "summary": page_result.get("summary") or {},
+                }
+                response["quality_report"] = _build_agent_wiki_bootstrap_quality_report(
+                    plan_pages=plan_pages,
+                    page_result=merged_page_result,
+                )
+            mark_request_completed(
+                conn,
+                endpoint="/v1/adoption/bundle-promotion/run",
+                idempotency_key=idempotency_key,
+                status_code=200,
+                response_body=response,
+            )
+            return response
+        except Exception as exc:
+            mark_request_failed(
+                conn,
+                endpoint="/v1/adoption/bundle-promotion/run",
                 idempotency_key=idempotency_key,
                 error_message=str(exc),
             )

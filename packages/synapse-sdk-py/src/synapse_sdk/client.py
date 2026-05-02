@@ -731,6 +731,52 @@ class SynapseClient:
             },
         )
 
+    def run_adoption_bundle_promotion(
+        self,
+        *,
+        updated_by: str,
+        dry_run: bool = True,
+        confirm_project_id: str | None = None,
+        publish: bool = True,
+        bootstrap_publish_core: bool = True,
+        space_key: str = "operations",
+        include_data_sources_catalog: bool = True,
+        include_agent_capability_profile: bool = True,
+        include_process_playbooks: bool = True,
+        include_decisions_log: bool = True,
+        include_company_operating_context: bool = True,
+        include_operational_logic_map: bool = True,
+        max_sources: int = 20,
+        max_agents: int = 12,
+        max_signals: int = 50,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/bundle-promotion/run",
+            method="POST",
+            payload={
+                "project_id": self._config.project_id,
+                "updated_by": updated_by,
+                "dry_run": bool(dry_run),
+                "confirm_project_id": (
+                    self._config.project_id if not dry_run and confirm_project_id is None else confirm_project_id
+                ),
+                "publish": bool(publish),
+                "bootstrap_publish_core": bool(bootstrap_publish_core),
+                "space_key": _normalize_space_key(space_key),
+                "include_data_sources_catalog": bool(include_data_sources_catalog),
+                "include_agent_capability_profile": bool(include_agent_capability_profile),
+                "include_process_playbooks": bool(include_process_playbooks),
+                "include_decisions_log": bool(include_decisions_log),
+                "include_company_operating_context": bool(include_company_operating_context),
+                "include_operational_logic_map": bool(include_operational_logic_map),
+                "max_sources": max(1, min(200, int(max_sources))),
+                "max_agents": max(1, min(100, int(max_agents))),
+                "max_signals": max(1, min(500, int(max_signals))),
+            },
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
     def get_adoption_policy_calibration_quick_loop(self, *, days: int = 14) -> dict[str, Any]:
         return self._request_json(
             "/v1/adoption/policy-calibration/quick-loop",

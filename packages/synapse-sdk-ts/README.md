@@ -81,6 +81,13 @@ const audit = await synapse.getAdoptionSignalNoiseAudit({ days: 14 });
 const monitor = await synapse.getAdoptionStabilityMonitor({ days: 14 });
 const prompts = await synapse.getAdoptionSynthesisPrompts({ days: 14, maxItems: 8 });
 const benchmark = await synapse.getAdoptionWikiRichnessBenchmark({ days: 14 });
+const bundleRun = await synapse.runAdoptionBundlePromotion({
+  updatedBy: "ops_admin",
+  dryRun: true,
+  publish: true,
+  bootstrapPublishCore: true,
+  spaceKey: "operations"
+});
 ```
 
 These helpers make it easier to evaluate whether the wiki is actually becoming useful:
@@ -88,6 +95,7 @@ These helpers make it easier to evaluate whether the wiki is actually becoming u
 - current stability state and whether safe mode should be recommended or has already been applied,
 - missing durable knowledge,
 - targeted follow-up questions,
+- preview/apply refresh of core wiki pages from durable bundles,
 - richness / completeness benchmark.
 
 ## Graceful Degradation Modes
