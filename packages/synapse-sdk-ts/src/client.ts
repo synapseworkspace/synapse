@@ -736,6 +736,46 @@ export class SynapseClient {
     });
   }
 
+  async listAdoptionEvidenceLedger(options: {
+    sourceShape?: string;
+    volatilityClass?: string;
+    piiLevel?: string;
+    evidenceRole?: string;
+    ingestionClassification?: string;
+    knowledgeTaxonomyClass?: string;
+    normalizedTargetType?: string;
+    bundleStatus?: string;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/evidence-ledger", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        source_shape: asOptionalString(options.sourceShape)?.toLowerCase(),
+        volatility_class: asOptionalString(options.volatilityClass)?.toLowerCase(),
+        pii_level: asOptionalString(options.piiLevel)?.toLowerCase(),
+        evidence_role: asOptionalString(options.evidenceRole)?.toLowerCase(),
+        ingestion_classification: asOptionalString(options.ingestionClassification)?.toLowerCase(),
+        knowledge_taxonomy_class: asOptionalString(options.knowledgeTaxonomyClass)?.toLowerCase(),
+        normalized_target_type: asOptionalString(options.normalizedTargetType)?.toLowerCase(),
+        bundle_status: asOptionalString(options.bundleStatus)?.toLowerCase(),
+        limit: normalizeInt(options.limit ?? 50, 1, 200)
+      }
+    });
+  }
+
+  async getAdoptionEvidenceLedgerStats(options: {
+    days?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/evidence-ledger/stats", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 30, 1, 365)
+      }
+    });
+  }
+
   async getAdoptionStabilityMonitor(options: {
     days?: number;
     maxItemsPerBucket?: number;

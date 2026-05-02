@@ -246,6 +246,8 @@ Enterprise shortcut (single API call):
 - `GET /v1/adoption/knowledge-gaps` shows where the wiki is still missing durable answers, grounded process detail, or source-backed structure.
 - `POST /v1/adoption/knowledge-gaps/tasks/sync` turns those gaps into deduplicated Synapse tasks so missing knowledge enters the execution loop.
 - `GET /v1/adoption/signal-noise/audit` gives operators one compact view of rejection pressure, bundle promotion, weak page families, missing signals, and noisy source families.
+- `GET /v1/adoption/evidence-ledger` exposes the normalized evidence layer directly, with source shape, volatility, PII level, transactionality, taxonomy, and bundle linkage separated from wiki intent.
+- `GET /v1/adoption/evidence-ledger/stats` shows how much of the current evidence layer is durable vs ephemeral, suppressed vs promoted, and where sensitive evidence is accumulating.
 - `GET /v1/adoption/stability-monitor` turns those signals into an operator-ready health state and records the safe-mode recommendation/apply loop in audit history.
 - `GET /v1/adoption/synthesis-prompts` generates targeted follow-up questions for agents/operators from candidate bundles, repeated unanswered questions, and weak pages.
 - `POST /v1/adoption/bundle-promotion/run` refreshes core wiki pages directly from durable evidence bundles with a safe `Preview -> Apply` flow.
@@ -260,6 +262,8 @@ curl -X POST "http://localhost:8080/v1/adoption/knowledge-gaps/tasks/sync" \
   -H "Content-Type: application/json" \
   -d '{"project_id":"omega_demo","created_by":"ops_admin","dry_run":true}'
 curl "http://localhost:8080/v1/adoption/signal-noise/audit?project_id=omega_demo"
+curl "http://localhost:8080/v1/adoption/evidence-ledger?project_id=omega_demo&limit=20"
+curl "http://localhost:8080/v1/adoption/evidence-ledger/stats?project_id=omega_demo&days=30"
 curl "http://localhost:8080/v1/adoption/stability-monitor?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/synthesis-prompts?project_id=omega_demo"
 curl -X POST "http://localhost:8080/v1/adoption/bundle-promotion/run" \

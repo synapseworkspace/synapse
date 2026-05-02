@@ -24928,6 +24928,249 @@ def list_adoption_evidence_bundles(
     }
 
 
+def _redact_evidence_excerpt_if_needed(*, pii_level: str, excerpt: str | None) -> str | None:
+    normalized_level = str(pii_level or "").strip().lower()
+    if normalized_level == "high":
+        return "[redacted: high-risk evidence excerpt hidden]"
+    return excerpt
+
+
+@app.get("/v1/adoption/evidence-ledger")
+def list_adoption_evidence_ledger(
+    project_id: str,
+    source_shape: str | None = Query(default=None),
+    volatility_class: str | None = Query(default=None),
+    pii_level: str | None = Query(default=None),
+    evidence_role: str | None = Query(default=None),
+    ingestion_classification: str | None = Query(default=None),
+    knowledge_taxonomy_class: str | None = Query(default=None),
+    normalized_target_type: str | None = Query(default=None),
+    bundle_status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    rows: list[tuple[Any, ...]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.evidence_records"):
+                return JSONResponse(status_code=503, content={"error": "evidence_ledger_unavailable"})
+            has_bundles = _wiki_feature_table_exists(cur, "public.evidence_bundles")
+            where_parts = ["er.project_id = %s"]
+            params: list[Any] = [project_id]
+            for field_name, raw_value in (
+                ("er.source_shape", source_shape),
+                ("er.volatility_class", volatility_class),
+                ("er.pii_level", pii_level),
+                ("er.evidence_role", evidence_role),
+                ("er.ingestion_classification", ingestion_classification),
+                ("er.knowledge_taxonomy_class", knowledge_taxonomy_class),
+                ("er.normalized_target_type", normalized_target_type),
+            ):
+                normalized = str(raw_value or "").strip().lower()
+                if normalized:
+                    where_parts.append(f"{field_name} = %s")
+                    params.append(normalized)
+            normalized_bundle_status = str(bundle_status or "").strip().lower()
+            if normalized_bundle_status and has_bundles:
+                where_parts.append("COALESCE(b.bundle_status, 'unbundled') = %s")
+                params.append(normalized_bundle_status)
+            join_sql = (
+                "LEFT JOIN evidence_bundles b ON b.project_id = er.project_id AND b.bundle_key = er.bundle_key"
+                if has_bundles
+                else ""
+            )
+            cur.execute(
+                f"""
+                SELECT
+                  er.id::text,
+                  er.claim_id::text,
+                  er.bundle_key,
+                  er.event_id,
+                  er.entity_key,
+                  er.category,
+                  er.source_type,
+                  er.source_id,
+                  er.source_system,
+                  er.source_shape,
+                  er.volatility_class,
+                  er.pii_level,
+                  er.transactionality,
+                  er.ingestion_classification,
+                  er.knowledge_taxonomy_class,
+                  er.normalized_target_type,
+                  er.evidence_role,
+                  er.content_excerpt,
+                  er.observed_at,
+                  er.metadata,
+                  COALESCE(b.bundle_status, 'unbundled') AS bundle_status,
+                  COALESCE(b.quality_score, 0) AS bundle_quality_score
+                FROM evidence_records er
+                {join_sql}
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY
+                  er.observed_at DESC NULLS LAST,
+                  er.created_at DESC
+                LIMIT %s
+                """,
+                tuple([*params, int(limit)]),
+            )
+            rows = cur.fetchall() or []
+
+    records = [
+        {
+            "id": row[0],
+            "claim_id": row[1],
+            "bundle_key": row[2],
+            "event_id": row[3],
+            "entity_key": row[4],
+            "category": row[5],
+            "source_type": row[6],
+            "source_id": row[7],
+            "source_system": row[8],
+            "source_shape": row[9],
+            "volatility_class": row[10],
+            "pii_level": row[11],
+            "transactionality": row[12],
+            "ingestion_classification": row[13],
+            "knowledge_taxonomy_class": row[14],
+            "normalized_target_type": row[15],
+            "evidence_role": row[16],
+            "content_excerpt": _redact_evidence_excerpt_if_needed(pii_level=str(row[11] or ""), excerpt=row[17]),
+            "observed_at": row[18].isoformat() if row[18] is not None else None,
+            "metadata": row[19] if isinstance(row[19], dict) else {},
+            "bundle_status": row[20],
+            "bundle_quality_score": float(row[21] or 0.0),
+        }
+        for row in rows
+    ]
+    summary: dict[str, dict[str, int]] = {
+        "source_shapes": {},
+        "volatility_classes": {},
+        "pii_levels": {},
+        "evidence_roles": {},
+        "bundle_statuses": {},
+    }
+    for record in records:
+        for bucket, key in (
+            ("source_shapes", str(record.get("source_shape") or "unknown")),
+            ("volatility_classes", str(record.get("volatility_class") or "unknown")),
+            ("pii_levels", str(record.get("pii_level") or "unknown")),
+            ("evidence_roles", str(record.get("evidence_role") or "unknown")),
+            ("bundle_statuses", str(record.get("bundle_status") or "unknown")),
+        ):
+            summary[bucket][key] = int(summary[bucket].get(key, 0)) + 1
+    return {
+        "records": records,
+        "summary": summary,
+        "filters": {
+            "project_id": project_id,
+            "source_shape": source_shape,
+            "volatility_class": volatility_class,
+            "pii_level": pii_level,
+            "evidence_role": evidence_role,
+            "ingestion_classification": ingestion_classification,
+            "knowledge_taxonomy_class": knowledge_taxonomy_class,
+            "normalized_target_type": normalized_target_type,
+            "bundle_status": bundle_status,
+            "limit": int(limit),
+        },
+    }
+
+
+@app.get("/v1/adoption/evidence-ledger/stats")
+def get_adoption_evidence_ledger_stats(
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict[str, Any]:
+    observed_after = datetime.now(UTC) - timedelta(days=int(days))
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.evidence_records"):
+                return JSONResponse(status_code=503, content={"error": "evidence_ledger_unavailable"})
+            has_bundles = _wiki_feature_table_exists(cur, "public.evidence_bundles")
+            bundle_join = (
+                "LEFT JOIN evidence_bundles b ON b.project_id = er.project_id AND b.bundle_key = er.bundle_key"
+                if has_bundles
+                else ""
+            )
+            cur.execute(
+                f"""
+                SELECT
+                  COALESCE(er.source_shape, 'unknown') AS source_shape,
+                  COALESCE(er.volatility_class, 'unknown') AS volatility_class,
+                  COALESCE(er.pii_level, 'unknown') AS pii_level,
+                  COALESCE(er.evidence_role, 'unknown') AS evidence_role,
+                  COALESCE(er.knowledge_taxonomy_class, 'unknown') AS knowledge_taxonomy_class,
+                  COALESCE(er.source_system, 'unknown') AS source_system,
+                  COALESCE({ 'b.bundle_status' if has_bundles else "'unbundled'" }, 'unbundled') AS bundle_status,
+                  COUNT(*)::int
+                FROM evidence_records er
+                {bundle_join}
+                WHERE er.project_id = %s
+                  AND COALESCE(er.observed_at, er.created_at) >= %s
+                GROUP BY 1, 2, 3, 4, 5, 6, 7
+                """,
+                (project_id, observed_after),
+            )
+            rows = cur.fetchall() or []
+            cur.execute(
+                """
+                SELECT
+                  COUNT(*)::int,
+                  COUNT(*) FILTER (WHERE pii_level = 'high')::int,
+                  COUNT(*) FILTER (WHERE volatility_class IN ('durable', 'authoritative'))::int,
+                  COUNT(*) FILTER (WHERE evidence_role = 'suppressed')::int
+                FROM evidence_records
+                WHERE project_id = %s
+                  AND COALESCE(observed_at, created_at) >= %s
+                """,
+                (project_id, observed_after),
+            )
+            total_row = cur.fetchone() or (0, 0, 0, 0)
+
+    breakdowns: dict[str, dict[str, int]] = {
+        "source_shapes": {},
+        "volatility_classes": {},
+        "pii_levels": {},
+        "evidence_roles": {},
+        "knowledge_taxonomy_classes": {},
+        "source_systems": {},
+        "bundle_statuses": {},
+    }
+    for row in rows:
+        source_shape, volatility_cls, pii_cls, evidence_role_value, taxonomy_cls, source_system_value, bundle_status_value, count = row
+        mapping = (
+            ("source_shapes", source_shape),
+            ("volatility_classes", volatility_cls),
+            ("pii_levels", pii_cls),
+            ("evidence_roles", evidence_role_value),
+            ("knowledge_taxonomy_classes", taxonomy_cls),
+            ("source_systems", source_system_value),
+            ("bundle_statuses", bundle_status_value),
+        )
+        for bucket, key in mapping:
+            breakdowns[bucket][str(key or "unknown")] = int(breakdowns[bucket].get(str(key or "unknown"), 0)) + int(count or 0)
+
+    total_records = int(total_row[0] or 0)
+    high_pii_records = int(total_row[1] or 0)
+    durable_records = int(total_row[2] or 0)
+    suppressed_records = int(total_row[3] or 0)
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "observed_after": observed_after.isoformat(),
+        "totals": {
+            "records": total_records,
+            "high_pii_records": high_pii_records,
+            "durable_records": durable_records,
+            "suppressed_records": suppressed_records,
+            "durable_ratio": round((durable_records / total_records), 4) if total_records else 0.0,
+            "high_pii_ratio": round((high_pii_records / total_records), 4) if total_records else 0.0,
+            "suppressed_ratio": round((suppressed_records / total_records), 4) if total_records else 0.0,
+        },
+        "breakdowns": breakdowns,
+    }
+
+
 _DRAFT_STATUSES = {"pending_review", "blocked_conflict", "approved", "rejected"}
 _RISK_LEVEL_TO_INT = {"low": 0, "medium": 1, "high": 2}
 _BUNDLE_STATUS_PRIORITY = {"ready": 3, "candidate": 2, "observed": 1, "suppressed": 0}

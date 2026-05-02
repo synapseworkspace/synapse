@@ -857,6 +857,7 @@ class WikiSynthesisEngine:
         self._gatekeeper_config_has_routing_policy_column_cache: bool | None = None
         self._evidence_bundles_table_exists_cache: bool | None = None
         self._evidence_bundle_claim_links_table_exists_cache: bool | None = None
+        self._evidence_records_table_exists_cache: bool | None = None
         self._routing_feedback_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._page_context_cache: dict[str, tuple[float, str]] = {}
         self.routing_feedback_cache_ttl_sec = max(
@@ -1968,6 +1969,12 @@ class WikiSynthesisEngine:
             gate=gate,
             observed_at=valid_from or claim.observed_at,
         )
+        self._upsert_evidence_records(
+            conn,
+            claim=claim,
+            gate=gate,
+            observed_at=valid_from or claim.observed_at,
+        )
 
         if gate.tier == "operational_memory":
             return
@@ -2470,6 +2477,15 @@ class WikiSynthesisEngine:
         self._evidence_bundle_claim_links_table_exists_cache = bool(row and row[0] is not None)
         return self._evidence_bundle_claim_links_table_exists_cache
 
+    def _evidence_records_table_exists(self, conn) -> bool:
+        if self._evidence_records_table_exists_cache is not None:
+            return self._evidence_records_table_exists_cache
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.evidence_records')")
+            row = cur.fetchone()
+        self._evidence_records_table_exists_cache = bool(row and row[0] is not None)
+        return self._evidence_records_table_exists_cache
+
     def _load_existing_evidence_bundle_snapshot(
         self,
         conn,
@@ -2549,6 +2565,286 @@ class WikiSynthesisEngine:
             "knowledge_taxonomy_class": taxonomy_class,
             "normalized_target_type": normalized_target_type,
         }
+
+    def _derive_evidence_source_shape(self, evidence: dict[str, Any]) -> str:
+        source_type = str(evidence.get("source_type") or "").strip().lower()
+        snippet = str(evidence.get("snippet") or "").strip()
+        metadata = evidence.get("metadata") if isinstance(evidence.get("metadata"), dict) else {}
+        provenance = evidence.get("provenance") if isinstance(evidence.get("provenance"), dict) else {}
+        mime_type = str(provenance.get("mime_type") or metadata.get("mime_type") or "").strip().lower()
+        format_hint = str(provenance.get("format") or metadata.get("format") or "").strip().lower()
+        url = str(evidence.get("url") or "").strip().lower()
+        if source_type == "file":
+            if mime_type in {"text/markdown", "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}:
+                return "document"
+            if format_hint in {"csv", "tsv", "json", "jsonl", "xlsx", "xls"}:
+                return "structured_record"
+            return "document"
+        if source_type == "tool_output":
+            if snippet.startswith("{") or snippet.startswith("[") or format_hint in {"json", "jsonl", "csv", "tsv"}:
+                return "structured_record"
+            return "tool_summary"
+        if source_type in {"dialog", "human_note"}:
+            return "conversation"
+        if source_type == "external_event":
+            if snippet.startswith("{") or snippet.startswith("[") or "event" in url or format_hint in {"json", "jsonl"}:
+                return "event_payload"
+            return "event_summary"
+        return "unknown"
+
+    def _derive_evidence_volatility_class(
+        self,
+        *,
+        source_shape: str,
+        source_type: str,
+        ingestion_classification: str | None,
+        taxonomy_class: str | None,
+        suggested_page_type: str | None,
+        source_system: str | None,
+    ) -> str:
+        normalized_ingestion = str(ingestion_classification or "").strip().lower()
+        normalized_taxonomy = str(taxonomy_class or "").strip().lower()
+        normalized_page_type = str(suggested_page_type or "").strip().lower()
+        normalized_source_system = str(source_system or "").strip().lower()
+        if normalized_ingestion == "pii_sensitive_stream":
+            return "ephemeral"
+        if source_shape == "event_payload" or normalized_ingestion == "operational_stream":
+            return "ephemeral"
+        if source_shape == "document" and (
+            "manual" in normalized_source_system
+            or "notion" in normalized_source_system
+            or "policy" in normalized_source_system
+            or "kb" in normalized_source_system
+        ):
+            return "authoritative"
+        if normalized_taxonomy in {"semantic", "procedural"} or normalized_page_type in {
+            "agent_profile",
+            "data_map",
+            "process",
+            "runbook",
+            "policy",
+            "decision_log",
+        }:
+            return "durable"
+        if source_type in {"dialog", "human_note"}:
+            return "session"
+        return "session"
+
+    def _derive_evidence_pii_level(
+        self,
+        *,
+        evidence: dict[str, Any],
+        ingestion_classification: str | None,
+        pii_keyword_hits: list[str],
+        pii_regex_hits: bool,
+    ) -> str:
+        if str(ingestion_classification or "").strip().lower() == "pii_sensitive_stream" or pii_regex_hits:
+            return "high"
+        if pii_keyword_hits:
+            return "possible"
+        snippet = str(evidence.get("snippet") or "").strip().lower()
+        if "@" in snippet or re.search(r"\+\d[\d\-\s()]{6,}", snippet):
+            return "possible"
+        return "none"
+
+    def _derive_evidence_transactionality(
+        self,
+        *,
+        source_shape: str,
+        category: str,
+        suggested_page_type: str | None,
+        normalized_target_type: str | None,
+    ) -> str:
+        normalized_category = str(category or "").strip().lower()
+        normalized_page_type = str(suggested_page_type or "").strip().lower()
+        normalized_target = str(normalized_target_type or "").strip().lower()
+        if source_shape in {"event_payload", "structured_record"} and any(
+            token in normalized_category
+            for token in ("order", "invoice", "ticket", "shipment", "delivery", "transaction", "snapshot")
+        ):
+            return "transactional"
+        if normalized_page_type in {"policy", "runbook", "process"}:
+            return "policy"
+        if normalized_target in {"agent_profile", "data_source_doc", "process_playbook", "decision_log"}:
+            return "reference"
+        if source_shape in {"tool_summary", "event_summary", "conversation"}:
+            return "aggregate"
+        return "unknown"
+
+    def _normalize_evidence_excerpt(self, text: str | None, *, fallback: str) -> str:
+        candidate = str(text or "").strip() or str(fallback or "").strip()
+        candidate = re.sub(r"\s+", " ", candidate)
+        if len(candidate) > 320:
+            return candidate[:317].rstrip() + "..."
+        return candidate
+
+    def _upsert_evidence_records(
+        self,
+        conn,
+        *,
+        claim: ClaimInput,
+        gate: GatekeeperDecision,
+        observed_at: datetime | None,
+    ) -> None:
+        if not self._evidence_records_table_exists(conn):
+            return
+        features = gate.features if isinstance(gate.features, dict) else {}
+        compiler_v2 = claim.metadata.get("compiler_v2") if isinstance(claim.metadata.get("compiler_v2"), dict) else {}
+        bundle_key = str(features.get("bundle_key") or "").strip() or None
+        source_system_fallback = self._extract_source_systems(claim.evidence)
+        taxonomy_class = str(
+            compiler_v2.get("knowledge_taxonomy_class")
+            or features.get("knowledge_taxonomy_class")
+            or ""
+        ).strip().lower() or None
+        normalized_target_type = str(
+            compiler_v2.get("normalized_target_type")
+            or features.get("normalized_target_type")
+            or ""
+        ).strip().lower() or None
+        ingestion_classification = str(features.get("ingestion_classification") or "").strip().lower() or None
+        suggested_page_type = str(features.get("suggested_page_type") or "").strip().lower() or None
+        pii_keyword_hits = [str(item).strip().lower() for item in (features.get("pii_keyword_hits") or []) if str(item).strip()]
+        pii_regex_hits = bool(features.get("pii_regex_hits"))
+        evidence_role = "supporting"
+        if gate.tier == "operational_memory":
+            evidence_role = "suppressed"
+        elif claim.metadata.get("source") == "agent_reflection":
+            evidence_role = "derived"
+        normalized_observed_at = self._ensure_utc(observed_at) if observed_at else (claim.observed_at or datetime.now(timezone.utc))
+        evidence_items = [item for item in claim.evidence if isinstance(item, dict)]
+        if not evidence_items:
+            evidence_items = [
+                {
+                    "source_type": "external_event",
+                    "source_id": f"claim:{claim.id}",
+                    "snippet": claim.claim_text,
+                    "metadata": claim.metadata,
+                }
+            ]
+        with conn.cursor() as cur:
+            for index, evidence in enumerate(evidence_items):
+                evidence_metadata = evidence.get("metadata") if isinstance(evidence.get("metadata"), dict) else {}
+                evidence_provenance = evidence.get("provenance") if isinstance(evidence.get("provenance"), dict) else {}
+                source_type = str(evidence.get("source_type") or "external_event").strip().lower() or "external_event"
+                source_id = str(evidence.get("source_id") or evidence.get("id") or f"claim:{claim.id}:{index + 1}").strip()
+                source_system = str(
+                    evidence.get("source_system")
+                    or evidence_metadata.get("source_system")
+                    or evidence_metadata.get("source")
+                    or evidence_provenance.get("source_system")
+                    or (source_system_fallback[0] if source_system_fallback else "")
+                ).strip().lower() or None
+                source_shape = self._derive_evidence_source_shape(evidence)
+                volatility_class = self._derive_evidence_volatility_class(
+                    source_shape=source_shape,
+                    source_type=source_type,
+                    ingestion_classification=ingestion_classification,
+                    taxonomy_class=taxonomy_class,
+                    suggested_page_type=suggested_page_type,
+                    source_system=source_system,
+                )
+                pii_level = self._derive_evidence_pii_level(
+                    evidence=evidence,
+                    ingestion_classification=ingestion_classification,
+                    pii_keyword_hits=pii_keyword_hits,
+                    pii_regex_hits=pii_regex_hits,
+                )
+                transactionality = self._derive_evidence_transactionality(
+                    source_shape=source_shape,
+                    category=claim.category,
+                    suggested_page_type=suggested_page_type,
+                    normalized_target_type=normalized_target_type,
+                )
+                evidence_observed_at = ClaimInput._parse_datetime(
+                    evidence.get("observed_at")
+                    or evidence_provenance.get("observed_at")
+                ) or normalized_observed_at
+                metadata = {
+                    "bundle_key": bundle_key,
+                    "knowledge_dimensions": [str(item).strip() for item in (features.get("knowledge_dimensions") or []) if str(item).strip()],
+                    "assertion_class": str(features.get("assertion_class") or "").strip().lower() or None,
+                    "support_count": int(features.get("bundle_support") or 0),
+                    "source_diversity": int(features.get("source_diversity") or 0),
+                    "quality_score": float(features.get("knowledge_like_score") or gate.score or 0.0),
+                    "event_id": str(claim.metadata.get("event_id") or "").strip() or None,
+                    "tool_name": str(evidence.get("tool_name") or "").strip() or None,
+                    "url": str(evidence.get("url") or "").strip() or None,
+                    "metadata": evidence_metadata,
+                    "provenance": evidence_provenance,
+                }
+                metadata = {key: value for key, value in metadata.items() if value not in (None, "", [], {})}
+                cur.execute(
+                    """
+                    INSERT INTO evidence_records (
+                      id,
+                      project_id,
+                      claim_id,
+                      bundle_key,
+                      event_id,
+                      entity_key,
+                      category,
+                      source_type,
+                      source_id,
+                      source_system,
+                      source_shape,
+                      volatility_class,
+                      pii_level,
+                      transactionality,
+                      ingestion_classification,
+                      knowledge_taxonomy_class,
+                      normalized_target_type,
+                      evidence_role,
+                      content_excerpt,
+                      observed_at,
+                      metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (project_id, claim_id, source_type, source_id, evidence_role) DO UPDATE
+                    SET bundle_key = EXCLUDED.bundle_key,
+                        event_id = COALESCE(EXCLUDED.event_id, evidence_records.event_id),
+                        entity_key = EXCLUDED.entity_key,
+                        category = EXCLUDED.category,
+                        source_system = COALESCE(EXCLUDED.source_system, evidence_records.source_system),
+                        source_shape = EXCLUDED.source_shape,
+                        volatility_class = EXCLUDED.volatility_class,
+                        pii_level = EXCLUDED.pii_level,
+                        transactionality = EXCLUDED.transactionality,
+                        ingestion_classification = EXCLUDED.ingestion_classification,
+                        knowledge_taxonomy_class = EXCLUDED.knowledge_taxonomy_class,
+                        normalized_target_type = EXCLUDED.normalized_target_type,
+                        content_excerpt = EXCLUDED.content_excerpt,
+                        observed_at = GREATEST(COALESCE(evidence_records.observed_at, EXCLUDED.observed_at), EXCLUDED.observed_at),
+                        metadata = COALESCE(evidence_records.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                        updated_at = NOW()
+                    """,
+                    (
+                        uuid.uuid4(),
+                        claim.project_id,
+                        claim.id,
+                        bundle_key,
+                        str(claim.metadata.get("event_id") or "").strip() or None,
+                        claim.entity_key,
+                        claim.category,
+                        source_type,
+                        source_id,
+                        source_system,
+                        source_shape,
+                        volatility_class,
+                        pii_level,
+                        transactionality,
+                        ingestion_classification,
+                        taxonomy_class,
+                        normalized_target_type,
+                        evidence_role,
+                        self._normalize_evidence_excerpt(
+                            evidence.get("snippet"),
+                            fallback=claim.claim_text,
+                        ),
+                        evidence_observed_at,
+                        self._jsonb(metadata),
+                    ),
+                )
 
     def _upsert_evidence_bundle(
         self,

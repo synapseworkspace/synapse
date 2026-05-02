@@ -264,6 +264,61 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertEqual(capability_taxonomy["knowledge_taxonomy_class"], "semantic")
         self.assertEqual(capability_taxonomy["normalized_target_type"], "agent_profile")
 
+    def test_evidence_semantics_classify_document_as_authoritative_durable(self) -> None:
+        evidence = {
+            "source_type": "file",
+            "source_id": "policy-doc-1",
+            "snippet": "Escalation policy for after-hours warehouse closure.",
+            "metadata": {"source_system": "notion_manual"},
+            "provenance": {"mime_type": "text/markdown"},
+        }
+        source_shape = self.engine._derive_evidence_source_shape(evidence)
+        self.assertEqual(source_shape, "document")
+        volatility = self.engine._derive_evidence_volatility_class(
+            source_shape=source_shape,
+            source_type="file",
+            ingestion_classification="evergreen_knowledge",
+            taxonomy_class="procedural",
+            suggested_page_type="process",
+            source_system="notion_manual",
+        )
+        self.assertEqual(volatility, "authoritative")
+
+    def test_evidence_semantics_classify_event_payload_as_ephemeral_transactional(self) -> None:
+        evidence = {
+            "source_type": "external_event",
+            "source_id": "order-stream-1",
+            "snippet": '{"order_id":"ord_42","status":"processing"}',
+            "provenance": {"format": "json"},
+        }
+        source_shape = self.engine._derive_evidence_source_shape(evidence)
+        self.assertEqual(source_shape, "event_payload")
+        volatility = self.engine._derive_evidence_volatility_class(
+            source_shape=source_shape,
+            source_type="external_event",
+            ingestion_classification="operational_stream",
+            taxonomy_class="operational",
+            suggested_page_type="fact",
+            source_system="postgres_sql",
+        )
+        transactionality = self.engine._derive_evidence_transactionality(
+            source_shape=source_shape,
+            category="order_snapshot",
+            suggested_page_type="fact",
+            normalized_target_type="fact",
+        )
+        self.assertEqual(volatility, "ephemeral")
+        self.assertEqual(transactionality, "transactional")
+
+    def test_evidence_semantics_raise_pii_level_from_hits(self) -> None:
+        pii_level = self.engine._derive_evidence_pii_level(
+            evidence={"snippet": "Call john@example.com for exception handling."},
+            ingestion_classification="evergreen_knowledge",
+            pii_keyword_hits=["email"],
+            pii_regex_hits=False,
+        )
+        self.assertEqual(pii_level, "possible")
+
     def test_backfill_suppression_enforce_mode_can_override_skip(self) -> None:
         class _Classifier:
             def classify(self, *, claim, features, config):  # type: ignore[no-untyped-def]

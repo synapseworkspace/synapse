@@ -47,7 +47,7 @@ Owner: Core team
 
 ## Knowledge Compiler v2 (May 2026)
 
-Status: `in_progress`
+Status: `done`
 
 Goal:
 - перестать думать в модели `одно событие -> один draft`;
@@ -62,7 +62,7 @@ Principles:
 - `reflection over raw logs`: Synapse должен уметь не только читать логи, но и собирать post-task reflection/debrief сигналы от агентов.
 
 Phase 1 (Architecture Reset)
-1. `in_progress` Evidence layer as first-class model:
+1. `done` Evidence layer as first-class model:
    - выделить явный слой `evidence` / `episodes` / `observations` отдельно от `claims` и `drafts`;
    - хранить source shape, freshness, volatility, PII risk, transactionality, and confidence separately from wiki intent.
 2. `done` Knowledge candidate bundles:
@@ -987,7 +987,8 @@ Checklist:
 
 ## Recent Updates
 
-- 2026-05-03: Reconciled `Knowledge Compiler v2` roadmap statuses with the codebase after the latest delivery wave. The track now treats `bundles`, `taxonomy`, `negative routing`, `process/data/capability/decision compilers`, `reflection/debrief`, `knowledge gaps`, `synthesis prompts`, `hard page schemas`, `publish-time enrichment`, `freshness semantics`, `importance-aware publishing`, and `richness benchmark` as `done`; the one major item intentionally left `in_progress` is `Evidence layer as first-class model`, because Synapse already has first-class bundles and reflection signals but still does not yet expose a fully separate generalized evidence/episode storage contract with all desired source-shape/volatility/PII semantics.
+- 2026-05-03: Reconciled `Knowledge Compiler v2` roadmap statuses with the codebase after the latest delivery wave. The track treats `bundles`, `taxonomy`, `negative routing`, `process/data/capability/decision compilers`, `reflection/debrief`, `knowledge gaps`, `synthesis prompts`, `hard page schemas`, `publish-time enrichment`, `freshness semantics`, `importance-aware publishing`, and `richness benchmark` as `done`; at that moment the one major item still left open was `Evidence layer as first-class model`, because Synapse already had first-class bundles and reflection signals but still did not expose a fully separate generalized evidence/episode storage contract with all desired source-shape/volatility/PII semantics.
+- 2026-05-03: Closed the final remaining `Knowledge Compiler v2` architecture gap by adding a first-class `evidence_records` ledger with explicit source-shape, volatility, PII, transactionality, taxonomy, target-type, role, and bundle-link semantics. Synapse now exposes that layer through `/v1/adoption/evidence-ledger` and `/v1/adoption/evidence-ledger/stats`, and the worker persists normalized evidence records alongside bundles/claims so evidence is no longer only implicit inside claim JSON.
 - 2026-05-03: Added a lightweight bundle-first control layer to the Drafts UI without turning it into an ops cockpit: operators now get compact recommendation chips (`approve first`, `review with context`, `human caution`) to slice the inbox, plus a one-line safe-bulk-approve hint that estimates how many weaker drafts will be skipped in the current scope by the default bundle guard.
 - 2026-05-03: Surfaced bundle-first review signals in the web Drafts experience: the inbox now shows a compact queue summary from `GET /v1/wiki/drafts` (recommendation mix, bundle-status mix, ready-support total), each draft card shows bundle recommendation/status, and Draft Detail now renders a dedicated `Bundle Recommendation` block so operators can understand “why this draft is high-priority” without reading raw gatekeeper metadata.
 - 2026-05-03: Promoted bundle recommendations into first-class review-queue signals: `GET /v1/wiki/drafts` now returns a `queue_summary` grouped by recommendation/status/page-family plus top bundle-backed items, draft detail exposes `recommended_action`, and bulk review now surfaces `skipped_by_bundle_guard` previews so operators can see exactly which drafts were withheld by the safe default instead of treating bundle-aware moderation as a hidden backend rule.

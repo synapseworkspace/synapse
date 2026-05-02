@@ -740,6 +740,55 @@ class SynapseClient:
             },
         )
 
+    def list_adoption_evidence_ledger(
+        self,
+        *,
+        source_shape: str | None = None,
+        volatility_class: str | None = None,
+        pii_level: str | None = None,
+        evidence_role: str | None = None,
+        ingestion_classification: str | None = None,
+        knowledge_taxonomy_class: str | None = None,
+        normalized_target_type: str | None = None,
+        bundle_status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "limit": max(1, min(200, int(limit))),
+        }
+        for key, value in (
+            ("source_shape", source_shape),
+            ("volatility_class", volatility_class),
+            ("pii_level", pii_level),
+            ("evidence_role", evidence_role),
+            ("ingestion_classification", ingestion_classification),
+            ("knowledge_taxonomy_class", knowledge_taxonomy_class),
+            ("normalized_target_type", normalized_target_type),
+            ("bundle_status", bundle_status),
+        ):
+            if value is not None and str(value).strip():
+                params[key] = str(value).strip().lower()
+        return self._request_json(
+            "/v1/adoption/evidence-ledger",
+            method="GET",
+            params=params,
+        )
+
+    def get_adoption_evidence_ledger_stats(
+        self,
+        *,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/evidence-ledger/stats",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(365, int(days))),
+            },
+        )
+
     def get_adoption_stability_monitor(
         self,
         *,

@@ -236,6 +236,34 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("days"), 9)
         self.assertEqual(call["params"].get("max_items_per_bucket"), 4)
 
+    def test_list_adoption_evidence_ledger_is_project_scoped(self) -> None:
+        self.client.list_adoption_evidence_ledger(
+            source_shape="document",
+            volatility_class="durable",
+            pii_level="possible",
+            evidence_role="supporting",
+            knowledge_taxonomy_class="semantic",
+            normalized_target_type="data_source_doc",
+            bundle_status="ready",
+            limit=17,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/evidence-ledger")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+        self.assertEqual(call["params"].get("source_shape"), "document")
+        self.assertEqual(call["params"].get("volatility_class"), "durable")
+        self.assertEqual(call["params"].get("bundle_status"), "ready")
+        self.assertEqual(call["params"].get("limit"), 17)
+
+    def test_get_adoption_evidence_ledger_stats_is_project_scoped(self) -> None:
+        self.client.get_adoption_evidence_ledger_stats(days=45)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/evidence-ledger/stats")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+        self.assertEqual(call["params"].get("days"), 45)
+
     def test_get_adoption_stability_monitor_is_project_scoped(self) -> None:
         self.client.get_adoption_stability_monitor(days=11, max_items_per_bucket=5)
         call = self.client.calls[-1]
