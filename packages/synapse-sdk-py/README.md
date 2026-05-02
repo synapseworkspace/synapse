@@ -44,6 +44,52 @@ synapse.sync_wiki_state_snapshot(
 )
 ```
 
+## Reflection / Debrief
+
+```python
+from synapse_sdk import AgentReflection, AgentReflectionInsight
+
+synapse.submit_agent_reflection(
+    AgentReflection(
+        agent_id="dispatch_bot",
+        reflected_by="dispatch_bot",
+        task_id="task-123",
+        summary="Resolved gated-access blocker and learned a durable escalation rule.",
+        learned_rules=[
+            "If gated access fails for 15 minutes, escalate to the on-call dispatch owner."
+        ],
+        decisions_made=[
+            "Approved reroute via alternate loading bay after warehouse confirmation."
+        ],
+        tools_used=["maps_router"],
+        data_sources_used=["orders_api"],
+        follow_up_actions=["Document alternate loading bay fallback in the runbook."],
+        insights=[
+            AgentReflectionInsight(
+                claim_text="Dispatch bot can reroute deliveries but cannot override billing.",
+                category="capability",
+                confidence=0.88,
+            )
+        ],
+    )
+)
+```
+
+This powers post-task learning without forcing raw runtime logs directly into the wiki.
+
+## Adoption Diagnostics
+
+```python
+gaps = synapse.get_adoption_knowledge_gaps(days=14)
+prompts = synapse.get_adoption_synthesis_prompts(days=14, max_items=8)
+benchmark = synapse.get_adoption_wiki_richness_benchmark(days=14)
+```
+
+Use these together to inspect:
+- where useful knowledge is still missing,
+- which follow-up questions Synapse recommends asking,
+- and whether your published wiki is actually rich enough to be useful.
+
 ## Graceful Degradation Modes
 
 `SynapseConfig.degradation_mode` (or `synapse.set_degradation_mode(...)`) controls behavior when transport is unavailable:

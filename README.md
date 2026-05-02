@@ -39,6 +39,32 @@ Synapse is middleware between your agent runtime (OpenClaw, LangGraph, CrewAI, c
 
 This is your live **single source of truth** for agent behavior.
 
+### What Synapse now compiles
+
+Synapse is no longer just `event -> draft`.
+
+It now pushes knowledge through:
+
+1. `evidence / observations`
+2. `knowledge candidate bundles`
+3. `typed wiki outputs`
+
+With an explicit taxonomy:
+- `operational`
+- `episodic`
+- `semantic`
+- `procedural`
+
+And normalized wiki targets:
+- `fact`
+- `process_playbook`
+- `data_source_doc`
+- `agent_profile`
+- `decision_log`
+- `incident_pattern`
+
+This is how Synapse keeps raw runtime noise out of the wiki while still promoting durable agent knowledge.
+
 ## Synapse As L2 Cognitive State Layer
 
 - **L0**: model weights and system prompt.
@@ -216,6 +242,25 @@ Enterprise shortcut (single API call):
 - `POST /v1/adoption/agent-wiki-bootstrap` now supports explicit `Preview -> Apply` flow, `bootstrap_publish_core=true` (publish core onboarding pages with warning blocks when coverage is partial), and returns a structured `quality_report`.
 - bootstrap pack can include: `Data Sources Catalog`, `Agent Capability Profile`, `Tooling Map`, `Process Playbooks`, `Company Operating Context`, `Operational Logic Map`, plus starter pages.
 - `GET /v1/adoption/wiki-quality/report` provides a hard OOTB quality gate (`core coverage`, `placeholder ratio`, `daily-summary draft ratio`) for release/onboarding checks.
+- `GET /v1/adoption/wiki-richness/benchmark` scores useful wiki density instead of only slug existence.
+- `GET /v1/adoption/knowledge-gaps` shows where the wiki is still missing durable answers, grounded process detail, or source-backed structure.
+- `GET /v1/adoption/synthesis-prompts` generates targeted follow-up questions for agents/operators from candidate bundles, repeated unanswered questions, and weak pages.
+
+Knowledge Compiler diagnostics flow:
+
+```bash
+synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id omega_demo --updated-by ops_admin --with-pipeline
+curl "http://localhost:8080/v1/adoption/wiki-richness/benchmark?project_id=omega_demo"
+curl "http://localhost:8080/v1/adoption/knowledge-gaps?project_id=omega_demo"
+curl "http://localhost:8080/v1/adoption/synthesis-prompts?project_id=omega_demo"
+```
+
+This gives you a concrete loop:
+- import signals
+- inspect what was promoted
+- inspect what is still missing
+- ask targeted follow-up questions
+- publish richer pages
 
 ## Agentic Onboarding Benchmark
 

@@ -44,6 +44,48 @@ await synapse.syncWikiStateSnapshot({
 });
 ```
 
+## Reflection / Debrief
+
+```ts
+await synapse.submitAgentReflection({
+  agentId: "dispatch_bot",
+  reflectedBy: "dispatch_bot",
+  taskId: "task-123",
+  summary: "Resolved gated-access blocker and learned a durable escalation rule.",
+  learnedRules: [
+    "If gated access fails for 15 minutes, escalate to the on-call dispatch owner."
+  ],
+  decisionsMade: [
+    "Approved reroute via alternate loading bay after warehouse confirmation."
+  ],
+  toolsUsed: ["maps_router"],
+  dataSourcesUsed: ["orders_api"],
+  followUpActions: ["Document alternate loading bay fallback in the runbook."],
+  insights: [
+    {
+      claimText: "Dispatch bot can reroute deliveries but cannot override billing.",
+      category: "capability",
+      confidence: 0.88
+    }
+  ]
+});
+```
+
+This gives Synapse a structured debrief channel instead of relying only on raw logs.
+
+## Adoption Diagnostics
+
+```ts
+const gaps = await synapse.getAdoptionKnowledgeGaps({ days: 14 });
+const prompts = await synapse.getAdoptionSynthesisPrompts({ days: 14, maxItems: 8 });
+const benchmark = await synapse.getAdoptionWikiRichnessBenchmark({ days: 14 });
+```
+
+These helpers make it easier to evaluate whether the wiki is actually becoming useful:
+- missing durable knowledge,
+- targeted follow-up questions,
+- richness / completeness benchmark.
+
 ## Graceful Degradation Modes
 
 `degradationMode` in config (or `synapse.setDegradationMode(...)`) defines behavior when transport fails:
