@@ -65,7 +65,70 @@ type DraftSummary = {
   page: {
     title: string | null;
     slug: string | null;
+    page_type?: string | null;
   };
+  claim?: {
+    category: string | null;
+    entity_key: string | null;
+    text?: string | null;
+  };
+  gatekeeper?: {
+    tier: string | null;
+    assertion_class?: string | null;
+    compiler_v2?: {
+      knowledge_dimensions?: string[];
+      knowledge_like_score?: number | null;
+      suggested_page_type?: string | null;
+      bundle_key?: string | null;
+      bundle_support?: number;
+      promotion_ready_from_bundle?: boolean;
+    };
+  };
+  bundle?: {
+    bundle_key: string;
+    bundle_type: string;
+    suggested_page_type: string | null;
+    entity_key: string | null;
+    bundle_status: string;
+    support_count: number;
+    source_diversity: number;
+    evidence_count: number;
+    quality_score: number;
+    knowledge_taxonomy_class?: string | null;
+    normalized_target_type?: string | null;
+    sample_claims?: Array<{ claim_text?: string; category?: string }>;
+  } | null;
+  bundle_priority?: {
+    score: number;
+    recommendation: string;
+    reason: string;
+  };
+  evidence?: {
+    source_systems?: string[];
+    connectors?: string[];
+    source_types?: string[];
+  };
+  has_open_conflict?: boolean;
+  risk?: {
+    level?: string;
+  };
+};
+
+type DraftQueueSummary = {
+  drafts_total: number;
+  recommendations: Record<string, number>;
+  bundle_statuses: Record<string, number>;
+  suggested_page_types: Record<string, number>;
+  ready_bundle_support_total: number;
+  top_recommended: Array<{
+    draft_id: string;
+    page_slug: string;
+    page_type: string;
+    claim_category: string;
+    recommendation: string;
+    score: number;
+    reason: string;
+  }>;
 };
 
 type ConflictItem = {
@@ -155,6 +218,9 @@ type DraftDetailPayload = {
       created_at: string | null;
     };
   };
+  bundle?: DraftSummary["bundle"];
+  bundle_priority?: DraftSummary["bundle_priority"];
+  recommended_action?: string;
   gatekeeper?: {
     tier: string | null;
     score: number | null;
@@ -1805,6 +1871,21 @@ function statusColor(status: string): string {
   return "gray";
 }
 
+function recommendationColor(recommendation: string | null | undefined): string {
+  const normalized = String(recommendation || "").trim().toLowerCase();
+  if (normalized === "approve_first") return "teal";
+  if (normalized === "review_with_context") return "blue";
+  if (normalized === "needs_human_caution") return "orange";
+  if (normalized === "needs_more_bundle_evidence") return "gray";
+  return "grape";
+}
+
+function humanizeRecommendation(recommendation: string | null | undefined): string {
+  const normalized = String(recommendation || "").trim();
+  if (!normalized) return "review";
+  return normalized.replace(/_/g, " ");
+}
+
 function isOpenReviewDraft(draft: DraftSummary): boolean {
   return draft.status === "pending_review" || draft.status === "blocked_conflict";
 }
@@ -2133,6 +2214,7 @@ export default function App() {
   const [pageStatusFilter, setPageStatusFilter] = useState<string | null>(null);
   const [pageUpdatedByFilter, setPageUpdatedByFilter] = useState("");
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  const [draftQueueSummary, setDraftQueueSummary] = useState<DraftQueueSummary | null>(null);
   const [wikiPages, setWikiPages] = useState<WikiPageListItem[]>([]);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [selectedPageSlug, setSelectedPageSlug] = useState<string | null>(null);
@@ -3488,17 +3570,19 @@ export default function App() {
       return;
     }
     setLoadingDrafts(true);
+    setDraftQueueSummary(null);
     const throughputPromise = showExpertModerationControls ? loadModerationThroughput() : Promise.resolve();
     if (!showExpertModerationControls) {
       setModerationThroughput(null);
     }
     try {
       const statusQuery = status ? `&status=${encodeURIComponent(status)}` : "";
-      const data = await apiFetch<{ drafts: DraftSummary[] }>(
+      const data = await apiFetch<{ drafts: DraftSummary[]; queue_summary?: DraftQueueSummary }>(
         apiUrl,
         `/v1/wiki/drafts?project_id=${encodeURIComponent(projectId)}${statusQuery}&limit=120`,
       );
       setDrafts(data.drafts ?? []);
+      setDraftQueueSummary(data.queue_summary ?? null);
       if (selectedDraftId && !data.drafts.some((item) => item.id === selectedDraftId)) {
         setSelectedDraftId(null);
         setDraftDetail(null);
@@ -9518,8 +9602,40 @@ export default function App() {
                       </Text>
                     </Paper>
                   ) : (
-                    <ScrollArea h={760} type="auto">
-                      <Stack gap="xs">
+                    <Stack gap="sm">
+                      {draftQueueSummary ? (
+                        <Paper withBorder p="sm" radius="md">
+                          <Stack gap={8}>
+                            <Group justify="space-between" align="center" wrap="wrap">
+                              <Text size="sm" fw={700}>
+                                Queue summary
+                              </Text>
+                              <Badge size="xs" variant="light" color="cyan">
+                                {draftQueueSummary.drafts_total} drafts
+                              </Badge>
+                            </Group>
+                            <Group gap={6} wrap="wrap">
+                              {Object.entries(draftQueueSummary.recommendations || {}).map(([key, count]) => (
+                                <Badge key={`rec-${key}`} size="xs" variant="light" color={recommendationColor(key)}>
+                                  {humanizeRecommendation(key)} {count}
+                                </Badge>
+                              ))}
+                            </Group>
+                            <Group gap={6} wrap="wrap">
+                              {Object.entries(draftQueueSummary.bundle_statuses || {}).map(([key, count]) => (
+                                <Badge key={`bundle-status-${key}`} size="xs" variant="light" color={key === "ready" ? "teal" : key === "candidate" ? "blue" : "gray"}>
+                                  {key.replace(/_/g, " ")} {count}
+                                </Badge>
+                              ))}
+                            </Group>
+                            <Text size="xs" c="dimmed">
+                              Ready bundle support total: {draftQueueSummary.ready_bundle_support_total}. Queue is ranked by durable bundle maturity before raw draft recency.
+                            </Text>
+                          </Stack>
+                        </Paper>
+                      ) : null}
+                      <ScrollArea h={680} type="auto">
+                        <Stack gap="xs">
                         {visibleDrafts.map((draft) => (
                           <Paper
                             key={draft.id}
@@ -9545,9 +9661,32 @@ export default function App() {
                                   <Badge size="xs" variant="light" color="gray">
                                     {fmtDate(draft.created_at)}
                                   </Badge>
+                                  {draft.bundle_priority?.recommendation ? (
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={recommendationColor(draft.bundle_priority.recommendation)}
+                                    >
+                                      {humanizeRecommendation(draft.bundle_priority.recommendation)}
+                                    </Badge>
+                                  ) : null}
+                                  {draft.bundle?.bundle_status ? (
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={draft.bundle.bundle_status === "ready" ? "teal" : draft.bundle.bundle_status === "candidate" ? "blue" : "gray"}
+                                    >
+                                      bundle {draft.bundle.bundle_status}
+                                    </Badge>
+                                  ) : null}
                                 </Group>
                                 <Text size="xs" c="dimmed" lineClamp={2}>
                                   {draft.rationale}
+                                </Text>
+                                <Text size="xs" c="dimmed" lineClamp={1}>
+                                  {draft.bundle_priority?.reason
+                                    ? `why now: ${draft.bundle_priority.reason}`
+                                    : draft.claim?.category || draft.page.page_type || "knowledge draft"}
                                 </Text>
                               </Stack>
                               <Button
@@ -9565,8 +9704,9 @@ export default function App() {
                             </Group>
                           </Paper>
                         ))}
-                      </Stack>
-                    </ScrollArea>
+                        </Stack>
+                      </ScrollArea>
+                    </Stack>
                   )
                 }
                 detailContent={
@@ -9604,6 +9744,15 @@ export default function App() {
                             <Badge size="xs" variant="light" color="gray">
                               {fmtDate(draftDetail.draft.created_at)}
                             </Badge>
+                            {draftDetail.recommended_action ? (
+                              <Badge
+                                size="xs"
+                                variant="light"
+                                color={recommendationColor(draftDetail.recommended_action)}
+                              >
+                                {humanizeRecommendation(draftDetail.recommended_action)}
+                              </Badge>
+                            ) : null}
                           </Group>
                           <Text size="sm" fw={700}>
                             {draftDetail.draft.page.title || draftDetail.draft.page.slug || "Untitled draft"}
@@ -9611,6 +9760,72 @@ export default function App() {
                           <Text size="xs" c="dimmed">
                             {draftDetail.draft.rationale}
                           </Text>
+                          {draftDetail.bundle_priority || draftDetail.bundle ? (
+                            <Paper withBorder p="sm" radius="md">
+                              <Stack gap={6}>
+                                <Group justify="space-between" align="center" wrap="wrap">
+                                  <Text size="sm" fw={700}>
+                                    Bundle Recommendation
+                                  </Text>
+                                  {draftDetail.bundle?.bundle_status ? (
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={
+                                        draftDetail.bundle.bundle_status === "ready"
+                                          ? "teal"
+                                          : draftDetail.bundle.bundle_status === "candidate"
+                                            ? "blue"
+                                            : "gray"
+                                      }
+                                    >
+                                      bundle {draftDetail.bundle.bundle_status}
+                                    </Badge>
+                                  ) : null}
+                                </Group>
+                                <Group gap={6} wrap="wrap">
+                                  {draftDetail.bundle_priority ? (
+                                    <>
+                                      <Badge
+                                        size="xs"
+                                        variant="light"
+                                        color={recommendationColor(draftDetail.bundle_priority.recommendation)}
+                                      >
+                                        {humanizeRecommendation(draftDetail.bundle_priority.recommendation)}
+                                      </Badge>
+                                      <Badge size="xs" variant="light" color="grape">
+                                        score {draftDetail.bundle_priority.score.toFixed(2)}
+                                      </Badge>
+                                    </>
+                                  ) : null}
+                                  {draftDetail.bundle?.support_count != null ? (
+                                    <Badge size="xs" variant="light" color="cyan">
+                                      support {draftDetail.bundle.support_count}
+                                    </Badge>
+                                  ) : null}
+                                  {draftDetail.bundle?.quality_score != null ? (
+                                    <Badge size="xs" variant="light" color="indigo">
+                                      quality {draftDetail.bundle.quality_score.toFixed(2)}
+                                    </Badge>
+                                  ) : null}
+                                </Group>
+                                {draftDetail.bundle_priority?.reason ? (
+                                  <Text size="xs" c="dimmed">
+                                    {draftDetail.bundle_priority.reason}
+                                  </Text>
+                                ) : null}
+                                {draftDetail.bundle?.sample_claims?.length ? (
+                                  <Text size="xs" c="dimmed" lineClamp={2}>
+                                    {draftDetail.bundle.sample_claims
+                                      .map((item) => item.claim_text)
+                                      .filter(Boolean)
+                                      .slice(0, 2)
+                                      .join(" • ")}
+                                  </Text>
+                                ) : null}
+                              </Stack>
+                            </Paper>
+                          ) : null}
                           {draftDetail.gatekeeper ? (
                             <Paper withBorder p="sm" radius="md">
                               <Stack gap={6}>
