@@ -153,6 +153,22 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("connector_id"), "postgres_sql:ops_kb_items:polling")
         self.assertIsInstance(payload.get("field_overrides"), dict)
 
+    def test_validate_adoption_import_connector_uses_project_scope(self) -> None:
+        self.client.validate_adoption_import_connector(
+            connector_id="postgres_sql:ops_kb_items:polling",
+            source_ref="hw_memory_items",
+            field_overrides={"sql_dsn_env": "HW_MEMORY_DSN"},
+            live_connect=False,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/import-connectors/validate")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("connector_id"), "postgres_sql:ops_kb_items:polling")
+        self.assertEqual(payload.get("source_ref"), "hw_memory_items")
+        self.assertFalse(payload.get("live_connect"))
+
     def test_bootstrap_adoption_import_connector_posts_expected_payload(self) -> None:
         self.client.bootstrap_adoption_import_connector(
             updated_by="ops_admin",

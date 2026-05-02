@@ -594,6 +594,34 @@ class SynapseClient:
             },
         )
 
+    def validate_adoption_import_connector(
+        self,
+        *,
+        connector_id: str,
+        source_type: str = "postgres_sql",
+        source_ref: str | None = None,
+        field_overrides: dict[str, Any] | None = None,
+        live_connect: bool = True,
+    ) -> dict[str, Any]:
+        normalized_connector_id = str(connector_id or "").strip()
+        if not normalized_connector_id:
+            raise ValueError("connector_id is required")
+        normalized_source_type = str(source_type or "postgres_sql").strip().lower() or "postgres_sql"
+        if normalized_source_type not in {"postgres_sql", "memory_api"}:
+            raise ValueError("source_type must be one of: postgres_sql, memory_api")
+        return self._request_json(
+            "/v1/adoption/import-connectors/validate",
+            method="POST",
+            payload={
+                "source_type": normalized_source_type,
+                "connector_id": normalized_connector_id,
+                "project_id": self._config.project_id,
+                "source_ref": str(source_ref).strip() if source_ref is not None and str(source_ref).strip() else None,
+                "field_overrides": dict(field_overrides or {}),
+                "live_connect": bool(live_connect),
+            },
+        )
+
     def bootstrap_adoption_import_connector(
         self,
         *,

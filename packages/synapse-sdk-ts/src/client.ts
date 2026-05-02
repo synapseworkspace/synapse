@@ -598,6 +598,34 @@ export class SynapseClient {
     });
   }
 
+  async validateAdoptionImportConnector(options: {
+    connectorId: string;
+    sourceType?: "postgres_sql" | "memory_api" | string;
+    sourceRef?: string;
+    fieldOverrides?: Record<string, unknown>;
+    liveConnect?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const connectorId = String(options.connectorId ?? "").trim();
+    if (!connectorId) {
+      throw new Error("connectorId is required");
+    }
+    const sourceType = String(options.sourceType ?? "postgres_sql").trim().toLowerCase() || "postgres_sql";
+    if (!["postgres_sql", "memory_api"].includes(sourceType)) {
+      throw new Error("sourceType must be one of: postgres_sql, memory_api");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/import-connectors/validate", {
+      method: "POST",
+      payload: {
+        source_type: sourceType,
+        connector_id: connectorId,
+        project_id: this.projectId,
+        source_ref: asOptionalString(options.sourceRef) ?? undefined,
+        field_overrides: options.fieldOverrides ?? {},
+        live_connect: options.liveConnect ?? true
+      }
+    });
+  }
+
   async bootstrapAdoptionImportConnector(options: {
     updatedBy: string;
     connectorId: string;

@@ -10,6 +10,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import psycopg
 import re
 import shlex
 import subprocess
@@ -260,6 +261,15 @@ class AdoptionImportConnectorBootstrapRequest(BaseModel):
     confirm_project_id: str | None = None
     sync_processor_lookback_minutes: int = Field(default=30, ge=1, le=1440)
     fail_on_sync_processor_unavailable: bool = False
+
+
+class AdoptionImportConnectorValidateRequest(BaseModel):
+    source_type: str = Field(default="postgres_sql", pattern="^(postgres_sql|memory_api)$")
+    connector_id: str = Field(min_length=1, max_length=256)
+    project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    source_ref: str | None = Field(default=None, min_length=1, max_length=2000)
+    field_overrides: dict[str, Any] | None = None
+    live_connect: bool = True
 
 
 class AuthSessionCreateRequest(BaseModel):
@@ -28607,6 +28617,58 @@ def _build_postgres_dsn_diagnostics(*, sql_dsn: str, sql_dsn_env: str) -> dict[s
     }
 
 
+def _resolve_postgres_dsn_for_validation(*, sql_dsn: str, sql_dsn_env: str) -> tuple[str | None, dict[str, Any]]:
+    inline_dsn = str(sql_dsn or "").strip()
+    env_name = str(sql_dsn_env or "").strip()
+    if inline_dsn:
+        return inline_dsn, {"resolution_mode": "inline", "sql_dsn_env": env_name or None}
+    if env_name:
+        env_value = str(os.getenv(env_name) or "").strip()
+        if not env_value:
+            return None, {
+                "resolution_mode": "env_missing",
+                "sql_dsn_env": env_name,
+                "warning": f"Environment variable `{env_name}` is not set in the Synapse API runtime.",
+            }
+        return env_value, {"resolution_mode": "env", "sql_dsn_env": env_name}
+    return None, {"resolution_mode": "missing", "warning": "Neither sql_dsn nor sql_dsn_env is configured."}
+
+
+def _live_validate_postgres_dsn(*, sql_dsn: str, sql_dsn_env: str) -> dict[str, Any]:
+    resolved_dsn, resolution = _resolve_postgres_dsn_for_validation(sql_dsn=sql_dsn, sql_dsn_env=sql_dsn_env)
+    diagnostics = _build_postgres_dsn_diagnostics(sql_dsn=resolved_dsn or "", sql_dsn_env=sql_dsn_env)
+    response: dict[str, Any] = {
+        "source_type": "postgres_sql",
+        "resolution": resolution,
+        "connection_diagnostics": diagnostics,
+    }
+    if not resolved_dsn:
+        response["status"] = "unresolved"
+        return response
+    try:
+        with psycopg.connect(resolved_dsn, connect_timeout=3) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        response["status"] = "ok"
+        response["live_check"] = {
+            "attempted": True,
+            "reachable": True,
+            "query_ok": True,
+        }
+        return response
+    except Exception as exc:
+        response["status"] = "failed"
+        response["live_check"] = {
+            "attempted": True,
+            "reachable": False,
+            "query_ok": False,
+            "error_type": type(exc).__name__,
+            "error_message": str(exc)[:400],
+        }
+        return response
+
+
 def _build_connector_validation_hints(*, connector_id: str, source_type: str, sync_mode: str, config_patch: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     errors: list[str] = []
@@ -28901,6 +28963,50 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
     diagnostics = validation.get("diagnostics") if isinstance(validation.get("diagnostics"), dict) else {}
     if normalized_source_type == "postgres_sql" and diagnostics.get("dsn"):
         response["connection_diagnostics"] = diagnostics.get("dsn")
+    return response
+
+
+@app.post("/v1/adoption/import-connectors/validate", response_model=None)
+def validate_adoption_import_connector(payload: AdoptionImportConnectorValidateRequest) -> Any:
+    normalized_source_type = str(payload.source_type or "postgres_sql").strip().lower() or "postgres_sql"
+    selected, overrides = _resolve_adoption_import_connector_definition(
+        source_type=normalized_source_type,
+        connector_id=str(payload.connector_id),
+        field_overrides=payload.field_overrides,
+    )
+    config_patch = selected.get("config_patch") if isinstance(selected.get("config_patch"), dict) else {}
+    response: dict[str, Any] = {
+        "status": "ok",
+        "source_type": normalized_source_type,
+        "project_id": payload.project_id,
+        "connector": selected,
+        "field_overrides": overrides,
+        "live_connect": bool(payload.live_connect),
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    validation = selected.get("validation_hints") if isinstance(selected.get("validation_hints"), dict) else {}
+    if validation:
+        response["validation"] = validation
+    if normalized_source_type == "postgres_sql":
+        dsn = str(config_patch.get("sql_dsn") or "").strip()
+        dsn_env = str(config_patch.get("sql_dsn_env") or "").strip()
+        if bool(payload.live_connect):
+            connection_check = _live_validate_postgres_dsn(sql_dsn=dsn, sql_dsn_env=dsn_env)
+        else:
+            connection_check = {
+                "status": "skipped",
+                "source_type": "postgres_sql",
+                "connection_diagnostics": _build_postgres_dsn_diagnostics(sql_dsn=dsn, sql_dsn_env=dsn_env),
+            }
+        response["connection_check"] = connection_check
+        if str(connection_check.get("status") or "") == "failed":
+            response["status"] = "warning"
+    else:
+        response["connection_check"] = {
+            "status": "unsupported",
+            "source_type": normalized_source_type,
+            "warning": "Live connection validation is currently implemented for postgres_sql only.",
+        }
     return response
 
 
