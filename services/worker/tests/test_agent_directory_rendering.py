@@ -462,6 +462,14 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
                     "data_sources": ["orders_api"],
                     "limits": ["cannot change billing"],
                     "scenario_examples": ["route blocker"],
+                    "observed_strengths": ["Use address override only after dispatcher approval."],
+                    "observed_actions": ["reroute delivery and notify dispatch"],
+                    "observed_questions": ["When should address override bypass normal queue?"],
+                    "observed_uncertainties": ["Courier handoff policy differs after 18:00."],
+                    "observed_decisions": ["Approved same-day reroute for gated access incidents."],
+                    "latest_reflection_summary": "Dispatch bot summarized the reroute workflow and captured approval boundary.",
+                    "latest_reflection_outcome": "resolved with approval",
+                    "reflection_count": 2,
                 }
             ]
             _api_main.get_agent_orgchart = lambda **kwargs: {
@@ -500,6 +508,9 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("capability:dispatch_bot", markdown)
         self.assertIn("Bundle evidence: ready 1 / candidate 0", markdown)
         self.assertIn("Dispatch bot can reroute deliveries", markdown)
+        self.assertIn("Durable rules learned: Use address override only after dispatcher approval.", markdown)
+        self.assertIn("Latest debrief: Dispatch bot summarized the reroute workflow", markdown)
+        self.assertIn("Missing documentation questions: When should address override bypass normal queue?", markdown)
 
     def test_bootstrap_page_importance_prioritizes_core_onboarding_pages(self) -> None:
         agent_page = _bootstrap_page_importance(
@@ -1454,11 +1465,14 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
 
         markdown = str(pages[0].get("markdown") or "")
         self.assertIn("## Canonical Runbooks", markdown)
+        self.assertIn("- Owners:", markdown)
         self.assertIn("- Purpose:", markdown)
         self.assertIn("- Inputs:", markdown)
         self.assertIn("- Steps:", markdown)
         self.assertIn("- Exceptions:", markdown)
         self.assertIn("- Outputs:", markdown)
+        self.assertIn("- Verification:", markdown)
+        self.assertIn("- Human-in-the-loop:", markdown)
         self.assertIn("- Tools used: maps_router", markdown)
         self.assertIn("- Source evidence: ops_kb_sync", markdown)
 

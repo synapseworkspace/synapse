@@ -3245,6 +3245,12 @@ def _build_runtime_agent_capability_matrix(
     rows = cur.fetchall() or []
     has_tasks_table = _wiki_feature_table_exists(cur, "public.synapse_tasks")
     matrix: list[dict[str, Any]] = []
+    reflection_signals = _load_recent_agent_reflection_signals(
+        cur,
+        project_id=project_id,
+        days=lookback_days,
+        max_agents=max_agents,
+    )
 
     for row in rows:
         agent_id = str(row[0] or "").strip().lower()
@@ -3327,6 +3333,43 @@ def _build_runtime_agent_capability_matrix(
         )
         source_rows = cur.fetchall() or []
         data_sources = [str(item[0] or "").strip() for item in source_rows if str(item[0] or "").strip()]
+        reflection_signal = reflection_signals.get(agent_id, {})
+        observed_strengths = [
+            str(item).strip()
+            for item in (reflection_signal.get("durable_rules") or [])
+            if str(item).strip()
+        ][:6]
+        observed_decisions = [
+            str(item).strip()
+            for item in (reflection_signal.get("decisions") or [])
+            if str(item).strip()
+        ][:4]
+        observed_escalations = [
+            str(item).strip()
+            for item in (reflection_signal.get("escalations") or [])
+            if str(item).strip()
+        ][:4]
+        observed_questions = [
+            str(item).strip()
+            for item in (reflection_signal.get("follow_up_questions") or [])
+            if str(item).strip()
+        ][:4]
+        observed_uncertainties = [
+            str(item).strip()
+            for item in (reflection_signal.get("uncertainties") or [])
+            if str(item).strip()
+        ][:4]
+        observed_actions = [
+            str(item).strip()
+            for item in (reflection_signal.get("actions_taken") or [])
+            if str(item).strip()
+        ][:6]
+        reflected_tools = [str(item).strip() for item in (reflection_signal.get("tools") or []) if str(item).strip()]
+        reflected_sources = [str(item).strip() for item in (reflection_signal.get("sources") or []) if str(item).strip()]
+        if reflected_tools:
+            tools = list(dict.fromkeys([*tools, *reflected_tools]))[:20]
+        if reflected_sources:
+            data_sources = list(dict.fromkeys([*data_sources, *reflected_sources]))[:20]
 
         tasks_touched = 0
         tasks_done = 0
@@ -3371,6 +3414,21 @@ def _build_runtime_agent_capability_matrix(
             tools=tools,
             data_sources=data_sources,
         )
+        if observed_actions:
+            typical_actions = list(dict.fromkeys([*typical_actions, *observed_actions]))[:8]
+        if observed_escalations:
+            escalation_rules = list(dict.fromkeys([*escalation_rules, *observed_escalations]))[:6]
+        if observed_strengths:
+            responsibilities = list(dict.fromkeys([*responsibilities, *observed_strengths]))[:8]
+        if observed_questions:
+            scenario_examples = list(
+                dict.fromkeys(
+                    [
+                        *scenario_examples,
+                        *[f"Needs documentation for: {item}" for item in observed_questions[:2]],
+                    ]
+                )
+            )[:6]
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -3387,6 +3445,15 @@ def _build_runtime_agent_capability_matrix(
                 "limits": limits,
                 "confidence": confidence,
                 "last_success_at": last_seen_at.isoformat() if isinstance(last_seen_at, datetime) else None,
+                "observed_strengths": observed_strengths,
+                "observed_decisions": observed_decisions,
+                "observed_escalations": observed_escalations,
+                "observed_questions": observed_questions,
+                "observed_uncertainties": observed_uncertainties,
+                "observed_actions": observed_actions,
+                "latest_reflection_summary": str(reflection_signal.get("latest_summary") or "").strip() or None,
+                "latest_reflection_outcome": str(reflection_signal.get("latest_outcome") or "").strip() or None,
+                "reflection_count": int(reflection_signal.get("count") or 0),
                 "evidence": [
                     {
                         "kind": "runtime_events",
@@ -3394,6 +3461,11 @@ def _build_runtime_agent_capability_matrix(
                         "events_total": events_total,
                         "sessions_total": sessions_total,
                         "top_event_types": event_types[:5],
+                    },
+                    {
+                        "kind": "agent_reflections",
+                        "count": int(reflection_signal.get("count") or 0),
+                        "latest_summary": str(reflection_signal.get("latest_summary") or "").strip()[:220],
                     }
                 ],
             }
@@ -3493,6 +3565,13 @@ def _build_agent_capability_matrix(
             if len(deduped) >= 6:
                 break
         return deduped
+
+    reflection_signals = _load_recent_agent_reflection_signals(
+        cur,
+        project_id=project_id,
+        days=45,
+        max_agents=max_agents,
+    )
 
     cur.execute(
         """
@@ -3595,6 +3674,13 @@ def _build_agent_capability_matrix(
             object_fields=("name", "system", "id", "title", "description"),
         )
         model_routing = _model_routing_hints(metadata)
+        reflection_signal = reflection_signals.get(agent_id.lower(), {})
+        reflected_tools = [str(item).strip() for item in (reflection_signal.get("tools") or []) if str(item).strip()]
+        reflected_sources = [str(item).strip() for item in (reflection_signal.get("sources") or []) if str(item).strip()]
+        if reflected_tools:
+            tools = list(dict.fromkeys([*tools, *reflected_tools]))[:24]
+        if reflected_sources:
+            data_sources = list(dict.fromkeys([*data_sources, *reflected_sources]))[:24]
         cur.execute(
             """
             SELECT
@@ -3639,6 +3725,24 @@ def _build_agent_capability_matrix(
             tools=tools,
             data_sources=data_sources,
         )
+        observed_strengths = [
+            str(item).strip() for item in (reflection_signal.get("durable_rules") or []) if str(item).strip()
+        ][:6]
+        observed_decisions = [
+            str(item).strip() for item in (reflection_signal.get("decisions") or []) if str(item).strip()
+        ][:4]
+        observed_escalations = [
+            str(item).strip() for item in (reflection_signal.get("escalations") or []) if str(item).strip()
+        ][:4]
+        observed_questions = [
+            str(item).strip() for item in (reflection_signal.get("follow_up_questions") or []) if str(item).strip()
+        ][:4]
+        observed_uncertainties = [
+            str(item).strip() for item in (reflection_signal.get("uncertainties") or []) if str(item).strip()
+        ][:4]
+        observed_actions = [
+            str(item).strip() for item in (reflection_signal.get("actions_taken") or []) if str(item).strip()
+        ][:6]
         if prompt_signal:
             scenario_examples = [*scenario_examples, "Follows system prompt and policy intent during tool execution."][:4]
         if allowed_actions:
@@ -3646,9 +3750,24 @@ def _build_agent_capability_matrix(
         if approval_rules:
             escalation_rules = [*escalation_rules, f"Approval rules: {', '.join(approval_rules[:3])}."][:3]
         if registry_tools:
-            tools = list(dict.fromkeys([*tools, *registry_tools]))[:20]
+            tools = list(dict.fromkeys([*tools, *registry_tools]))[:24]
         if source_bindings:
-            data_sources = list(dict.fromkeys([*data_sources, *source_bindings]))[:20]
+            data_sources = list(dict.fromkeys([*data_sources, *source_bindings]))[:24]
+        if observed_actions:
+            typical_actions = list(dict.fromkeys([*typical_actions, *observed_actions]))[:8]
+        if observed_escalations:
+            escalation_rules = list(dict.fromkeys([*escalation_rules, *observed_escalations]))[:6]
+        if observed_strengths:
+            responsibilities = list(dict.fromkeys([*responsibilities, *observed_strengths]))[:8]
+        if observed_questions:
+            scenario_examples = list(
+                dict.fromkeys(
+                    [
+                        *scenario_examples,
+                        *[f"Needs documentation for: {item}" for item in observed_questions[:2]],
+                    ]
+                )
+            )[:6]
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -3675,11 +3794,124 @@ def _build_agent_capability_matrix(
                 "static_config_keys": static_config_keys,
                 "confidence": confidence,
                 "last_success_at": latest_success_at,
+                "observed_strengths": observed_strengths,
+                "observed_decisions": observed_decisions,
+                "observed_escalations": observed_escalations,
+                "observed_questions": observed_questions,
+                "observed_uncertainties": observed_uncertainties,
+                "observed_actions": observed_actions,
+                "latest_reflection_summary": str(
+                    (metadata.get("latest_reflection") or {}).get("summary")
+                    or reflection_signal.get("latest_summary")
+                    or ""
+                ).strip()
+                or None,
+                "latest_reflection_outcome": str(
+                    (metadata.get("latest_reflection") or {}).get("outcome")
+                    or reflection_signal.get("latest_outcome")
+                    or ""
+                ).strip()
+                or None,
+                "reflection_count": int(reflection_signal.get("count") or 0),
                 "evidence": evidence,
             }
         )
     matrix.sort(key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("agent_id") or "")))
     return matrix
+
+
+def _load_recent_agent_reflection_signals(
+    cur: Any,
+    *,
+    project_id: str,
+    days: int,
+    max_agents: int,
+) -> dict[str, dict[str, Any]]:
+    if not _wiki_feature_table_exists(cur, "public.events"):
+        return {}
+    cutoff = datetime.now(UTC) - timedelta(days=max(1, min(180, int(days))))
+    limit = max(50, min(30000, int(max_agents) * 80))
+    cur.execute(
+        """
+        SELECT agent_id, payload, observed_at
+        FROM events
+        WHERE project_id = %s
+          AND event_type = 'system_signal'
+          AND observed_at >= %s
+          AND COALESCE(payload->>'source_system', '') = 'agent_reflection'
+        ORDER BY observed_at DESC
+        LIMIT %s
+        """,
+        (project_id, cutoff, limit),
+    )
+    rows = cur.fetchall() or []
+    aggregated: dict[str, dict[str, Any]] = {}
+
+    def _ensure(agent_id: str) -> dict[str, Any]:
+        key = str(agent_id or "").strip().lower()
+        bucket = aggregated.get(key)
+        if bucket is None:
+            bucket = {
+                "count": 0,
+                "durable_rules": [],
+                "decisions": [],
+                "actions_taken": [],
+                "escalations": [],
+                "follow_up_questions": [],
+                "uncertainties": [],
+                "tools": [],
+                "sources": [],
+                "latest_summary": None,
+                "latest_outcome": None,
+                "_seen": set(),
+            }
+            aggregated[key] = bucket
+        return bucket
+
+    def _append(bucket: dict[str, Any], field: str, values: Any, *, limit_per_field: int) -> None:
+        if not values:
+            return
+        raw_values = values if isinstance(values, list) else [values]
+        seen = bucket["_seen"]
+        for value in raw_values:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            marker = f"{field}:{text.lower()}"
+            if marker in seen:
+                continue
+            seen.add(marker)
+            bucket[field].append(text[:220])
+            if len(bucket[field]) >= limit_per_field:
+                break
+
+    for row in rows:
+        agent_id = str(row[0] or "").strip().lower()
+        payload = row[1] if isinstance(row[1], dict) else {}
+        reflection = payload.get("reflection") if isinstance(payload.get("reflection"), dict) else payload
+        if not agent_id:
+            agent_id = str(reflection.get("agent_id") or "").strip().lower()
+        if not agent_id:
+            continue
+        bucket = _ensure(agent_id)
+        bucket["count"] = int(bucket.get("count") or 0) + 1
+        if bucket.get("latest_summary") is None:
+            bucket["latest_summary"] = str(reflection.get("summary") or "").strip()[:280] or None
+            bucket["latest_outcome"] = str(reflection.get("outcome") or "").strip()[:120] or None
+        _append(bucket, "durable_rules", reflection.get("durable_rules"), limit_per_field=8)
+        _append(bucket, "durable_rules", reflection.get("learned_rules"), limit_per_field=8)
+        _append(bucket, "decisions", reflection.get("decisions_made"), limit_per_field=6)
+        _append(bucket, "actions_taken", reflection.get("actions_taken"), limit_per_field=8)
+        _append(bucket, "actions_taken", reflection.get("follow_up_actions"), limit_per_field=8)
+        _append(bucket, "escalations", reflection.get("escalations"), limit_per_field=6)
+        _append(bucket, "follow_up_questions", reflection.get("follow_up_questions"), limit_per_field=6)
+        _append(bucket, "uncertainties", reflection.get("uncertainties"), limit_per_field=6)
+        _append(bucket, "tools", reflection.get("tools_used"), limit_per_field=10)
+        _append(bucket, "sources", reflection.get("data_sources_used"), limit_per_field=10)
+
+    for bucket in aggregated.values():
+        bucket.pop("_seen", None)
+    return aggregated
 
 
 def _render_agent_capability_matrix_markdown(*, matrix: list[dict[str, Any]]) -> str:
@@ -30837,6 +31069,14 @@ def _build_agent_capability_bootstrap_page(
             integrations = [str(v).strip() for v in (item.get("integrations") or []) if str(v).strip()]
             model_routing = [str(v).strip() for v in (item.get("model_routing") or []) if str(v).strip()]
             prompt_signal = str(item.get("prompt_signal") or "").strip()
+            observed_strengths = [str(v).strip() for v in (item.get("observed_strengths") or []) if str(v).strip()]
+            observed_decisions = [str(v).strip() for v in (item.get("observed_decisions") or []) if str(v).strip()]
+            observed_questions = [str(v).strip() for v in (item.get("observed_questions") or []) if str(v).strip()]
+            observed_uncertainties = [str(v).strip() for v in (item.get("observed_uncertainties") or []) if str(v).strip()]
+            observed_actions = [str(v).strip() for v in (item.get("observed_actions") or []) if str(v).strip()]
+            reflection_summary = str(item.get("latest_reflection_summary") or "").strip()
+            reflection_outcome = str(item.get("latest_reflection_outcome") or "").strip()
+            reflection_count = int(item.get("reflection_count") or 0)
             bundle_matches = bundles_by_entity.get(_normalize_statement_text(agent_id), []) or bundles_by_entity.get(
                 _normalize_statement_text(display_name),
                 [],
@@ -30880,6 +31120,22 @@ def _build_agent_capability_bootstrap_page(
             if prompt_signal:
                 detail_lines.append(f"- Prompt context: {prompt_signal[:200]}")
             detail_lines.append(f"- Scenario examples: {'; '.join(scenarios[:2]) if scenarios else 'n/a'}")
+            if observed_actions:
+                detail_lines.append(f"- Observed workflow actions: {'; '.join(observed_actions[:3])}")
+            if observed_strengths:
+                detail_lines.append(f"- Durable rules learned: {'; '.join(observed_strengths[:3])}")
+            if observed_decisions:
+                detail_lines.append(f"- Decisions recorded: {'; '.join(observed_decisions[:2])}")
+            if reflection_count > 0:
+                detail_lines.append(
+                    f"- Reflection coverage: {reflection_count} debrief(s){f'; latest outcome: {reflection_outcome}' if reflection_outcome else ''}"
+                )
+            if reflection_summary:
+                detail_lines.append(f"- Latest debrief: {reflection_summary[:220]}")
+            if observed_questions:
+                detail_lines.append(f"- Missing documentation questions: {'; '.join(observed_questions[:2])}")
+            if observed_uncertainties:
+                detail_lines.append(f"- Open uncertainties: {'; '.join(observed_uncertainties[:2])}")
             if bundle_matches:
                 detail_lines.append(f"- Bundle evidence: ready {bundle_ready} / candidate {bundle_candidate}")
                 detail_lines.append(
@@ -31092,8 +31348,64 @@ def _build_process_playbooks_bootstrap_page(
             return "Execute repeatable operating steps with clear escalation and verification."
         return "Convert recurring operational signals into repeatable, auditable action."
 
+    def _process_title(trigger: str, action: str, category: str, owner_agents: list[str]) -> str:
+        if trigger:
+            seed = trigger
+        elif action:
+            seed = action
+        elif owner_agents:
+            seed = f"{owner_agents[0]} workflow"
+        else:
+            seed = f"{category} workflow"
+        normalized = re.sub(r"\s+", " ", str(seed or "").replace("_", " ")).strip(" .,:;-")
+        normalized = normalized[:80] if normalized else f"{category.title()} workflow"
+        if normalized.lower().endswith("playbook"):
+            return normalized
+        return f"{normalized[:1].upper()}{normalized[1:]} Playbook"
+
+    def _owner_agents_from_metadata(metadata: dict[str, Any], *, fallback: str | None = None) -> list[str]:
+        owners = _extract_list_values(
+            metadata.get("agent_id"),
+            metadata.get("runtime_agent_id"),
+            metadata.get("agent_ids"),
+            metadata.get("owner_agent"),
+            metadata.get("owner_agents"),
+            metadata.get("claim_entity_key"),
+            fallback,
+            limit=4,
+        )
+        cleaned = [item for item in owners if item.lower() not in {"process", "policy", "decision"}]
+        return cleaned[:4]
+
+    def _verification_steps(output: str, escalation: str, *, confidence: float) -> list[str]:
+        steps = []
+        if output:
+            steps.append(f"Check that outcome is explicit: {output}.")
+        else:
+            steps.append("Check that the action closed the loop and removed repeat escalation signals.")
+        if confidence < 0.75:
+            steps.append("Confirm the rule against a second source before broad reuse.")
+        steps.append(f"Watch for escalation condition: {escalation}")
+        return steps[:3]
+
+    def _human_loop_guidance(category: str, escalation: str, *, confidence: float, exceptions: list[str]) -> str:
+        normalized = str(category or "").strip().lower()
+        if normalized in {"policy", "access"}:
+            return "Human approval required before publishing or applying this rule broadly."
+        if confidence < 0.7:
+            return "Human confirmation recommended because evidence confidence is still low."
+        if exceptions:
+            return "Escalate to a human when an exception path or repeated failure appears."
+        return f"Autonomous execution is acceptable until this escalation boundary is hit: {escalation}"
+
     rows: list[tuple[Any, ...]] = []
     query_limit = max(20, min(800, int(max_signals) * 10))
+    reflection_signals = _load_recent_agent_reflection_signals(
+        cur,
+        project_id=project_id,
+        days=45,
+        max_agents=max(50, int(max_signals) * 6),
+    )
     bundle_rows = _load_evidence_bundles_for_bootstrap(
         cur,
         project_id=project_id,
@@ -31187,11 +31499,31 @@ def _build_process_playbooks_bootstrap_page(
             f"bundle_status={str(bundle.get('bundle_status') or 'candidate')}",
             limit=6,
         )
+        owner_agents = _owner_agents_from_metadata(
+            merged_metadata,
+            fallback=str(bundle.get("entity_key") or "") if str(bundle.get("bundle_type") or "") == "capability" else None,
+        )
+        verification = _verification_steps(output, escalation, confidence=confidence)
+        human_loop = _human_loop_guidance(category, escalation, confidence=confidence, exceptions=exceptions)
+        decision_refs = _extract_list_values(
+            merged_metadata.get("decision"),
+            merged_metadata.get("decisions"),
+            merged_metadata.get("operator_decision"),
+            limit=4,
+        )
+        artifacts = _extract_list_values(
+            source_refs,
+            ticket_signal.get("ticket_ids"),
+            merged_metadata.get("task_id"),
+            merged_metadata.get("session_id"),
+            limit=5,
+        )
         playbooks.append(
             {
-                "title": f"{str(bundle.get('entity_key') or category).replace('_', ' ').title()} Playbook",
+                "title": _process_title(trigger, action, category, owner_agents),
                 "purpose": _purpose_for_category(category),
                 "category": category,
+                "owners": owner_agents,
                 "trigger": trigger,
                 "action": action,
                 "inputs": inputs,
@@ -31199,7 +31531,11 @@ def _build_process_playbooks_bootstrap_page(
                 "exceptions": exceptions,
                 "output": output or str(ticket_signal.get("outcome") or "verified action outcome"),
                 "escalation": escalation,
+                "verification": verification,
+                "human_loop": human_loop,
                 "tools": tools_used,
+                "artifacts": artifacts,
+                "decision_refs": decision_refs,
                 "evidence": evidence_summary,
             }
         )
@@ -31265,11 +31601,23 @@ def _build_process_playbooks_bootstrap_page(
         if category.lower() in {"policy", "access"}:
             exceptions.append("Policy/access changes must not bypass approval guardrails.")
         evidence_summary = _extract_list_values(source_refs, ticket_ids, ticket_signal.get("outcome"), limit=6)
+        owner_agents = _owner_agents_from_metadata(metadata)
+        verification = _verification_steps(output, escalation, confidence=confidence)
+        human_loop = _human_loop_guidance(category, escalation, confidence=confidence, exceptions=exceptions)
+        decision_refs = _extract_list_values(
+            metadata.get("decision"),
+            metadata.get("decisions"),
+            metadata.get("operator_decision"),
+            ticket_ids,
+            limit=4,
+        )
+        artifacts = _extract_list_values(source_refs, ticket_ids, metadata.get("task_id"), metadata.get("session_id"), limit=5)
         playbooks.append(
             {
-                "title": f"{category.title()} Playbook",
+                "title": _process_title(trigger, action, category, owner_agents),
                 "purpose": _purpose_for_category(category),
                 "category": category,
+                "owners": owner_agents,
                 "trigger": trigger,
                 "action": action,
                 "inputs": inputs,
@@ -31277,8 +31625,69 @@ def _build_process_playbooks_bootstrap_page(
                 "exceptions": exceptions,
                 "output": output or str(ticket_signal.get("outcome") or "verified action outcome"),
                 "escalation": escalation,
+                "verification": verification,
+                "human_loop": human_loop,
                 "tools": tools_used,
+                "artifacts": artifacts,
+                "decision_refs": decision_refs,
                 "evidence": evidence_summary,
+            }
+        )
+        if len(playbooks) >= max(6, min(50, int(max_signals))):
+            break
+
+    for agent_id, signal in list(reflection_signals.items())[: max(4, min(24, int(max_signals) * 2))]:
+        durable_rules = [str(item).strip() for item in (signal.get("durable_rules") or []) if str(item).strip()]
+        actions_taken = [str(item).strip() for item in (signal.get("actions_taken") or []) if str(item).strip()]
+        escalations = [str(item).strip() for item in (signal.get("escalations") or []) if str(item).strip()]
+        sources_used = [str(item).strip() for item in (signal.get("sources") or []) if str(item).strip()]
+        tools_used = [str(item).strip() for item in (signal.get("tools") or []) if str(item).strip()]
+        decisions = [str(item).strip() for item in (signal.get("decisions") or []) if str(item).strip()]
+        if not durable_rules and not actions_taken:
+            continue
+        trigger = durable_rules[0] if durable_rules else f"Agent {agent_id} receives a workflow task"
+        action = actions_taken[0] if actions_taken else "apply the durable rule and document the result"
+        category = "process"
+        normalized = _normalize_statement_text(f"{agent_id}:{trigger}:{action}")[:200]
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        exceptions = []
+        if escalations:
+            exceptions.append(f"Escalate when {escalations[0]}")
+        human_loop = _human_loop_guidance(category, escalations[0] if escalations else "repeat failures", confidence=0.81, exceptions=exceptions)
+        playbooks.append(
+            {
+                "title": _process_title(trigger, action, category, [agent_id]),
+                "purpose": "Capture durable operator knowledge discovered during agent debriefs and turn it into reusable SOP.",
+                "category": category,
+                "owners": [agent_id],
+                "trigger": trigger,
+                "action": action,
+                "inputs": _extract_list_values(sources_used, f"agent:{agent_id}", limit=4),
+                "steps": [
+                    f"Review the durable rule: {trigger}.",
+                    f"Execute the known action pattern: {action}.",
+                    "Write back the resolution and update the wiki page if the rule changed.",
+                ],
+                "exceptions": exceptions,
+                "output": str(signal.get("latest_outcome") or "verified workflow outcome"),
+                "escalation": escalations[0] if escalations else "Escalate to reviewer when the debrief reveals a new exception.",
+                "verification": _verification_steps(
+                    str(signal.get("latest_outcome") or ""),
+                    escalations[0] if escalations else "repeat failures",
+                    confidence=0.81,
+                ),
+                "human_loop": human_loop,
+                "tools": tools_used[:5],
+                "artifacts": _extract_list_values(sources_used, tools_used, limit=5),
+                "decision_refs": decisions[:3],
+                "evidence": _extract_list_values(
+                    durable_rules[:2],
+                    decisions[:2],
+                    f"reflection_count={int(signal.get('count') or 0)}",
+                    limit=6,
+                ),
             }
         )
         if len(playbooks) >= max(6, min(50, int(max_signals))):
@@ -31306,6 +31715,7 @@ def _build_process_playbooks_bootstrap_page(
                     "",
                     f"### {index}. {item['title']}",
                     f"- Purpose: {item['purpose']}",
+                    f"- Owners: {'; '.join(item['owners']) if item['owners'] else 'runtime owner inference pending'}",
                     f"- Trigger: {item['trigger']}",
                     f"- Inputs: {'; '.join(item['inputs']) if item['inputs'] else 'runtime signal + current policy context'}",
                     "- Steps:",
@@ -31313,8 +31723,13 @@ def _build_process_playbooks_bootstrap_page(
                     "- Exceptions:",
                     *([f"  - {step}" for step in item["exceptions"]] if item["exceptions"] else ["  - No special exception captured yet; use standard escalation if confidence drops."]),
                     f"- Outputs: {item['output']}",
+                    "- Verification:",
+                    *[f"  - {step}" for step in item["verification"]],
+                    f"- Human-in-the-loop: {item['human_loop']}",
                     f"- Escalation: {item['escalation']}",
                     f"- Tools used: {', '.join(item['tools']) if item['tools'] else 'runtime tool discovery pending'}",
+                    f"- Artifacts / systems: {'; '.join(item['artifacts']) if item['artifacts'] else 'runtime systems + source evidence'}",
+                    *([f"- Decision trail: {'; '.join(item['decision_refs'])}"] if item["decision_refs"] else []),
                     f"- Source evidence: {'; '.join(item['evidence']) if item['evidence'] else 'claim text + category evidence'}",
                 ]
             )
