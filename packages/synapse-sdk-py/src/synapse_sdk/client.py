@@ -683,6 +683,22 @@ class SynapseClient:
             },
         )
 
+    def get_adoption_synthesis_prompts(
+        self,
+        *,
+        days: int = 14,
+        max_items: int = 8,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/synthesis-prompts",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "max_items": max(1, min(50, int(max_items))),
+            },
+        )
+
     def get_adoption_policy_calibration_quick_loop(self, *, days: int = 14) -> dict[str, Any]:
         return self._request_json(
             "/v1/adoption/policy-calibration/quick-loop",

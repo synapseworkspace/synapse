@@ -14,6 +14,7 @@ try:
         _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
         _build_project_wiki_richness_benchmark_from_rows,
+        _build_human_guided_synthesis_prompts,
         _page_type_freshness_thresholds,
         _prepend_bootstrap_publish_notice,
         _build_runtime_agent_capability_matrix,
@@ -46,6 +47,7 @@ except Exception:  # pragma: no cover
     _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
     _build_project_wiki_richness_benchmark_from_rows = None
+    _build_human_guided_synthesis_prompts = None
     _page_type_freshness_thresholds = None
     _prepend_bootstrap_publish_notice = None
     _build_runtime_agent_capability_matrix = None
@@ -77,6 +79,7 @@ except Exception:  # pragma: no cover
     or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
     or _build_project_wiki_richness_benchmark_from_rows is None
+    or _build_human_guided_synthesis_prompts is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
     or _prepend_bootstrap_publish_notice is None
@@ -801,6 +804,54 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(policy["stale_days"], 3)
         self.assertEqual(data_map["stale_days"], 14)
         self.assertEqual(global_mode["stale_days"], 10)
+
+    def test_human_guided_synthesis_prompts_use_knowledge_gaps(self) -> None:
+        assert _api_main is not None
+        original_gap_report = _api_main._build_adoption_knowledge_gap_report
+        try:
+            _api_main._build_adoption_knowledge_gap_report = lambda **kwargs: {
+                "candidate_knowledge_bundles": [
+                    {
+                        "bundle_key": "process:dispatch_bot",
+                        "bundle_type": "process",
+                        "suggested_page_type": "process",
+                        "entity_key": "dispatch_bot",
+                        "bundle_status": "candidate",
+                        "support_count": 3,
+                        "quality_score": 0.81,
+                    }
+                ],
+                "unresolved_agent_questions": [{"question": "When should dispatch escalate gated access failures?", "count": 3}],
+                "page_enrichment_gaps": [
+                    {
+                        "leaf": "process-playbooks",
+                        "slug": "operations/process-playbooks",
+                        "score": 0.42,
+                        "missing_sections": ["## Canonical Runbooks", "## How To Use"],
+                    }
+                ],
+            }
+            prompts = _build_human_guided_synthesis_prompts(
+                project_id="omega_demo",
+                days=14,
+                max_items=5,
+            )
+        finally:
+            _api_main._build_adoption_knowledge_gap_report = original_gap_report
+
+        items = prompts.get("prompts") if isinstance(prompts.get("prompts"), list) else []
+        self.assertGreaterEqual(len(items), 3)
+        self.assertTrue(any(str(item.get("prompt_type") or "") == "bundle_follow_up" for item in items if isinstance(item, dict)))
+        self.assertTrue(any(str(item.get("prompt_type") or "") == "repeated_question" for item in items if isinstance(item, dict)))
+        self.assertTrue(any(str(item.get("prompt_type") or "") == "page_enrichment" for item in items if isinstance(item, dict)))
+        bundle_prompt = next(
+            item for item in items if isinstance(item, dict) and str(item.get("prompt_type") or "") == "bundle_follow_up"
+        )
+        self.assertTrue(bool(bundle_prompt.get("why_now")))
+        self.assertTrue(bool(bundle_prompt.get("expected_sections")))
+        summary = prompts.get("summary") if isinstance(prompts.get("summary"), dict) else {}
+        by_type = summary.get("by_type") if isinstance(summary.get("by_type"), dict) else {}
+        self.assertEqual(int(by_type.get("bundle_follow_up") or 0), 1)
 
     def test_runtime_agent_sql_expr_and_filter_include_payload_fallbacks(self) -> None:
         expr = _runtime_agent_id_sql_expr(table_alias="e")

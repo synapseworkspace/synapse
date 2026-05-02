@@ -68,7 +68,7 @@ Phase 1 (Architecture Reset)
 2. `in_progress` Knowledge candidate bundles:
    - добавить сущность bundle (`entity/process/topic/source-group`) с агрегатами `repeated_count`, `independent_sources`, `first_seen`, `last_seen`, `volatility`, `suggested_page_type`;
    - перевести promotion logic from event-level to bundle-level.
-3. `planned` Universal knowledge taxonomy v2:
+3. `in_progress` Universal knowledge taxonomy v2:
    - закрепить canonical classes: `operational`, `episodic`, `semantic`, `procedural`;
    - внутри wiki compiler normalized targets: `fact`, `process_playbook`, `data_source_doc`, `agent_profile`, `decision_log`, `incident_pattern`.
 4. `in_progress` Negative routing by default:
@@ -97,7 +97,7 @@ Phase 3 (Reflection & Learning Loops)
    - SDK/API contract for agent self-report after task/session: `what changed`, `what rule was learned`, `temporary vs durable`, `who else should know`, `confidence`, `evidence`.
 13. `in_progress` Query-gap driven knowledge creation:
    - использовать retrieval misses, repeated escalations, frequent re-queries, and repeated operator overrides как сигнал на создание/обновление wiki knowledge.
-14. `planned` Human-guided synthesis prompts:
+14. `in_progress` Human-guided synthesis prompts:
    - режим targeted follow-up questions от Synapse к агенту/оператору only when evidence bundle is promising but incomplete.
 
 Phase 4 (Wiki Output Quality)
@@ -987,6 +987,7 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-05-02: Advanced `Knowledge Compiler v2` with explicit taxonomy and guided synthesis support: worker routing now stamps bundles/claims with `knowledge_taxonomy_class` (`operational / episodic / semantic / procedural`) and normalized target types, evidence-bundle API exposes those fields, and Synapse now ships `/v1/adoption/synthesis-prompts` to generate targeted follow-up questions from candidate bundles, repeated agent questions, and page-enrichment gaps. This closes the first production slice of human-guided synthesis instead of leaving gaps as raw diagnostics only.
 - 2026-05-02: Extended `Knowledge Compiler v2` beyond page compilers: Synapse now exposes `/v1/adoption/knowledge-gaps` to surface repeated agent questions, escalation patterns, candidate bundles, and core-page enrichment gaps; freshness semantics are now page-type aware (`policy/process/runbook/agent_profile/data_map/decision_log`) in wiki listing/lifecycle endpoints instead of one global stale threshold; and SDK adoption helpers now expose both richness benchmark and knowledge-gap diagnostics.
 - 2026-05-02: Implemented the next `Knowledge Compiler v2` production slice: publish-time enrichment now rehydrates thin/placeholder-heavy pages from canonical compilers before publish, hard page-type schema contracts were expanded for agent/data/process/decision pages, a new `decision-log` compiler and `/v1/agents/reflections` debrief contract landed, both SDKs gained first-class reflection submission methods, and `/v1/adoption/wiki-richness/benchmark` now measures useful wiki density beyond simple page existence.
 - 2026-05-02: Made bootstrap synthesis bundle-aware: `Process Playbooks` and `Agent Capability Profile` now consume first-class `evidence_bundles` (status/support/sample claims), so core wiki pages can be grounded by durable knowledge clusters instead of only raw claims or runtime matrix fallbacks.

@@ -2305,6 +2305,8 @@ class WikiSynthesisEngine:
             "bundle_support": int(feature_summary.get("bundle_support") or 0),
             "promotion_ready_from_bundle": bool(feature_summary.get("promotion_ready_from_bundle")),
             "has_knowledge_like_signal": bool(feature_summary.get("has_knowledge_like_signal")),
+            "knowledge_taxonomy_class": str(feature_summary.get("knowledge_taxonomy_class") or "").strip().lower() or None,
+            "normalized_target_type": str(feature_summary.get("normalized_target_type") or "").strip().lower() or None,
         }
         metadata["compiler_v2"] = {
             key: value
@@ -2467,6 +2469,46 @@ class WikiSynthesisEngine:
         self._evidence_bundle_claim_links_table_exists_cache = bool(row and row[0] is not None)
         return self._evidence_bundle_claim_links_table_exists_cache
 
+    def _derive_knowledge_taxonomy_v2(
+        self,
+        *,
+        knowledge_dimensions: list[str],
+        suggested_page_type: str | None,
+        ingestion_classification: str | None,
+        has_knowledge_like_signal: bool,
+        repeated_count: int,
+    ) -> dict[str, str]:
+        normalized_dimensions = [str(item or "").strip().lower() for item in knowledge_dimensions if str(item or "").strip()]
+        normalized_page_type = str(suggested_page_type or "").strip().lower()
+        normalized_ingestion = str(ingestion_classification or "").strip().lower()
+        taxonomy_class = "operational"
+        normalized_target_type = "fact"
+        if normalized_ingestion == "pii_sensitive_stream":
+            taxonomy_class = "operational"
+            normalized_target_type = "fact"
+        elif "process" in normalized_dimensions or normalized_page_type in {"process", "runbook", "policy"}:
+            taxonomy_class = "procedural"
+            normalized_target_type = "process_playbook" if normalized_page_type in {"process", "runbook"} else "fact"
+        elif "decision" in normalized_dimensions or normalized_page_type == "decision_log":
+            taxonomy_class = "episodic"
+            normalized_target_type = "decision_log"
+        elif "capability" in normalized_dimensions or normalized_page_type == "agent_profile":
+            taxonomy_class = "semantic"
+            normalized_target_type = "agent_profile"
+        elif "data_source" in normalized_dimensions or normalized_page_type == "data_map":
+            taxonomy_class = "semantic"
+            normalized_target_type = "data_source_doc"
+        elif has_knowledge_like_signal and repeated_count > 0:
+            taxonomy_class = "semantic"
+            normalized_target_type = "fact"
+        elif has_knowledge_like_signal:
+            taxonomy_class = "episodic"
+            normalized_target_type = "incident_pattern"
+        return {
+            "knowledge_taxonomy_class": taxonomy_class,
+            "normalized_target_type": normalized_target_type,
+        }
+
     def _upsert_evidence_bundle(
         self,
         conn,
@@ -2501,6 +2543,13 @@ class WikiSynthesisEngine:
             bundle_status = "candidate"
         if gate.tier == "operational_memory" and not bool(features.get("has_knowledge_like_signal")):
             bundle_status = "suppressed"
+        taxonomy_v2 = self._derive_knowledge_taxonomy_v2(
+            knowledge_dimensions=knowledge_dimensions,
+            suggested_page_type=suggested_page_type,
+            ingestion_classification=ingestion_classification,
+            has_knowledge_like_signal=bool(features.get("has_knowledge_like_signal")),
+            repeated_count=repeated_count,
+        )
         metadata = {
             "claim_category": claim.category,
             "claim_entity_key": claim.entity_key,
@@ -2514,6 +2563,7 @@ class WikiSynthesisEngine:
             "latest_claim_id": str(claim.id),
             "promotion_ready_from_bundle": bool(features.get("promotion_ready_from_bundle")),
             "has_knowledge_like_signal": bool(features.get("has_knowledge_like_signal")),
+            **taxonomy_v2,
         }
         metadata = {key: value for key, value in metadata.items() if value not in (None, "", [], {})}
         bundle_id = uuid.uuid4()
@@ -3228,6 +3278,13 @@ class WikiSynthesisEngine:
             has_knowledge_like_signal
             and bundle_support >= knowledge_like_bundle_min_support
         )
+        taxonomy_v2 = self._derive_knowledge_taxonomy_v2(
+            knowledge_dimensions=knowledge_dimensions,
+            suggested_page_type=suggested_page_type,
+            ingestion_classification=ingestion_classification,
+            has_knowledge_like_signal=has_knowledge_like_signal,
+            repeated_count=repeated_count,
+        )
 
         score = 0.35
         if has_policy_signal:
@@ -3444,6 +3501,8 @@ class WikiSynthesisEngine:
             "bundle_key": bundle_key,
             "bundle_support": bundle_support,
             "promotion_ready_from_bundle": promotion_ready_from_bundle,
+            "knowledge_taxonomy_class": taxonomy_v2["knowledge_taxonomy_class"],
+            "normalized_target_type": taxonomy_v2["normalized_target_type"],
             "assertion_class": assertion_class,
             "publish_mode_by_assertion_class": publish_mode_by_assertion_class,
             "gatekeeper_min_sources_for_golden": config.min_sources_for_golden,

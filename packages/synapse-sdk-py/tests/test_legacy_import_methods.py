@@ -200,6 +200,15 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("days"), 12)
         self.assertEqual(call["params"].get("max_items_per_bucket"), 6)
 
+    def test_get_adoption_synthesis_prompts_is_project_scoped(self) -> None:
+        self.client.get_adoption_synthesis_prompts(days=10, max_items=5)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/synthesis-prompts")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+        self.assertEqual(call["params"].get("days"), 10)
+        self.assertEqual(call["params"].get("max_items"), 5)
+
     def test_submit_agent_reflection_posts_expected_payload(self) -> None:
         self.client.submit_agent_reflection(
             AgentReflection(

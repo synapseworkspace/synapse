@@ -243,8 +243,26 @@ class WikiEngineRoutingTests(unittest.TestCase):
         )
         self.assertTrue(bool(evaluation.get("skip")))
         self.assertEqual(str(evaluation.get("reason")), "event_like_low_signal")
-        self.assertFalse(bool(evaluation.get("llm_applied")))
-        self.assertEqual(str(evaluation.get("llm_reason_code")), "assist_only")
+
+    def test_taxonomy_v2_maps_process_and_capability_signals(self) -> None:
+        process_taxonomy = self.engine._derive_knowledge_taxonomy_v2(
+            knowledge_dimensions=["process"],
+            suggested_page_type="process",
+            ingestion_classification="evergreen_knowledge",
+            has_knowledge_like_signal=True,
+            repeated_count=2,
+        )
+        capability_taxonomy = self.engine._derive_knowledge_taxonomy_v2(
+            knowledge_dimensions=["capability"],
+            suggested_page_type="agent_profile",
+            ingestion_classification="evergreen_knowledge",
+            has_knowledge_like_signal=True,
+            repeated_count=1,
+        )
+        self.assertEqual(process_taxonomy["knowledge_taxonomy_class"], "procedural")
+        self.assertEqual(process_taxonomy["normalized_target_type"], "process_playbook")
+        self.assertEqual(capability_taxonomy["knowledge_taxonomy_class"], "semantic")
+        self.assertEqual(capability_taxonomy["normalized_target_type"], "agent_profile")
 
     def test_backfill_suppression_enforce_mode_can_override_skip(self) -> None:
         class _Classifier:

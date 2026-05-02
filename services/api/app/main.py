@@ -24599,6 +24599,18 @@ def list_adoption_evidence_bundles(
             "last_seen_at": row[12].isoformat() if row[12] is not None else None,
             "latest_claim_at": row[13].isoformat() if row[13] is not None else None,
             "metadata": row[14] if isinstance(row[14], dict) else {},
+            "knowledge_taxonomy_class": (
+                str((row[14] or {}).get("knowledge_taxonomy_class") or "").strip().lower()
+                if isinstance(row[14], dict)
+                else ""
+            )
+            or None,
+            "normalized_target_type": (
+                str((row[14] or {}).get("normalized_target_type") or "").strip().lower()
+                if isinstance(row[14], dict)
+                else ""
+            )
+            or None,
             "linked_claims": int(row[15] or 0),
             "sample_claims": row[16] if isinstance(row[16], list) else [],
         }
@@ -32919,6 +32931,132 @@ def _build_adoption_knowledge_gap_report(
     }
 
 
+def _build_human_guided_synthesis_prompts(
+    *,
+    project_id: str,
+    days: int,
+    max_items: int,
+) -> dict[str, Any]:
+    gap_report = _build_adoption_knowledge_gap_report(
+        project_id=project_id,
+        days=days,
+        max_items_per_bucket=max_items,
+    )
+    prompts: list[dict[str, Any]] = []
+    prompt_type_counts: dict[str, int] = {}
+
+    def _append_prompt(payload: dict[str, Any]) -> None:
+        prompt_type = str(payload.get("prompt_type") or "unknown").strip().lower() or "unknown"
+        payload["prompt_id"] = payload.get("prompt_id") or f"{prompt_type}:{len(prompts) + 1}"
+        prompts.append(payload)
+        prompt_type_counts[prompt_type] = int(prompt_type_counts.get(prompt_type, 0)) + 1
+
+    for item in (gap_report.get("candidate_knowledge_bundles") or [])[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        bundle_type = str(item.get("bundle_type") or "knowledge")
+        page_type = str(item.get("suggested_page_type") or "operations")
+        entity_key = str(item.get("entity_key") or "this area")
+        taxonomy_class = "procedural" if page_type in {"process", "runbook", "policy"} else "semantic"
+        expected_sections = (
+            ["purpose", "trigger", "inputs", "steps", "exceptions", "escalation", "verification"]
+            if taxonomy_class == "procedural"
+            else ["summary", "rules", "constraints", "source_of_truth", "owner"]
+        )
+        _append_prompt(
+            {
+                "prompt_type": "bundle_follow_up",
+                "target_kind": "agent_or_operator",
+                "bundle_key": item.get("bundle_key"),
+                "entity_key": entity_key,
+                "page_type": page_type,
+                "knowledge_taxonomy_class": taxonomy_class,
+                "normalized_target_type": (
+                    "process_playbook"
+                    if taxonomy_class == "procedural"
+                    else ("agent_profile" if page_type == "agent_profile" else "fact")
+                ),
+                "priority": "high" if str(item.get("bundle_status") or "") == "ready" else "medium",
+                "why_now": (
+                    f"Bundle `{item.get('bundle_key')}` already has support_count={int(item.get('support_count') or 0)} "
+                    f"but still needs structured synthesis before it becomes a reliable wiki page."
+                ),
+                "question": f"What is the durable rule or repeatable procedure for {entity_key}?",
+                "follow_up": [
+                    f"What trigger starts the {bundle_type} workflow?",
+                    "What exact action should the agent take?",
+                    "What escalation or approval rule applies?",
+                    "What source of truth should be linked on the wiki page?",
+                ],
+                "expected_sections": expected_sections,
+            }
+        )
+
+    for item in (gap_report.get("unresolved_agent_questions") or [])[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        if not question:
+            continue
+        _append_prompt(
+            {
+                "prompt_type": "repeated_question",
+                "target_kind": "operator",
+                "knowledge_taxonomy_class": "semantic",
+                "normalized_target_type": "fact",
+                "question": question,
+                "why_now": (
+                    f"Agents asked this {int(item.get('count') or 0)} times, which suggests a missing stable answer "
+                    "in the published wiki."
+                ),
+                "follow_up": [
+                    "Should this answer become a published wiki page or section update?",
+                    "Is the answer stable across cases or only temporary?",
+                    "Which source or owner confirms the answer?",
+                ],
+                "expected_sections": ["answer", "scope", "owner", "source_of_truth"],
+                "repeat_count": int(item.get("count") or 0),
+            }
+        )
+
+    for item in (gap_report.get("page_enrichment_gaps") or [])[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        missing_sections = [str(section).strip() for section in (item.get("missing_sections") or []) if str(section).strip()]
+        _append_prompt(
+            {
+                "prompt_type": "page_enrichment",
+                "target_kind": "operator",
+                "page_slug": item.get("slug"),
+                "knowledge_taxonomy_class": "semantic",
+                "normalized_target_type": "fact",
+                "question": f"What concrete details are missing to make `{item.get('leaf')}` production-useful?",
+                "why_now": (
+                    f"Page `{item.get('slug')}` is below the richness threshold with score={float(item.get('score') or 0.0):.2f}."
+                ),
+                "follow_up": missing_sections[:6] or ["Add durable facts, process steps, and source-backed details."],
+                "expected_sections": missing_sections[:6] or ["durable_facts", "process_steps", "source_backing"],
+                "score": item.get("score"),
+            }
+        )
+
+    limited_prompts = prompts[: max(1, min(100, max_items * 3))]
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "prompts": limited_prompts,
+        "summary": {
+            "prompts_total": len(limited_prompts),
+            "source": "knowledge_gap_analysis",
+            "by_type": {
+                key: int(value)
+                for key, value in sorted(prompt_type_counts.items(), key=lambda item: item[0])
+            },
+        },
+    }
+
+
 def _legacy_import_sources_table_exists_from_cursor(cur: Any) -> bool:
     return _wiki_feature_table_exists(cur, "public.legacy_import_sources")
 
@@ -34597,6 +34735,19 @@ def get_adoption_knowledge_gaps(
         project_id=project_id,
         days=int(days),
         max_items_per_bucket=int(max_items_per_bucket),
+    )
+
+
+@app.get("/v1/adoption/synthesis-prompts")
+def get_adoption_synthesis_prompts(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    max_items: int = Query(default=8, ge=1, le=50),
+) -> dict[str, Any]:
+    return _build_human_guided_synthesis_prompts(
+        project_id=project_id,
+        days=int(days),
+        max_items=int(max_items),
     )
 
 

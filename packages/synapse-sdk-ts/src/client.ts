@@ -683,6 +683,20 @@ export class SynapseClient {
     });
   }
 
+  async getAdoptionSynthesisPrompts(options: {
+    days?: number;
+    maxItems?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/synthesis-prompts", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        max_items: normalizeInt(options.maxItems ?? 8, 1, 50)
+      }
+    });
+  }
+
   async getAdoptionPolicyCalibrationQuickLoop(options: {
     days?: number;
   } = {}): Promise<Record<string, unknown>> {
