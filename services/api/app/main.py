@@ -18,7 +18,7 @@ import time
 import unicodedata
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -28556,9 +28556,61 @@ def _normalize_connector_overrides(value: Any) -> dict[str, Any]:
     return out
 
 
+_AMBIGUOUS_POSTGRES_HOSTS = {"postgres", "db", "database", "pgsql", "postgresql"}
+
+
+def _build_postgres_dsn_diagnostics(*, sql_dsn: str, sql_dsn_env: str) -> dict[str, Any]:
+    dsn = str(sql_dsn or "").strip()
+    dsn_env = str(sql_dsn_env or "").strip()
+    mode = "inline" if dsn else ("env" if dsn_env else "missing")
+    parsed_host: str | None = None
+    parsed_port: int | None = None
+    parsed_db: str | None = None
+    warning: str | None = None
+    resolved_host_preview: str | None = None
+    if dsn:
+        try:
+            parsed = urlparse(dsn)
+            parsed_host = str(parsed.hostname or "").strip() or None
+            parsed_port = int(parsed.port) if parsed.port is not None else None
+            parsed_db = str((parsed.path or "").lstrip("/") or "").strip() or None
+        except Exception:
+            warning = "Could not parse sql_dsn; verify connection string format before bootstrap."
+        else:
+            if parsed_host:
+                resolved_host_preview = parsed_host if parsed_port is None else f"{parsed_host}:{parsed_port}"
+                if parsed_host.strip().lower() in _AMBIGUOUS_POSTGRES_HOSTS:
+                    warning = (
+                        f"DSN host `{parsed_host}` is ambiguous in split-stack self-host setups. "
+                        "Prefer a network-specific hostname/service alias reachable from the Synapse containers."
+                    )
+    elif dsn_env:
+        env_host_hint = None
+        host_match = re.search(r"(?:HOST|PGHOST|DB_HOST)$", dsn_env, flags=re.IGNORECASE)
+        if host_match:
+            env_host_hint = dsn_env
+        warning = (
+            "sql_dsn_env is configured but host portability cannot be validated from the raw environment variable name alone. "
+            "Double-check that the resolved DSN host is reachable from the Synapse stack."
+        )
+        if env_host_hint:
+            resolved_host_preview = f"${env_host_hint}"
+    return {
+        "mode": mode,
+        "sql_dsn_env": dsn_env or None,
+        "resolved_host": parsed_host,
+        "resolved_port": parsed_port,
+        "resolved_database": parsed_db,
+        "resolved_host_preview": resolved_host_preview,
+        "warning": warning,
+        "ambiguous_host": bool(parsed_host and parsed_host.strip().lower() in _AMBIGUOUS_POSTGRES_HOSTS),
+    }
+
+
 def _build_connector_validation_hints(*, connector_id: str, source_type: str, sync_mode: str, config_patch: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     errors: list[str] = []
+    diagnostics: dict[str, Any] = {}
     if source_type == "memory_api":
         required_fields = ["api_url", "api_mapping.content"]
     else:
@@ -28581,6 +28633,12 @@ def _build_connector_validation_hints(*, connector_id: str, source_type: str, sy
         dsn_env = str(config_patch.get("sql_dsn_env") or "").strip()
         if not dsn and not dsn_env:
             errors.append("Set `sql_dsn` or `sql_dsn_env` before first sync.")
+        diagnostics["dsn"] = _build_postgres_dsn_diagnostics(
+            sql_dsn=dsn,
+            sql_dsn_env=dsn_env,
+        )
+        if diagnostics["dsn"].get("warning"):
+            warnings.append(str(diagnostics["dsn"]["warning"]))
 
     chunk_size = _coerce_int(config_patch.get("chunk_size"), 100)
     max_records = _coerce_int(config_patch.get("max_records"), 5000)
@@ -28613,6 +28671,7 @@ def _build_connector_validation_hints(*, connector_id: str, source_type: str, sy
         "required_fields": required_fields,
         "errors": errors,
         "warnings": warnings,
+        "diagnostics": diagnostics,
         "is_valid": len(errors) == 0,
     }
 
@@ -28830,7 +28889,7 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
         connector_id=str(payload.connector_id),
         field_overrides=payload.field_overrides,
     )
-    return {
+    response = {
         "status": "ok",
         "source_type": normalized_source_type,
         "project_id": payload.project_id,
@@ -28838,6 +28897,11 @@ def resolve_adoption_import_connector(payload: AdoptionImportConnectorResolveReq
         "field_overrides": overrides,
         "generated_at": datetime.now(UTC).isoformat(),
     }
+    validation = selected.get("validation_hints") if isinstance(selected.get("validation_hints"), dict) else {}
+    diagnostics = validation.get("diagnostics") if isinstance(validation.get("diagnostics"), dict) else {}
+    if normalized_source_type == "postgres_sql" and diagnostics.get("dsn"):
+        response["connection_diagnostics"] = diagnostics.get("dsn")
+    return response
 
 
 def _queue_legacy_import_source_run(
@@ -28955,6 +29019,9 @@ def bootstrap_adoption_import_connector(
         },
         "generated_at": datetime.now(UTC).isoformat(),
     }
+    diagnostics = validation.get("diagnostics") if isinstance(validation.get("diagnostics"), dict) else {}
+    if normalized_source_type == "postgres_sql" and diagnostics.get("dsn"):
+        response["connection_diagnostics"] = diagnostics.get("dsn")
     if validation_warnings:
         response["warnings"] = validation_warnings
     if validation_errors:
@@ -47166,6 +47233,14 @@ def list_legacy_import_sources(
             "updated_by": row[11],
             "created_at": row[12].isoformat(),
             "updated_at": row[13].isoformat(),
+            "connection_diagnostics": (
+                _build_postgres_dsn_diagnostics(
+                    sql_dsn=str((row[9] or {}).get("sql_dsn") or "").strip() if isinstance(row[9], dict) else "",
+                    sql_dsn_env=str((row[9] or {}).get("sql_dsn_env") or "").strip() if isinstance(row[9], dict) else "",
+                )
+                if str(row[2] or "").strip().lower() == "postgres_sql"
+                else None
+            ),
         }
         for row in rows
     ]
@@ -47358,6 +47433,12 @@ def _upsert_legacy_import_source_record(
             "updated_at": row[13].isoformat(),
         }
     }
+    if source_type == "postgres_sql":
+        source_config = result["source"].get("config") if isinstance(result["source"].get("config"), dict) else {}
+        result["connection_diagnostics"] = _build_postgres_dsn_diagnostics(
+            sql_dsn=str(source_config.get("sql_dsn") or "").strip(),
+            sql_dsn_env=str(source_config.get("sql_dsn_env") or "").strip(),
+        )
     if profile_meta:
         result["profile_resolution"] = profile_meta
     return result

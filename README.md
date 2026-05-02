@@ -251,6 +251,7 @@ Enterprise shortcut (single API call):
 - `GET /v1/adoption/stability-monitor` turns those signals into an operator-ready health state and records the safe-mode recommendation/apply loop in audit history.
 - `GET /v1/adoption/synthesis-prompts` generates targeted follow-up questions for agents/operators from candidate bundles, repeated unanswered questions, and weak pages.
 - `POST /v1/adoption/bundle-promotion/run` refreshes core wiki pages directly from durable evidence bundles with a safe `Preview -> Apply` flow.
+- `POST /v1/adoption/import-connectors/resolve` and `POST /v1/adoption/import-connectors/bootstrap` now return `connection_diagnostics` for `postgres_sql` sources, including resolved host preview and ambiguous-host portability warnings for split-stack self-host deployments.
 
 Knowledge Compiler diagnostics flow:
 
