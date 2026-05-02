@@ -18,6 +18,8 @@ try:
         _build_adoption_signal_noise_audit,
         _build_adoption_signal_noise_stability_monitor,
         _bundle_promotion_scope_for_page_type,
+        _draft_bundle_priority,
+        _draft_passes_default_bundle_guard_for_approve,
         _build_first_run_starter_pages,
         _page_type_freshness_thresholds,
         _prepend_bootstrap_publish_notice,
@@ -56,6 +58,8 @@ except Exception:  # pragma: no cover
     _build_adoption_signal_noise_audit = None
     _build_adoption_signal_noise_stability_monitor = None
     _bundle_promotion_scope_for_page_type = None
+    _draft_bundle_priority = None
+    _draft_passes_default_bundle_guard_for_approve = None
     _build_first_run_starter_pages = None
     _page_type_freshness_thresholds = None
     _prepend_bootstrap_publish_notice = None
@@ -93,6 +97,8 @@ except Exception:  # pragma: no cover
     or _build_adoption_signal_noise_audit is None
     or _build_adoption_signal_noise_stability_monitor is None
     or _bundle_promotion_scope_for_page_type is None
+    or _draft_bundle_priority is None
+    or _draft_passes_default_bundle_guard_for_approve is None
     or _build_first_run_starter_pages is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
@@ -1452,6 +1458,61 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
             require_bundle_ready=True,
         )
         self.assertFalse(_draft_matches_bulk_filter(draft, failing_filter))
+
+    def test_draft_bundle_priority_prefers_ready_supported_bundles(self) -> None:
+        assert _draft_bundle_priority is not None
+
+        strong = _draft_bundle_priority(
+            {
+                "confidence": 0.88,
+                "has_open_conflict": False,
+                "gatekeeper": {
+                    "compiler_v2": {
+                        "knowledge_like_score": 0.84,
+                        "bundle_support": 4,
+                        "promotion_ready_from_bundle": True,
+                    }
+                },
+                "bundle": {"bundle_status": "ready", "support_count": 4, "quality_score": 0.9},
+                "risk": {"level": "medium"},
+            }
+        )
+        weak = _draft_bundle_priority(
+            {
+                "confidence": 0.74,
+                "has_open_conflict": False,
+                "gatekeeper": {
+                    "compiler_v2": {
+                        "knowledge_like_score": 0.4,
+                        "bundle_support": 0,
+                        "promotion_ready_from_bundle": False,
+                    }
+                },
+                "bundle": {"bundle_status": "observed", "support_count": 0, "quality_score": 0.2},
+                "risk": {"level": "medium"},
+            }
+        )
+        self.assertGreater(float(strong["score"]), float(weak["score"]))
+        self.assertEqual(strong["recommendation"], "approve_first")
+
+    def test_default_bundle_guard_requires_ready_or_promotion_ready_bundle(self) -> None:
+        assert _draft_passes_default_bundle_guard_for_approve is not None
+
+        ready_draft = {
+            "gatekeeper": {"compiler_v2": {"bundle_support": 2, "promotion_ready_from_bundle": False}},
+            "bundle": {"bundle_status": "ready", "support_count": 2},
+        }
+        candidate_draft = {
+            "gatekeeper": {"compiler_v2": {"bundle_support": 1, "promotion_ready_from_bundle": False}},
+            "bundle": {"bundle_status": "candidate", "support_count": 1},
+        }
+        promoted_candidate = {
+            "gatekeeper": {"compiler_v2": {"bundle_support": 2, "promotion_ready_from_bundle": True}},
+            "bundle": {"bundle_status": "candidate", "support_count": 2},
+        }
+        self.assertTrue(_draft_passes_default_bundle_guard_for_approve(ready_draft))
+        self.assertFalse(_draft_passes_default_bundle_guard_for_approve(candidate_draft))
+        self.assertTrue(_draft_passes_default_bundle_guard_for_approve(promoted_candidate))
 
     def test_process_playbooks_bootstrap_page_renders_runbook_sections(self) -> None:
         assert _api_main is not None

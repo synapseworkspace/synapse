@@ -24783,6 +24783,10 @@ def list_wiki_drafts(
             "status": status,
             "limit": int(limit),
         },
+        "ordering": {
+            "mode": "bundle_priority_desc",
+            "description": "Ready/candidate durable bundles are prioritized ahead of weaker draft-only items.",
+        },
     }
 
 
@@ -24925,6 +24929,7 @@ def list_adoption_evidence_bundles(
 
 _DRAFT_STATUSES = {"pending_review", "blocked_conflict", "approved", "rejected"}
 _RISK_LEVEL_TO_INT = {"low": 0, "medium": 1, "high": 2}
+_BUNDLE_STATUS_PRIORITY = {"ready": 3, "candidate": 2, "observed": 1, "suppressed": 0}
 
 
 def _normalize_draft_statuses(value: Any, *, default: list[str] | None = None) -> list[str]:
@@ -24958,6 +24963,71 @@ def _match_text_filter(value: str, expected: str, mode: str) -> bool:
         except re.error:
             return False
     return haystack == needle
+
+
+def _draft_bundle_priority(draft: dict[str, Any]) -> dict[str, Any]:
+    gatekeeper = draft.get("gatekeeper") if isinstance(draft.get("gatekeeper"), dict) else {}
+    compiler_v2 = gatekeeper.get("compiler_v2") if isinstance(gatekeeper.get("compiler_v2"), dict) else {}
+    bundle = draft.get("bundle") if isinstance(draft.get("bundle"), dict) else {}
+    risk = draft.get("risk") if isinstance(draft.get("risk"), dict) else {}
+    status = str(bundle.get("bundle_status") or "").strip().lower()
+    support = int(bundle.get("support_count") or compiler_v2.get("bundle_support") or 0)
+    quality = float(bundle.get("quality_score") or 0.0)
+    confidence = float(draft.get("confidence") or 0.0)
+    knowledge_score = (
+        float(compiler_v2.get("knowledge_like_score"))
+        if isinstance(compiler_v2.get("knowledge_like_score"), (int, float))
+        else 0.0
+    )
+    promotion_ready = bool(compiler_v2.get("promotion_ready_from_bundle"))
+    open_conflict_penalty = 0.4 if bool(draft.get("has_open_conflict")) else 0.0
+    risk_penalty = {"low": 0.0, "medium": 0.08, "high": 0.16}.get(str(risk.get("level") or "").strip().lower(), 0.0)
+    score = (
+        float(_BUNDLE_STATUS_PRIORITY.get(status, 0)) * 1.2
+        + min(1.6, float(support) * 0.2)
+        + min(1.0, quality)
+        + min(1.0, confidence)
+        + min(1.0, knowledge_score)
+        + (0.35 if promotion_ready else 0.0)
+        - open_conflict_penalty
+        - risk_penalty
+    )
+    reason_bits: list[str] = []
+    if status:
+        reason_bits.append(f"bundle={status}")
+    if support:
+        reason_bits.append(f"support={support}")
+    if promotion_ready:
+        reason_bits.append("promotion_ready")
+    if knowledge_score:
+        reason_bits.append(f"knowledge={round(knowledge_score, 2)}")
+    recommendation = "review"
+    if status == "ready" and support >= 2 and not bool(draft.get("has_open_conflict")) and str(risk.get("level") or "low").lower() != "high":
+        recommendation = "approve_first"
+    elif status in {"candidate", "observed"} and support >= 2:
+        recommendation = "review_with_context"
+    elif str(risk.get("level") or "").strip().lower() == "high":
+        recommendation = "needs_human_caution"
+    elif not status:
+        recommendation = "needs_more_bundle_evidence"
+    return {
+        "score": round(score, 4),
+        "recommendation": recommendation,
+        "reason": ", ".join(reason_bits) or "draft_only",
+    }
+
+
+def _draft_passes_default_bundle_guard_for_approve(draft: dict[str, Any]) -> bool:
+    gatekeeper = draft.get("gatekeeper") if isinstance(draft.get("gatekeeper"), dict) else {}
+    compiler_v2 = gatekeeper.get("compiler_v2") if isinstance(gatekeeper.get("compiler_v2"), dict) else {}
+    bundle = draft.get("bundle") if isinstance(draft.get("bundle"), dict) else {}
+    status = str(bundle.get("bundle_status") or "").strip().lower()
+    support = int(bundle.get("support_count") or compiler_v2.get("bundle_support") or 0)
+    if status == "ready" and support >= 1:
+        return True
+    if bool(compiler_v2.get("promotion_ready_from_bundle")) and support >= 2:
+        return True
+    return False
 
 
 def _list_wiki_drafts_with_metadata(
@@ -25086,6 +25156,21 @@ def _list_wiki_drafts_with_metadata(
         )
         bundle_key = str(features.get("bundle_key") or "").strip()
         bundle_context = bundle_context_by_key.get(bundle_key) if bundle_key else None
+        bundle_priority = _draft_bundle_priority(
+            {
+                "confidence": float(row[5] or 0.0),
+                "has_open_conflict": bool(row[22]),
+                "gatekeeper": {
+                    "compiler_v2": {
+                        "knowledge_like_score": features.get("knowledge_like_score"),
+                        "bundle_support": int(features.get("bundle_support") or 0),
+                        "promotion_ready_from_bundle": bool(features.get("promotion_ready_from_bundle")),
+                    }
+                },
+                "bundle": bundle_context,
+                "risk": risk,
+            }
+        )
         drafts.append(
             {
                 "id": row[0],
@@ -25127,6 +25212,7 @@ def _list_wiki_drafts_with_metadata(
                     },
                 },
                 "bundle": bundle_context,
+                "bundle_priority": bundle_priority,
                 "evidence": {
                     "source_systems": [str(item) for item in (row[19] or []) if str(item).strip()],
                     "connectors": [str(item) for item in (row[20] or []) if str(item).strip()],
@@ -25136,6 +25222,14 @@ def _list_wiki_drafts_with_metadata(
                 "risk": risk,
             }
         )
+    drafts.sort(
+        key=lambda item: (
+            -float(((item.get("bundle_priority") or {}).get("score") or 0.0)),
+            -float(item.get("confidence") or 0.0),
+            str(item.get("created_at") or ""),
+        ),
+        reverse=False,
+    )
     return drafts
 
 
@@ -25248,6 +25342,7 @@ def _draft_matches_bulk_filter(draft: dict[str, Any], filter_config: DraftBulkRe
 @app.post("/v1/wiki/drafts/bulk-review", response_model=None)
 def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
     filter_config = payload.filter if isinstance(payload.filter, DraftBulkReviewFilter) else DraftBulkReviewFilter()
+    bundle_guard_defaulted = False
     status_filters = _normalize_draft_statuses(filter_config.statuses, default=["pending_review"])
     if payload.action == "approve" and not bool(payload.force):
         # Approve without force should generally avoid conflicted drafts unless explicitly requested.
@@ -25255,6 +25350,13 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
             status_filters = [item for item in status_filters if item != "blocked_conflict"]
             if not status_filters:
                 status_filters = ["pending_review"]
+        if (
+            not bool(filter_config.require_bundle_ready)
+            and filter_config.bundle_status is None
+            and filter_config.bundle_key is None
+            and filter_config.min_bundle_support is None
+        ):
+            bundle_guard_defaulted = True
 
     scan_limit = min(5000, max(int(payload.limit), 200))
     drafts = _list_wiki_drafts_with_metadata(
@@ -25266,6 +25368,9 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
     matched: list[dict[str, Any]] = []
     for item in drafts:
         if _draft_matches_bulk_filter(item, filter_config):
+            if payload.action == "approve" and not bool(payload.force) and bundle_guard_defaulted:
+                if not _draft_passes_default_bundle_guard_for_approve(item):
+                    continue
             matched.append(item)
         if len(matched) >= int(payload.limit):
             break
@@ -25279,6 +25384,7 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
                 "scanned": len(drafts),
                 "matched": len(matched),
                 "limit": int(payload.limit),
+                "bundle_guard_defaulted": bundle_guard_defaulted,
             },
             "filters": payload.filter.model_dump(mode="json"),
             "items": matched,
@@ -25336,6 +25442,7 @@ def bulk_review_wiki_drafts(payload: DraftBulkReviewRequest) -> dict[str, Any]:
             "applied": applied,
             "failed": failed,
             "limit": int(payload.limit),
+            "bundle_guard_defaulted": bundle_guard_defaulted,
         },
         "filters": payload.filter.model_dump(mode="json"),
         "results": results,
@@ -25560,6 +25667,27 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
     llm_applied = bool(gatekeeper_features_dict.get("llm_applied"))
     bundle_key = str(gatekeeper_features_dict.get("bundle_key") or "").strip()
     bundle_context = _load_bundle_context_by_keys(project_id=project_id, bundle_keys={bundle_key}).get(bundle_key) if bundle_key else None
+    bundle_priority = _draft_bundle_priority(
+        {
+            "confidence": float(confidence_value or 0.0),
+            "has_open_conflict": len(conflicts) > 0,
+            "gatekeeper": {
+                "compiler_v2": {
+                    "knowledge_like_score": gatekeeper_features_dict.get("knowledge_like_score"),
+                    "bundle_support": int(gatekeeper_features_dict.get("bundle_support") or 0),
+                    "promotion_ready_from_bundle": bool(gatekeeper_features_dict.get("promotion_ready_from_bundle")),
+                }
+            },
+            "bundle": bundle_context,
+            "risk": _classify_auto_publish_risk(
+                assertion_class=_extract_assertion_class(gatekeeper_features_dict, category=str(claim_category or ""), page_type=str(page_type or "")),
+                category=str(claim_category or ""),
+                page_type=str(page_type or ""),
+                claim_text=str(claim_text or ""),
+                routing_policy={},
+            ),
+        }
+    )
 
     return {
         "draft": {
@@ -25641,6 +25769,7 @@ def get_wiki_draft(draft_id: UUID, project_id: str) -> Any:
             },
         },
         "bundle": bundle_context,
+        "bundle_priority": bundle_priority,
         "conflicts": conflicts,
         "moderation_actions": moderation_actions,
     }
