@@ -985,6 +985,15 @@ class AdoptionSafeModeEnableRequest(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class AdoptionSafeModeRecommendRequest(BaseModel):
+    project_id: str
+    recommended_by: str = Field(default="ops_admin", min_length=1, max_length=256)
+    dry_run: bool = True
+    confirm_project_id: str | None = None
+    note: str | None = Field(default=None, max_length=2000)
+    days: int = Field(default=14, ge=1, le=90)
+
+
 class AdoptionAgentWikiBootstrapRequest(BaseModel):
     project_id: str
     updated_by: str = Field(default="web_ui", min_length=1, max_length=256)
@@ -33466,6 +33475,220 @@ def _build_adoption_signal_noise_audit(
     }
 
 
+def _list_adoption_safe_mode_audit_events(
+    *,
+    project_id: str,
+    days: int,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    since = datetime.now(UTC) - timedelta(days=max(1, int(days)))
+    rows: list[tuple[Any, ...]] = []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if not _wiki_feature_table_exists(cur, "public.gatekeeper_calibration_queue_control_events"):
+                return []
+            cur.execute(
+                """
+                SELECT
+                  id,
+                  action,
+                  actor,
+                  reason,
+                  payload,
+                  created_at
+                FROM gatekeeper_calibration_queue_control_events
+                WHERE project_id = %s
+                  AND created_at >= %s
+                  AND action = ANY(%s)
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (
+                    project_id,
+                    since,
+                    ["adoption_safe_mode_recommended", "adoption_safe_mode_applied"],
+                    max(1, min(100, int(limit))),
+                ),
+            )
+            rows = cur.fetchall() or []
+    return [
+        {
+            "id": int(row[0]),
+            "action": str(row[1] or ""),
+            "actor": str(row[2] or ""),
+            "reason": str(row[3] or "") or None,
+            "payload": row[4] if isinstance(row[4], dict) else {},
+            "created_at": row[5].isoformat() if row[5] is not None else None,
+        }
+        for row in rows
+    ]
+
+
+def _build_adoption_signal_noise_stability_monitor(
+    *,
+    project_id: str,
+    days: int,
+    max_items_per_bucket: int = 8,
+) -> dict[str, Any]:
+    pipeline = get_adoption_pipeline_visibility(project_id=project_id, days=days)
+    audit = _build_adoption_signal_noise_audit(
+        project_id=project_id,
+        days=days,
+        max_items_per_bucket=max_items_per_bucket,
+    )
+    recent_safe_mode_events = _list_adoption_safe_mode_audit_events(
+        project_id=project_id,
+        days=max(days, 14),
+        limit=max(6, max_items_per_bucket),
+    )
+
+    warnings = list(pipeline.get("warnings") or []) if isinstance(pipeline.get("warnings"), list) else []
+    derived_alerts: list[dict[str, Any]] = []
+    summary = audit.get("summary") if isinstance(audit.get("summary"), dict) else {}
+    bundles = audit.get("bundles") if isinstance(audit.get("bundles"), dict) else {}
+    quality = audit.get("quality") if isinstance(audit.get("quality"), dict) else {}
+    quality_report = quality.get("report") if isinstance(quality.get("report"), dict) else {}
+    richness = quality.get("richness_benchmark") if isinstance(quality.get("richness_benchmark"), dict) else {}
+    bundle_status_rows = bundles.get("by_status") if isinstance(bundles.get("by_status"), list) else []
+    candidate_bundle_total = sum(
+        int(item.get("count") or 0)
+        for item in bundle_status_rows
+        if isinstance(item, dict) and str(item.get("status") or "") in {"candidate", "observed"}
+    )
+    bundle_promotion_ratio = float(summary.get("bundle_promotion_ratio") or 0.0)
+    rejected_pct = float(summary.get("evidence_rejected_pct") or 0.0)
+    placeholder_ratio = float(summary.get("placeholder_ratio_core") or 0.0)
+
+    if rejected_pct >= 0.9:
+        derived_alerts.append(
+            {
+                "code": "evidence_rejected_pct_high",
+                "severity": "critical",
+                "message": "Most incoming evidence is being rejected before durable promotion.",
+                "value": rejected_pct,
+                "threshold": 0.9,
+            }
+        )
+    elif rejected_pct >= 0.75:
+        derived_alerts.append(
+            {
+                "code": "evidence_rejected_pct_watch",
+                "severity": "warning",
+                "message": "Evidence rejection is high; useful knowledge may be over-filtered.",
+                "value": rejected_pct,
+                "threshold": 0.75,
+            }
+        )
+    if candidate_bundle_total >= 5 and bundle_promotion_ratio <= 0.15:
+        derived_alerts.append(
+            {
+                "code": "bundle_promotion_backlog",
+                "severity": "warning" if candidate_bundle_total < 10 else "critical",
+                "message": "Durable candidate bundles are accumulating faster than they reach ready/published state.",
+                "candidate_bundles": int(candidate_bundle_total),
+                "bundle_promotion_ratio": bundle_promotion_ratio,
+            }
+        )
+    if not bool(quality_report.get("pass")):
+        derived_alerts.append(
+            {
+                "code": "wiki_quality_not_passing",
+                "severity": "warning",
+                "message": "Core wiki quality gates are currently failing.",
+                "checks": quality_report.get("checks"),
+            }
+        )
+    if not bool(richness.get("pass")):
+        derived_alerts.append(
+            {
+                "code": "wiki_richness_not_passing",
+                "severity": "warning",
+                "message": "Published core pages remain shallow or structurally incomplete.",
+                "scores": richness.get("scores"),
+                "checks": richness.get("checks"),
+            }
+        )
+    if placeholder_ratio >= 0.15:
+        derived_alerts.append(
+            {
+                "code": "placeholder_pressure_high",
+                "severity": "warning",
+                "message": "Core pages still contain too much placeholder content.",
+                "value": placeholder_ratio,
+                "threshold": 0.15,
+            }
+        )
+
+    merged_alerts = _merge_adoption_warnings(warnings, derived_alerts)
+    critical = [item for item in merged_alerts if isinstance(item, dict) and str(item.get("severity") or "") == "critical"]
+    warning_only = [item for item in merged_alerts if isinstance(item, dict) and str(item.get("severity") or "") == "warning"]
+    state = "healthy"
+    if critical:
+        state = "critical"
+    elif warning_only:
+        state = "watch"
+
+    latest_recommendation = next(
+        (
+            item
+            for item in recent_safe_mode_events
+            if isinstance(item, dict) and str(item.get("action") or "") == "adoption_safe_mode_recommended"
+        ),
+        None,
+    )
+    latest_applied = next(
+        (
+            item
+            for item in recent_safe_mode_events
+            if isinstance(item, dict) and str(item.get("action") or "") == "adoption_safe_mode_applied"
+        ),
+        None,
+    )
+    safe_mode = {
+        "state": (
+            "applied_recently"
+            if latest_applied is not None
+            else ("recommended" if critical else "not_needed")
+        ),
+        "should_recommend": bool(critical and latest_applied is None),
+        "latest_recommendation": latest_recommendation,
+        "latest_applied": latest_applied,
+        "recommend_endpoint": "/v1/adoption/safe-mode/recommend",
+        "apply_endpoint": "/v1/adoption/safe-mode/enable",
+    }
+
+    return {
+        "project_id": project_id,
+        "window_days": int(days),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "status": state,
+        "alerts": merged_alerts,
+        "safe_mode": safe_mode,
+        "summary": {
+            "critical_alerts": len(critical),
+            "warning_alerts": len(warning_only),
+            "candidate_bundle_total": int(candidate_bundle_total),
+            "bundle_promotion_ratio": bundle_promotion_ratio,
+            "evidence_rejected_pct": rejected_pct,
+            "placeholder_ratio_core": placeholder_ratio,
+        },
+        "pipeline": {
+            "bottleneck": pipeline.get("bottleneck"),
+            "claims_floor_guard": pipeline.get("claims_floor_guard"),
+            "draft_flood_guard": pipeline.get("draft_flood_guard"),
+        },
+        "recent_safe_mode_events": recent_safe_mode_events,
+        "signal_noise_audit": {
+            "summary": summary,
+            "top_noisy_source_families": audit.get("top_noisy_source_families"),
+        },
+        "quality": {
+            "report": quality_report,
+            "richness_benchmark": richness,
+        },
+    }
+
+
 def _legacy_import_sources_table_exists_from_cursor(cur: Any) -> bool:
     return _wiki_feature_table_exists(cur, "public.legacy_import_sources")
 
@@ -35160,6 +35383,19 @@ def get_adoption_signal_noise_audit(
     )
 
 
+@app.get("/v1/adoption/stability-monitor")
+def get_adoption_stability_monitor(
+    project_id: str,
+    days: int = Query(default=14, ge=1, le=90),
+    max_items_per_bucket: int = Query(default=8, ge=1, le=50),
+) -> dict[str, Any]:
+    return _build_adoption_signal_noise_stability_monitor(
+        project_id=project_id,
+        days=int(days),
+        max_items_per_bucket=int(max_items_per_bucket),
+    )
+
+
 @app.get("/v1/adoption/synthesis-prompts")
 def get_adoption_synthesis_prompts(
     project_id: str,
@@ -35948,7 +36184,21 @@ def enable_adoption_safe_mode(payload: AdoptionSafeModeEnableRequest) -> Any:
             auto_publish_allow_conflicts=bool(target_config.get("auto_publish_allow_conflicts", False)),
         )
     )
+    event_id = _append_operation_queue_control_event(
+        project_id=project_id,
+        action="adoption_safe_mode_applied",
+        actor=str(payload.updated_by or "ops_admin"),
+        reason=payload.note or "Adoption safe mode applied.",
+        paused_until=None,
+        payload={
+            "snapshot_id": snapshot.get("id"),
+            "changed_routing_keys": target_payload.get("changed_routing_keys"),
+            "changed_config_keys": target_payload.get("changed_config_keys"),
+            "target_config": target_config,
+        },
+    )
     response["snapshot_id"] = snapshot.get("id")
+    response["audit_event_id"] = event_id
     response["applied_config"] = updated.get("config") if isinstance(updated, dict) else None
     return response
 
@@ -35962,6 +36212,50 @@ def get_adoption_policy_calibration_quick_loop(
     payload["apply_endpoint"] = "/v1/adoption/policy-calibration/quick-loop/apply"
     payload["rollback_preview_endpoint"] = "/v1/gatekeeper/config/rollback/preview"
     return payload
+
+
+@app.post("/v1/adoption/safe-mode/recommend", response_model=None)
+def recommend_adoption_safe_mode(payload: AdoptionSafeModeRecommendRequest) -> Any:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm_value = str(payload.confirm_project_id or "").strip()
+        if confirm_value != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
+    monitor = _build_adoption_signal_noise_stability_monitor(
+        project_id=project_id,
+        days=int(payload.days),
+        max_items_per_bucket=8,
+    )
+    response: dict[str, Any] = {
+        "status": "dry_run" if payload.dry_run else "recorded",
+        "project_id": project_id,
+        "monitor": monitor,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if payload.dry_run:
+        response["next_action"] = "rerun_with_dry_run=false_and_confirm_project_id"
+        return response
+
+    safe_mode = monitor.get("safe_mode") if isinstance(monitor.get("safe_mode"), dict) else {}
+    event_id = _append_operation_queue_control_event(
+        project_id=project_id,
+        action="adoption_safe_mode_recommended",
+        actor=str(payload.recommended_by or "ops_admin"),
+        reason=payload.note or "Stability monitor recommended adoption safe mode.",
+        paused_until=None,
+        payload={
+            "monitor_status": monitor.get("status"),
+            "alerts": monitor.get("alerts"),
+            "safe_mode": safe_mode,
+            "summary": monitor.get("summary"),
+            "days": int(payload.days),
+        },
+    )
+    response["event_id"] = event_id
+    return response
 
 
 @app.post("/v1/adoption/policy-calibration/quick-loop/apply", response_model=None)

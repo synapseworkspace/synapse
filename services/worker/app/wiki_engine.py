@@ -2414,6 +2414,7 @@ class WikiSynthesisEngine:
         return self._gatekeeper_decide_from_inputs(
             claim=claim,
             config=resolved_config,
+            conn=conn,
             repeated_count=repeated_count,
             historical_source_count=historical_source_count,
             incoming_source_ids=incoming_source_ids,
@@ -2465,9 +2466,49 @@ class WikiSynthesisEngine:
             return self._evidence_bundle_claim_links_table_exists_cache
         with conn.cursor() as cur:
             cur.execute("SELECT to_regclass('public.evidence_bundle_claim_links')")
-            row = cur.fetchone()
+        row = cur.fetchone()
         self._evidence_bundle_claim_links_table_exists_cache = bool(row and row[0] is not None)
         return self._evidence_bundle_claim_links_table_exists_cache
+
+    def _load_existing_evidence_bundle_snapshot(
+        self,
+        conn,
+        *,
+        project_id: str,
+        bundle_key: str,
+    ) -> dict[str, Any] | None:
+        if not bundle_key or not self._evidence_bundles_table_exists(conn):
+            return None
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  bundle_status,
+                  support_count,
+                  repeated_claims,
+                  source_diversity,
+                  evidence_count,
+                  quality_score,
+                  metadata
+                FROM evidence_bundles
+                WHERE project_id = %s
+                  AND bundle_key = %s
+                LIMIT 1
+                """,
+                (project_id, bundle_key),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "bundle_status": str(row[0] or ""),
+            "support_count": int(row[1] or 0),
+            "repeated_claims": int(row[2] or 0),
+            "source_diversity": int(row[3] or 0),
+            "evidence_count": int(row[4] or 0),
+            "quality_score": float(row[5] or 0.0),
+            "metadata": row[6] if isinstance(row[6], dict) else {},
+        }
 
     def _derive_knowledge_taxonomy_v2(
         self,
@@ -2755,6 +2796,7 @@ class WikiSynthesisEngine:
         *,
         claim: ClaimInput,
         config: GatekeeperConfig,
+        conn=None,
         repeated_count: int,
         historical_source_count: int,
         incoming_source_ids: list[str],
@@ -3274,16 +3316,115 @@ class WikiSynthesisEngine:
             suggested_page_type = category_hint
         bundle_key_dimension = knowledge_dimensions[0] if knowledge_dimensions else assertion_class
         bundle_key = f"{bundle_key_dimension}:{self._slugify(claim.entity_key) or self._slugify(claim.category) or 'general'}"
-        promotion_ready_from_bundle = bool(
-            has_knowledge_like_signal
-            and bundle_support >= knowledge_like_bundle_min_support
-        )
         taxonomy_v2 = self._derive_knowledge_taxonomy_v2(
             knowledge_dimensions=knowledge_dimensions,
             suggested_page_type=suggested_page_type,
             ingestion_classification=ingestion_classification,
             has_knowledge_like_signal=has_knowledge_like_signal,
             repeated_count=repeated_count,
+        )
+        existing_bundle_snapshot = (
+            self._load_existing_evidence_bundle_snapshot(conn, project_id=claim.project_id, bundle_key=bundle_key)
+            if conn is not None
+            else None
+        )
+        existing_bundle_status = (
+            str((existing_bundle_snapshot or {}).get("bundle_status") or "").strip().lower()
+            if isinstance(existing_bundle_snapshot, dict)
+            else ""
+        )
+        existing_bundle_support = int((existing_bundle_snapshot or {}).get("support_count") or 0)
+        existing_bundle_repeated_claims = int((existing_bundle_snapshot or {}).get("repeated_claims") or 0)
+        existing_bundle_source_diversity = int((existing_bundle_snapshot or {}).get("source_diversity") or 0)
+        existing_bundle_evidence_count = int((existing_bundle_snapshot or {}).get("evidence_count") or 0)
+        existing_bundle_quality = float((existing_bundle_snapshot or {}).get("quality_score") or 0.0)
+        effective_source_diversity = max(source_diversity, existing_bundle_source_diversity)
+        effective_evidence_count = max(evidence_count, existing_bundle_evidence_count)
+        effective_repeated_count = max(repeated_count, existing_bundle_repeated_claims)
+        effective_bundle_support = max(
+            bundle_support,
+            existing_bundle_support,
+            effective_repeated_count + max(0, effective_source_diversity - 1) + max(0, effective_evidence_count - 1),
+        )
+        bundle_history_ready = existing_bundle_status == "ready"
+        bundle_history_candidate = existing_bundle_status == "candidate"
+        promotion_ready_from_bundle = bool(
+            has_knowledge_like_signal
+            and (
+                effective_bundle_support >= knowledge_like_bundle_min_support
+                or bundle_history_ready
+                or (bundle_history_candidate and existing_bundle_quality >= 0.48)
+            )
+        )
+
+        durability_axis = 0.0
+        if has_durable_signal:
+            durability_axis += 0.34
+        durability_axis += min(0.26, effective_bundle_support * 0.05)
+        if effective_source_diversity >= 2:
+            durability_axis += 0.14
+        if bundle_history_ready:
+            durability_axis += 0.18
+        elif bundle_history_candidate:
+            durability_axis += 0.08
+        durability_axis += min(0.12, existing_bundle_quality * 0.18)
+        if ingestion_classification == "operational_stream" and not has_knowledge_like_signal:
+            durability_axis -= 0.18
+        durability_axis = max(0.0, min(1.0, round(durability_axis, 4)))
+
+        reusability_axis = 0.0
+        if knowledge_dimensions:
+            reusability_axis += 0.28
+        if suggested_page_type in {"agent_profile", "data_map", "process", "policy", "decision_log"}:
+            reusability_axis += 0.2
+        if not is_single_source_one_off:
+            reusability_axis += 0.16
+        if not looks_like_runtime_noise:
+            reusability_axis += 0.12
+        if has_policy_signal or has_process_signal or has_capability_signal or has_data_source_signal:
+            reusability_axis += 0.18
+        reusability_axis = max(0.0, min(1.0, round(reusability_axis, 4)))
+
+        actionability_axis = 0.0
+        if has_process_signal:
+            actionability_axis += 0.26
+        if has_policy_signal:
+            actionability_axis += 0.24
+        if has_decision_signal:
+            actionability_axis += 0.14
+        if has_high_priority_signal:
+            actionability_axis += 0.12
+        if {"escalation", "approval", "owner", "sla"} & knowledge_token_set:
+            actionability_axis += 0.14
+        actionability_axis = max(0.0, min(1.0, round(actionability_axis, 4)))
+
+        scope_axis = 0.0
+        if effective_source_diversity >= config.min_sources_for_golden:
+            scope_axis += 0.24
+        elif effective_source_diversity >= 2:
+            scope_axis += 0.14
+        if effective_evidence_count >= 2:
+            scope_axis += 0.18
+        if claim.entity_key and self._slugify(claim.entity_key) not in {"", "general"}:
+            scope_axis += 0.12
+        if taxonomy_v2["normalized_target_type"] != "fact":
+            scope_axis += 0.18
+        if bundle_history_ready or bundle_history_candidate:
+            scope_axis += 0.12
+        scope_axis = max(0.0, min(1.0, round(scope_axis, 4)))
+
+        durable_knowledge_score_v2 = round(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    durability_axis * 0.34
+                    + reusability_axis * 0.24
+                    + actionability_axis * 0.24
+                    + scope_axis * 0.18,
+                ),
+            ),
+            4,
         )
 
         score = 0.35
@@ -3293,11 +3434,11 @@ class WikiSynthesisEngine:
             score += 0.12
         if has_knowledge_like_signal and not has_policy_signal and not has_process_signal:
             score += 0.08
-        if evidence_count >= 2:
+        if effective_evidence_count >= 2:
             score += 0.2
-        if repeated_count >= 1:
-            score += min(0.25, repeated_count * 0.12)
-        if source_diversity >= config.min_sources_for_golden:
+        if effective_repeated_count >= 1:
+            score += min(0.25, effective_repeated_count * 0.12)
+        if effective_source_diversity >= config.min_sources_for_golden:
             score += 0.1
         if not is_short:
             score += 0.1
@@ -3305,6 +3446,7 @@ class WikiSynthesisEngine:
             score -= 0.2
         if has_recent_open_conflict:
             score -= 0.1
+        score = round(max(score, (score * 0.56) + (durable_knowledge_score_v2 * 0.44)), 4)
         score = max(0.0, min(1.0, round(score, 4)))
         score_before_llm = score
 
@@ -3317,16 +3459,16 @@ class WikiSynthesisEngine:
         elif is_single_source_one_off:
             tier = "operational_memory"
             rationale = "single-source one-off observation without durable knowledge signal"
-        elif has_operational_pattern and is_short and repeated_count == 0:
+        elif has_operational_pattern and is_short and effective_repeated_count == 0:
             tier = "operational_memory"
             rationale = "short operational event with low reusable signal"
-        elif has_policy_signal and (evidence_count >= 2 or repeated_count >= 1):
+        elif has_policy_signal and (effective_evidence_count >= 2 or effective_repeated_count >= 1):
             tier = "golden_candidate"
             rationale = "policy-like fact with multi-signal support"
-        elif promotion_ready_from_bundle and knowledge_like_score >= max(knowledge_like_min_score, 0.34):
+        elif promotion_ready_from_bundle and durable_knowledge_score_v2 >= max(knowledge_like_min_score + 0.18, 0.46):
             tier = "golden_candidate"
             rationale = "bundle-supported knowledge pattern reached reusable documentation threshold"
-        elif repeated_count >= 2:
+        elif effective_repeated_count >= 2:
             tier = "golden_candidate"
             rationale = "repeated claim pattern reached promotion threshold"
         elif has_knowledge_like_signal and not looks_like_runtime_noise:
@@ -3338,7 +3480,7 @@ class WikiSynthesisEngine:
 
         if (
             tier == "insight_candidate"
-            and source_diversity >= config.min_sources_for_golden
+            and effective_source_diversity >= config.min_sources_for_golden
             and score >= config.min_score_for_golden
             and not has_recent_open_conflict
         ):
@@ -3347,11 +3489,12 @@ class WikiSynthesisEngine:
 
         insufficient_support = (
             require_multi_source_for_wiki
-            and source_diversity < min_sources_for_wiki_candidate
-            and evidence_count < min_evidence_for_wiki_candidate
-            and repeated_count <= 0
+            and effective_source_diversity < min_sources_for_wiki_candidate
+            and effective_evidence_count < min_evidence_for_wiki_candidate
+            and effective_repeated_count <= 0
             and not has_override_signal
             and not has_durable_signal
+            and not bundle_history_ready
         )
         if insufficient_support and tier != "operational_memory":
             tier = "operational_memory"
@@ -3374,9 +3517,12 @@ class WikiSynthesisEngine:
                 features={
                     "evidence_count": evidence_count,
                     "repeated_count": repeated_count,
+                    "effective_repeated_count": effective_repeated_count,
                     "historical_source_count": historical_source_count,
                     "incoming_source_count": len(incoming_source_ids),
                     "source_diversity": source_diversity,
+                    "effective_source_diversity": effective_source_diversity,
+                    "effective_evidence_count": effective_evidence_count,
                     "is_short": is_short,
                     "has_operational_pattern": has_operational_pattern,
                     "has_policy_signal": has_policy_signal,
@@ -3395,7 +3541,11 @@ class WikiSynthesisEngine:
                     "suggested_page_type": suggested_page_type,
                     "bundle_key": bundle_key,
                     "bundle_support": bundle_support,
+                    "effective_bundle_support": effective_bundle_support,
                     "promotion_ready_from_bundle": promotion_ready_from_bundle,
+                    "existing_bundle_status": existing_bundle_status or None,
+                    "existing_bundle_quality": round(existing_bundle_quality, 4),
+                    "durable_knowledge_score_v2": durable_knowledge_score_v2,
                     "routing_hard_block": routing_hard_block,
                     "insufficient_support": insufficient_support,
                     "blocked_by_category": blocked_by_category,
@@ -3426,7 +3576,7 @@ class WikiSynthesisEngine:
                         tier = "golden_candidate"
                         rationale = "llm-assisted promotion: high-confidence model signal and score threshold met"
             elif suggested == "operational_memory":
-                if is_short and repeated_count == 0 and not has_durable_signal:
+                if is_short and effective_repeated_count == 0 and not has_durable_signal:
                     if tier != "operational_memory":
                         tier = "operational_memory"
                         rationale = "llm-assisted demotion: short low-value operational event"
@@ -3442,9 +3592,12 @@ class WikiSynthesisEngine:
         features = {
             "evidence_count": evidence_count,
             "repeated_count": repeated_count,
+            "effective_repeated_count": effective_repeated_count,
             "historical_source_count": historical_source_count,
             "incoming_source_count": len(incoming_source_ids),
             "source_diversity": source_diversity,
+            "effective_source_diversity": effective_source_diversity,
+            "effective_evidence_count": effective_evidence_count,
             "incoming_source_systems": incoming_source_systems,
             "incoming_source_types": incoming_source_types,
             "incoming_tool_names": incoming_tool_names,
@@ -3500,7 +3653,18 @@ class WikiSynthesisEngine:
             "suggested_page_type": suggested_page_type,
             "bundle_key": bundle_key,
             "bundle_support": bundle_support,
+            "effective_bundle_support": effective_bundle_support,
             "promotion_ready_from_bundle": promotion_ready_from_bundle,
+            "existing_bundle_status": existing_bundle_status or None,
+            "existing_bundle_support": existing_bundle_support,
+            "existing_bundle_quality": round(existing_bundle_quality, 4),
+            "durable_score_axes": {
+                "durability": durability_axis,
+                "reusability": reusability_axis,
+                "actionability": actionability_axis,
+                "scope": scope_axis,
+            },
+            "durable_knowledge_score_v2": durable_knowledge_score_v2,
             "knowledge_taxonomy_class": taxonomy_v2["knowledge_taxonomy_class"],
             "normalized_target_type": taxonomy_v2["normalized_target_type"],
             "assertion_class": assertion_class,

@@ -16,6 +16,7 @@ try:
         _build_project_wiki_richness_benchmark_from_rows,
         _build_human_guided_synthesis_prompts,
         _build_adoption_signal_noise_audit,
+        _build_adoption_signal_noise_stability_monitor,
         _build_first_run_starter_pages,
         _page_type_freshness_thresholds,
         _prepend_bootstrap_publish_notice,
@@ -51,6 +52,7 @@ except Exception:  # pragma: no cover
     _build_project_wiki_richness_benchmark_from_rows = None
     _build_human_guided_synthesis_prompts = None
     _build_adoption_signal_noise_audit = None
+    _build_adoption_signal_noise_stability_monitor = None
     _build_first_run_starter_pages = None
     _page_type_freshness_thresholds = None
     _prepend_bootstrap_publish_notice = None
@@ -85,6 +87,7 @@ except Exception:  # pragma: no cover
     or _build_project_wiki_richness_benchmark_from_rows is None
     or _build_human_guided_synthesis_prompts is None
     or _build_adoption_signal_noise_audit is None
+    or _build_adoption_signal_noise_stability_monitor is None
     or _build_first_run_starter_pages is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
@@ -1008,6 +1011,67 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(int(audit.get("bundles", {}).get("total") or 0), 5)
         self.assertTrue(bool(audit.get("quality", {}).get("report", {}).get("weak_page_families")))
         self.assertTrue(bool(audit.get("top_noisy_source_families", {}).get("source_types")))
+
+    def test_stability_monitor_merges_pipeline_and_safe_mode_audit(self) -> None:
+        assert _api_main is not None
+        original_pipeline = _api_main.get_adoption_pipeline_visibility
+        original_audit = _api_main._build_adoption_signal_noise_audit
+        original_safe_mode_events = _api_main._list_adoption_safe_mode_audit_events
+        try:
+            _api_main.get_adoption_pipeline_visibility = lambda **kwargs: {
+                "warnings": [
+                    {
+                        "code": "events_claims_zero_floor",
+                        "severity": "critical",
+                        "message": "Events are flowing but claims remain zero.",
+                    }
+                ],
+                "bottleneck": {"from_stage": "events", "to_stage": "claims"},
+                "claims_floor_guard": {"triggered": True, "events_total": 220, "claims_total": 0},
+                "draft_flood_guard": {"max_open_per_page": 0, "max_open_per_entity": 0, "thresholds": {}},
+            }
+            _api_main._build_adoption_signal_noise_audit = lambda **kwargs: {
+                "summary": {
+                    "evidence_rejected_pct": 0.93,
+                    "bundle_promotion_ratio": 0.05,
+                    "placeholder_ratio_core": 0.18,
+                },
+                "bundles": {
+                    "by_status": [
+                        {"status": "candidate", "count": 9},
+                        {"status": "ready", "count": 1},
+                    ]
+                },
+                "quality": {
+                    "report": {"pass": False, "checks": {"core_publish_coverage": False}},
+                    "richness_benchmark": {"pass": False, "scores": {"average_page_score": 0.44}},
+                },
+                "top_noisy_source_families": {"source_types": [{"key": "external_event", "count": 30}]},
+            }
+            _api_main._list_adoption_safe_mode_audit_events = lambda **kwargs: [
+                {
+                    "id": 41,
+                    "action": "adoption_safe_mode_recommended",
+                    "actor": "ops_admin",
+                    "reason": "queue pressure",
+                    "payload": {},
+                    "created_at": "2026-05-03T10:00:00+00:00",
+                }
+            ]
+            monitor = _build_adoption_signal_noise_stability_monitor(
+                project_id="omega_demo",
+                days=14,
+                max_items_per_bucket=4,
+            )
+        finally:
+            _api_main.get_adoption_pipeline_visibility = original_pipeline
+            _api_main._build_adoption_signal_noise_audit = original_audit
+            _api_main._list_adoption_safe_mode_audit_events = original_safe_mode_events
+
+        self.assertEqual(str(monitor.get("status") or ""), "critical")
+        self.assertTrue(bool((monitor.get("safe_mode") or {}).get("latest_recommendation")))
+        self.assertTrue(any(str(item.get("code") or "") == "bundle_promotion_backlog" for item in (monitor.get("alerts") or [])))
+        self.assertEqual(str((monitor.get("safe_mode") or {}).get("state") or ""), "recommended")
 
     def test_runtime_agent_sql_expr_and_filter_include_payload_fallbacks(self) -> None:
         expr = _runtime_agent_id_sql_expr(table_alias="e")

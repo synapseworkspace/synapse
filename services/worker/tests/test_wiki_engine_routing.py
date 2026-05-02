@@ -578,6 +578,55 @@ class WikiEngineRoutingTests(unittest.TestCase):
         self.assertEqual(str(decision.features.get("suggested_page_type")), "data_map")
         self.assertTrue(str(decision.features.get("bundle_key") or "").startswith("data_source:"))
 
+    def test_gatekeeper_uses_existing_bundle_history_for_durable_score(self) -> None:
+        claim = ClaimInput(
+            id=uuid.uuid4(),
+            project_id="omega_demo",
+            entity_key="dispatch_access",
+            category="process",
+            claim_text="When gate override fails, escalate to on-call and record approval owner.",
+            evidence=[
+                {
+                    "source_type": "tool_result",
+                    "source_id": "runtime_note_22",
+                    "tool_name": "chat_runtime",
+                    "source_system": "runtime_memory",
+                }
+            ],
+            metadata={},
+        )
+
+        class _Cursor:
+            def execute(self, sql: str, params=None) -> None:
+                self.sql = str(sql)
+            def fetchone(self):
+                if "FROM evidence_bundles" in getattr(self, "sql", ""):
+                    return ("candidate", 5, 3, 2, 4, 0.73, {"knowledge_taxonomy_class": "procedural"})
+                return None
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+        self.engine._evidence_bundles_table_exists_cache = True
+        decision = self.engine._gatekeeper_decide_from_inputs(
+            claim=claim,
+            config=_base_gatekeeper_config(),
+            conn=_Conn(),
+            repeated_count=0,
+            historical_source_count=0,
+            incoming_source_ids=["runtime_note_22"],
+            has_recent_open_conflict=False,
+        )
+        self.assertEqual(decision.tier, "golden_candidate")
+        self.assertEqual(str(decision.features.get("existing_bundle_status") or ""), "candidate")
+        self.assertGreater(float(decision.features.get("durable_knowledge_score_v2") or 0.0), 0.45)
+        self.assertGreaterEqual(int(decision.features.get("effective_bundle_support") or 0), 5)
+
     def test_process_section_resolution_prefers_steps(self) -> None:
         section_key, section_heading, created_new = self.engine._resolve_section(
             page_type="process",

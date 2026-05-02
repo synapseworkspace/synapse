@@ -82,12 +82,14 @@ This powers post-task learning without forcing raw runtime logs directly into th
 ```python
 gaps = synapse.get_adoption_knowledge_gaps(days=14)
 audit = synapse.get_adoption_signal_noise_audit(days=14)
+monitor = synapse.get_adoption_stability_monitor(days=14)
 prompts = synapse.get_adoption_synthesis_prompts(days=14, max_items=8)
 benchmark = synapse.get_adoption_wiki_richness_benchmark(days=14)
 ```
 
 Use these together to inspect:
 - signal vs noise and which source families are still dominating,
+- whether the project is currently healthy / watch / critical and if safe mode should be recommended,
 - where useful knowledge is still missing,
 - which follow-up questions Synapse recommends asking,
 - and whether your published wiki is actually rich enough to be useful.

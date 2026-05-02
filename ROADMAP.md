@@ -75,7 +75,7 @@ Phase 1 (Architecture Reset)
    - explicit hard-block families before draft stage: snapshots, telemetry, payload blobs, PII-heavy records, transient state deltas, heartbeats.
 
 Phase 2 (Signal Extraction)
-5. `in_progress` Durable knowledge scoring v2:
+5. `done` Durable knowledge scoring v2:
    - заменить текущий преимущественно event-centric scoring на composite score from durability, reusability, actionability, and scope.
 6. `in_progress` Process extraction compiler:
    - отдельный compiler for `trigger -> condition -> action -> escalation -> verification`, not generic fact extraction.
@@ -239,7 +239,7 @@ Goal:
    - noisy classes always `pending_review`.
 4. `done` Runtime registry fallback from event payloads:
    - capability/source-usage discovery now infers `agent_id` from runtime event payload/metadata fields when explicit `/v1/agents/register` integration is absent.
-5. `planned` Signal/noise stability monitor:
+5. `done` Signal/noise stability monitor:
    - queue growth alerts + “safe mode recommended/applied” audit trail.
 
 ## v0.1.3 Release Plan (Q2 2026)
@@ -988,6 +988,7 @@ Checklist:
 ## Recent Updates
 
 - 2026-05-02: Closed the next first-run quality loop in `Knowledge Compiler v2`: Synapse now ships `/v1/adoption/signal-noise/audit` for a compact operator-facing view of evidence rejection, bundle promotion, published/reviewed page mix, weak page families, missing signals, and noisy source families; `wiki-quality/report` now explains reviewed core backlog and missing synthesis signals instead of only pass/fail counters; Operations UI renders this as a `Knowledge Compiler Health` panel; and first-run/template bootstrap now includes an opinionated `AI Employee Org` pack (`Tool Catalog`, `Scheduled Tasks`, `Human-in-the-Loop Rules`, `Integrations Map`, `Escalation Rules`, `Agent Directory Index`).
+- 2026-05-03: Tightened the knowledge compiler core instead of just its diagnostics: worker gatekeeper scoring now consumes existing `evidence_bundles` history and computes an explicit composite durable score (`durability / reusability / actionability / scope`) before promotion, so new claims are judged in bundle context rather than as isolated events; API now ships `/v1/adoption/stability-monitor` plus `/v1/adoption/safe-mode/recommend`, and both recommendation/apply flows persist `adoption_safe_mode_recommended` / `adoption_safe_mode_applied` audit events via queue-control history instead of leaving safe-mode decisions as ephemeral warnings only.
 - 2026-05-02: Advanced `Knowledge Compiler v2` with explicit taxonomy and guided synthesis support: worker routing now stamps bundles/claims with `knowledge_taxonomy_class` (`operational / episodic / semantic / procedural`) and normalized target types, evidence-bundle API exposes those fields, and Synapse now ships `/v1/adoption/synthesis-prompts` to generate targeted follow-up questions from candidate bundles, repeated agent questions, and page-enrichment gaps. This closes the first production slice of human-guided synthesis instead of leaving gaps as raw diagnostics only.
 - 2026-05-02: Extended `Knowledge Compiler v2` beyond page compilers: Synapse now exposes `/v1/adoption/knowledge-gaps` to surface repeated agent questions, escalation patterns, candidate bundles, and core-page enrichment gaps; freshness semantics are now page-type aware (`policy/process/runbook/agent_profile/data_map/decision_log`) in wiki listing/lifecycle endpoints instead of one global stale threshold; and SDK adoption helpers now expose both richness benchmark and knowledge-gap diagnostics.
 - 2026-05-02: Implemented the next `Knowledge Compiler v2` production slice: publish-time enrichment now rehydrates thin/placeholder-heavy pages from canonical compilers before publish, hard page-type schema contracts were expanded for agent/data/process/decision pages, a new `decision-log` compiler and `/v1/agents/reflections` debrief contract landed, both SDKs gained first-class reflection submission methods, and `/v1/adoption/wiki-richness/benchmark` now measures useful wiki density beyond simple page existence.

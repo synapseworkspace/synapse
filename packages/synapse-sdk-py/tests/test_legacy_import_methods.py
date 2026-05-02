@@ -209,6 +209,15 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["params"].get("days"), 9)
         self.assertEqual(call["params"].get("max_items_per_bucket"), 4)
 
+    def test_get_adoption_stability_monitor_is_project_scoped(self) -> None:
+        self.client.get_adoption_stability_monitor(days=11, max_items_per_bucket=5)
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/stability-monitor")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["params"].get("project_id"), "omega_demo")
+        self.assertEqual(call["params"].get("days"), 11)
+        self.assertEqual(call["params"].get("max_items_per_bucket"), 5)
+
     def test_get_adoption_synthesis_prompts_is_project_scoped(self) -> None:
         self.client.get_adoption_synthesis_prompts(days=10, max_items=5)
         call = self.client.calls[-1]
@@ -396,6 +405,24 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("note"), "critical queue regression")
+
+    def test_recommend_adoption_safe_mode_posts_expected_payload(self) -> None:
+        self.client.recommend_adoption_safe_mode(
+            recommended_by="ops_admin",
+            days=21,
+            dry_run=False,
+            note="claims floor breached",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/safe-mode/recommend")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("recommended_by"), "ops_admin")
+        self.assertEqual(payload.get("days"), 21)
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
+        self.assertEqual(payload.get("note"), "claims floor breached")
 
     def test_bulk_review_wiki_drafts_posts_expected_payload(self) -> None:
         self.client.bulk_review_wiki_drafts(

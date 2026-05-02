@@ -78,12 +78,14 @@ This gives Synapse a structured debrief channel instead of relying only on raw l
 ```ts
 const gaps = await synapse.getAdoptionKnowledgeGaps({ days: 14 });
 const audit = await synapse.getAdoptionSignalNoiseAudit({ days: 14 });
+const monitor = await synapse.getAdoptionStabilityMonitor({ days: 14 });
 const prompts = await synapse.getAdoptionSynthesisPrompts({ days: 14, maxItems: 8 });
 const benchmark = await synapse.getAdoptionWikiRichnessBenchmark({ days: 14 });
 ```
 
 These helpers make it easier to evaluate whether the wiki is actually becoming useful:
 - signal vs noise and dominant noisy source families,
+- current stability state and whether safe mode should be recommended or has already been applied,
 - missing durable knowledge,
 - targeted follow-up questions,
 - richness / completeness benchmark.

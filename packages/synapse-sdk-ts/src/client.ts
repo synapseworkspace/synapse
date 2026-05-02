@@ -697,6 +697,20 @@ export class SynapseClient {
     });
   }
 
+  async getAdoptionStabilityMonitor(options: {
+    days?: number;
+    maxItemsPerBucket?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/stability-monitor", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        days: normalizeInt(options.days ?? 14, 1, 90),
+        max_items_per_bucket: normalizeInt(options.maxItemsPerBucket ?? 8, 1, 50)
+      }
+    });
+  }
+
   async getAdoptionSynthesisPrompts(options: {
     days?: number;
     maxItems?: number;
@@ -933,6 +947,32 @@ export class SynapseClient {
       payload: {
         project_id: this.projectId,
         updated_by: updatedBy,
+        dry_run: dryRun,
+        confirm_project_id: dryRun ? undefined : this.projectId,
+        note: asOptionalString(options.note) ?? undefined
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async recommendAdoptionSafeMode(options: {
+    recommendedBy: string;
+    days?: number;
+    dryRun?: boolean;
+    note?: string;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    const recommendedBy = String(options.recommendedBy ?? "").trim();
+    if (!recommendedBy) {
+      throw new Error("recommendedBy is required");
+    }
+    const dryRun = options.dryRun ?? true;
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/safe-mode/recommend", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        recommended_by: recommendedBy,
+        days: normalizeInt(options.days ?? 14, 1, 90),
         dry_run: dryRun,
         confirm_project_id: dryRun ? undefined : this.projectId,
         note: asOptionalString(options.note) ?? undefined

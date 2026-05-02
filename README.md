@@ -245,6 +245,7 @@ Enterprise shortcut (single API call):
 - `GET /v1/adoption/wiki-richness/benchmark` scores useful wiki density instead of only slug existence.
 - `GET /v1/adoption/knowledge-gaps` shows where the wiki is still missing durable answers, grounded process detail, or source-backed structure.
 - `GET /v1/adoption/signal-noise/audit` gives operators one compact view of rejection pressure, bundle promotion, weak page families, missing signals, and noisy source families.
+- `GET /v1/adoption/stability-monitor` turns those signals into an operator-ready health state and records the safe-mode recommendation/apply loop in audit history.
 - `GET /v1/adoption/synthesis-prompts` generates targeted follow-up questions for agents/operators from candidate bundles, repeated unanswered questions, and weak pages.
 
 Knowledge Compiler diagnostics flow:
@@ -254,6 +255,7 @@ synapse-cli adoption sync-preset --api-url http://localhost:8080 --project-id om
 curl "http://localhost:8080/v1/adoption/wiki-richness/benchmark?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/knowledge-gaps?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/signal-noise/audit?project_id=omega_demo"
+curl "http://localhost:8080/v1/adoption/stability-monitor?project_id=omega_demo"
 curl "http://localhost:8080/v1/adoption/synthesis-prompts?project_id=omega_demo"
 ```
 

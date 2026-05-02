@@ -699,6 +699,22 @@ class SynapseClient:
             },
         )
 
+    def get_adoption_stability_monitor(
+        self,
+        *,
+        days: int = 14,
+        max_items_per_bucket: int = 8,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/stability-monitor",
+            method="GET",
+            params={
+                "project_id": self._config.project_id,
+                "days": max(1, min(90, int(days))),
+                "max_items_per_bucket": max(1, min(50, int(max_items_per_bucket))),
+            },
+        )
+
     def get_adoption_synthesis_prompts(
         self,
         *,
@@ -922,6 +938,32 @@ class SynapseClient:
         }
         return self._request_json(
             "/v1/adoption/safe-mode/enable",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def recommend_adoption_safe_mode(
+        self,
+        *,
+        recommended_by: str,
+        days: int = 14,
+        dry_run: bool = True,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        actor = str(recommended_by or "").strip()
+        if not actor:
+            raise ValueError("recommended_by is required")
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "recommended_by": actor,
+            "days": max(1, min(90, int(days))),
+            "dry_run": bool(dry_run),
+            "confirm_project_id": self._config.project_id if not dry_run else None,
+            "note": str(note).strip() if note is not None and str(note).strip() else None,
+        }
+        return self._request_json(
+            "/v1/adoption/safe-mode/recommend",
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),
