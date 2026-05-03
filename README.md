@@ -254,6 +254,7 @@ Enterprise shortcut (single API call):
 - `POST /v1/adoption/bundle-promotion/run` refreshes core wiki pages directly from durable evidence bundles with a safe `Preview -> Apply` flow.
 - `POST /v1/adoption/import-connectors/resolve` and `POST /v1/adoption/import-connectors/bootstrap` now return `connection_diagnostics` for `postgres_sql` sources, including resolved host preview and ambiguous-host portability warnings for split-stack self-host deployments.
 - `POST /v1/adoption/import-connectors/validate` performs an optional live connectivity check for `postgres_sql` targets from inside the Synapse API runtime, so operators can verify host/network reachability before the first sync.
+- `POST /v1/agents/runtime-surface/sync` lets you feed Synapse a generic control-plane surface for each agent (`runtime_overview`, scheduled tasks, standing orders, capability registry, action surface, tool manifest, source hints, approvals, model routing). Synapse uses that contract to enrich `Agent Capability Profile`, `Tooling Map`, `Process Playbooks`, `Company Operating Context`, and source usage even when direct runtime discovery is incomplete.
 
 Knowledge Compiler diagnostics flow:
 

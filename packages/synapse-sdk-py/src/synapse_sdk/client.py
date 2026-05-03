@@ -20,6 +20,7 @@ from synapse_sdk.types import (
     AgentReflection,
     AgentReflectionInsight,
     AgentProfile,
+    AgentRuntimeSurfaceAgent,
     AdoptionMode,
     BootstrapMemoryInput,
     BootstrapMemoryOptions,
@@ -1982,6 +1983,82 @@ class SynapseClient:
         }
         return self._request_json(
             "/v1/agents/register",
+            method="POST",
+            payload=payload,
+            idempotency_key=idempotency_key or str(uuid4()),
+        )
+
+    def sync_agent_runtime_surface(
+        self,
+        agents: list[AgentRuntimeSurfaceAgent | dict[str, Any]],
+        *,
+        updated_by: str,
+        ensure_scaffold: bool = True,
+        include_daily_report_stub: bool = True,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_updated_by = str(updated_by or "").strip()
+        if not normalized_updated_by:
+            raise ValueError("updated_by is required")
+        payload_agents: list[dict[str, Any]] = []
+        for item in agents or []:
+            surface = item if isinstance(item, AgentRuntimeSurfaceAgent) else AgentRuntimeSurfaceAgent(**dict(item))
+            payload_agents.append(
+                {
+                    "agent_id": str(surface.agent_id or "").strip() or None,
+                    "display_name": str(surface.display_name).strip() if surface.display_name is not None else None,
+                    "team": str(surface.team).strip() if surface.team is not None else None,
+                    "role": str(surface.role).strip() if surface.role is not None else None,
+                    "runtime_overview": dict(surface.runtime_overview or {}),
+                    "scheduled_tasks": [dict(task) for task in surface.scheduled_tasks or [] if isinstance(task, dict)],
+                    "standing_orders": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.standing_orders or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "capability_registry": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.capability_registry or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "action_surface": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.action_surface or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "tool_manifest": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.tool_manifest or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "source_hints": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.source_hints or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "model_routing": surface.model_routing,
+                    "approvals": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.approvals or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "limits": [
+                        dict(value) if isinstance(value, dict) else str(value).strip()
+                        for value in surface.limits or []
+                        if isinstance(value, dict) or str(value).strip()
+                    ],
+                    "metadata": dict(surface.metadata or {}),
+                }
+            )
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": normalized_updated_by,
+            "agents": payload_agents,
+            "ensure_scaffold": bool(ensure_scaffold),
+            "include_daily_report_stub": bool(include_daily_report_stub),
+        }
+        return self._request_json(
+            "/v1/agents/runtime-surface/sync",
             method="POST",
             payload=payload,
             idempotency_key=idempotency_key or str(uuid4()),

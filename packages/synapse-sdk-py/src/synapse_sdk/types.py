@@ -151,6 +151,25 @@ class AgentProfile:
 
 
 @dataclass
+class AgentRuntimeSurfaceAgent:
+    agent_id: str
+    display_name: str | None = None
+    team: str | None = None
+    role: str | None = None
+    runtime_overview: dict[str, Any] = field(default_factory=dict)
+    scheduled_tasks: list[dict[str, Any]] = field(default_factory=list)
+    standing_orders: list[str | dict[str, Any]] = field(default_factory=list)
+    capability_registry: list[str | dict[str, Any]] = field(default_factory=list)
+    action_surface: list[str | dict[str, Any]] = field(default_factory=list)
+    tool_manifest: list[str | dict[str, Any]] = field(default_factory=list)
+    source_hints: list[str | dict[str, Any]] = field(default_factory=list)
+    model_routing: dict[str, Any] | list[Any] | str | None = None
+    approvals: list[str | dict[str, Any]] = field(default_factory=list)
+    limits: list[str | dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class AgentReflectionInsight:
     claim_text: str
     category: str | None = None

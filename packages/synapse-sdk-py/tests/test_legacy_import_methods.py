@@ -7,6 +7,7 @@ from synapse_sdk.client import Synapse
 from synapse_sdk.types import (
     AgentReflection,
     AgentReflectionInsight,
+    AgentRuntimeSurfaceAgent,
     MemoryBackfillRecord,
     SynapseConfig,
     WikiDraftBulkReviewFilter,
@@ -107,6 +108,41 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(call["path"], "/v1/legacy-import/sync-contracts")
         self.assertEqual(call["method"], "GET")
         self.assertEqual(call["params"].get("source_type"), "postgres_sql")
+
+    def test_sync_agent_runtime_surface_posts_control_plane_contract(self) -> None:
+        self.client.sync_agent_runtime_surface(
+            [
+                AgentRuntimeSurfaceAgent(
+                    agent_id="logistics-assistant",
+                    runtime_overview={"runtime_mode": "service", "running_instances": 6},
+                    scheduled_tasks=[
+                        {
+                            "task_code": "standing_order.logistics.driver_economy_sheet",
+                            "builtin_task": "driver_economy_report_to_sheet",
+                            "cron_expr": "0 12 * * *",
+                        }
+                    ],
+                    capability_registry=["driver_economics", "logistics_world_model"],
+                    action_surface=["outbound_messaging"],
+                    tool_manifest=[{"tool": "driver_economy_report_to_sheet", "purpose": "Publish daily driver economics"}],
+                    source_hints=["driver_economy_daily_latest"],
+                    approvals=[{"mode": "none"}],
+                )
+            ],
+            updated_by="ops_admin",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/runtime-surface/sync")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertTrue(payload.get("ensure_scaffold"))
+        self.assertEqual(len(payload.get("agents") or []), 1)
+        first = payload["agents"][0]
+        self.assertEqual(first.get("agent_id"), "logistics-assistant")
+        self.assertEqual(first.get("runtime_overview", {}).get("running_instances"), 6)
+        self.assertEqual(first.get("capability_registry"), ["driver_economics", "logistics_world_model"])
 
     def test_bootstrap_recommendation_is_project_scoped(self) -> None:
         self.client.get_bootstrap_migration_recommendation()

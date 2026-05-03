@@ -500,6 +500,24 @@ export interface AgentProfileInput {
   lastSeenAt?: string;
 }
 
+export interface AgentRuntimeSurfaceAgentInput {
+  agentId: string;
+  displayName?: string;
+  team?: string;
+  role?: string;
+  runtimeOverview?: Record<string, unknown>;
+  scheduledTasks?: Array<Record<string, unknown>>;
+  standingOrders?: Array<string | Record<string, unknown>>;
+  capabilityRegistry?: Array<string | Record<string, unknown>>;
+  actionSurface?: Array<string | Record<string, unknown>>;
+  toolManifest?: Array<string | Record<string, unknown>>;
+  sourceHints?: Array<string | Record<string, unknown>>;
+  modelRouting?: Record<string, unknown> | unknown[] | string | null;
+  approvals?: Array<string | Record<string, unknown>>;
+  limits?: Array<string | Record<string, unknown>>;
+  metadata?: Record<string, unknown>;
+}
+
 export interface AgentReflectionInsightInput {
   claimText: string;
   category?: string;

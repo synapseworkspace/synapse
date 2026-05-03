@@ -1163,6 +1163,32 @@ class AgentDirectoryRegisterRequest(BaseModel):
     last_seen_at: datetime | None = None
 
 
+class AgentRuntimeSurfaceAgentIn(BaseModel):
+    agent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    display_name: str | None = Field(default=None, min_length=1, max_length=256)
+    team: str | None = Field(default=None, min_length=1, max_length=128)
+    role: str | None = Field(default=None, min_length=1, max_length=128)
+    runtime_overview: dict[str, Any] | None = None
+    scheduled_tasks: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    standing_orders: list[str | dict[str, Any]] = Field(default_factory=list, max_length=500)
+    capability_registry: list[str | dict[str, Any]] = Field(default_factory=list, max_length=500)
+    action_surface: list[str | dict[str, Any]] = Field(default_factory=list, max_length=500)
+    tool_manifest: list[str | dict[str, Any]] = Field(default_factory=list, max_length=500)
+    source_hints: list[str | dict[str, Any]] = Field(default_factory=list, max_length=500)
+    model_routing: dict[str, Any] | list[Any] | str | None = None
+    approvals: list[str | dict[str, Any]] = Field(default_factory=list, max_length=200)
+    limits: list[str | dict[str, Any]] = Field(default_factory=list, max_length=200)
+    metadata: dict[str, Any] | None = None
+
+
+class AgentRuntimeSurfaceSyncRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    agents: list[AgentRuntimeSurfaceAgentIn] = Field(default_factory=list, max_length=2000)
+    ensure_scaffold: bool = True
+    include_daily_report_stub: bool = True
+
+
 class AgentReflectionInsightIn(BaseModel):
     claim_text: str = Field(min_length=4, max_length=4000)
     category: str = Field(default="operations", min_length=1, max_length=128)
@@ -2787,6 +2813,417 @@ def _serialize_agent_profile_row(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+def _runtime_surface_extract_items(
+    values: list[Any] | None,
+    *,
+    fields: tuple[str, ...],
+    limit: int = 12,
+) -> list[str]:
+    collected: list[str] = []
+    for value in values or []:
+        if isinstance(value, dict):
+            text = ""
+            for field in fields:
+                candidate = str(value.get(field) or "").strip()
+                if candidate:
+                    text = candidate
+                    break
+            if not text and value:
+                text = str(value).strip()
+        else:
+            text = str(value or "").strip()
+        if text:
+            collected.append(text[:220])
+    return _normalize_agent_directory_items(collected, limit=limit)
+
+
+def _format_runtime_surface_task(task: dict[str, Any]) -> str:
+    task_code = str(task.get("task_code") or task.get("name") or task.get("id") or "").strip()
+    builtin_task = str(task.get("builtin_task") or task.get("task_name") or "").strip()
+    schedule_kind = str(task.get("schedule_kind") or "").strip().lower()
+    cron_expr = str(task.get("cron_expr") or "").strip()
+    interval_seconds = task.get("interval_seconds")
+    timezone_name = str(task.get("timezone") or "").strip()
+    authority = _normalize_agent_directory_items(task.get("standing_order_authority") or [], limit=4)
+    approval_mode = str(task.get("standing_order_approval_mode") or task.get("approval_mode") or "").strip()
+    escalation = task.get("standing_order_escalation") if isinstance(task.get("standing_order_escalation"), dict) else {}
+    escalation_mode = str(escalation.get("mode") or "").strip()
+    label = task_code or builtin_task or "scheduled_task"
+    schedule_desc = ""
+    if schedule_kind == "cron" and cron_expr:
+        schedule_desc = f"cron {cron_expr}"
+    elif schedule_kind == "interval" and isinstance(interval_seconds, int) and interval_seconds > 0:
+        schedule_desc = f"every {interval_seconds}s"
+    elif cron_expr:
+        schedule_desc = cron_expr
+    parts = [label]
+    if builtin_task and builtin_task.lower() != label.lower():
+        parts.append(f"builtin={builtin_task}")
+    if schedule_desc:
+        parts.append(schedule_desc)
+    if timezone_name:
+        parts.append(f"tz={timezone_name}")
+    if approval_mode:
+        parts.append(f"approval={approval_mode}")
+    if authority:
+        parts.append(f"authority={', '.join(authority[:3])}")
+    if escalation_mode:
+        parts.append(f"escalation={escalation_mode}")
+    return " | ".join(parts)
+
+
+def _build_runtime_surface_tool_contracts(surface: AgentRuntimeSurfaceAgentIn) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+
+    for item in surface.tool_manifest or []:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("tool") or item.get("id") or "").strip()
+            purpose = str(item.get("purpose") or item.get("description") or "").strip()
+            scenarios = _runtime_surface_extract_items(
+                item.get("scenarios") if isinstance(item.get("scenarios"), list) else [item.get("scenario")],
+                fields=("name", "title", "description"),
+                limit=4,
+            )
+            guardrails = _runtime_surface_extract_items(
+                [
+                    *(item.get("guardrails") or []),
+                    *(item.get("approval_rules") or []),
+                    *(item.get("limits") or []),
+                ],
+                fields=("name", "title", "description"),
+                limit=5,
+            )
+            sources = _runtime_surface_extract_items(
+                [
+                    *(item.get("source_hints") or []),
+                    *(item.get("data_sources") or []),
+                ],
+                fields=("source", "name", "binding", "id", "title"),
+                limit=4,
+            )
+            capabilities = _runtime_surface_extract_items(
+                item.get("capabilities") if isinstance(item.get("capabilities"), list) else [item.get("capability")],
+                fields=("name", "title", "description"),
+                limit=4,
+            )
+        else:
+            name = str(item or "").strip()
+            purpose = ""
+            scenarios = []
+            guardrails = []
+            sources = []
+            capabilities = []
+        if not name:
+            continue
+        contracts.append(
+            {
+                "name": name[:180],
+                "purpose": purpose[:220],
+                "scenarios": scenarios,
+                "guardrails": guardrails,
+                "sources": sources,
+                "capabilities": capabilities,
+            }
+        )
+
+    action_names = _runtime_surface_extract_items(
+        list(surface.action_surface or []),
+        fields=("name", "action", "id", "title", "description"),
+        limit=30,
+    )
+    for action_name in action_names:
+        contracts.append(
+            {
+                "name": action_name,
+                "purpose": "Runtime action surface capability.",
+                "scenarios": [],
+                "guardrails": [],
+                "sources": [],
+                "capabilities": [],
+            }
+        )
+
+    for task in surface.scheduled_tasks or []:
+        if not isinstance(task, dict):
+            continue
+        builtin_task = str(task.get("builtin_task") or "").strip()
+        if not builtin_task:
+            continue
+        contracts.append(
+            {
+                "name": builtin_task[:180],
+                "purpose": "Scheduled builtin task surfaced from runtime control-plane.",
+                "scenarios": _runtime_surface_extract_items(
+                    [task.get("task_code"), task.get("standing_order_program")],
+                    fields=("name",),
+                    limit=3,
+                ),
+                "guardrails": _runtime_surface_extract_items(
+                    [
+                        task.get("standing_order_approval_mode"),
+                        *(task.get("standing_order_authority") or []),
+                    ],
+                    fields=("name",),
+                    limit=4,
+                ),
+                "sources": _runtime_surface_extract_items(
+                    task.get("source_hints") if isinstance(task.get("source_hints"), list) else [],
+                    fields=("source", "name", "binding", "id", "title"),
+                    limit=4,
+                ),
+                "capabilities": [],
+            }
+        )
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for contract in contracts:
+        marker = str(contract.get("name") or "").strip().lower()
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(contract)
+        if len(deduped) >= 40:
+            break
+    return deduped
+
+
+def _build_agent_profile_from_runtime_surface(
+    surface: AgentRuntimeSurfaceAgentIn,
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    runtime_overview = surface.runtime_overview if isinstance(surface.runtime_overview, dict) else {}
+    metadata = dict(surface.metadata or {})
+    agent_id = (
+        str(surface.agent_id or "").strip()
+        or str(runtime_overview.get("agent_code") or "").strip()
+        or str(runtime_overview.get("agent_id") or "").strip()
+    )
+    if not agent_id:
+        raise HTTPException(status_code=422, detail="runtime_surface_agent_id_required")
+    display_name = str(surface.display_name or "").strip() or agent_id
+    team = str(surface.team or runtime_overview.get("org_code") or "").strip() or None
+    role = str(surface.role or runtime_overview.get("runtime_mode") or "AI Agent").strip() or "AI Agent"
+
+    enabled = runtime_overview.get("enabled")
+    running_instances_raw = runtime_overview.get("running_instances")
+    try:
+        running_instances = max(0, int(running_instances_raw)) if running_instances_raw is not None else 0
+    except (TypeError, ValueError):
+        running_instances = 0
+    latest_heartbeat_raw = runtime_overview.get("latest_heartbeat_at")
+    latest_heartbeat = _parse_iso_datetime(latest_heartbeat_raw) if latest_heartbeat_raw else None
+    if enabled is False:
+        status = "paused"
+    elif running_instances > 0:
+        status = "active"
+    elif latest_heartbeat is not None:
+        status = "idle"
+    else:
+        status = "offline"
+
+    capability_registry = _runtime_surface_extract_items(
+        list(surface.capability_registry or []),
+        fields=("name", "capability", "id", "title", "description"),
+        limit=30,
+    )
+    action_surface = _runtime_surface_extract_items(
+        list(surface.action_surface or []),
+        fields=("name", "action", "id", "title", "description"),
+        limit=30,
+    )
+    source_hints = _runtime_surface_extract_items(
+        list(surface.source_hints or []),
+        fields=("source", "name", "binding", "id", "title", "table"),
+        limit=40,
+    )
+    scheduled_task_contracts = [_format_runtime_surface_task(task) for task in surface.scheduled_tasks or [] if isinstance(task, dict)]
+    scheduled_task_contracts = _normalize_agent_directory_items(scheduled_task_contracts, limit=40)
+    standing_orders = _runtime_surface_extract_items(
+        list(surface.standing_orders or []),
+        fields=("name", "task_code", "title", "program", "description"),
+        limit=30,
+    )
+    approval_contracts = _runtime_surface_extract_items(
+        list(surface.approvals or []),
+        fields=("name", "rule", "title", "description", "mode"),
+        limit=20,
+    )
+    explicit_limits = _runtime_surface_extract_items(
+        list(surface.limits or []),
+        fields=("name", "rule", "title", "description", "mode"),
+        limit=20,
+    )
+    tool_contracts = _build_runtime_surface_tool_contracts(surface)
+    tools = _normalize_agent_directory_items(
+        [
+            *[str(item.get("name") or "").strip() for item in tool_contracts if isinstance(item, dict)],
+            *action_surface,
+        ],
+        limit=80,
+    )
+    responsibilities = _normalize_agent_directory_items(
+        [
+            *capability_registry,
+            *standing_orders,
+            *scheduled_task_contracts,
+        ],
+        limit=80,
+    )
+    limits = _normalize_agent_directory_items(
+        [
+            *explicit_limits,
+            *approval_contracts,
+            *[
+                f"Task approval mode: {str(task.get('standing_order_approval_mode') or '').strip()}"
+                for task in surface.scheduled_tasks or []
+                if isinstance(task, dict) and str(task.get("standing_order_approval_mode") or "").strip()
+            ],
+            *[
+                f"Task authority: {', '.join(_normalize_agent_directory_items(task.get('standing_order_authority') or [], limit=4))}"
+                for task in surface.scheduled_tasks or []
+                if isinstance(task, dict) and (task.get("standing_order_authority") or [])
+            ],
+        ],
+        limit=40,
+    )
+
+    metadata["runtime_overview"] = runtime_overview
+    metadata["scheduled_tasks"] = scheduled_task_contracts
+    metadata["scheduled_task_contracts"] = [task for task in surface.scheduled_tasks or [] if isinstance(task, dict)][:100]
+    metadata["standing_orders"] = standing_orders
+    metadata["capabilities"] = capability_registry
+    metadata["allowed_actions"] = action_surface
+    metadata["source_bindings"] = source_hints
+    metadata["known_data_sources"] = source_hints
+    metadata["tool_registry"] = tool_contracts
+    metadata["approval_rules"] = approval_contracts
+    metadata["limits_contract"] = explicit_limits
+    metadata["runtime_surface_ingested_at"] = datetime.now(UTC).isoformat()
+    metadata["runtime_surface_ingested_by"] = actor
+    if surface.model_routing is not None:
+        metadata["model_routing"] = surface.model_routing
+
+    return {
+        "agent_id": agent_id,
+        "display_name": display_name,
+        "team": team,
+        "role": role,
+        "status": status,
+        "responsibilities": responsibilities,
+        "tools": tools,
+        "data_sources": source_hints,
+        "limits": limits,
+        "metadata": metadata,
+        "last_seen_at": latest_heartbeat or datetime.now(UTC),
+    }
+
+
+def _upsert_agent_directory_profile_record(
+    cur: Any,
+    *,
+    project_id: str,
+    actor: str,
+    agent_id: str,
+    display_name: str,
+    team: str | None,
+    role: str | None,
+    status: str,
+    responsibilities: list[str],
+    tools: list[str],
+    data_sources: list[str],
+    limits: list[str],
+    metadata: dict[str, Any],
+    last_seen_at: datetime,
+) -> dict[str, Any]:
+    cur.execute(
+        """
+        INSERT INTO agent_directory_profiles (
+          id,
+          project_id,
+          agent_id,
+          display_name,
+          team,
+          role,
+          status,
+          responsibilities,
+          tools,
+          data_sources,
+          limits,
+          metadata,
+          created_by,
+          updated_by,
+          last_seen_at,
+          created_at,
+          updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON CONFLICT (project_id, agent_id) DO UPDATE
+        SET display_name = EXCLUDED.display_name,
+            team = EXCLUDED.team,
+            role = EXCLUDED.role,
+            status = EXCLUDED.status,
+            responsibilities = EXCLUDED.responsibilities,
+            tools = EXCLUDED.tools,
+            data_sources = EXCLUDED.data_sources,
+            limits = EXCLUDED.limits,
+            metadata = EXCLUDED.metadata,
+            updated_by = EXCLUDED.updated_by,
+            last_seen_at = EXCLUDED.last_seen_at,
+            updated_at = NOW()
+        """,
+        (
+            uuid4(),
+            project_id,
+            agent_id,
+            display_name,
+            team,
+            role,
+            status,
+            Jsonb(_normalize_agent_directory_items(responsibilities, limit=120)),
+            Jsonb(_normalize_agent_directory_items(tools, limit=200)),
+            Jsonb(_normalize_agent_directory_items(data_sources, limit=200)),
+            Jsonb(_normalize_agent_directory_items(limits, limit=120)),
+            Jsonb(metadata if isinstance(metadata, dict) else {}),
+            actor,
+            actor,
+            last_seen_at,
+        ),
+    )
+    cur.execute(
+        """
+        SELECT
+          id,
+          project_id,
+          agent_id,
+          display_name,
+          team,
+          role,
+          status,
+          responsibilities,
+          tools,
+          data_sources,
+          limits,
+          metadata,
+          created_by,
+          updated_by,
+          last_seen_at,
+          created_at,
+          updated_at
+        FROM agent_directory_profiles
+        WHERE project_id = %s
+          AND agent_id = %s
+        LIMIT 1
+        """,
+        (project_id, agent_id),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=500, detail="agent_directory_upsert_failed")
+    return _serialize_agent_profile_row(row)
+
+
 def _resolve_agent_worklog_timezone(
     conn,
     *,
@@ -3768,6 +4205,12 @@ def _build_agent_capability_matrix(
             object_fields=("name", "system", "id", "title", "description"),
         )
         model_routing = _model_routing_hints(metadata)
+        runtime_overview = metadata.get("runtime_overview") if isinstance(metadata.get("runtime_overview"), dict) else {}
+        runtime_mode = str(runtime_overview.get("runtime_mode") or "").strip()
+        try:
+            running_instances = max(0, int(runtime_overview.get("running_instances") or 0))
+        except (TypeError, ValueError):
+            running_instances = 0
         reflection_signal = reflection_signals.get(agent_id.lower(), {})
         reflected_tools = [str(item).strip() for item in (reflection_signal.get("tools") or []) if str(item).strip()]
         reflected_sources = [str(item).strip() for item in (reflection_signal.get("sources") or []) if str(item).strip()]
@@ -3901,6 +4344,8 @@ def _build_agent_capability_matrix(
                 "source_bindings": source_bindings,
                 "integrations": integrations,
                 "model_routing": model_routing,
+                "runtime_mode": runtime_mode or None,
+                "running_instances": running_instances,
                 "prompt_signal": prompt_signal or None,
                 "static_config_keys": static_config_keys,
                 "confidence": confidence,
@@ -32375,6 +32820,10 @@ def _build_agent_capability_bootstrap_page(
                 detail_lines.append(f"- Source bindings: {'; '.join(source_bindings[:3])}")
             if model_routing:
                 detail_lines.append(f"- Model routing / failover: {'; '.join(model_routing[:3])}")
+            runtime_mode = str(item.get("runtime_mode") or "").strip()
+            running_instances = int(item.get("running_instances") or 0)
+            if runtime_mode or running_instances > 0:
+                detail_lines.append(f"- Runtime surface: {runtime_mode or 'service'}; running instances={running_instances}")
             if integrations:
                 detail_lines.append(f"- Integrations: {', '.join(integrations[:5])}")
             if tool_contracts:
@@ -32428,7 +32877,7 @@ def _build_agent_capability_bootstrap_page(
         lines.extend(
             [
                 "",
-                "- Runtime discovery pending. Connect at least one active agent or register profiles via `/v1/agents/register`.",
+                "- Runtime discovery pending. Connect at least one active agent or sync control-plane surface via `/v1/agents/runtime-surface/sync`.",
             ]
         )
     lines.append("")
@@ -33232,9 +33681,11 @@ def _build_company_operating_context_bootstrap_page(
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=200)
     team_rollup: dict[str, int] = {}
+    running_instances_total = 0
     for item in matrix:
         team = str(item.get("team") or "Runtime Agents")
         team_rollup[team] = int(team_rollup.get(team, 0)) + 1
+        running_instances_total += int(item.get("running_instances") or 0)
 
     claims_rollup: list[tuple[str, int]] = []
     if _wiki_feature_table_exists(cur, "public.claims"):
@@ -33258,6 +33709,7 @@ def _build_company_operating_context_bootstrap_page(
         "## Snapshot",
         f"- Project: `{project_id}`",
         f"- Active agents discovered: `{len(matrix)}`",
+        f"- Running instances observed: `{running_instances_total}`",
         f"- Connected data sources: `{sum(count for _, count in source_counts)}`",
         "",
         "## Team Topology",
@@ -45970,92 +46422,22 @@ def register_agent_directory_profile(
                 role = str(payload.role or "").strip() or None
                 actor = str(payload.updated_by or "synapse_agent").strip() or "synapse_agent"
                 resolved_last_seen = payload.last_seen_at or datetime.now(UTC)
-
-                cur.execute(
-                    """
-                    INSERT INTO agent_directory_profiles (
-                      id,
-                      project_id,
-                      agent_id,
-                      display_name,
-                      team,
-                      role,
-                      status,
-                      responsibilities,
-                      tools,
-                      data_sources,
-                      limits,
-                      metadata,
-                      created_by,
-                      updated_by,
-                      last_seen_at,
-                      created_at,
-                      updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-                    ON CONFLICT (project_id, agent_id) DO UPDATE
-                    SET display_name = EXCLUDED.display_name,
-                        team = EXCLUDED.team,
-                        role = EXCLUDED.role,
-                        status = EXCLUDED.status,
-                        responsibilities = EXCLUDED.responsibilities,
-                        tools = EXCLUDED.tools,
-                        data_sources = EXCLUDED.data_sources,
-                        limits = EXCLUDED.limits,
-                        metadata = EXCLUDED.metadata,
-                        updated_by = EXCLUDED.updated_by,
-                        last_seen_at = EXCLUDED.last_seen_at,
-                        updated_at = NOW()
-                    """,
-                    (
-                        uuid4(),
-                        payload.project_id,
-                        agent_id,
-                        display_name,
-                        team,
-                        role,
-                        status,
-                        Jsonb(responsibilities),
-                        Jsonb(tools),
-                        Jsonb(data_sources),
-                        Jsonb(limits),
-                        Jsonb(metadata),
-                        actor,
-                        actor,
-                        resolved_last_seen,
-                    ),
+                profile = _upsert_agent_directory_profile_record(
+                    cur,
+                    project_id=payload.project_id,
+                    actor=actor,
+                    agent_id=agent_id,
+                    display_name=display_name,
+                    team=team,
+                    role=role,
+                    status=status,
+                    responsibilities=responsibilities,
+                    tools=tools,
+                    data_sources=data_sources,
+                    limits=limits,
+                    metadata=metadata,
+                    last_seen_at=resolved_last_seen,
                 )
-                cur.execute(
-                    """
-                    SELECT
-                      id,
-                      project_id,
-                      agent_id,
-                      display_name,
-                      team,
-                      role,
-                      status,
-                      responsibilities,
-                      tools,
-                      data_sources,
-                      limits,
-                      metadata,
-                      created_by,
-                      updated_by,
-                      last_seen_at,
-                      created_at,
-                      updated_at
-                    FROM agent_directory_profiles
-                    WHERE project_id = %s
-                      AND agent_id = %s
-                    LIMIT 1
-                    """,
-                    (payload.project_id, agent_id),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    raise HTTPException(status_code=500, detail="agent_directory_upsert_failed")
-                profile = _serialize_agent_profile_row(row)
                 page_sync = _sync_agent_directory_pages(
                     cur,
                     project_id=payload.project_id,
@@ -46068,6 +46450,98 @@ def register_agent_directory_profile(
                     "status": "ok",
                     "profile": profile,
                     "page_sync": page_sync,
+                }
+                mark_request_completed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    status_code=200,
+                    response_body=response,
+                )
+                return response
+            except Exception as exc:
+                mark_request_failed(
+                    conn,
+                    endpoint=endpoint,
+                    idempotency_key=idempotency_key,
+                    error_message=str(exc),
+                )
+                raise
+
+
+@app.post("/v1/agents/runtime-surface/sync", response_model=None)
+def sync_agent_runtime_surface(
+    payload: AgentRuntimeSurfaceSyncRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> Any:
+    endpoint = "/v1/agents/runtime-surface/sync"
+    request_payload = payload.model_dump(mode="json")
+    with get_conn() as conn:
+        if not _agent_directory_table_exists(conn):
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": "agent_directory_unavailable",
+                    "detail": "Run DB migration 051_agent_directory.sql before syncing runtime surface.",
+                },
+            )
+        maybe_cleanup_expired_requests(conn)
+        decision = acquire_request_slot(
+            conn,
+            endpoint=endpoint,
+            idempotency_key=idempotency_key,
+            request_payload=request_payload,
+        )
+        if decision.mode == "replay":
+            return JSONResponse(
+                status_code=decision.response_code or 200,
+                content=decision.response_body or {},
+                headers={"X-Idempotent-Replay": "true"},
+            )
+        with conn.cursor() as cur:
+            try:
+                actor = str(payload.updated_by or "synapse_agent").strip() or "synapse_agent"
+                profiles: list[dict[str, Any]] = []
+                page_sync_rows: list[dict[str, Any]] = []
+                for surface in payload.agents or []:
+                    profile_payload = _build_agent_profile_from_runtime_surface(surface, actor=actor)
+                    profile = _upsert_agent_directory_profile_record(
+                        cur,
+                        project_id=payload.project_id,
+                        actor=actor,
+                        agent_id=str(profile_payload["agent_id"]),
+                        display_name=str(profile_payload["display_name"]),
+                        team=profile_payload.get("team"),
+                        role=profile_payload.get("role"),
+                        status=str(profile_payload["status"]),
+                        responsibilities=list(profile_payload.get("responsibilities") or []),
+                        tools=list(profile_payload.get("tools") or []),
+                        data_sources=list(profile_payload.get("data_sources") or []),
+                        limits=list(profile_payload.get("limits") or []),
+                        metadata=dict(profile_payload.get("metadata") or {}),
+                        last_seen_at=profile_payload.get("last_seen_at") if isinstance(profile_payload.get("last_seen_at"), datetime) else datetime.now(UTC),
+                    )
+                    profiles.append(profile)
+                    page_sync_rows.append(
+                        {
+                            "agent_id": profile["agent_id"],
+                            "page_sync": _sync_agent_directory_pages(
+                                cur,
+                                project_id=payload.project_id,
+                                actor=actor,
+                                profile=profile,
+                                ensure_scaffold=bool(payload.ensure_scaffold),
+                                include_daily_report_stub=bool(payload.include_daily_report_stub),
+                            ),
+                        }
+                    )
+                response = {
+                    "status": "ok",
+                    "project_id": payload.project_id,
+                    "profiles_total": len(profiles),
+                    "profiles": profiles,
+                    "page_sync": page_sync_rows,
+                    "generated_at": datetime.now(UTC).isoformat(),
                 }
                 mark_request_completed(
                     conn,

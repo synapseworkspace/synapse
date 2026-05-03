@@ -3,6 +3,7 @@ import { HttpTransport } from "./transports/http.js";
 import { buildOpenClawBootstrapOptions } from "./openclaw.js";
 import type {
   AgentReflectionInput,
+  AgentRuntimeSurfaceAgentInput,
   AttachBootstrapMemoryOptions,
   AgentProfileInput,
   AttachOptions,
@@ -1868,6 +1869,48 @@ export class SynapseClient {
         ensure_scaffold: profile.ensureScaffold ?? true,
         include_daily_report_stub: profile.includeDailyReportStub ?? true,
         last_seen_at: profile.lastSeenAt ?? new Date().toISOString()
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async syncAgentRuntimeSurface(
+    agents: AgentRuntimeSurfaceAgentInput[],
+    options: {
+      updatedBy: string;
+      ensureScaffold?: boolean;
+      includeDailyReportStub?: boolean;
+      idempotencyKey?: string;
+    }
+  ): Promise<Record<string, unknown>> {
+    const updatedBy = asOptionalString(options.updatedBy);
+    if (!updatedBy) {
+      throw new Error("options.updatedBy is required");
+    }
+    return this.requestJson<Record<string, unknown>>("/v1/agents/runtime-surface/sync", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: updatedBy,
+        agents: (agents ?? []).map((agent) => ({
+          agent_id: asOptionalString(agent.agentId),
+          display_name: asOptionalString(agent.displayName) ?? null,
+          team: asOptionalString(agent.team) ?? null,
+          role: asOptionalString(agent.role) ?? null,
+          runtime_overview: agent.runtimeOverview ?? {},
+          scheduled_tasks: agent.scheduledTasks ?? [],
+          standing_orders: agent.standingOrders ?? [],
+          capability_registry: agent.capabilityRegistry ?? [],
+          action_surface: agent.actionSurface ?? [],
+          tool_manifest: agent.toolManifest ?? [],
+          source_hints: agent.sourceHints ?? [],
+          model_routing: agent.modelRouting ?? null,
+          approvals: agent.approvals ?? [],
+          limits: agent.limits ?? [],
+          metadata: agent.metadata ?? {}
+        })),
+        ensure_scaffold: options.ensureScaffold ?? true,
+        include_daily_report_stub: options.includeDailyReportStub ?? true
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });

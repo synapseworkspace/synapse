@@ -7,8 +7,10 @@ try:
     import services.api.app.main as _api_main
     from services.api.app.main import (
         AgentReflectionSubmitRequest,
+        AgentRuntimeSurfaceAgentIn,
         _bootstrap_page_importance,
         _build_agent_reflection_claim_payloads,
+        _build_agent_profile_from_runtime_surface,
         _build_data_sources_catalog_pages,
         _build_agent_capability_bootstrap_page,
         _build_tooling_map_bootstrap_page,
@@ -50,8 +52,10 @@ try:
 except Exception:  # pragma: no cover
     _api_main = None
     AgentReflectionSubmitRequest = None
+    AgentRuntimeSurfaceAgentIn = None
     _bootstrap_page_importance = None
     _build_agent_reflection_claim_payloads = None
+    _build_agent_profile_from_runtime_surface = None
     _build_data_sources_catalog_pages = None
     _build_agent_capability_bootstrap_page = None
     _build_tooling_map_bootstrap_page = None
@@ -111,9 +115,11 @@ except Exception:  # pragma: no cover
     or _build_first_run_starter_pages is None
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
+    or _build_agent_profile_from_runtime_surface is None
     or _prepend_bootstrap_publish_notice is None
     or _build_project_wiki_quality_report_from_rows is None
     or AgentReflectionSubmitRequest is None
+    or AgentRuntimeSurfaceAgentIn is None
     or _build_agent_provenance_activity is None
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
@@ -138,6 +144,55 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
     def test_sync_preset_defaults_to_standard_starter_profile(self) -> None:
         request = AdoptionSyncPresetExecuteRequest(project_id="omega_demo")
         self.assertEqual(request.starter_profile, "standard")
+
+    def test_runtime_surface_profile_builder_extracts_control_plane_contracts(self) -> None:
+        surface = AgentRuntimeSurfaceAgentIn(
+            agent_id="logistics-assistant",
+            runtime_overview={
+                "org_code": "hw",
+                "agent_code": "logistics-assistant",
+                "enabled": True,
+                "runtime_mode": "service",
+                "running_instances": 6,
+                "latest_heartbeat_at": "2026-05-03T03:37:59+03:00",
+            },
+            scheduled_tasks=[
+                {
+                    "task_code": "standing_order.logistics.incident.monitor",
+                    "schedule_kind": "interval",
+                    "interval_seconds": 600,
+                    "builtin_task": "logistics_incident_monitor",
+                    "standing_order_program": "logistics-default-ops-v1",
+                    "standing_order_authority": ["logist", "director"],
+                    "standing_order_approval_mode": "none",
+                    "standing_order_escalation": {"mode": "notify"},
+                    "source_hints": ["logistics_world_model_latest"],
+                }
+            ],
+            capability_registry=["documents_orders", "logistics_world_model"],
+            action_surface=["outbound_messaging", "browser_automation"],
+            source_hints=["driver_shift_daily_latest", "driver_economy_daily_latest"],
+            tool_manifest=[
+                {
+                    "name": "controlled_exec",
+                    "purpose": "Run controlled operational commands",
+                    "scenarios": ["incident mitigation"],
+                    "guardrails": ["human approval for destructive actions"],
+                    "source_hints": ["logistics_world_model_latest"],
+                    "capabilities": ["route_reschedule_request"],
+                }
+            ],
+            model_routing={"primary": "gpt-5.5", "fallback": "gpt-5.4"},
+        )
+        profile = _build_agent_profile_from_runtime_surface(surface, actor="ops_admin")
+        self.assertEqual(profile["status"], "active")
+        self.assertIn("documents_orders", profile["responsibilities"])
+        self.assertIn("controlled_exec", profile["tools"])
+        self.assertIn("driver_shift_daily_latest", profile["data_sources"])
+        metadata = profile["metadata"]
+        self.assertIn("standing_order.logistics.incident.monitor", " ".join(metadata["scheduled_tasks"]))
+        self.assertIn("controlled_exec", [item["name"] for item in metadata["tool_registry"]])
+        self.assertEqual(metadata["runtime_overview"]["running_instances"], 6)
 
     def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
         scope = _bundle_promotion_scope_for_page_type("process")
