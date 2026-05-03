@@ -9,12 +9,20 @@ const buildLabel =
 const featureLabel =
   process.env.VITE_SYNAPSE_UI_FEATURES ||
   "synthesis_observability_panel,adoption_synthesis_graph,typed_synthesis_diagnostics";
+const publicBaseRaw = String(process.env.VITE_SYNAPSE_PUBLIC_BASE || "./").trim() || "./";
+const publicBase =
+  publicBaseRaw === "." || publicBaseRaw === "./"
+    ? "./"
+    : publicBaseRaw.endsWith("/")
+      ? publicBaseRaw
+      : `${publicBaseRaw}/`;
 
 process.env.VITE_SYNAPSE_WEB_BUILD = buildLabel;
 process.env.VITE_SYNAPSE_UI_FEATURES = featureLabel;
+process.env.VITE_SYNAPSE_PUBLIC_BASE = publicBase;
 
 export default defineConfig({
-  base: "./",
+  base: publicBase,
   plugins: [react()],
   build: {
     rollupOptions: {

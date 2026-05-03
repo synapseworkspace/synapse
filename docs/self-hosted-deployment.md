@@ -71,10 +71,11 @@ Open the bundled web service and validate the route split:
 Expected behavior:
 - `Drafts` under `/wiki` stays inbox/detail focused.
 - Migration and bootstrap controls appear on `/operations`.
-- `/synapse/...` path works without rebuilding frontend assets.
+- `/synapse/...` path works when the web bundle is built with the matching public base path (default self-host value: `/synapse/`).
 - Reviewer/notifications controls are in `Settings` drawer (not in the core first viewport).
 
 Reverse-proxy contract for base-path deployments:
+- build the web bundle with `SYNAPSE_WEB_PUBLIC_BASE` matching the deployed public base path (`/synapse/` by default in self-host compose; use `/` only if the app is really served at origin root).
 - `/synapse/build.json` must be served as a real JSON file from the Synapse `web` origin.
 - `/synapse/assets/*` must be served directly from the same Synapse `web` origin and must not be rewritten to another static site or stale bundle.
 - SPA fallback (`/synapse/wiki`, `/synapse/operations`, nested review URLs) may resolve to `index.html`, but `build.json` and `/assets/*` must remain file-backed paths.

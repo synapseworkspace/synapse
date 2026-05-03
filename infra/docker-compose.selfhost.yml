@@ -129,6 +129,7 @@ services:
         VITE_SYNAPSE_API_URL: ${SYNAPSE_WEB_API_URL:-http://localhost:8080}
         VITE_SYNAPSE_WEB_BUILD: ${SYNAPSE_WEB_BUILD:-}
         VITE_SYNAPSE_UI_FEATURES: ${SYNAPSE_WEB_UI_FEATURES:-}
+        VITE_SYNAPSE_PUBLIC_BASE: ${SYNAPSE_WEB_PUBLIC_BASE:-/synapse/}
     restart: unless-stopped
     depends_on:
       api:
