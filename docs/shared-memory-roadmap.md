@@ -158,9 +158,10 @@ Implemented:
 20. fanout dispatch now supports queued delivery (`enqueue_only=true`) plus a dedicated pending-delivery processor, so shared-memory push can move from inline-only execution toward a real delivery queue
 21. materialized private/team memory entries now support richer lifecycle states (`superseded`, `resolved`, `expired`, `archived`) plus lifecycle metadata (`superseded_by`, `resolved_at`, `expires_at`, `reason`), so working memory can age out or close cleanly instead of living forever as `active`
 22. shared-memory entries now have a lifecycle processor for due expirations, so long-lived private/team memory can automatically age from `active` to `expired` instead of relying entirely on manual cleanup
+23. worker loop now includes shared-memory maintenance, so pending fanout deliveries, due retries, and expiring lifecycle entries can be processed on a regular cadence in self-host deployments instead of depending on manual endpoint calls
 
 Current limitation:
-- private/team memory now has materialized entry backing, lifecycle states, due-expiry processing, fanout retry/backoff, runtime ack freshness, and queued delivery foundation, but still lacks stronger background execution guarantees beyond explicit/manual processor runs
+- private/team memory now has materialized entry backing, lifecycle states, due-expiry processing, fanout retry/backoff, runtime ack freshness, queued delivery foundation, and scheduler integration, but still lacks stronger background execution guarantees such as distributed locking / lease-based processing if multiple workers run the same maintenance loop concurrently
 
 These endpoints are intentionally conservative:
 

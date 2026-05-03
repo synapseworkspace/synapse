@@ -1851,6 +1851,7 @@ PYTHONPATH="$ROOT_DIR/services/worker" python3 scripts/check_legacy_sync_wal_con
 
 PYTHONPATH="$ROOT_DIR/services/worker" python3 services/worker/scripts/run_legacy_sync_scheduler.py --help >/dev/null
 PYTHONPATH="$ROOT_DIR/services/worker" python3 services/worker/scripts/run_queue_incident_sync_scheduler.py --help >/dev/null
+PYTHONPATH="$ROOT_DIR/services/worker" python3 services/worker/scripts/run_shared_memory_maintenance.py --help >/dev/null
 
 echo "[5.69/6] MCP runtime cache invalidation smoke (offline)"
 PYTHONPATH="$ROOT_DIR/services/mcp" python3 - <<'PY'

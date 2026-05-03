@@ -172,6 +172,25 @@ Worker loop integration:
 - tune realtime cadence with `SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_INTERVAL_SEC` and lookback via `SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_LOOKBACK_MINUTES`;
 - tune batch load with `SYNAPSE_WORKER_AGENT_WORKLOGS_DAYS_BACK` and `SYNAPSE_WORKER_AGENT_WORKLOGS_MAX_AGENTS`.
 
+Shared-memory maintenance loop (keeps fanout queue/retries/lifecycle moving without manual API calls):
+
+```bash
+PYTHONPATH=services/worker python services/worker/scripts/run_shared_memory_maintenance.py \
+  --all-projects \
+  --pending-limit 50 \
+  --retry-limit 50 \
+  --lifecycle-limit 100 \
+  --api-url http://localhost:8080
+```
+
+Worker loop integration:
+- enabled by default via `SYNAPSE_WORKER_ENABLE_SHARED_MEMORY_MAINTENANCE=1`;
+- default interval is every 5 minutes (`SYNAPSE_WORKER_SHARED_MEMORY_MAINTENANCE_INTERVAL_SEC=300`);
+- tune per-run load via:
+  - `SYNAPSE_WORKER_SHARED_MEMORY_PENDING_LIMIT`
+  - `SYNAPSE_WORKER_SHARED_MEMORY_RETRY_LIMIT`
+  - `SYNAPSE_WORKER_SHARED_MEMORY_LIFECYCLE_LIMIT`.
+
 Synthesis regression evaluator:
 
 ```bash

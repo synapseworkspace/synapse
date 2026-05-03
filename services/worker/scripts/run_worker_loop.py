@@ -268,6 +268,57 @@ def parse_args() -> argparse.Namespace:
         default=_env_int("SYNAPSE_WORKER_AGENT_WORKLOGS_REALTIME_LOOKBACK_MINUTES", 15),
         help="Lookback window for session/task close trigger scan.",
     )
+    parser.add_argument(
+        "--enable-shared-memory-maintenance",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_ENABLE_SHARED_MEMORY_MAINTENANCE", True),
+        help="Enable periodic shared-memory delivery/lifecycle maintenance job.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-interval-sec",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_SHARED_MEMORY_MAINTENANCE_INTERVAL_SEC", 300),
+        help="Interval for shared-memory maintenance job.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-pending-limit",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_SHARED_MEMORY_PENDING_LIMIT", 50),
+        help="Maximum queued shared-memory deliveries processed per maintenance run.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-retry-limit",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_SHARED_MEMORY_RETRY_LIMIT", 50),
+        help="Maximum due shared-memory retries processed per maintenance run.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-lifecycle-limit",
+        type=int,
+        default=_env_int("SYNAPSE_WORKER_SHARED_MEMORY_LIFECYCLE_LIMIT", 100),
+        help="Maximum due shared-memory lifecycle entries processed per maintenance run.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-all-projects",
+        action=argparse.BooleanOptionalAction,
+        default=_env_bool("SYNAPSE_WORKER_SHARED_MEMORY_ALL_PROJECTS", True),
+        help="Discover projects from shared-memory tables for maintenance runs.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-api-url",
+        default=str(os.getenv("SYNAPSE_WORKER_SHARED_MEMORY_API_URL") or os.getenv("SYNAPSE_API_URL") or "http://api:8080"),
+        help="API URL passed to shared-memory maintenance script.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-api-key",
+        default=str(os.getenv("SYNAPSE_WORKER_SHARED_MEMORY_API_KEY") or os.getenv("SYNAPSE_API_KEY") or ""),
+        help="Optional API key passed to shared-memory maintenance script.",
+    )
+    parser.add_argument(
+        "--shared-memory-maintenance-updated-by",
+        default=str(os.getenv("SYNAPSE_WORKER_SHARED_MEMORY_UPDATED_BY") or "shared_memory_maintenance"),
+        help="Actor identity for shared-memory maintenance processors.",
+    )
     return parser.parse_args()
 
 
@@ -421,6 +472,34 @@ def build_jobs(args: argparse.Namespace) -> list[JobSpec]:
                     enabled=True,
                 )
             )
+    if args.enable_shared_memory_maintenance:
+        shared_memory_cmd = [
+            python_bin,
+            str(SCRIPT_DIR / "run_shared_memory_maintenance.py"),
+            "--pending-limit",
+            str(max(1, int(args.shared_memory_maintenance_pending_limit))),
+            "--retry-limit",
+            str(max(1, int(args.shared_memory_maintenance_retry_limit))),
+            "--lifecycle-limit",
+            str(max(1, int(args.shared_memory_maintenance_lifecycle_limit))),
+            "--api-url",
+            str(args.shared_memory_maintenance_api_url).strip() or "http://api:8080",
+            "--updated-by",
+            str(args.shared_memory_maintenance_updated_by).strip() or "shared_memory_maintenance",
+        ]
+        if bool(args.shared_memory_maintenance_all_projects):
+            shared_memory_cmd.append("--all-projects")
+        api_key = str(args.shared_memory_maintenance_api_key).strip()
+        if api_key:
+            shared_memory_cmd.extend(["--api-key", api_key])
+        jobs.append(
+            JobSpec(
+                name="shared_memory_maintenance",
+                argv=shared_memory_cmd,
+                interval_sec=max(1, int(args.shared_memory_maintenance_interval_sec)),
+                enabled=True,
+            )
+        )
     return jobs
 
 
