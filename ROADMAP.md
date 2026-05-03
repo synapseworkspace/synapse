@@ -72,6 +72,7 @@ Phase 2 (signal extraction)
    - repeated facts, repeated operator decisions, recurring exception patterns, contradiction resolution.
    - current slice surfaces candidate canon blocks in `Company Operating Context`.
    - candidate canon blocks now carry target page classes/slugs and promotion-path hints.
+   - persisted `company knowledge candidates` storage + `sync/list/promote` APIs now anchor compiler output as first-class records.
 7. `planned` Humanization layer:
    - translate internal technical labels into company-readable summaries and titles.
 8. `in_progress` Knowledge quality lifecycle:

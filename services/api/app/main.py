@@ -1314,6 +1314,22 @@ class SharedMemoryFanoutAckRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class CompanyKnowledgeCandidateSyncRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(default="synapse_company_compiler", min_length=1, max_length=256)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    max_signals: int = Field(default=12, ge=5, le=50)
+
+
+class CompanyKnowledgeCandidatePromoteRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    knowledge_state: str = Field(default="reviewed", pattern="^(candidate|reviewed|canonical|stale|contradicted|superseded)$")
+    note: str | None = Field(default=None, max_length=2000)
+    promote_to_wiki: bool = False
+    wiki_status: str = Field(default="reviewed", pattern="^(draft|reviewed|published)$")
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -4778,6 +4794,14 @@ def _shared_memory_entries_table_exists(conn) -> bool:
     return bool(_SHARED_MEMORY_ENTRIES_TABLE_EXISTS)
 
 
+def _company_knowledge_candidates_table_exists(conn) -> bool:
+    global _COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS
+    if _COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.company_knowledge_candidates")
+    return bool(_COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS)
+
+
 def _shared_memory_fanout_hooks_table_exists(conn) -> bool:
     global _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS
     if _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS is None:
@@ -8043,6 +8067,7 @@ _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
 _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_ENTRIES_TABLE_EXISTS: bool | None = None
+_COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS: bool | None = None
@@ -11903,6 +11928,439 @@ def _list_shared_memory_entries(
             "tier_scope": _shared_memory_visible_entry_tiers(tier_scope),
         },
         "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _company_knowledge_candidate_title(*, target_page_slug: str | None, target_page_type: str | None, block_type: str) -> str:
+    slug_leaf = str(target_page_slug or "").strip().split("/")[-1]
+    if slug_leaf:
+        words = [part for part in slug_leaf.replace("-", " ").replace("_", " ").split() if part]
+        if words:
+            return " ".join(word.capitalize() for word in words)
+    words = [part for part in str(target_page_type or block_type or "Company Knowledge").replace("_", " ").replace("-", " ").split() if part]
+    return " ".join(word.capitalize() for word in words) or "Company Knowledge"
+
+
+def _build_company_knowledge_candidate_markdown(candidate: dict[str, Any]) -> str:
+    title = _company_knowledge_candidate_title(
+        target_page_slug=str(candidate.get("target_page_slug") or ""),
+        target_page_type=str(candidate.get("target_page_type") or ""),
+        block_type=str(candidate.get("block_type") or ""),
+    )
+    lines = [
+        f"# {title}",
+        "",
+        "## Summary",
+        f"- Knowledge state: {str(candidate.get('knowledge_state') or 'candidate').strip().lower() or 'candidate'}",
+        f"- Confidence: {str(candidate.get('confidence') or 'unknown').strip().lower() or 'unknown'}",
+        f"- Block ID: `{str(candidate.get('block_id') or '').strip()}`",
+        f"- Candidate statement: {str(candidate.get('summary') or '').strip() or 'Pending summary.'}",
+        "",
+        "## Evidence Basis",
+        f"- {str(candidate.get('evidence_basis') or '').strip() or 'Evidence basis pending.'}",
+    ]
+    contradiction_topic = str(candidate.get("contradiction_topic") or "").strip()
+    if contradiction_topic:
+        lines.extend(["", "## Contradiction Topic", f"- {contradiction_topic}"])
+    resolution_rule = str(candidate.get("resolution_rule") or "").strip()
+    if resolution_rule:
+        lines.extend(["", "## Resolution Rule", f"- {resolution_rule}"])
+    lines.extend(
+        [
+            "",
+            "## Promotion Path",
+            f"- {str(candidate.get('promotion_path') or '').strip() or 'Promotion path pending explicit owner review.'}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _sync_company_knowledge_candidates(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None,
+    updated_by: str,
+    max_signals: int,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_actor = str(updated_by or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="company") or "company"
+    if not normalized_project or not normalized_actor:
+        raise HTTPException(status_code=422, detail={"code": "project_id_and_updated_by_required"})
+    if not _company_knowledge_candidates_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "company_knowledge_candidates_unavailable"})
+    with conn.cursor() as cur:
+        snapshot = _collect_company_operating_context_snapshot(
+            cur,
+            project_id=normalized_project,
+            space_key=normalized_space,
+            max_signals=max_signals,
+        )
+        context_extensions = snapshot.get("context_extensions") if isinstance(snapshot.get("context_extensions"), dict) else {}
+        candidate_blocks = [item for item in (context_extensions.get("candidate_canon_blocks") or []) if isinstance(item, dict)]
+        contradiction_rows = [item for item in (context_extensions.get("contradiction_summaries") or []) if isinstance(item, dict)]
+        contradiction_by_state = {
+            str(item.get("knowledge_state") or "").strip().lower(): item
+            for item in contradiction_rows
+            if isinstance(item, dict)
+        }
+        synced: list[dict[str, Any]] = []
+        seen_block_ids: list[str] = []
+        for block in candidate_blocks:
+            block_payload = dict(block)
+            block_id = str(block_payload.get("block_id") or "").strip()
+            if not block_id:
+                continue
+            seen_block_ids.append(block_id)
+            knowledge_state = str(block_payload.get("knowledge_state") or "candidate").strip().lower() or "candidate"
+            contradiction_meta = contradiction_by_state.get(knowledge_state) if str(block_payload.get("block_type") or "") == "contradiction_watch" else None
+            target_page_type = str(block_payload.get("target_page_type") or "").strip().lower() or None
+            target_page_slug = _normalize_wiki_slug(str(block_payload.get("target_page_slug") or ""), str(block_payload.get("target_page_slug") or "")) if str(block_payload.get("target_page_slug") or "").strip() else None
+            cur.execute(
+                """
+                INSERT INTO company_knowledge_candidates (
+                  project_id,
+                  space_key,
+                  block_id,
+                  block_type,
+                  knowledge_state,
+                  state_source,
+                  confidence,
+                  summary,
+                  evidence_basis,
+                  target_page_type,
+                  target_page_slug,
+                  promotion_path,
+                  contradiction_topic,
+                  source_payload,
+                  updated_by,
+                  first_seen_at,
+                  last_seen_at
+                )
+                VALUES (%s, %s, %s, %s, %s, 'computed', %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON CONFLICT (project_id, space_key, block_id) DO UPDATE
+                SET block_type = EXCLUDED.block_type,
+                    knowledge_state = CASE
+                      WHEN company_knowledge_candidates.state_source = 'manual'
+                        THEN company_knowledge_candidates.knowledge_state
+                      ELSE EXCLUDED.knowledge_state
+                    END,
+                    confidence = EXCLUDED.confidence,
+                    summary = EXCLUDED.summary,
+                    evidence_basis = EXCLUDED.evidence_basis,
+                    target_page_type = EXCLUDED.target_page_type,
+                    target_page_slug = EXCLUDED.target_page_slug,
+                    promotion_path = EXCLUDED.promotion_path,
+                    contradiction_topic = COALESCE(EXCLUDED.contradiction_topic, company_knowledge_candidates.contradiction_topic),
+                    source_payload = EXCLUDED.source_payload,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW(),
+                    last_seen_at = NOW()
+                RETURNING id, knowledge_state, state_source, target_page_slug
+                """,
+                (
+                    normalized_project,
+                    normalized_space,
+                    block_id,
+                    str(block_payload.get("block_type") or "candidate").strip().lower() or "candidate",
+                    knowledge_state,
+                    str(block_payload.get("confidence") or "unknown").strip().lower() or "unknown",
+                    str(block_payload.get("summary") or "").strip(),
+                    str(block_payload.get("evidence_basis") or "").strip() or None,
+                    target_page_type,
+                    target_page_slug,
+                    str(block_payload.get("promotion_path") or "").strip() or None,
+                    str((contradiction_meta or {}).get("topic") or "").strip() or None,
+                    Jsonb(block_payload),
+                    normalized_actor,
+                ),
+            )
+            row = cur.fetchone()
+            synced.append(
+                {
+                    "candidate_id": int(row[0]),
+                    "block_id": block_id,
+                    "knowledge_state": str(row[1] or knowledge_state),
+                    "state_source": str(row[2] or "computed"),
+                    "target_page_slug": str(row[3] or target_page_slug or "").strip() or None,
+                }
+            )
+        if seen_block_ids:
+            cur.execute(
+                """
+                UPDATE company_knowledge_candidates
+                SET knowledge_state = CASE
+                      WHEN knowledge_state IN ('canonical', 'superseded') THEN knowledge_state
+                      ELSE 'stale'
+                    END,
+                    updated_at = NOW(),
+                    updated_by = %s
+                WHERE project_id = %s
+                  AND space_key = %s
+                  AND block_id <> ALL(%s)
+                  AND state_source = 'computed'
+                """,
+                (normalized_actor, normalized_project, normalized_space, seen_block_ids),
+            )
+        cur.execute(
+            """
+            SELECT knowledge_state, COUNT(*)::int
+            FROM company_knowledge_candidates
+            WHERE project_id = %s
+              AND space_key = %s
+            GROUP BY knowledge_state
+            ORDER BY COUNT(*) DESC, knowledge_state ASC
+            """,
+            (normalized_project, normalized_space),
+        )
+        state_counts = [{"state": str(row[0] or "candidate"), "count": int(row[1] or 0)} for row in (cur.fetchall() or [])]
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "space_key": normalized_space,
+        "summary": {
+            "synced_blocks": len(synced),
+            "lifecycle_states": state_counts,
+        },
+        "candidates": synced,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _list_company_knowledge_candidates(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    knowledge_state: str | None = None,
+    target_page_type: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="") or None
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _company_knowledge_candidates_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "space_key": normalized_space,
+            "candidates": [],
+            "summary": {"candidates_total": 0, "supported": False},
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+    filters = ["project_id = %s"]
+    params: list[Any] = [normalized_project]
+    if normalized_space:
+        filters.append("space_key = %s")
+        params.append(normalized_space)
+    if str(knowledge_state or "").strip():
+        filters.append("knowledge_state = %s")
+        params.append(str(knowledge_state).strip().lower())
+    if str(target_page_type or "").strip():
+        filters.append("target_page_type = %s")
+        params.append(str(target_page_type).strip().lower())
+    where_sql = " AND ".join(filters)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+              id,
+              block_id,
+              block_type,
+              knowledge_state,
+              state_source,
+              confidence,
+              summary,
+              evidence_basis,
+              target_page_type,
+              target_page_slug,
+              promotion_path,
+              contradiction_topic,
+              note,
+              reviewed_by,
+              reviewed_at,
+              canonical_page_slug,
+              updated_at
+            FROM company_knowledge_candidates
+            WHERE {where_sql}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT %s
+            """,
+            [*params, max(1, min(200, int(limit)))],
+        )
+        rows = cur.fetchall() or []
+        cur.execute(
+            f"""
+            SELECT knowledge_state, COUNT(*)::int
+            FROM company_knowledge_candidates
+            WHERE {where_sql}
+            GROUP BY knowledge_state
+            ORDER BY COUNT(*) DESC, knowledge_state ASC
+            """,
+            params,
+        )
+        state_counts = [{"state": str(row[0] or "candidate"), "count": int(row[1] or 0)} for row in (cur.fetchall() or [])]
+    candidates = []
+    for row in rows:
+        candidates.append(
+            {
+                "candidate_id": int(row[0]),
+                "block_id": str(row[1] or ""),
+                "block_type": str(row[2] or ""),
+                "knowledge_state": str(row[3] or ""),
+                "state_source": str(row[4] or ""),
+                "confidence": str(row[5] or ""),
+                "summary": str(row[6] or ""),
+                "evidence_basis": str(row[7] or ""),
+                "target_page_type": str(row[8] or "") or None,
+                "target_page_slug": str(row[9] or "") or None,
+                "promotion_path": str(row[10] or "") or None,
+                "contradiction_topic": str(row[11] or "") or None,
+                "note": str(row[12] or "") or None,
+                "reviewed_by": str(row[13] or "") or None,
+                "reviewed_at": row[14].astimezone(UTC).isoformat() if isinstance(row[14], datetime) else None,
+                "canonical_page_slug": str(row[15] or "") or None,
+                "updated_at": row[16].astimezone(UTC).isoformat() if isinstance(row[16], datetime) else None,
+            }
+        )
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space,
+        "candidates": candidates,
+        "summary": {
+            "candidates_total": len(candidates),
+            "state_counts": state_counts,
+            "supported": True,
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _promote_company_knowledge_candidate(
+    conn,
+    *,
+    candidate_id: int,
+    project_id: str,
+    updated_by: str,
+    knowledge_state: str,
+    note: str | None,
+    promote_to_wiki: bool,
+    wiki_status: str,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_actor = str(updated_by or "").strip()
+    normalized_state = str(knowledge_state or "reviewed").strip().lower() or "reviewed"
+    normalized_note = str(note or "").strip() or None
+    normalized_wiki_status = str(wiki_status or "reviewed").strip().lower() or "reviewed"
+    if not normalized_project or not normalized_actor:
+        raise HTTPException(status_code=422, detail={"code": "project_id_and_updated_by_required"})
+    if not _company_knowledge_candidates_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "company_knowledge_candidates_unavailable"})
+    wiki_page_result: dict[str, Any] | None = None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              id,
+              project_id,
+              space_key,
+              block_id,
+              block_type,
+              confidence,
+              summary,
+              evidence_basis,
+              target_page_type,
+              target_page_slug,
+              promotion_path,
+              contradiction_topic,
+              source_payload
+            FROM company_knowledge_candidates
+            WHERE id = %s
+              AND project_id = %s
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (int(candidate_id), normalized_project),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail={"code": "company_knowledge_candidate_not_found", "candidate_id": int(candidate_id)})
+        candidate = {
+            "candidate_id": int(row[0]),
+            "project_id": str(row[1] or ""),
+            "space_key": str(row[2] or "") or None,
+            "block_id": str(row[3] or ""),
+            "block_type": str(row[4] or ""),
+            "confidence": str(row[5] or ""),
+            "summary": str(row[6] or ""),
+            "evidence_basis": str(row[7] or ""),
+            "target_page_type": str(row[8] or "") or None,
+            "target_page_slug": str(row[9] or "") or None,
+            "promotion_path": str(row[10] or "") or None,
+            "contradiction_topic": str(row[11] or "") or None,
+        }
+        source_payload = row[12] if isinstance(row[12], dict) else {}
+        if isinstance(source_payload, dict):
+            candidate.update({"resolution_rule": source_payload.get("resolution_rule")})
+        canonical_page_slug = None
+        if promote_to_wiki and candidate.get("target_page_slug") and candidate.get("target_page_type"):
+            wiki_page_result = _upsert_wiki_page_system(
+                cur,
+                project_id=normalized_project,
+                actor=normalized_actor,
+                slug=str(candidate.get("target_page_slug") or ""),
+                title=_company_knowledge_candidate_title(
+                    target_page_slug=str(candidate.get("target_page_slug") or ""),
+                    target_page_type=str(candidate.get("target_page_type") or ""),
+                    block_type=str(candidate.get("block_type") or ""),
+                ),
+                page_type=str(candidate.get("target_page_type") or "operations"),
+                entity_key=str(candidate.get("block_id") or ""),
+                markdown=_build_company_knowledge_candidate_markdown({**candidate, "knowledge_state": normalized_state}),
+                status=normalized_wiki_status,
+                change_summary=f"Company knowledge promotion by {normalized_actor}",
+            )
+            canonical_page_slug = str((((wiki_page_result or {}).get("page") or {}) if isinstance((wiki_page_result or {}).get("page"), dict) else {}).get("slug") or "").strip() or None
+        cur.execute(
+            """
+            UPDATE company_knowledge_candidates
+            SET knowledge_state = %s,
+                state_source = 'manual',
+                note = %s,
+                reviewed_by = %s,
+                reviewed_at = NOW(),
+                canonical_page_slug = COALESCE(%s, canonical_page_slug),
+                updated_by = %s,
+                updated_at = NOW()
+            WHERE id = %s
+              AND project_id = %s
+            RETURNING id, knowledge_state, state_source, canonical_page_slug, reviewed_at, updated_at
+            """,
+            (
+                normalized_state,
+                normalized_note,
+                normalized_actor,
+                canonical_page_slug,
+                normalized_actor,
+                int(candidate_id),
+                normalized_project,
+            ),
+        )
+        updated_row = cur.fetchone()
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "candidate": {
+            "candidate_id": int(updated_row[0]),
+            "knowledge_state": str(updated_row[1] or normalized_state),
+            "state_source": str(updated_row[2] or "manual"),
+            "canonical_page_slug": str(updated_row[3] or "") or None,
+            "reviewed_at": updated_row[4].astimezone(UTC).isoformat() if isinstance(updated_row[4], datetime) else None,
+            "updated_at": updated_row[5].astimezone(UTC).isoformat() if isinstance(updated_row[5], datetime) else None,
+        },
+        "wiki_page": wiki_page_result,
     }
 
 
@@ -40408,6 +40866,52 @@ def _build_tooling_map_bootstrap_page(
     ]
 
 
+@app.post("/v1/adoption/company-knowledge/candidates/sync", response_model=None)
+def sync_company_knowledge_candidates(payload: CompanyKnowledgeCandidateSyncRequest):
+    with get_conn() as conn:
+        return _sync_company_knowledge_candidates(
+            conn,
+            project_id=payload.project_id,
+            space_key=payload.space_key,
+            updated_by=payload.updated_by,
+            max_signals=payload.max_signals,
+        )
+
+
+@app.get("/v1/adoption/company-knowledge/candidates")
+def list_company_knowledge_candidates(
+    project_id: str = Query(..., min_length=1),
+    space_key: str | None = Query(default=None),
+    knowledge_state: str | None = Query(default=None),
+    target_page_type: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        return _list_company_knowledge_candidates(
+            conn,
+            project_id=project_id,
+            space_key=space_key,
+            knowledge_state=knowledge_state,
+            target_page_type=target_page_type,
+            limit=limit,
+        )
+
+
+@app.post("/v1/adoption/company-knowledge/candidates/{candidate_id}/promote", response_model=None)
+def promote_company_knowledge_candidate(candidate_id: int, payload: CompanyKnowledgeCandidatePromoteRequest):
+    with get_conn() as conn:
+        return _promote_company_knowledge_candidate(
+            conn,
+            candidate_id=candidate_id,
+            project_id=payload.project_id,
+            updated_by=payload.updated_by,
+            knowledge_state=payload.knowledge_state,
+            note=payload.note,
+            promote_to_wiki=payload.promote_to_wiki,
+            wiki_status=payload.wiki_status,
+        )
+
+
 @app.get("/v1/adoption/tooling-map/diagnostics")
 def get_adoption_tooling_map_diagnostics(
     project_id: str,
@@ -41390,6 +41894,64 @@ def _build_company_operating_context_bootstrap_page(
     space_key: str,
     max_signals: int,
 ) -> list[dict[str, str]]:
+    snapshot = _collect_company_operating_context_snapshot(
+        cur,
+        project_id=project_id,
+        space_key=space_key,
+        max_signals=max_signals,
+    )
+    source_counts = [tuple(item) for item in (snapshot.get("source_counts") or [])]
+    matrix = [item for item in (snapshot.get("matrix") or []) if isinstance(item, dict)]
+    team_rollup = dict(snapshot.get("team_rollup") or {})
+    running_instances_total = int(snapshot.get("running_instances_total") or 0)
+    claims_rollup = [tuple(item) for item in (snapshot.get("claims_rollup") or [])]
+    context_extensions = snapshot.get("context_extensions") if isinstance(snapshot.get("context_extensions"), dict) else {}
+    snapshot_notes = [str(v).strip() for v in (context_extensions.get("snapshot_notes") or []) if str(v).strip()]
+    workflow_signals = [item for item in (context_extensions.get("workflow_signals") or []) if isinstance(item, dict)]
+    entity_signals = [item for item in (context_extensions.get("entity_signals") or []) if isinstance(item, dict)]
+    process_signals = [item for item in (context_extensions.get("process_signals") or []) if isinstance(item, dict)]
+    trust_signals = [item for item in (context_extensions.get("trust_signals") or []) if isinstance(item, dict)]
+    exception_signals = [item for item in (context_extensions.get("exception_signals") or []) if isinstance(item, dict)]
+    candidate_canon_blocks = [item for item in (context_extensions.get("candidate_canon_blocks") or []) if isinstance(item, dict)]
+    knowledge_lifecycle_summary = [item for item in (context_extensions.get("knowledge_lifecycle_summary") or []) if isinstance(item, dict)]
+    contradiction_summaries = [item for item in (context_extensions.get("contradiction_summaries") or []) if isinstance(item, dict)]
+    principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
+
+    lines = _render_company_operating_context_markdown(
+        project_id=project_id,
+        source_counts=source_counts,
+        matrix=matrix,
+        team_rollup=team_rollup,
+        running_instances_total=running_instances_total,
+        claims_rollup=claims_rollup,
+        snapshot_notes=snapshot_notes,
+        workflow_signals=workflow_signals,
+        entity_signals=entity_signals,
+        process_signals=process_signals,
+        trust_signals=trust_signals,
+        exception_signals=exception_signals,
+        candidate_canon_blocks=candidate_canon_blocks,
+        knowledge_lifecycle_summary=knowledge_lifecycle_summary,
+        contradiction_summaries=contradiction_summaries,
+        principles=principles,
+    )
+    return [
+        {
+            "title": "Company Operating Context",
+            "slug": _space_slug(space_key, "company-operating-context"),
+            "page_type": "operations",
+            "markdown": "\n".join(lines),
+        }
+    ]
+
+
+def _collect_company_operating_context_snapshot(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_signals: int,
+) -> dict[str, Any]:
     synthesis_pack = _synthesis_pack_for_space_key(space_key)
     source_counts: list[tuple[str, int]] = []
     if _legacy_import_sources_table_exists_from_cursor(cur):
@@ -41456,17 +42018,35 @@ def _build_company_operating_context_bootstrap_page(
         claims_rollup=claims_rollup,
         normalize_statement_text=_normalize_statement_text,
     )
-    snapshot_notes = [str(v).strip() for v in (context_extensions.get("snapshot_notes") or []) if str(v).strip()]
-    workflow_signals = [item for item in (context_extensions.get("workflow_signals") or []) if isinstance(item, dict)]
-    entity_signals = [item for item in (context_extensions.get("entity_signals") or []) if isinstance(item, dict)]
-    process_signals = [item for item in (context_extensions.get("process_signals") or []) if isinstance(item, dict)]
-    trust_signals = [item for item in (context_extensions.get("trust_signals") or []) if isinstance(item, dict)]
-    exception_signals = [item for item in (context_extensions.get("exception_signals") or []) if isinstance(item, dict)]
-    candidate_canon_blocks = [item for item in (context_extensions.get("candidate_canon_blocks") or []) if isinstance(item, dict)]
-    knowledge_lifecycle_summary = [item for item in (context_extensions.get("knowledge_lifecycle_summary") or []) if isinstance(item, dict)]
-    contradiction_summaries = [item for item in (context_extensions.get("contradiction_summaries") or []) if isinstance(item, dict)]
-    principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
+    return {
+        "source_counts": source_counts,
+        "matrix": matrix,
+        "team_rollup": team_rollup,
+        "running_instances_total": running_instances_total,
+        "claims_rollup": claims_rollup,
+        "context_extensions": context_extensions,
+    }
 
+
+def _render_company_operating_context_markdown(
+    *,
+    project_id: str,
+    source_counts: list[tuple[str, int]],
+    matrix: list[dict[str, Any]],
+    team_rollup: dict[str, int],
+    running_instances_total: int,
+    claims_rollup: list[tuple[str, int]],
+    snapshot_notes: list[str],
+    workflow_signals: list[dict[str, Any]],
+    entity_signals: list[dict[str, Any]],
+    process_signals: list[dict[str, Any]],
+    trust_signals: list[dict[str, Any]],
+    exception_signals: list[dict[str, Any]],
+    candidate_canon_blocks: list[dict[str, Any]],
+    knowledge_lifecycle_summary: list[dict[str, Any]],
+    contradiction_summaries: list[dict[str, Any]],
+    principles: list[str],
+) -> list[str]:
     lines = [
         "# Company Operating Context",
         "",
@@ -41649,14 +42229,7 @@ def _build_company_operating_context_bootstrap_page(
             "",
         ]
     )
-    return [
-        {
-            "title": "Company Operating Context",
-            "slug": _space_slug(space_key, "company-operating-context"),
-            "page_type": "operations",
-            "markdown": "\n".join(lines),
-        }
-    ]
+    return lines
 
 
 def _build_daily_operations_digest_bootstrap_page(

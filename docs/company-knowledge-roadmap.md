@@ -167,6 +167,7 @@ Current progress:
 - lifecycle heuristics now classify candidate blocks into `candidate`, `reviewed`, `stale`, and `contradicted`
 - contradiction summaries now attach a recommended resolution rule for source-of-truth conflicts
 - candidate canon blocks now carry stable ids plus suggested target page class/slug for future promotion into canonical wiki pages
+- persisted candidate storage plus `sync/list/promote` API turns company knowledge blocks into first-class records instead of render-only output
 
 ## Phase 4: Humanization Layer
 
