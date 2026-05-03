@@ -973,6 +973,8 @@ class AdoptionFirstRunBootstrapRequest(BaseModel):
     profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     business_profile_key: str | None = Field(default=None, min_length=1, max_length=128)
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    dry_run: bool = False
+    confirm_project_id: str | None = None
     publish: bool = True
     include_state_snapshot: bool = True
 
@@ -37769,12 +37771,15 @@ def execute_adoption_sync_preset(
                     )
                 )
 
-            if payload.include_starter_pages and not payload.dry_run:
+            if payload.include_starter_pages:
                 response["starter_pages"] = run_adoption_first_run_bootstrap(
                     AdoptionFirstRunBootstrapRequest(
                         project_id=project_id,
                         created_by=updated_by,
                         profile=effective_starter_profile,
+                        business_profile_key=str(payload.business_profile_key or "").strip() or None,
+                        dry_run=bool(payload.dry_run),
+                        confirm_project_id=project_id if not payload.dry_run else None,
                         publish=True,
                         include_state_snapshot=True,
                     )
@@ -38196,6 +38201,14 @@ def run_adoption_bundle_promotion(
 
 @app.post("/v1/adoption/first-run/bootstrap")
 def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) -> dict[str, Any]:
+    project_id = str(payload.project_id or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id_required")
+    if not payload.dry_run:
+        confirm = str(payload.confirm_project_id or "").strip()
+        if confirm != project_id:
+            raise HTTPException(status_code=422, detail="confirm_project_id_mismatch")
+
     resolved_business_profile = _resolve_adoption_business_profile(payload.business_profile_key)
     effective_profile = str(
         (resolved_business_profile or {}).get("starter_profile") or payload.profile
@@ -38211,10 +38224,58 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
         include_decisions_log=True,
     )
     requested_status = "published" if payload.publish else "reviewed"
+    page_preview = [
+        {
+            "title": str(item.get("title") or ""),
+            "slug": str(item.get("slug") or ""),
+            "page_type": str(item.get("page_type") or "operations"),
+            "words": len(str(item.get("markdown") or "").split()),
+        }
+        for item in pages
+    ]
+    response: dict[str, Any] = {
+        "status": "ok",
+        "project_id": project_id,
+        "dry_run": bool(payload.dry_run),
+        "profile": effective_profile,
+        "business_profile": resolved_business_profile,
+        "resolved_defaults": {
+            "starter_profile": effective_profile,
+            "space_key": _normalize_space_key(effective_space_key or "", default=""),
+        },
+        "space_key": _normalize_space_key(effective_space_key or "", default=""),
+        "include_state_snapshot": bool(payload.include_state_snapshot),
+        "requested_status": requested_status,
+        "plan": {
+            "pages_total": len(page_preview),
+            "pages": page_preview,
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if bool(payload.dry_run):
+        response["preview_apply_flow"] = {
+            "step_1": "preview",
+            "step_2": "apply",
+            "apply_hint": "rerun this endpoint with dry_run=false and confirm_project_id",
+            "apply_payload_template": {
+                "project_id": project_id,
+                "created_by": payload.created_by,
+                "profile": effective_profile,
+                "business_profile_key": str(payload.business_profile_key or "").strip() or None,
+                "space_key": _normalize_space_key(effective_space_key or "", default=""),
+                "dry_run": False,
+                "confirm_project_id": project_id,
+                "publish": bool(payload.publish),
+                "include_state_snapshot": bool(payload.include_state_snapshot),
+            },
+        }
+        response["next_action"] = "rerun_with_dry_run=false_and_confirm_project_id"
+        return response
+
     with get_conn() as conn:
         page_result = _insert_bootstrap_pages(
             conn,
-            project_id=payload.project_id,
+            project_id=project_id,
             created_by=payload.created_by,
             profile=effective_profile,
             pages=pages,
@@ -38226,7 +38287,7 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
         if bool(payload.include_state_snapshot):
             state_sync_payload = _sync_wiki_state_snapshot_page(
                 conn,
-                project_id=payload.project_id,
+                project_id=project_id,
                 updated_by=payload.created_by,
                 space_key=effective_space_key,
                 status=requested_status,
@@ -38238,28 +38299,15 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
             status_code=409,
             detail={
                 "error": "bootstrap_policy_denied",
-                "project_id": payload.project_id,
+                "project_id": project_id,
                 "hint": "No writable wiki space was found for this actor. Add owner access or run bootstrap with another actor.",
                 "policy_space_fallback": page_result.get("policy_space_fallback"),
                 "skipped": page_result.get("skipped"),
             },
         )
-    return {
-        "status": "ok",
-        "project_id": payload.project_id,
-        "profile": effective_profile,
-        "business_profile": resolved_business_profile,
-        "resolved_defaults": {
-            "starter_profile": effective_profile,
-            "space_key": _normalize_space_key(effective_space_key or "", default=""),
-        },
-        "space_key": _normalize_space_key(effective_space_key or "", default=""),
-        "include_state_snapshot": bool(payload.include_state_snapshot),
-        "requested_status": requested_status,
-        **page_result,
-        "state_snapshot": state_sync_payload if bool(payload.include_state_snapshot) else None,
-        "generated_at": datetime.now(UTC).isoformat(),
-    }
+    response.update(page_result)
+    response["state_snapshot"] = state_sync_payload if bool(payload.include_state_snapshot) else None
+    return response
 
 
 @app.get("/v1/adoption/business-profiles")

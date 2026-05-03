@@ -398,6 +398,8 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.client.run_adoption_first_run_bootstrap(
             created_by="ops_admin",
             profile="support_ops",
+            business_profile_key="support_center",
+            dry_run=True,
             publish=True,
             include_state_snapshot=False,
         )
@@ -408,6 +410,9 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("project_id"), "omega_demo")
         self.assertEqual(payload.get("created_by"), "ops_admin")
         self.assertEqual(payload.get("profile"), "support_ops")
+        self.assertEqual(payload.get("business_profile_key"), "support_center")
+        self.assertTrue(payload.get("dry_run"))
+        self.assertIsNone(payload.get("confirm_project_id"))
         self.assertTrue(payload.get("publish"))
         self.assertFalse(payload.get("include_state_snapshot"))
 
@@ -429,6 +434,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
     def test_execute_adoption_sync_preset_posts_expected_payload(self) -> None:
         self.client.execute_adoption_sync_preset(
             updated_by="ops_admin",
+            business_profile_key="logistics_operator",
             dry_run=False,
             include_role_template=True,
             role_template_key="logistics_ops",
@@ -446,6 +452,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         payload = call["payload"]
         self.assertEqual(payload.get("project_id"), "omega_demo")
         self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("business_profile_key"), "logistics_operator")
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("confirm_project_id"), "omega_demo")
         self.assertEqual(payload.get("role_template_key"), "logistics_ops")
@@ -456,6 +463,12 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("sync_processor_lookback_minutes"), 45)
         self.assertTrue(payload.get("fail_on_sync_processor_unavailable"))
         self.assertFalse(payload.get("auto_apply_safe_mode_on_critical"))
+
+    def test_list_adoption_business_profiles_uses_catalog_endpoint(self) -> None:
+        self.client.list_adoption_business_profiles()
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/adoption/business-profiles")
+        self.assertEqual(call["method"], "GET")
 
     def test_run_adoption_agent_wiki_bootstrap_posts_expected_payload(self) -> None:
         self.client.run_adoption_agent_wiki_bootstrap(

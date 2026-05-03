@@ -944,10 +944,18 @@ export class SynapseClient {
     });
   }
 
+  async listAdoptionBusinessProfiles(): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/adoption/business-profiles", {
+      method: "GET"
+    });
+  }
+
   async runAdoptionFirstRunBootstrap(options: {
     createdBy: string;
-    profile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+    profile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | "ai_employee_org" | string;
+    businessProfileKey?: string;
     spaceKey?: string;
+    dryRun?: boolean;
     publish?: boolean;
     includeStateSnapshot?: boolean;
     idempotencyKey?: string;
@@ -957,13 +965,17 @@ export class SynapseClient {
       throw new Error("createdBy is required");
     }
     const profileRaw = String(options.profile ?? "standard").trim().toLowerCase() || "standard";
-    if (!["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"].includes(profileRaw)) {
-      throw new Error("profile must be one of: standard, support_ops, logistics_ops, sales_ops, compliance_ops");
+    if (!["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops", "ai_employee_org"].includes(profileRaw)) {
+      throw new Error("profile must be one of: standard, support_ops, logistics_ops, sales_ops, compliance_ops, ai_employee_org");
     }
+    const dryRun = options.dryRun ?? false;
     const payload: Record<string, unknown> = {
       project_id: this.projectId,
       created_by: createdBy,
       profile: profileRaw,
+      business_profile_key: asOptionalString(options.businessProfileKey) ?? undefined,
+      dry_run: dryRun,
+      confirm_project_id: dryRun ? undefined : this.projectId,
       publish: options.publish ?? true,
       include_state_snapshot: options.includeStateSnapshot ?? true
     };
@@ -1021,7 +1033,7 @@ export class SynapseClient {
     }
     const dryRun = options.dryRun ?? true;
     const starterProfile = String(options.starterProfile ?? "support_ops").trim().toLowerCase() || "support_ops";
-    if (!["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"].includes(starterProfile)) {
+    if (!["standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops", "ai_employee_org"].includes(starterProfile)) {
       throw new Error("starterProfile is invalid");
     }
     const payload: Record<string, unknown> = {
@@ -1029,6 +1041,7 @@ export class SynapseClient {
       updated_by: updatedBy,
       reviewed_by: asOptionalString(options.reviewedBy) ?? undefined,
       preset_key: "enterprise_curated_safe",
+      business_profile_key: asOptionalString(options.businessProfileKey) ?? undefined,
       dry_run: dryRun,
       confirm_project_id: dryRun ? undefined : this.projectId,
       apply_bootstrap_profile: options.applyBootstrapProfile ?? true,

@@ -962,12 +962,20 @@ class SynapseClient:
             params=params,
         )
 
+    def list_adoption_business_profiles(self) -> dict[str, Any]:
+        return self._request_json(
+            "/v1/adoption/business-profiles",
+            method="GET",
+        )
+
     def run_adoption_first_run_bootstrap(
         self,
         *,
         created_by: str,
         profile: str = "standard",
+        business_profile_key: str | None = None,
         space_key: str | None = None,
+        dry_run: bool = False,
         publish: bool = True,
         include_state_snapshot: bool = True,
     ) -> dict[str, Any]:
@@ -975,15 +983,19 @@ class SynapseClient:
         if not actor:
             raise ValueError("created_by is required")
         normalized_profile = str(profile or "standard").strip().lower() or "standard"
-        if normalized_profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
-            raise ValueError("profile must be one of: standard, support_ops, logistics_ops, sales_ops, compliance_ops")
+        if normalized_profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops", "ai_employee_org"}:
+            raise ValueError("profile must be one of: standard, support_ops, logistics_ops, sales_ops, compliance_ops, ai_employee_org")
         request_payload: dict[str, Any] = {
             "project_id": self._config.project_id,
             "created_by": actor,
             "profile": normalized_profile,
+            "dry_run": bool(dry_run),
+            "confirm_project_id": None if bool(dry_run) else self._config.project_id,
             "publish": bool(publish),
             "include_state_snapshot": bool(include_state_snapshot),
         }
+        if business_profile_key is not None and str(business_profile_key).strip():
+            request_payload["business_profile_key"] = str(business_profile_key).strip()
         if space_key is not None and str(space_key).strip():
             request_payload["space_key"] = str(space_key).strip()
         return self._request_json(
@@ -1033,6 +1045,7 @@ class SynapseClient:
         *,
         updated_by: str,
         reviewed_by: str | None = None,
+        business_profile_key: str | None = None,
         dry_run: bool = True,
         apply_bootstrap_profile: bool = True,
         queue_enabled_sources: bool = True,
@@ -1054,13 +1067,16 @@ class SynapseClient:
         if not actor:
             raise ValueError("updated_by is required")
         profile = str(starter_profile or "support_ops").strip().lower() or "support_ops"
-        if profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops"}:
+        if profile not in {"standard", "support_ops", "logistics_ops", "sales_ops", "compliance_ops", "ai_employee_org"}:
             raise ValueError("starter_profile is invalid")
         payload: dict[str, Any] = {
             "project_id": self._config.project_id,
             "updated_by": actor,
             "reviewed_by": str(reviewed_by).strip() if reviewed_by is not None and str(reviewed_by).strip() else None,
             "preset_key": "enterprise_curated_safe",
+            "business_profile_key": (
+                str(business_profile_key).strip() if business_profile_key is not None and str(business_profile_key).strip() else None
+            ),
             "dry_run": bool(dry_run),
             "confirm_project_id": self._config.project_id if not dry_run else None,
             "apply_bootstrap_profile": bool(apply_bootstrap_profile),

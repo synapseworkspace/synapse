@@ -1137,6 +1137,23 @@ type AdoptionSyncPresetPayload = {
   status: string;
   project_id: string;
   dry_run: boolean;
+  business_profile?: {
+    key?: string;
+    label?: string;
+    synthesis_pack?: string;
+    starter_profile?: string;
+    role_template_key?: string | null;
+    default_space_key?: string;
+    bundle_promotion_space_key?: string;
+    focus?: string[];
+  } | null;
+  resolved_defaults?: {
+    starter_profile?: string;
+    include_role_template?: boolean;
+    role_template_key?: string | null;
+    role_template_space_key?: string | null;
+    bundle_promotion_space_key?: string | null;
+  };
   explainability?: {
     summary?: {
       total_rejections?: number;
@@ -1168,6 +1185,7 @@ type AdoptionSyncPresetPayload = {
       failed?: number;
     };
   };
+  starter_pages?: AdoptionFirstRunBootstrapPayload;
 };
 
 type AdoptionAgentWikiBootstrapPayload = {
@@ -1201,8 +1219,33 @@ type AdoptionAgentWikiBootstrapPayload = {
 type AdoptionFirstRunBootstrapPayload = {
   status: string;
   project_id: string;
+  dry_run?: boolean;
   profile: string;
+  business_profile?: {
+    key?: string;
+    label?: string;
+    synthesis_pack?: string;
+    starter_profile?: string;
+    role_template_key?: string | null;
+    default_space_key?: string;
+    bundle_promotion_space_key?: string;
+    focus?: string[];
+  } | null;
+  resolved_defaults?: {
+    starter_profile?: string;
+    space_key?: string;
+  };
+  space_key?: string;
   requested_status: string;
+  plan?: {
+    pages_total?: number;
+    pages?: Array<{
+      title?: string;
+      slug?: string;
+      page_type?: string;
+      words?: number;
+    }>;
+  };
   summary?: {
     created?: number;
     existing?: number;
@@ -1210,6 +1253,27 @@ type AdoptionFirstRunBootstrapPayload = {
     published_downgraded_to_reviewed?: number;
   };
   snapshot_id?: string | null;
+};
+
+type AdoptionBusinessProfile = {
+  key: string;
+  label?: string;
+  description?: string;
+  synthesis_pack?: string;
+  starter_profile?: string;
+  role_template_key?: string | null;
+  default_space_key?: string;
+  bundle_promotion_space_key?: string;
+  recommended_noise_preset?: string;
+  focus?: string[];
+};
+
+type AdoptionBusinessProfilesPayload = {
+  profiles: AdoptionBusinessProfile[];
+  summary?: {
+    total?: number;
+    packs?: string[];
+  };
 };
 
 type LegacyImportSource = {
@@ -2289,8 +2353,12 @@ export default function App() {
   const [enterpriseReadiness, setEnterpriseReadiness] = useState<EnterpriseReadinessPayload | null>(null);
   const [loadingEnterpriseReadiness, setLoadingEnterpriseReadiness] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
+  const [adoptionSyncPresetResult, setAdoptionSyncPresetResult] = useState<AdoptionSyncPresetPayload | null>(null);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
   const [agentWikiBootstrapResult, setAgentWikiBootstrapResult] = useState<AdoptionAgentWikiBootstrapPayload | null>(null);
+  const [adoptionBusinessProfiles, setAdoptionBusinessProfiles] = useState<AdoptionBusinessProfile[]>([]);
+  const [loadingAdoptionBusinessProfiles, setLoadingAdoptionBusinessProfiles] = useState(false);
+  const [selectedBusinessProfileKey, setSelectedBusinessProfileKey] = useState("ai_employee_org");
   const [selfhostConsistency, setSelfhostConsistency] = useState<SelfhostConsistencyPayload | null>(null);
   const [loadingSelfhostConsistency, setLoadingSelfhostConsistency] = useState(false);
   const [connectingLegacySource, setConnectingLegacySource] = useState(false);
@@ -2310,8 +2378,11 @@ export default function App() {
   const [legacyWizardStep3Done, setLegacyWizardStep3Done] = useState(false);
   const [legacyWizardStep4Done, setLegacyWizardStep4Done] = useState(false);
   const [legacySeedStarterPages, setLegacySeedStarterPages] = useState(true);
-  const [legacyStarterProfile, setLegacyStarterProfile] = useState<"standard" | "support_ops">("standard");
+  const [legacyStarterProfile, setLegacyStarterProfile] = useState<
+    "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | "ai_employee_org"
+  >("standard");
   const [runningStarterBootstrap, setRunningStarterBootstrap] = useState(false);
+  const [starterBootstrapPreview, setStarterBootstrapPreview] = useState<AdoptionFirstRunBootstrapPayload | null>(null);
   const [draftDetail, setDraftDetail] = useState<DraftDetailPayload | null>(null);
   const [selectedPageDetail, setSelectedPageDetail] = useState<WikiPageDetailPayload | null>(null);
   const [pageHistory, setPageHistory] = useState<WikiPageHistoryPayload | null>(null);
@@ -2853,6 +2924,18 @@ export default function App() {
   const selectedAdoptionConnector = useMemo(
     () => adoptionImportConnectors.find((item) => item.id === selectedConnectorId) || resolvedConnector || null,
     [adoptionImportConnectors, resolvedConnector, selectedConnectorId],
+  );
+  const selectedAdoptionBusinessProfile = useMemo(
+    () => adoptionBusinessProfiles.find((item) => item.key === selectedBusinessProfileKey) || null,
+    [adoptionBusinessProfiles, selectedBusinessProfileKey],
+  );
+  const effectiveBusinessStarterProfile = useMemo(
+    () => String(selectedAdoptionBusinessProfile?.starter_profile || legacyStarterProfile || "standard").trim().toLowerCase() || "standard",
+    [legacyStarterProfile, selectedAdoptionBusinessProfile],
+  );
+  const effectiveBusinessSpaceKey = useMemo(
+    () => String(selectedAdoptionBusinessProfile?.default_space_key || "operations").trim().toLowerCase() || "operations",
+    [selectedAdoptionBusinessProfile],
   );
 
   const scopedDrafts = useMemo(
@@ -4180,6 +4263,32 @@ export default function App() {
     }
   }, [apiUrl, legacySqlProfile, selectedConnectorId]);
 
+  const loadAdoptionBusinessProfiles = useCallback(async () => {
+    setLoadingAdoptionBusinessProfiles(true);
+    try {
+      const payload = await apiFetch<AdoptionBusinessProfilesPayload>(apiUrl, "/v1/adoption/business-profiles");
+      const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+      setAdoptionBusinessProfiles(profiles);
+      setSelectedBusinessProfileKey((current) => {
+        const currentKey = String(current || "").trim();
+        if (currentKey && profiles.some((item) => item.key === currentKey)) {
+          return currentKey;
+        }
+        if (profiles.some((item) => item.key === "ai_employee_org")) {
+          return "ai_employee_org";
+        }
+        if (profiles.some((item) => item.key === "generic_service_ops")) {
+          return "generic_service_ops";
+        }
+        return String(profiles[0]?.key || "ai_employee_org");
+      });
+    } catch {
+      setAdoptionBusinessProfiles([]);
+    } finally {
+      setLoadingAdoptionBusinessProfiles(false);
+    }
+  }, [apiUrl]);
+
   const resolveConnectorConfig = useCallback(
     async (connectorId: string, fieldOverrides?: Record<string, unknown>) => {
       if (!connectorId.trim()) {
@@ -5169,6 +5278,11 @@ export default function App() {
   }, [historyDrawerOpen, selectedPageSlug]);
 
   useEffect(() => {
+    setStarterBootstrapPreview(null);
+    setAdoptionSyncPresetResult(null);
+  }, [selectedBusinessProfileKey]);
+
+  useEffect(() => {
     void loadGatekeeperConfig();
   }, [loadGatekeeperConfig]);
 
@@ -5187,7 +5301,9 @@ export default function App() {
     if (!projectId.trim()) {
       setLegacyProfiles([]);
       setAdoptionImportConnectors([]);
+      setAdoptionBusinessProfiles([]);
       setSelectedConnectorId(null);
+      setSelectedBusinessProfileKey("ai_employee_org");
       setResolvedConnector(null);
       setLegacySources([]);
       setBootstrapRecommendation(null);
@@ -5195,12 +5311,15 @@ export default function App() {
       setAdoptionEvidenceBundles(null);
       setAdoptionRejections(null);
       setAdoptionKpi(null);
+      setAdoptionSyncPresetResult(null);
+      setStarterBootstrapPreview(null);
       setPolicyQuickLoop(null);
       setEnterpriseReadiness(null);
       return;
     }
     void loadLegacyImportProfiles();
     void loadAdoptionImportConnectors();
+    void loadAdoptionBusinessProfiles();
     void loadLegacyImportSources();
     void loadBootstrapRecommendation();
     void loadAdoptionPipelineVisibility();
@@ -5210,6 +5329,7 @@ export default function App() {
     void loadPolicyQuickLoop();
     void loadEnterpriseReadiness();
   }, [
+    loadAdoptionBusinessProfiles,
     loadAdoptionImportConnectors,
     loadAdoptionEvidenceBundles,
     loadAdoptionKpi,
@@ -5931,17 +6051,19 @@ export default function App() {
             updated_by: reviewer.trim() || "web_ui",
             reviewed_by: reviewer.trim() || "web_ui",
             preset_key: "enterprise_curated_safe",
+            business_profile_key: selectedBusinessProfileKey || undefined,
             dry_run: Boolean(dryRun),
             confirm_project_id: dryRun ? undefined : project,
             apply_bootstrap_profile: true,
             queue_enabled_sources: true,
             run_bootstrap_approve: true,
-            include_starter_pages: !dryRun,
-            starter_profile: "support_ops",
+            include_starter_pages: true,
+            starter_profile: effectiveBusinessStarterProfile,
             include_role_template: false,
           },
           idempotencyKey: randomKey(),
         });
+        setAdoptionSyncPresetResult(payload);
         if (payload.pipeline_visibility) {
           setAdoptionPipeline(payload.pipeline_visibility);
         }
@@ -5992,6 +6114,7 @@ export default function App() {
     },
     [
       apiUrl,
+      effectiveBusinessStarterProfile,
       loadAdoptionEvidenceBundles,
       loadAdoptionKpi,
       loadAdoptionPipelineVisibility,
@@ -6002,6 +6125,7 @@ export default function App() {
       loadWikiPages,
       projectId,
       reviewer,
+      selectedBusinessProfileKey,
     ],
   );
 
@@ -6019,7 +6143,7 @@ export default function App() {
             dry_run: Boolean(dryRun),
             confirm_project_id: dryRun ? undefined : project,
             publish: true,
-            space_key: "operations",
+            space_key: effectiveBusinessSpaceKey,
             include_data_sources_catalog: true,
             include_agent_capability_profile: true,
             include_operational_logic: true,
@@ -6057,10 +6181,10 @@ export default function App() {
         setRunningAgentWikiBootstrap(false);
       }
     },
-    [apiUrl, loadAdoptionEvidenceBundles, loadAdoptionPipelineVisibility, loadWikiPages, projectId, reviewer],
+    [apiUrl, effectiveBusinessSpaceKey, loadAdoptionEvidenceBundles, loadAdoptionPipelineVisibility, loadWikiPages, projectId, reviewer],
   );
 
-  const runFirstRunStarterBootstrap = useCallback(async () => {
+  const runFirstRunStarterBootstrap = useCallback(async (dryRun: boolean) => {
     const project = projectId.trim();
     if (!project) return null;
     setRunningStarterBootstrap(true);
@@ -6070,11 +6194,24 @@ export default function App() {
         body: {
           project_id: project,
           created_by: reviewer.trim() || "web_ui",
-          profile: legacyStarterProfile,
+          profile: effectiveBusinessStarterProfile,
+          business_profile_key: selectedBusinessProfileKey || undefined,
+          dry_run: Boolean(dryRun),
+          confirm_project_id: dryRun ? undefined : project,
+          space_key: effectiveBusinessSpaceKey,
           publish: true,
         },
         idempotencyKey: randomKey(),
       });
+      if (dryRun) {
+        setStarterBootstrapPreview(payload);
+        notifications.show({
+          color: "indigo",
+          title: "Starter preview ready",
+          message: `Planned pages: ${Number(payload.plan?.pages_total || 0)} in ${String(payload.space_key || effectiveBusinessSpaceKey || "operations")}.`,
+        });
+        return payload;
+      }
       const createdCount = Number(payload.summary?.created || 0);
       const existingCount = Number(payload.summary?.existing || 0);
       notifications.show({
@@ -6094,7 +6231,7 @@ export default function App() {
     } finally {
       setRunningStarterBootstrap(false);
     }
-  }, [apiUrl, legacyStarterProfile, loadWikiPages, projectId, reviewer]);
+  }, [apiUrl, effectiveBusinessSpaceKey, effectiveBusinessStarterProfile, loadWikiPages, projectId, reviewer, selectedBusinessProfileKey]);
 
   const saveWikiPageEdit = useCallback(async () => {
     if (!selectedPageSlug) {
@@ -8867,6 +9004,69 @@ export default function App() {
                           <Text size="xs" c="dimmed">
                             Use this route for trusted-source onboarding and batch approvals.
                           </Text>
+                          <Paper withBorder p="xs" radius="md">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="end" wrap="wrap">
+                                <Select
+                                  label="Business profile"
+                                  value={selectedBusinessProfileKey}
+                                  onChange={(value) => setSelectedBusinessProfileKey(String(value || "ai_employee_org"))}
+                                  data={adoptionBusinessProfiles.map((item) => ({
+                                    value: item.key,
+                                    label: item.label || item.key,
+                                  }))}
+                                  disabled={loadingAdoptionBusinessProfiles || adoptionBusinessProfiles.length === 0}
+                                  allowDeselect={false}
+                                  style={{ minWidth: 260 }}
+                                />
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="indigo"
+                                  loading={runningStarterBootstrap}
+                                  onClick={() => void runFirstRunStarterBootstrap(true)}
+                                >
+                                  Preview starter pages
+                                </Button>
+                              </Group>
+                              <Text size="xs" c="dimmed">
+                                {selectedAdoptionBusinessProfile?.description ||
+                                  "Choose the closest deployment profile so starter pages, spaces, and bundle promotion defaults match the business shape."}
+                              </Text>
+                              <Group gap={6} wrap="wrap">
+                                <Badge size="xs" variant="light" color="gray">
+                                  pack {selectedAdoptionBusinessProfile?.synthesis_pack || "generic_ops"}
+                                </Badge>
+                                <Badge size="xs" variant="light" color="blue">
+                                  starter {selectedAdoptionBusinessProfile?.starter_profile || effectiveBusinessStarterProfile}
+                                </Badge>
+                                <Badge size="xs" variant="light" color="teal">
+                                  space {selectedAdoptionBusinessProfile?.default_space_key || effectiveBusinessSpaceKey}
+                                </Badge>
+                                <Badge size="xs" variant="light" color="violet">
+                                  role {selectedAdoptionBusinessProfile?.role_template_key || "none"}
+                                </Badge>
+                              </Group>
+                              {Array.isArray(selectedAdoptionBusinessProfile?.focus) && selectedAdoptionBusinessProfile?.focus?.length ? (
+                                <Text size="xs" c="dimmed">
+                                  Focus: {selectedAdoptionBusinessProfile.focus.join(" • ")}
+                                </Text>
+                              ) : null}
+                              {starterBootstrapPreview?.dry_run ? (
+                                <Text size="xs" c="dimmed">
+                                  Starter preview: {Number(starterBootstrapPreview.plan?.pages_total || 0)} page(s) in{" "}
+                                  {starterBootstrapPreview.space_key || effectiveBusinessSpaceKey}. Sample:{" "}
+                                  {Array.isArray(starterBootstrapPreview.plan?.pages) && starterBootstrapPreview.plan?.pages?.length > 0
+                                    ? starterBootstrapPreview.plan?.pages
+                                        ?.slice(0, 4)
+                                        .map((item) => String(item.slug || item.title || "").trim())
+                                        .filter(Boolean)
+                                        .join(", ")
+                                    : "no pages planned"}.
+                                </Text>
+                              ) : null}
+                            </Stack>
+                          </Paper>
                           <Group gap="xs" wrap="wrap">
                             <Button
                               size="xs"
@@ -9068,6 +9268,19 @@ export default function App() {
                               {agentWikiBootstrapResult.definition_of_done?.agent_page ? "yes" : "no"}, sources{" "}
                               {agentWikiBootstrapResult.definition_of_done?.data_sources_page ? "yes" : "no"}, process{" "}
                               {agentWikiBootstrapResult.definition_of_done?.operational_process_page ? "yes" : "no"}.
+                            </Text>
+                          ) : null}
+                          {adoptionSyncPresetResult ? (
+                            <Text size="xs" c="dimmed">
+                              Sync preset {adoptionSyncPresetResult.dry_run ? "preview" : "run"} for{" "}
+                              {adoptionSyncPresetResult.business_profile?.label || selectedAdoptionBusinessProfile?.label || "selected profile"}: starter{" "}
+                              {adoptionSyncPresetResult.resolved_defaults?.starter_profile || "standard"} • role{" "}
+                              {adoptionSyncPresetResult.resolved_defaults?.role_template_key || "none"} • bundle space{" "}
+                              {adoptionSyncPresetResult.resolved_defaults?.bundle_promotion_space_key || "operations"}
+                              {adoptionSyncPresetResult.starter_pages?.plan?.pages_total
+                                ? ` • starter preview ${Number(adoptionSyncPresetResult.starter_pages?.plan?.pages_total || 0)} page(s)`
+                                : ""}
+                              .
                             </Text>
                           ) : null}
                           {adoptionPipeline ? (
@@ -11648,16 +11861,35 @@ export default function App() {
                   onChange={(event) => setLegacySeedStarterPages(event.currentTarget.checked)}
                 />
                 {legacySeedStarterPages ? (
-                  <Select
-                    label="Starter profile"
-                    value={legacyStarterProfile}
-                    onChange={(value) => setLegacyStarterProfile(value === "support_ops" ? "support_ops" : "standard")}
-                    data={[
-                      { value: "standard", label: "standard" },
-                      { value: "support_ops", label: "support_ops" },
-                    ]}
-                    allowDeselect={false}
-                  />
+                  <Stack gap={6}>
+                    <Select
+                      label="Business profile"
+                      value={selectedBusinessProfileKey}
+                      onChange={(value) => setSelectedBusinessProfileKey(String(value || "ai_employee_org"))}
+                      data={adoptionBusinessProfiles.map((item) => ({
+                        value: item.key,
+                        label: item.label || item.key,
+                      }))}
+                      disabled={loadingAdoptionBusinessProfiles || adoptionBusinessProfiles.length === 0}
+                      allowDeselect={false}
+                    />
+                    <Text size="xs" c="dimmed">
+                      Starter pages will use {selectedAdoptionBusinessProfile?.starter_profile || effectiveBusinessStarterProfile} in{" "}
+                      {selectedAdoptionBusinessProfile?.default_space_key || effectiveBusinessSpaceKey}
+                      {selectedAdoptionBusinessProfile?.role_template_key
+                        ? ` with ${selectedAdoptionBusinessProfile.role_template_key} role template defaults`
+                        : ""}.
+                    </Text>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="indigo"
+                      loading={runningStarterBootstrap}
+                      onClick={() => void runFirstRunStarterBootstrap(true)}
+                    >
+                      Preview starter pages
+                    </Button>
+                  </Stack>
                 ) : null}
               </Stack>
             )}
@@ -11720,7 +11952,7 @@ export default function App() {
                     onClick={async () => {
                       await runRecommendedBootstrapApply();
                       if (legacySeedStarterPages) {
-                        await runFirstRunStarterBootstrap();
+                        await runFirstRunStarterBootstrap(false);
                       }
                       setCoreWorkspaceRoute("wiki");
                       setCoreWorkspaceTab("drafts");

@@ -154,12 +154,13 @@ export interface BulkReviewWikiDraftsOptions {
 export interface AdoptionSyncPresetExecuteOptions {
   updatedBy: string;
   reviewedBy?: string;
+  businessProfileKey?: string;
   dryRun?: boolean;
   applyBootstrapProfile?: boolean;
   queueEnabledSources?: boolean;
   runBootstrapApprove?: boolean;
   includeStarterPages?: boolean;
-  starterProfile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
+  starterProfile?: "standard" | "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | "ai_employee_org" | string;
   includeRoleTemplate?: boolean;
   roleTemplateKey?: "support_ops" | "logistics_ops" | "sales_ops" | "compliance_ops" | string;
   roleTemplateSpaceKey?: string;
