@@ -2042,6 +2042,14 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Dispatch escalation policy", markdown)
         self.assertIn("orders_api", markdown)
         self.assertIn("Manual approval for VIP reroutes", markdown)
+
+    def test_normalize_operating_label_strips_schedule_noise(self) -> None:
+        assert _api_main is not None
+        label = _api_main._normalize_operating_label(
+            "standing_order.logistics.daily_report | cron 0 8 * * * Europe/Moscow",
+            kind="process",
+        )
+        self.assertEqual(label, "daily report")
         self.assertIn("Approve route changes and publish dispatch overrides", markdown)
         self.assertIn("dispatch_overrides_sheet", markdown)
 

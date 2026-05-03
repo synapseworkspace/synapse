@@ -1416,6 +1416,8 @@ def _normalize_operating_label(text: Any, *, kind: str = "generic") -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
+    raw = re.split(r"\s+\|\s+(?:cron|interval|every)\b", raw, maxsplit=1, flags=re.IGNORECASE)[0]
+    raw = re.split(r"\b(?:cron|interval)\b\s+[0-9*/,\s-]+", raw, maxsplit=1, flags=re.IGNORECASE)[0]
     normalized = raw.replace("standing_order.", "").replace("standing-order.", "")
     normalized = re.sub(r"^(logistics|support|sales|compliance)[._-]+", "", normalized, flags=re.IGNORECASE)
     normalized = normalized.replace(":", " ")
@@ -1428,6 +1430,22 @@ def _normalize_operating_label(text: Any, *, kind: str = "generic") -> str:
         normalized = re.sub(r"\bstanding order\b", "", normalized).strip()
         normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized[:160]
+
+
+def _choose_related_guardrails(
+    anchor: str,
+    guardrails: list[str],
+    *,
+    max_items: int = 2,
+    allow_fallback_when_single: bool = True,
+) -> list[str]:
+    return _related_operating_labels(
+        anchor,
+        guardrails,
+        kind="generic",
+        max_items=max_items,
+        allow_fallback_when_single=allow_fallback_when_single,
+    )
 
 
 def _related_operating_labels(
@@ -33561,7 +33579,7 @@ def _build_tooling_map_bootstrap_page(
                 bucket["processes"].add(process[:120])
             for source in _related_operating_labels(tool, sources, kind="source", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
                 bucket["sources"].add(source[:120])
-            for rule in guardrails[:1]:
+            for rule in _choose_related_guardrails(tool, guardrails, max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
                 bucket["guardrails"].add(rule)
 
     lines = [
