@@ -99,7 +99,7 @@ This is what prevents `order_snapshot`/invoice/status streams from flooding wiki
 Assertion-class aware publication:
 1. project policy can define `publish_mode_by_assertion_class` in `routing_policy`;
 2. class mode is resolved before category fallback;
-3. typical default: `incident/event -> human_required`, `policy/process/fact -> conditional`, `preference -> auto_publish`.
+3. typical default: `event -> human_required`, `policy/process/incident/fact -> conditional`, `preference -> auto_publish`.
 
 Auto-promotion from `insight_candidate` to `golden_candidate` can happen when:
 1. source diversity reaches configured threshold;

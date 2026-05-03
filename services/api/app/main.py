@@ -8322,7 +8322,7 @@ _DEFAULT_GATEKEEPER_ROUTING_POLICY: dict[str, Any] = {
         "policy": "conditional",
         "process": "conditional",
         "preference": "auto_publish",
-        "incident": "human_required",
+        "incident": "conditional",
         "event": "human_required",
         "fact": "conditional",
     },
@@ -47486,11 +47486,11 @@ def _build_adoption_safe_mode_target_config(*, current_config: dict[str, Any]) -
         "ingestion_classification_default_deny_classes": ["operational_stream", "pii_sensitive_stream"],
         "publish_mode_by_assertion_class": {
             "policy": "human_required",
-            "process": "human_required",
+            "process": "conditional",
             "preference": "conditional",
-            "incident": "human_required",
+            "incident": "conditional",
             "event": "human_required",
-            "fact": "human_required",
+            "fact": "conditional",
         },
     }
     target_routing = _normalize_gatekeeper_routing_policy(_deep_merge_dict(current_routing, routing_patch))
@@ -47503,11 +47503,13 @@ def _build_adoption_safe_mode_target_config(*, current_config: dict[str, Any]) -
         else {}
     )
     target_publish_mode_by_category = dict(current_publish_mode_by_category)
-    for key in ("policy", "process", "runbook", "incident", "compliance", "security"):
+    for key in ("policy", "compliance", "security", "finance", "legal"):
         target_publish_mode_by_category[key] = "human_required"
+    for key in ("process", "runbook", "incident", "fact"):
+        target_publish_mode_by_category[key] = "conditional"
 
     target_config = {
-        "publish_mode_default": "human_required",
+        "publish_mode_default": "conditional",
         "publish_mode_by_category": target_publish_mode_by_category,
         "auto_publish_min_score": max(0.95, float(current_config.get("auto_publish_min_score", 0.9))),
         "auto_publish_min_sources": max(3, int(current_config.get("auto_publish_min_sources", 3))),
