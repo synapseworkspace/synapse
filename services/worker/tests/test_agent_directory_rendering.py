@@ -1449,6 +1449,38 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Warehouse intake reconciliation", bucket["processes"])
         self.assertIn("reconcile_inventory", bucket["actions"])
 
+    def test_generic_ops_pack_can_infer_source_usage_from_runtime_matrix(self) -> None:
+        assert _api_main is not None
+        inferred = get_synthesis_pack("generic_ops").infer_source_usage_from_matrix(
+            matrix_rows=[
+                {
+                    "agent_id": "logistics-assistant",
+                    "status": "active",
+                    "running_instances": 6,
+                    "responsibilities": ["documents_orders"],
+                    "standing_orders": ["daily report"],
+                    "scheduled_tasks": ["standing_order.logistics.daily_report"],
+                    "allowed_actions": ["outbound_messaging"],
+                    "tools": ["kb_search"],
+                    "scenario_examples": ["driver docs readiness"],
+                    "source_binding_contracts": [
+                        {
+                            "source": "postgres_sql:memory_items:polling",
+                            "capabilities": ["documents_orders"],
+                            "processes": ["daily report"],
+                        }
+                    ],
+                }
+            ],
+            source_ref="postgres_sql:memory_items:polling",
+            source_type="postgres_sql",
+            config={"sql_profile": "memory_items"},
+            normalize_statement_text=_api_main._normalize_statement_text,
+        )
+        self.assertIn("logistics-assistant", inferred["agents"])
+        self.assertIn("documents_orders", inferred["capabilities"])
+        self.assertIn("daily report", inferred["processes"])
+
     def test_render_agent_runbooks_uses_scheduled_task_contracts(self) -> None:
         profile = {
             "agent_id": "logistics-assistant",

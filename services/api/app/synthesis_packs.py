@@ -30,6 +30,16 @@ class SynthesisPack(Protocol):
         normalize_space_key: NormalizeSpaceKeyFn,
     ) -> list[str]: ...
 
+    def infer_source_usage_from_matrix(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_ref: str,
+        source_type: str,
+        config: dict[str, Any],
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]: ...
+
 
 _RUNTIME_SURFACE_SPACE_STOPWORDS = {
     "action",
@@ -339,6 +349,111 @@ class GenericOpsSynthesisPack:
             seen.add(normalized)
             deduped.append(normalized)
         return deduped[:1] or ["operations"]
+
+    def infer_source_usage_from_matrix(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_ref: str,
+        source_type: str,
+        config: dict[str, Any],
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        def _safe_items(value: Any) -> list[Any]:
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return value
+            if isinstance(value, tuple):
+                return list(value)
+            if isinstance(value, set):
+                return list(value)
+            if isinstance(value, dict):
+                return [value]
+            text = str(value or "").strip()
+            return [text] if text else []
+
+        def _looks_like_knowledge_plane_source() -> bool:
+            haystack = " ".join(
+                [
+                    str(source_type or ""),
+                    str(source_ref or ""),
+                    str(config.get("sql_profile") or ""),
+                    str(config.get("sql_profile_table") or ""),
+                    str(config.get("sql_profile_resolved_table") or ""),
+                    str(config.get("sql_table") or ""),
+                ]
+            ).lower()
+            return any(token in haystack for token in ("memory", "ops_kb", "knowledge", "policy", "wiki", "runbook"))
+
+        inferred = {
+            "agents": set(),
+            "scenarios": set(),
+            "capabilities": set(),
+            "actions": set(),
+            "processes": set(),
+            "tools": set(),
+            "contracts": [],
+        }
+        usage_tokens = {
+            normalize_statement_text(str(source_ref or "")),
+            normalize_statement_text(str(source_type or "")),
+            normalize_statement_text(str(config.get("sql_profile") or "")),
+            normalize_statement_text(str(config.get("sql_profile_table") or "")),
+            normalize_statement_text(str(config.get("sql_profile_resolved_table") or "")),
+            normalize_statement_text(str(config.get("sql_table") or "")),
+        }
+        usage_tokens = {token for token in usage_tokens if token}
+        for item in matrix_rows or []:
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(item.get("agent_id") or "").strip()
+            if not agent_id:
+                continue
+            item_sources = {
+                normalize_statement_text(str(value or ""))
+                for value in [*_safe_items(item.get("data_sources")), *_safe_items(item.get("source_bindings"))]
+                if str(value or "").strip()
+            }
+            contract_sources = {
+                normalize_statement_text(str(value or ""))
+                for contract in _safe_items(item.get("tool_contracts"))
+                if isinstance(contract, dict)
+                for value in _safe_items(contract.get("sources"))
+                if str(value or "").strip()
+            }
+            binding_contracts = [contract for contract in _safe_items(item.get("source_binding_contracts")) if isinstance(contract, dict)]
+            binding_sources = {
+                normalize_statement_text(str(contract.get("source") or ""))
+                for contract in binding_contracts
+                if str(contract.get("source") or "").strip()
+            }
+            if usage_tokens.intersection(item_sources.union(contract_sources).union(binding_sources)):
+                inferred["agents"].add(agent_id)
+                inferred["scenarios"].update({str(v).strip() for v in _safe_items(item.get("scenario_examples")) if str(v).strip()})
+                inferred["capabilities"].update({str(v).strip() for v in _safe_items(item.get("responsibilities")) if str(v).strip()})
+                inferred["actions"].update({str(v).strip() for v in _safe_items(item.get("allowed_actions")) if str(v).strip()})
+                inferred["actions"].update({str(v).strip() for v in _safe_items(item.get("observed_actions")) if str(v).strip()})
+                inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("standing_orders")) if str(v).strip()})
+                inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("scheduled_tasks")) if str(v).strip()})
+                inferred["tools"].update({str(v).strip() for v in _safe_items(item.get("tools")) if str(v).strip()})
+                for contract in binding_contracts:
+                    normalized_source = normalize_statement_text(str(contract.get("source") or ""))
+                    if normalized_source and normalized_source in usage_tokens:
+                        inferred["contracts"].append(contract)
+                continue
+            if _looks_like_knowledge_plane_source():
+                runtime_active = bool(item.get("running_instances")) or str(item.get("status") or "").strip().lower() == "active"
+                if runtime_active:
+                    inferred["agents"].add(agent_id)
+                    inferred["capabilities"].update({str(v).strip() for v in _safe_items(item.get("responsibilities")) if str(v).strip()})
+                    inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("standing_orders")) if str(v).strip()})
+                    inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("scheduled_tasks")) if str(v).strip()})
+                    inferred["actions"].update({str(v).strip() for v in _safe_items(item.get("allowed_actions")) if str(v).strip()})
+                    inferred["tools"].update({str(v).strip() for v in _safe_items(item.get("tools")) if str(v).strip()})
+                    inferred["scenarios"].update({str(v).strip() for v in _safe_items(item.get("scenario_examples")) if str(v).strip()})
+                    inferred["contracts"].extend(binding_contracts[:4])
+        return inferred
 
 
 class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
