@@ -1593,6 +1593,229 @@ def _best_contract_matches(
     return [contract for _, contract in ranked[:max_items]]
 
 
+def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    tool_index: dict[str, dict[str, Any]] = {}
+    for item in matrix or []:
+        if not isinstance(item, dict):
+            continue
+        agent_id = str(item.get("agent_id") or "").strip()
+        if not agent_id:
+            continue
+        tools = [str(tool).strip() for tool in (item.get("tools") or []) if str(tool).strip()]
+        registry_tools = [str(tool).strip() for tool in (item.get("registry_tools") or []) if str(tool).strip()]
+        all_tools = list(dict.fromkeys([*tools, *registry_tools]))[:24]
+        tool_contracts = [contract for contract in (item.get("tool_contracts") or []) if isinstance(contract, dict)]
+        capability_contracts = [contract for contract in (item.get("capability_contracts") or []) if isinstance(contract, dict)]
+        source_binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
+        scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+        capabilities = [str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()]
+        processes = [
+            str(v).strip()
+            for v in [*(item.get("standing_orders") or []), *(item.get("observed_actions") or [])]
+            if str(v).strip()
+        ]
+        sources = [
+            str(v).strip()
+            for v in [*(item.get("data_sources") or []), *(item.get("source_bindings") or [])]
+            if str(v).strip()
+        ]
+        guardrails = [
+            *[str(v).strip() for v in (item.get("limits") or []) if str(v).strip()],
+            *[str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()],
+            *[str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()],
+        ]
+        for tool in all_tools:
+            key = tool.lower()
+            bucket = tool_index.get(key)
+            if bucket is None:
+                bucket = {
+                    "tool": tool,
+                    "agents": set(),
+                    "scenarios": set(),
+                    "capabilities": set(),
+                    "processes": set(),
+                    "sources": set(),
+                    "guardrails": set(),
+                    "purposes": set(),
+                    "structured": False,
+                    "provenance": {
+                        "tool_contracts": set(),
+                        "capability_contracts": set(),
+                        "source_bindings": set(),
+                        "fallback_fields": set(),
+                        "fallback_used": False,
+                    },
+                }
+                tool_index[key] = bucket
+            bucket["agents"].add(agent_id)
+            matched_tool_contracts = _best_contract_matches(tool, tool_contracts, alias_fields=("tool", "name"), max_items=3)
+            matched_capability_contracts = _best_contract_matches(
+                tool,
+                capability_contracts,
+                alias_fields=("tools", "name"),
+                max_items=4,
+            )
+            matched_source_binding_contracts = _best_contract_matches(
+                tool,
+                source_binding_contracts,
+                alias_fields=("tools",),
+                max_items=4,
+            )
+            matched_capability_names = {
+                _normalize_operating_label(str(contract.get("name") or ""), kind="capability")
+                for contract in matched_capability_contracts
+                if str(contract.get("name") or "").strip()
+            }
+            for contract in matched_tool_contracts:
+                bucket["structured"] = True
+                tool_name = str(contract.get("tool") or contract.get("name") or "").strip()
+                if tool_name:
+                    bucket["provenance"]["tool_contracts"].add(tool_name[:180])
+                purpose = str(contract.get("purpose") or "").strip()
+                if purpose:
+                    bucket["purposes"].add(purpose[:140])
+                for value in contract.get("scenarios") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        bucket["scenarios"].add(text[:120])
+                for value in contract.get("capabilities") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        normalized = _normalize_operating_label(text, kind="capability")[:120]
+                        bucket["capabilities"].add(normalized)
+                        matched_capability_names.add(normalized)
+                for value in contract.get("sources") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        bucket["sources"].add(_normalize_operating_label(text, kind="source")[:120])
+                for value in contract.get("guardrails") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        bucket["guardrails"].add(text[:120])
+            for contract in matched_capability_contracts:
+                bucket["structured"] = True
+                capability_name = str(contract.get("name") or "").strip()
+                if capability_name:
+                    bucket["capabilities"].add(_normalize_operating_label(capability_name, kind="capability")[:120])
+                    bucket["provenance"]["capability_contracts"].add(capability_name[:180])
+                for scenario in [str(v).strip() for v in (contract.get("scenarios") or []) if str(v).strip()]:
+                    bucket["scenarios"].add(scenario[:120])
+                for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
+                    bucket["processes"].add(_normalize_operating_label(process, kind="process")[:120])
+                for source in [str(v).strip() for v in (contract.get("sources") or []) if str(v).strip()]:
+                    bucket["sources"].add(_normalize_operating_label(source, kind="source")[:120])
+            for contract in source_binding_contracts:
+                contract_capabilities = {
+                    _normalize_operating_label(str(v).strip(), kind="capability")
+                    for v in (contract.get("capabilities") or [])
+                    if str(v).strip()
+                }
+                if contract in matched_source_binding_contracts:
+                    matched = True
+                elif matched_capability_names and contract_capabilities.intersection(matched_capability_names):
+                    matched = True
+                else:
+                    matched = False
+                if not matched:
+                    continue
+                bucket["structured"] = True
+                source_name = str(contract.get("source") or "").strip()
+                if source_name:
+                    bucket["sources"].add(_normalize_operating_label(source_name, kind="source")[:120])
+                    bucket["provenance"]["source_bindings"].add(source_name[:180])
+                for capability in [str(v).strip() for v in (contract.get("capabilities") or []) if str(v).strip()]:
+                    bucket["capabilities"].add(_normalize_operating_label(capability, kind="capability")[:120])
+                for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
+                    bucket["processes"].add(_normalize_operating_label(process, kind="process")[:120])
+            for scenario in _related_operating_labels(tool, scenarios, kind="generic", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                if scenario:
+                    bucket["scenarios"].add(scenario[:120])
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("scenario")
+            for capability in _related_operating_labels(tool, capabilities, kind="capability", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                if capability:
+                    bucket["capabilities"].add(capability[:120])
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("capability")
+            if not bucket["processes"]:
+                for process in _related_operating_labels(tool, processes, kind="process", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                    if process:
+                        bucket["processes"].add(process[:120])
+                        bucket["provenance"]["fallback_used"] = True
+                        bucket["provenance"]["fallback_fields"].add("process")
+            if not bucket["sources"]:
+                for source in _related_operating_labels(tool, sources, kind="source", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                    if source:
+                        bucket["sources"].add(source[:120])
+                        bucket["provenance"]["fallback_used"] = True
+                        bucket["provenance"]["fallback_fields"].add("source")
+            if not bucket["guardrails"]:
+                for rule in _choose_related_guardrails(tool, guardrails, max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                    if rule:
+                        bucket["guardrails"].add(rule)
+                        bucket["provenance"]["fallback_used"] = True
+                        bucket["provenance"]["fallback_fields"].add("guardrail")
+
+    rows: list[dict[str, Any]] = []
+    for _, bucket in sorted(
+        tool_index.items(),
+        key=lambda item: (-len(item[1].get("agents") or []), str(item[1].get("tool") or "").lower()),
+    )[:200]:
+        rows.append(
+            {
+                "tool": str(bucket.get("tool") or ""),
+                "agents": sorted(bucket["agents"])[:4],
+                "capabilities": sorted(bucket["capabilities"])[:4],
+                "purposes": sorted(bucket["purposes"])[:3],
+                "scenarios": sorted(bucket["scenarios"])[:3],
+                "processes": sorted(bucket["processes"])[:3],
+                "sources": sorted(bucket["sources"])[:3],
+                "guardrails": sorted(bucket["guardrails"])[:3],
+                "structured": bool(bucket.get("structured")),
+                "provenance": {
+                    "tool_contracts": sorted(bucket["provenance"]["tool_contracts"])[:4],
+                    "capability_contracts": sorted(bucket["provenance"]["capability_contracts"])[:4],
+                    "source_bindings": sorted(bucket["provenance"]["source_bindings"])[:4],
+                    "fallback_fields": sorted(bucket["provenance"]["fallback_fields"])[:4],
+                    "fallback_used": bool(bucket["provenance"]["fallback_used"]),
+                },
+            }
+        )
+    return rows
+
+
+def _summarize_tooling_map_rows(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    total = len(rows)
+    with_process_or_source = 0
+    missing_process_or_source = 0
+    fallback_only = 0
+    structured_rows = 0
+    for row in rows:
+        processes = [str(v).strip() for v in (row.get("processes") or []) if str(v).strip()]
+        sources = [str(v).strip() for v in (row.get("sources") or []) if str(v).strip()]
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        if processes or sources:
+            with_process_or_source += 1
+        else:
+            missing_process_or_source += 1
+        if bool(row.get("structured")):
+            structured_rows += 1
+        if bool(provenance.get("fallback_used")) and not (
+            (provenance.get("tool_contracts") or [])
+            or (provenance.get("capability_contracts") or [])
+            or (provenance.get("source_bindings") or [])
+        ):
+            fallback_only += 1
+    return {
+        "rows_total": total,
+        "rows_with_process_or_source": with_process_or_source,
+        "rows_missing_process_or_source": missing_process_or_source,
+        "structured_rows": structured_rows,
+        "fallback_only_rows": fallback_only,
+    }
+
+
 def _section_heading_from_key(section_key: str) -> str:
     return " ".join(chunk.capitalize() for chunk in section_key.replace("_", " ").split())
 
@@ -33561,181 +33784,7 @@ def _build_tooling_map_bootstrap_page(
             matrix = _build_agent_directory_profile_fallback_matrix(cur, project_id=project_id, max_agents=max_agents)
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
-
-    tool_index: dict[str, dict[str, Any]] = {}
-    for item in matrix:
-        agent_id = str(item.get("agent_id") or "").strip()
-        if not agent_id:
-            continue
-        tools = [str(tool).strip() for tool in (item.get("tools") or []) if str(tool).strip()]
-        registry_tools = [str(tool).strip() for tool in (item.get("registry_tools") or []) if str(tool).strip()]
-        all_tools = list(dict.fromkeys([*tools, *registry_tools]))[:24]
-        tool_contracts = [contract for contract in (item.get("tool_contracts") or []) if isinstance(contract, dict)]
-        capability_contracts = [contract for contract in (item.get("capability_contracts") or []) if isinstance(contract, dict)]
-        source_binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
-        scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
-        capabilities = [str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()]
-        processes = [
-            str(v).strip()
-            for v in [*(item.get("standing_orders") or []), *(item.get("observed_actions") or [])]
-            if str(v).strip()
-        ]
-        sources = [
-            str(v).strip()
-            for v in [*(item.get("data_sources") or []), *(item.get("source_bindings") or [])]
-            if str(v).strip()
-        ]
-        guardrails = [
-            *[str(v).strip() for v in (item.get("limits") or []) if str(v).strip()],
-            *[str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()],
-            *[str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()],
-        ]
-        for tool in all_tools:
-            key = tool.lower()
-            bucket = tool_index.get(key)
-            if bucket is None:
-                bucket = {
-                    "tool": tool,
-                    "agents": set(),
-                    "scenarios": set(),
-                    "capabilities": set(),
-                    "processes": set(),
-                    "sources": set(),
-                    "guardrails": set(),
-                    "purposes": set(),
-                    "structured": False,
-                }
-                tool_index[key] = bucket
-            bucket["agents"].add(agent_id)
-            matched_tool_contracts = _best_contract_matches(tool, tool_contracts, alias_fields=("tool", "name"), max_items=3)
-            matched_capability_contracts = _best_contract_matches(
-                tool,
-                capability_contracts,
-                alias_fields=("tools", "name"),
-                max_items=4,
-            )
-            matched_source_binding_contracts = _best_contract_matches(
-                tool,
-                source_binding_contracts,
-                alias_fields=("tools",),
-                max_items=4,
-            )
-            matched_capability_names = {
-                _normalize_operating_label(str(contract.get("name") or ""), kind="capability")
-                for contract in matched_capability_contracts
-                if str(contract.get("name") or "").strip()
-            }
-            for contract in matched_tool_contracts:
-                bucket["structured"] = True
-                purpose = str(contract.get("purpose") or "").strip()
-                if purpose:
-                    bucket["purposes"].add(purpose[:140])
-                for value in contract.get("scenarios") or []:
-                    text = str(value or "").strip()
-                    if text:
-                        bucket["scenarios"].add(text[:120])
-                for value in contract.get("capabilities") or []:
-                    text = str(value or "").strip()
-                    if text:
-                        normalized = _normalize_operating_label(text, kind="capability")[:120]
-                        bucket["capabilities"].add(normalized)
-                        matched_capability_names.add(normalized)
-                for value in contract.get("sources") or []:
-                    text = str(value or "").strip()
-                    if text:
-                        bucket["sources"].add(_normalize_operating_label(text, kind="source")[:120])
-                for value in contract.get("guardrails") or []:
-                    text = str(value or "").strip()
-                    if text:
-                        bucket["guardrails"].add(text[:120])
-            for contract in matched_capability_contracts:
-                bucket["structured"] = True
-                capability_name = str(contract.get("name") or "").strip()
-                if capability_name:
-                    bucket["capabilities"].add(_normalize_operating_label(capability_name, kind="capability")[:120])
-                for scenario in [str(v).strip() for v in (contract.get("scenarios") or []) if str(v).strip()]:
-                    bucket["scenarios"].add(scenario[:120])
-                for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
-                    bucket["processes"].add(_normalize_operating_label(process, kind="process")[:120])
-                for source in [str(v).strip() for v in (contract.get("sources") or []) if str(v).strip()]:
-                    bucket["sources"].add(_normalize_operating_label(source, kind="source")[:120])
-            for contract in source_binding_contracts:
-                contract_capabilities = {
-                    _normalize_operating_label(str(v).strip(), kind="capability")
-                    for v in (contract.get("capabilities") or [])
-                    if str(v).strip()
-                }
-                if contract in matched_source_binding_contracts:
-                    matched = True
-                elif matched_capability_names and contract_capabilities.intersection(matched_capability_names):
-                    matched = True
-                else:
-                    matched = False
-                if not matched:
-                    continue
-                bucket["structured"] = True
-                source_name = str(contract.get("source") or "").strip()
-                if source_name:
-                    bucket["sources"].add(_normalize_operating_label(source_name, kind="source")[:120])
-                for capability in [str(v).strip() for v in (contract.get("capabilities") or []) if str(v).strip()]:
-                    bucket["capabilities"].add(_normalize_operating_label(capability, kind="capability")[:120])
-                for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
-                    bucket["processes"].add(_normalize_operating_label(process, kind="process")[:120])
-        for contract in tool_contracts:
-            tool_name = str(contract.get("tool") or contract.get("name") or "").strip()
-            if not tool_name:
-                continue
-            key = tool_name.lower()
-            bucket = tool_index.get(key)
-            if bucket is None:
-                bucket = {
-                    "tool": tool_name,
-                    "agents": set(),
-                    "scenarios": set(),
-                    "capabilities": set(),
-                    "processes": set(),
-                    "sources": set(),
-                    "guardrails": set(),
-                    "purposes": set(),
-                    "structured": False,
-                }
-                tool_index[key] = bucket
-            bucket["agents"].add(agent_id)
-            bucket["structured"] = True
-            purpose = str(contract.get("purpose") or "").strip()
-            if purpose:
-                bucket["purposes"].add(purpose[:140])
-            for value in contract.get("scenarios") or []:
-                text = str(value or "").strip()
-                if text:
-                    bucket["scenarios"].add(text[:120])
-            for value in contract.get("capabilities") or []:
-                text = str(value or "").strip()
-                if text:
-                    bucket["capabilities"].add(_normalize_operating_label(text, kind="capability")[:120])
-            for value in contract.get("sources") or []:
-                text = str(value or "").strip()
-                if text:
-                    bucket["sources"].add(_normalize_operating_label(text, kind="source")[:120])
-            for value in contract.get("guardrails") or []:
-                text = str(value or "").strip()
-                if text:
-                    bucket["guardrails"].add(text[:120])
-        for tool in all_tools:
-            key = tool.lower()
-            bucket = tool_index.get(key)
-            if bucket is None or bucket.get("structured"):
-                continue
-            for scenario in _related_operating_labels(tool, scenarios, kind="generic", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                bucket["scenarios"].add(scenario[:120])
-            for capability in _related_operating_labels(tool, capabilities, kind="capability", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                bucket["capabilities"].add(capability[:120])
-            for process in _related_operating_labels(tool, processes, kind="process", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                bucket["processes"].add(process[:120])
-            for source in _related_operating_labels(tool, sources, kind="source", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                bucket["sources"].add(source[:120])
-            for rule in _choose_related_guardrails(tool, guardrails, max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                bucket["guardrails"].add(rule)
+    tooling_rows = _build_tooling_map_rows_from_matrix(matrix)
 
     lines = [
         "# Tooling Map",
@@ -33745,21 +33794,25 @@ def _build_tooling_map_bootstrap_page(
         "|---|---|---|---|---|",
     ]
     tooling_extensions = synthesis_pack.build_tooling_map_extensions(matrix_rows=matrix)
-    if tool_index:
-        for _, bucket in sorted(
-            tool_index.items(),
-            key=lambda item: (-len(item[1].get("agents") or []), str(item[1].get("tool") or "").lower()),
-        )[:200]:
-            agents = ", ".join(sorted(bucket["agents"])[:4]) if bucket["agents"] else "n/a"
+    if tooling_rows:
+        for row in tooling_rows:
+            agents = ", ".join([str(item).strip() for item in (row.get("agents") or []) if str(item).strip()][:4]) or "n/a"
             capability_or_scenario = "; ".join(
-                [*sorted(bucket["capabilities"])[:1], *sorted(bucket["purposes"])[:1], *sorted(bucket["scenarios"])[:1]]
+                [
+                    *[str(item).strip() for item in (row.get("capabilities") or []) if str(item).strip()][:1],
+                    *[str(item).strip() for item in (row.get("purposes") or []) if str(item).strip()][:1],
+                    *[str(item).strip() for item in (row.get("scenarios") or []) if str(item).strip()][:1],
+                ]
             ) or "n/a"
             process_or_sources = "; ".join(
-                [*sorted(bucket["processes"])[:1], *sorted(bucket["sources"])[:1]]
+                [
+                    *[str(item).strip() for item in (row.get("processes") or []) if str(item).strip()][:1],
+                    *[str(item).strip() for item in (row.get("sources") or []) if str(item).strip()][:1],
+                ]
             ) or "n/a"
-            guardrails = "; ".join(sorted(bucket["guardrails"])[:2]) if bucket["guardrails"] else "n/a"
+            guardrails = "; ".join([str(item).strip() for item in (row.get("guardrails") or []) if str(item).strip()][:2]) or "n/a"
             lines.append(
-                f"| `{bucket['tool']}` | {agents} | {capability_or_scenario} | {process_or_sources} | {guardrails} |"
+                f"| `{str(row.get('tool') or '')}` | {agents} | {capability_or_scenario} | {process_or_sources} | {guardrails} |"
             )
     else:
         empty_hint = str(tooling_extensions.get("empty_hint") or "").strip() or "Runtime tool discovery pending"
@@ -33791,6 +33844,50 @@ def _build_tooling_map_bootstrap_page(
             "markdown": "\n".join(lines),
         }
     ]
+
+
+@app.get("/v1/adoption/tooling-map/diagnostics")
+def get_adoption_tooling_map_diagnostics(
+    project_id: str,
+    space_key: str = Query(default="operations", min_length=1, max_length=120),
+    limit: int = Query(default=100, ge=1, le=300),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            matrix: list[dict[str, Any]] = []
+            if _agent_directory_table_exists_from_cursor(cur):
+                matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(20, min(200, limit * 2)))
+                if not matrix:
+                    matrix = _build_agent_directory_profile_fallback_matrix(
+                        cur,
+                        project_id=project_id,
+                        max_agents=max(20, min(200, limit * 2)),
+                    )
+            if not matrix:
+                matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(20, min(200, limit * 2)))
+    rows = _build_tooling_map_rows_from_matrix(matrix)
+    diagnostics_rows = []
+    for row in rows[:limit]:
+        diagnostics_rows.append(
+            {
+                "tool": row.get("tool"),
+                "agents": row.get("agents"),
+                "capabilities": row.get("capabilities"),
+                "purposes": row.get("purposes"),
+                "scenarios": row.get("scenarios"),
+                "processes": row.get("processes"),
+                "sources": row.get("sources"),
+                "guardrails": row.get("guardrails"),
+                "structured": row.get("structured"),
+                "provenance": row.get("provenance"),
+            }
+        )
+    return {
+        "project_id": project_id,
+        "space_key": _normalize_space_key(space_key),
+        "summary": _summarize_tooling_map_rows(rows),
+        "rows": diagnostics_rows,
+    }
 
 
 def _build_process_playbooks_bootstrap_page(

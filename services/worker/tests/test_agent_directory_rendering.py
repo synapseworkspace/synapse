@@ -16,6 +16,8 @@ try:
         _build_data_sources_catalog_pages,
         _build_agent_capability_bootstrap_page,
         _build_tooling_map_bootstrap_page,
+        _build_tooling_map_rows_from_matrix,
+        _summarize_tooling_map_rows,
         _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
         _build_project_wiki_richness_benchmark_from_rows,
@@ -68,6 +70,8 @@ except Exception:  # pragma: no cover
     _build_data_sources_catalog_pages = None
     _build_agent_capability_bootstrap_page = None
     _build_tooling_map_bootstrap_page = None
+    _build_tooling_map_rows_from_matrix = None
+    _summarize_tooling_map_rows = None
     _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
     _build_project_wiki_richness_benchmark_from_rows = None
@@ -115,6 +119,8 @@ except Exception:  # pragma: no cover
     or _build_data_sources_catalog_pages is None
     or _build_agent_capability_bootstrap_page is None
     or _build_tooling_map_bootstrap_page is None
+    or _build_tooling_map_rows_from_matrix is None
+    or _summarize_tooling_map_rows is None
     or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
     or _build_project_wiki_richness_benchmark_from_rows is None
@@ -2143,6 +2149,64 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(weak, 0)
         self.assertGreaterEqual(strong, 80)
         self.assertGreaterEqual(normalized, 80)
+
+    def test_tooling_map_rows_include_provenance_and_summary(self) -> None:
+        assert _build_tooling_map_rows_from_matrix is not None
+        assert _summarize_tooling_map_rows is not None
+
+        rows = _build_tooling_map_rows_from_matrix(
+            [
+                {
+                    "agent_id": "logistics-assistant",
+                    "tools": ["erp_routes_slice", "driver_economics_for_day"],
+                    "registry_tools": [],
+                    "scenario_examples": ["dispatch route review"],
+                    "responsibilities": ["driver_vehicle", "driver_economics"],
+                    "standing_orders": ["standing_order.logistics.erp_cargo_notes_sync"],
+                    "observed_actions": ["reconcile cargo notes with ERP state"],
+                    "data_sources": ["driver_cargo_state_latest"],
+                    "source_bindings": ["driver_economy_daily_latest"],
+                    "limits": ["controlled exec blocked by role policy"],
+                    "approval_rules": ["browser automation requires confirmation"],
+                    "escalation_rules": ["Escalate ERP write failures to dispatcher"],
+                    "tool_contracts": [
+                        {
+                            "tool": "erp_routes_slice",
+                            "purpose": "Inspect ERP route and cargo slice for dispatch changes",
+                            "sources": ["driver_cargo_state_latest"],
+                            "capabilities": ["route_reschedule_request"],
+                            "guardrails": ["controlled exec blocked by role policy"],
+                        }
+                    ],
+                    "capability_contracts": [
+                        {
+                            "name": "driver_economics",
+                            "tools": ["driver economics for day"],
+                            "processes": ["standing_order.logistics.driver_economy_sheet"],
+                            "sources": ["driver_economy_daily_latest"],
+                        }
+                    ],
+                    "source_binding_contracts": [
+                        {
+                            "source": "driver_economy_daily_latest",
+                            "agent_id": "logistics-assistant",
+                            "capabilities": ["driver_economics"],
+                            "processes": ["standing_order.logistics.driver_economy_sheet"],
+                            "tools": ["driver_economics_for_day"],
+                        }
+                    ],
+                }
+            ]
+        )
+        row_by_tool = {str(row.get("tool")): row for row in rows}
+        erp_row = row_by_tool["erp_routes_slice"]
+        econ_row = row_by_tool["driver_economics_for_day"]
+        self.assertIn("erp_routes_slice", erp_row["provenance"]["tool_contracts"])
+        self.assertIn("driver_economics", econ_row["provenance"]["capability_contracts"])
+        self.assertIn("driver_economy_daily_latest", econ_row["provenance"]["source_bindings"])
+        summary = _summarize_tooling_map_rows(rows)
+        self.assertEqual(summary["rows_total"], 2)
+        self.assertGreaterEqual(summary["rows_with_process_or_source"], 2)
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
