@@ -8,6 +8,8 @@ NormalizeItemsFn = Callable[[Any], list[str]]
 ExtractRuntimeItemsFn = Callable[[list[Any], tuple[str, ...], int], list[str]]
 NormalizeStatementTextFn = Callable[[str], str]
 NormalizeSpaceKeyFn = Callable[[Any], str]
+SpaceSlugFn = Callable[[str, str], str]
+BuildDecisionsLogSeedPageFn = Callable[[str], dict[str, str]]
 
 
 class SynthesisPack(Protocol):
@@ -39,6 +41,30 @@ class SynthesisPack(Protocol):
         config: dict[str, Any],
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]: ...
+
+    def default_space_for_starter_profile(self, profile: str) -> str: ...
+
+    def wiki_space_template_catalog(self) -> list[dict[str, Any]]: ...
+
+    def build_first_run_starter_pages(
+        self,
+        profile: str,
+        *,
+        space_key: str | None,
+        include_decisions_log: bool,
+        normalize_space_key: NormalizeSpaceKeyFn,
+        space_slug: SpaceSlugFn,
+        build_decisions_log_seed_page: BuildDecisionsLogSeedPageFn,
+    ) -> list[dict[str, str]]: ...
+
+    def build_role_template_pages(
+        self,
+        template_key: str,
+        *,
+        space_key: str | None,
+        normalize_space_key: NormalizeSpaceKeyFn,
+        space_slug: SpaceSlugFn,
+    ) -> list[dict[str, str]]: ...
 
 
 _RUNTIME_SURFACE_SPACE_STOPWORDS = {
@@ -134,6 +160,53 @@ _RUNTIME_SURFACE_PREFERRED_SPACE_TOKENS = {
     "support",
     "warehouse",
 }
+
+_STARTER_PROFILE_DEFAULT_SPACES = {
+    "standard": "operations",
+    "support_ops": "support",
+    "logistics_ops": "logistics",
+    "sales_ops": "sales",
+    "compliance_ops": "compliance",
+    "ai_employee_org": "operations",
+}
+
+_WIKI_SPACE_TEMPLATE_CATALOG = [
+    {
+        "template_key": "support_ops",
+        "label": "Support Ops",
+        "default_space_key": "support",
+        "description": "Triage, escalation, and customer communication playbooks.",
+        "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+    },
+    {
+        "template_key": "logistics_ops",
+        "label": "Logistics Ops",
+        "default_space_key": "logistics",
+        "description": "Dispatch rules, access procedures, and incident handling.",
+        "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+    },
+    {
+        "template_key": "sales_ops",
+        "label": "Sales Ops",
+        "default_space_key": "sales",
+        "description": "Qualification rules, stage playbooks, and handoff contracts.",
+        "policy": {"write_mode": "open", "comment_mode": "open", "review_assignment_required": False},
+    },
+    {
+        "template_key": "compliance_ops",
+        "label": "Compliance Ops",
+        "default_space_key": "compliance",
+        "description": "Control catalog, evidence workflow, and audit readiness.",
+        "policy": {"write_mode": "owners_only", "comment_mode": "owners_only", "review_assignment_required": True},
+    },
+    {
+        "template_key": "ai_employee_org",
+        "label": "AI Employee Org",
+        "default_space_key": "operations",
+        "description": "Opinionated bootstrap for agent-driven organizations: profiles, tools, tasks, HITL, and integrations.",
+        "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+    },
+]
 
 
 def _extract_runtime_surface_space_candidates(*values: Any, normalize_space_key: NormalizeSpaceKeyFn) -> list[str]:
@@ -454,6 +527,371 @@ class GenericOpsSynthesisPack:
                     inferred["scenarios"].update({str(v).strip() for v in _safe_items(item.get("scenario_examples")) if str(v).strip()})
                     inferred["contracts"].extend(binding_contracts[:4])
         return inferred
+
+    def default_space_for_starter_profile(self, profile: str) -> str:
+        return _STARTER_PROFILE_DEFAULT_SPACES.get(str(profile or "").strip().lower(), "operations")
+
+    def wiki_space_template_catalog(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in _WIKI_SPACE_TEMPLATE_CATALOG]
+
+    def build_first_run_starter_pages(
+        self,
+        profile: str,
+        *,
+        space_key: str | None,
+        include_decisions_log: bool,
+        normalize_space_key: NormalizeSpaceKeyFn,
+        space_slug: SpaceSlugFn,
+        build_decisions_log_seed_page: BuildDecisionsLogSeedPageFn,
+    ) -> list[dict[str, str]]:
+        normalized_profile = str(profile or "").strip().lower() or "standard"
+        space = normalize_space_key(space_key or "") or self.default_space_for_starter_profile(normalized_profile)
+        pages: list[dict[str, str]] = [
+            {
+                "title": "Agent Profile",
+                "slug": space_slug(space, "agent-profile"),
+                "page_type": "agent_profile",
+                "markdown": (
+                    "# Agent Profile\n\n"
+                    "## Mission\n"
+                    "- What this agent is responsible for.\n\n"
+                    "## Inputs\n"
+                    "- Systems, queues, or channels the agent reads.\n\n"
+                    "## Tools\n"
+                    "- Tools/API integrations used in execution.\n\n"
+                    "## Escalation\n"
+                    "- Conditions that require human review.\n"
+                ),
+            },
+            {
+                "title": "Data Map",
+                "slug": space_slug(space, "data-map"),
+                "page_type": "data_map",
+                "markdown": (
+                    "# Data Map\n\n"
+                    "## Sources of Truth\n"
+                    "- Core systems and ownership.\n\n"
+                    "## Operational Signals\n"
+                    "- Which signals are durable knowledge vs runtime noise.\n\n"
+                    "## Sync Contracts\n"
+                    "- Connector cadence, cursor strategy, and replay guarantees.\n"
+                ),
+            },
+            {
+                "title": "Operational Runbook",
+                "slug": space_slug(space, "operational-runbook"),
+                "page_type": "runbook",
+                "markdown": (
+                    "# Operational Runbook\n\n"
+                    "## If/Then Procedures\n"
+                    "- If condition X happens, do action Y.\n\n"
+                    "## Incident Escalation\n"
+                    "- Owner, SLA, and communication channel.\n\n"
+                    "## Known Exceptions\n"
+                    "- Approved exceptions and expiration dates.\n"
+                ),
+            },
+        ]
+        if normalized_profile == "support_ops":
+            pages.append(
+                {
+                    "title": "Support Escalation Matrix",
+                    "slug": space_slug(space, "support-escalation-matrix"),
+                    "page_type": "runbook",
+                    "markdown": (
+                        "# Support Escalation Matrix\n\n"
+                        "## Triage Levels\n"
+                        "- P1/P2/P3 definitions and handling windows.\n\n"
+                        "## Routing Rules\n"
+                        "- Which queue and owner for each issue type.\n\n"
+                        "## Customer Communication\n"
+                        "- Message templates and update cadence.\n"
+                    ),
+                }
+            )
+        if normalized_profile == "logistics_ops":
+            pages.append(
+                {
+                    "title": "Dispatch Escalation Policy",
+                    "slug": space_slug(space, "dispatch-escalation-policy"),
+                    "page_type": "policy",
+                    "markdown": (
+                        "# Dispatch Escalation Policy\n\n"
+                        "## Trigger Conditions\n"
+                        "- Late pickup, access failure, or route dead-end.\n\n"
+                        "## Required Actions\n"
+                        "- Notify dispatch channel, update ETA, and create incident task.\n"
+                    ),
+                }
+            )
+        if normalized_profile == "sales_ops":
+            pages.append(
+                {
+                    "title": "Deal Stage Playbook",
+                    "slug": space_slug(space, "deal-stage-playbook"),
+                    "page_type": "runbook",
+                    "markdown": (
+                        "# Deal Stage Playbook\n\n"
+                        "## Qualification\n"
+                        "- Mandatory checks before stage transition.\n\n"
+                        "## Handoff\n"
+                        "- Required context for support/onboarding transfer.\n"
+                    ),
+                }
+            )
+        if normalized_profile == "compliance_ops":
+            pages.append(
+                {
+                    "title": "Compliance Control Map",
+                    "slug": space_slug(space, "compliance-control-map"),
+                    "page_type": "policy",
+                    "markdown": (
+                        "# Compliance Control Map\n\n"
+                        "## Control Catalog\n"
+                        "- Controls, owners, and evidence sources.\n\n"
+                        "## Audit Trail\n"
+                        "- Review cadence and exception workflow.\n"
+                    ),
+                }
+            )
+        if normalized_profile == "ai_employee_org":
+            pages.extend(
+                [
+                    {
+                        "title": "Tool Catalog",
+                        "slug": space_slug(space, "tool-catalog"),
+                        "page_type": "operations",
+                        "markdown": (
+                            "# Tool Catalog\n\n"
+                            "## Registered Tools\n"
+                            "- Tool name, purpose, and owning agent.\n\n"
+                            "## Guardrails\n"
+                            "- Approval boundaries, rate limits, and unsafe actions.\n\n"
+                            "## Failure Modes\n"
+                            "- Known failure cases and recovery workflow.\n"
+                        ),
+                    },
+                    {
+                        "title": "Scheduled Tasks",
+                        "slug": space_slug(space, "scheduled-tasks"),
+                        "page_type": "operations",
+                        "markdown": (
+                            "# Scheduled Tasks\n\n"
+                            "## Cron / Automations\n"
+                            "- Recurring jobs, trigger cadence, and owning agent.\n\n"
+                            "## Output Contracts\n"
+                            "- Which pages, tasks, or systems each automation updates.\n\n"
+                            "## Escalation\n"
+                            "- What to do if the scheduled task misses SLA.\n"
+                        ),
+                    },
+                    {
+                        "title": "Human-in-the-Loop Rules",
+                        "slug": space_slug(space, "human-in-the-loop-rules"),
+                        "page_type": "policy",
+                        "markdown": (
+                            "# Human-in-the-Loop Rules\n\n"
+                            "## Approval Boundaries\n"
+                            "- Which actions require explicit human approval.\n\n"
+                            "## Escalation Triggers\n"
+                            "- Risk, ambiguity, or policy conditions that force handoff.\n\n"
+                            "## Override Logging\n"
+                            "- How human overrides are recorded and reused.\n"
+                        ),
+                    },
+                    {
+                        "title": "Integrations Map",
+                        "slug": space_slug(space, "integrations-map"),
+                        "page_type": "operations",
+                        "markdown": (
+                            "# Integrations Map\n\n"
+                            "## Connected Systems\n"
+                            "- APIs, queues, docs, databases, and external services.\n\n"
+                            "## Data Flow\n"
+                            "- Which agent reads/writes each integration.\n\n"
+                            "## Reliability Notes\n"
+                            "- Freshness, fallback, and outage behavior.\n"
+                        ),
+                    },
+                    {
+                        "title": "Escalation Rules",
+                        "slug": space_slug(space, "escalation-rules"),
+                        "page_type": "policy",
+                        "markdown": (
+                            "# Escalation Rules\n\n"
+                            "## Trigger Conditions\n"
+                            "- When agents must escalate instead of acting autonomously.\n\n"
+                            "## Owners & Channels\n"
+                            "- Who gets paged and where.\n\n"
+                            "## Resolution Expectations\n"
+                            "- SLA, rollback, and follow-up capture requirements.\n"
+                        ),
+                    },
+                ]
+            )
+        if include_decisions_log:
+            pages.append(build_decisions_log_seed_page(space))
+        return pages
+
+    def build_role_template_pages(
+        self,
+        template_key: str,
+        *,
+        space_key: str | None,
+        normalize_space_key: NormalizeSpaceKeyFn,
+        space_slug: SpaceSlugFn,
+    ) -> list[dict[str, str]]:
+        normalized_key = str(template_key or "").strip().lower()
+        template = next((item for item in _WIKI_SPACE_TEMPLATE_CATALOG if str(item.get("template_key") or "").strip().lower() == normalized_key), {})
+        space = normalize_space_key(space_key or "") or normalize_space_key(template.get("default_space_key") or "") or "operations"
+        if normalized_key == "support_ops":
+            return [
+                {
+                    "title": "Ticket Triage Playbook",
+                    "slug": space_slug(space, "ticket-triage-playbook"),
+                    "page_type": "runbook",
+                    "markdown": "# Ticket Triage Playbook\n\n## Intake\n- Capture issue class, severity, and impact.\n\n## Decision\n- Route by SLA and ownership matrix.\n",
+                },
+                {
+                    "title": "Support Escalation Rules",
+                    "slug": space_slug(space, "support-escalation-rules"),
+                    "page_type": "policy",
+                    "markdown": "# Support Escalation Rules\n\n## Escalate When\n- SLA risk or repeated customer impact.\n\n## Notify\n- On-call + owner channel with incident reference.\n",
+                },
+                {
+                    "title": "Customer Communication Standard",
+                    "slug": space_slug(space, "customer-communication-standard"),
+                    "page_type": "policy",
+                    "markdown": "# Customer Communication Standard\n\n## Cadence\n- Provide periodic updates by severity level.\n\n## Message Quality\n- Include impact, ETA, and next checkpoint.\n",
+                },
+            ]
+        if normalized_key == "logistics_ops":
+            return [
+                {
+                    "title": "Dispatch Decision Runbook",
+                    "slug": space_slug(space, "dispatch-decision-runbook"),
+                    "page_type": "runbook",
+                    "markdown": "# Dispatch Decision Runbook\n\n## Route Validation\n- Validate access constraints and fallback routes.\n\n## Escalation\n- Open incident when route safety or SLA is at risk.\n",
+                },
+                {
+                    "title": "Warehouse Exception Flow",
+                    "slug": space_slug(space, "warehouse-exception-flow"),
+                    "page_type": "runbook",
+                    "markdown": "# Warehouse Exception Flow\n\n## Exceptions\n- Quarantine, ramp outage, stock mismatch.\n\n## Required Actions\n- Re-route, notify, and record mitigation.\n",
+                },
+                {
+                    "title": "Delivery SLA Escalation",
+                    "slug": space_slug(space, "delivery-sla-escalation"),
+                    "page_type": "policy",
+                    "markdown": "# Delivery SLA Escalation\n\n## Trigger\n- ETA drift above agreed threshold.\n\n## Action\n- Notify owner, customer, and dispatch channel.\n",
+                },
+            ]
+        if normalized_key == "sales_ops":
+            return [
+                {
+                    "title": "Lead Qualification Policy",
+                    "slug": space_slug(space, "lead-qualification-policy"),
+                    "page_type": "policy",
+                    "markdown": "# Lead Qualification Policy\n\n## Required Signals\n- Budget, timeline, stakeholder readiness.\n",
+                },
+                {
+                    "title": "Deal Stage Playbook",
+                    "slug": space_slug(space, "deal-stage-playbook"),
+                    "page_type": "runbook",
+                    "markdown": "# Deal Stage Playbook\n\n## Stage Gates\n- Exit criteria and next action for each stage.\n",
+                },
+                {
+                    "title": "Sales-to-Support Handoff",
+                    "slug": space_slug(space, "sales-to-support-handoff"),
+                    "page_type": "runbook",
+                    "markdown": "# Sales-to-Support Handoff\n\n## Required Context\n- Contract scope, commitments, and success criteria.\n",
+                },
+            ]
+        if normalized_key == "ai_employee_org":
+            return [
+                {
+                    "title": "Agent Directory Index",
+                    "slug": space_slug(space, "agent-directory-index"),
+                    "page_type": "agent_profile",
+                    "markdown": (
+                        "# Agent Directory Index\n\n"
+                        "## Agent Roster\n"
+                        "- Each connected agent, role, status, and owning team.\n\n"
+                        "## Capability Coverage\n"
+                        "- Which workstreams are automated, assisted, or human-only.\n\n"
+                        "## Handoff Topology\n"
+                        "- Where agents hand off to other agents or humans.\n"
+                    ),
+                },
+                {
+                    "title": "Tool Catalog",
+                    "slug": space_slug(space, "tool-catalog"),
+                    "page_type": "operations",
+                    "markdown": (
+                        "# Tool Catalog\n\n"
+                        "## Registered Tools\n"
+                        "- Tool, owner, purpose, and safety boundary.\n\n"
+                        "## Guardrails\n"
+                        "- Rate limits, approval rules, and rollback path.\n"
+                    ),
+                },
+                {
+                    "title": "Scheduled Tasks",
+                    "slug": space_slug(space, "scheduled-tasks"),
+                    "page_type": "operations",
+                    "markdown": (
+                        "# Scheduled Tasks\n\n"
+                        "## Automation Calendar\n"
+                        "- Recurring jobs, cadence, and owning agent.\n\n"
+                        "## Failure Handling\n"
+                        "- SLA, retry, and escalation path.\n"
+                    ),
+                },
+                {
+                    "title": "Human-in-the-Loop Rules",
+                    "slug": space_slug(space, "human-in-the-loop-rules"),
+                    "page_type": "policy",
+                    "markdown": (
+                        "# Human-in-the-Loop Rules\n\n"
+                        "## Approval Boundaries\n"
+                        "- Which actions require human sign-off.\n\n"
+                        "## Override Logging\n"
+                        "- How overrides are captured and fed back into Synapse.\n"
+                    ),
+                },
+                {
+                    "title": "Integrations Map",
+                    "slug": space_slug(space, "integrations-map"),
+                    "page_type": "operations",
+                    "markdown": (
+                        "# Integrations Map\n\n"
+                        "## Systems\n"
+                        "- APIs, DBs, docs, queues, and external SaaS.\n\n"
+                        "## Data Flow\n"
+                        "- Which agents consume or mutate which integration.\n"
+                    ),
+                },
+            ]
+        return [
+            {
+                "title": "Compliance Control Catalog",
+                "slug": space_slug(space, "compliance-control-catalog"),
+                "page_type": "policy",
+                "markdown": "# Compliance Control Catalog\n\n## Controls\n- Control owner, objective, and evidence source.\n",
+            },
+            {
+                "title": "Incident Reporting Procedure",
+                "slug": space_slug(space, "incident-reporting-procedure"),
+                "page_type": "runbook",
+                "markdown": "# Incident Reporting Procedure\n\n## Report Timeline\n- Initial report and update cadence by severity.\n",
+            },
+            {
+                "title": "Audit Evidence Checklist",
+                "slug": space_slug(space, "audit-evidence-checklist"),
+                "page_type": "runbook",
+                "markdown": "# Audit Evidence Checklist\n\n## Evidence Readiness\n- Owner, retention, and validation cadence.\n",
+            },
+        ]
 
 
 class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):

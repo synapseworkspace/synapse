@@ -1091,6 +1091,24 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("operations/integrations-map", slugs)
         self.assertIn("operations/escalation-rules", slugs)
 
+    def test_generic_ops_pack_builds_ai_employee_org_starter_pages(self) -> None:
+        pages = get_synthesis_pack("generic_ops").build_first_run_starter_pages(
+            "ai_employee_org",
+            space_key="operations",
+            include_decisions_log=True,
+            normalize_space_key=lambda value: _api_main._normalize_space_key(value, default=""),
+            space_slug=_api_main._space_slug,
+            build_decisions_log_seed_page=_api_main._build_decisions_log_seed_page,
+        )
+        slugs = {str(item.get("slug") or "") for item in pages}
+        self.assertIn("operations/tool-catalog", slugs)
+        self.assertIn("operations/scheduled-tasks", slugs)
+
+    def test_generic_ops_pack_exposes_logistics_template_defaults(self) -> None:
+        templates = get_synthesis_pack("generic_ops").wiki_space_template_catalog()
+        logistics = next(item for item in templates if str(item.get("template_key")) == "logistics_ops")
+        self.assertEqual(logistics["default_space_key"], "logistics")
+
     def test_signal_noise_audit_aggregates_quality_and_bundle_health(self) -> None:
         assert _api_main is not None
         original_pipeline = _api_main.get_adoption_pipeline_visibility
