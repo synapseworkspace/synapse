@@ -1169,6 +1169,25 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     ],
                 }
             )
+        elif "fleet" in tokens and "sync" in tokens:
+            semantics.update(
+                {
+                    "purpose": "Synchronize fleet state from the external provider so operations can act on current vehicle availability and status.",
+                    "trigger": f"Recurring fleet sync runs on `{semantics['schedule_text']}` and refreshes the current fleet picture.",
+                    "inputs": list(dict.fromkeys([*source_hints, "fleet status feed", "provider state", "vehicle availability"]))[:6],
+                    "steps": [
+                        "Load the latest fleet-provider state and current operational fleet snapshot.",
+                        "Apply the synchronization routine for vehicle status, availability, or metadata changes.",
+                        "Detect mismatches, stale provider data, or failed writes before declaring the sync complete.",
+                        "Record synchronization outcome and unresolved deltas for operator follow-up.",
+                    ],
+                    "outputs": "Fleet state synchronized with provider changes and mismatches explicitly recorded.",
+                    "verification": [
+                        "Confirm the synchronized fleet view matches the current provider state.",
+                        "Verify stale or failed fleet updates were surfaced instead of silently ignored.",
+                    ],
+                }
+            )
         elif ("cargo" in tokens and "sync" in tokens) or ("erp" in tokens and "sync" in tokens):
             semantics.update(
                 {
@@ -1293,6 +1312,24 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "verification": [
                         "Confirm the report covers the intended audience and reporting window.",
                         "Verify important blockers and escalations were surfaced directly, not diluted into generic prose.",
+                    ],
+                }
+            )
+        elif "fleet" in tokens and "sync" in tokens:
+            refined.update(
+                {
+                    "purpose": "Synchronize fleet-provider state so dispatch and operations use current vehicle availability, readiness, and status.",
+                    "inputs": list(dict.fromkeys([*inputs, "fleet status feed", "provider state", "vehicle availability"]))[:6],
+                    "steps": [
+                        "Load the latest fleet-provider snapshot and the current internal fleet state.",
+                        "Apply the synchronization routine for vehicle availability, status, and metadata changes.",
+                        "Detect mismatches, stale provider state, or failed writes before closing the workflow.",
+                        "Record synchronization outcome and unresolved deltas for operator follow-up.",
+                    ],
+                    "output": "Fleet state synchronized with provider changes and mismatches explicitly recorded.",
+                    "verification": [
+                        "Confirm the synchronized fleet view matches the latest provider state.",
+                        "Verify failed or stale fleet updates were surfaced instead of silently ignored.",
                     ],
                 }
             )

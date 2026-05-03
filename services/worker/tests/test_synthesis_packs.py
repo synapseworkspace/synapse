@@ -112,6 +112,24 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertIn("comments", str(refined["purpose"]).lower())
         self.assertNotIn("driver economy workflow", str(refined["purpose"]).lower())
 
+    def test_logistics_pack_deepens_fleet_sync_playbook(self) -> None:
+        pack = get_synthesis_pack("logistics_ops")
+        playbook = {
+            "title": "Delimobil Fleet Sync Playbook",
+            "purpose": "Document the process.",
+            "trigger": "Fleet sync fires.",
+            "action": "delimobil_fleet_sync",
+            "steps": ["Run task.", "Record result."],
+            "output": "Workflow done.",
+        }
+        refined = pack.refine_process_playbook(
+            playbook=playbook,
+            source_kind="scheduled_task",
+            normalize_statement_text=_normalize,
+        )
+        self.assertIn("fleet", str(refined["purpose"]).lower())
+        self.assertTrue(any("provider" in str(step).lower() or "availability" in str(step).lower() for step in refined["steps"]))
+
     def test_support_pack_deepens_ticket_playbook(self) -> None:
         pack = get_synthesis_pack("support_ops")
         playbook = {

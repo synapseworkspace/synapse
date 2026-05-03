@@ -1827,6 +1827,85 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("inferred from runtime/control-plane contracts", detail_markdown)
         self.assertIn("Explicit mappings:", detail_markdown)
 
+    def test_data_sources_catalog_normalizes_runtime_contract_impact_labels(self) -> None:
+        assert _api_main is not None
+
+        class _CatalogCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                if "FROM legacy_import_sources" in str(sql):
+                    self.mode = "sources"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "sources":
+                    return [
+                        (
+                            "postgres_sql",
+                            "postgres_sql:memory_items:polling",
+                            {"sql_profile": "memory_items", "sql_profile_table": "public.memory_items"},
+                            "ops_admin",
+                            datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
+                            datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
+                        )
+                    ]
+                return []
+
+        cursor = _CatalogCursor()
+        original_table_exists = _api_main._legacy_import_sources_table_exists_from_cursor
+        original_collect_usage = _api_main._collect_agent_source_usage
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_build_matrix = _api_main._build_agent_capability_matrix
+        try:
+            _api_main._legacy_import_sources_table_exists_from_cursor = lambda cur: True
+            _api_main._collect_agent_source_usage = lambda cur, project_id: {}
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: True
+            _api_main._build_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "logistics-assistant",
+                    "status": "active",
+                    "running_instances": 6,
+                    "responsibilities": ["driver_cargo_state"],
+                    "standing_orders": ["standing_order.logistics.daily_report"],
+                    "scheduled_tasks": ["standing_order.logistics.daily_report"],
+                    "scenario_examples": ["daily operating digest"],
+                    "allowed_actions": ["publish_daily_report"],
+                    "tools": ["daily_report_writer"],
+                    "data_sources": [],
+                    "source_bindings": [],
+                    "tool_contracts": [],
+                    "source_binding_contracts": [
+                        {
+                            "source": "postgres_sql:memory_items:polling",
+                            "capabilities": ["driver_cargo_state"],
+                            "processes": ["standing_order.logistics.daily_report"],
+                            "tools": ["daily_report_writer"],
+                        }
+                    ],
+                }
+            ]
+            pages = _build_data_sources_catalog_pages(
+                cursor,
+                project_id="omega_demo",
+                space_key="logistics",
+                max_sources=10,
+            )
+        finally:
+            _api_main._legacy_import_sources_table_exists_from_cursor = original_table_exists
+            _api_main._collect_agent_source_usage = original_collect_usage
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_agent_capability_matrix = original_build_matrix
+
+        catalog_markdown = str(pages[0].get("markdown") or "")
+        detail_markdown = str(pages[1].get("markdown") or "")
+        self.assertIn("daily report", catalog_markdown)
+        self.assertNotIn("standing_order.logistics.daily_report", catalog_markdown)
+        self.assertIn("daily report", detail_markdown)
+        self.assertIn("driver cargo state", detail_markdown)
+
     def test_agent_capability_bootstrap_page_renders_grounded_operating_scope(self) -> None:
         assert _api_main is not None
 
