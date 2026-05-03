@@ -1333,6 +1333,7 @@ export class SynapseClient {
     limit?: number;
     includeReviewed?: boolean;
     reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
     maxWorkstreams?: number;
     maxOpenItems?: number;
     maxPeopleWatch?: number;
@@ -1353,6 +1354,7 @@ export class SynapseClient {
         limit: normalizeInt(options.limit ?? 20, 1, 100),
         include_reviewed: Boolean(options.includeReviewed ?? false),
         review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
+        memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto",
         max_workstreams: normalizeInt(options.maxWorkstreams ?? 12, 1, 50),
         max_open_items: normalizeInt(options.maxOpenItems ?? 25, 1, 200),
         max_people_watch: normalizeInt(options.maxPeopleWatch ?? 15, 1, 100),
@@ -1370,6 +1372,7 @@ export class SynapseClient {
     spaceKey?: string;
     includeReviewed?: boolean;
     reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
     idempotencyKey?: string;
   } = {}): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/invalidation", {
@@ -1380,7 +1383,8 @@ export class SynapseClient {
         role: asOptionalString(options.role) ?? undefined,
         space_key: asOptionalString(options.spaceKey) ?? undefined,
         include_reviewed: Boolean(options.includeReviewed ?? false),
-        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto"
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
+        memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto"
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
@@ -1393,6 +1397,7 @@ export class SynapseClient {
     limit?: number;
     includeReviewed?: boolean;
     reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
     idempotencyKey?: string;
   } = {}): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/impact", {
@@ -1404,20 +1409,67 @@ export class SynapseClient {
         since_hours: normalizeInt(options.sinceHours ?? 24, 1, 24 * 30),
         limit: normalizeInt(options.limit ?? 20, 1, 100),
         include_reviewed: Boolean(options.includeReviewed ?? false),
-        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto"
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
+        memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto"
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async previewAgentSharedMemoryPublishImpact(options: {
+    agentId?: string;
+    role?: string;
+    spaceKey?: string;
+    pageSlug?: string;
+    pageTitle?: string;
+    pageType?: string;
+    entityKey?: string;
+    changeSummary?: string;
+    includeReviewed?: boolean;
+    reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
+    limit?: number;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/publish-impact-preview", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        agent_id: asOptionalString(options.agentId) ?? undefined,
+        role: asOptionalString(options.role) ?? undefined,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        page_slug: asOptionalString(options.pageSlug) ?? undefined,
+        page_title: asOptionalString(options.pageTitle) ?? undefined,
+        page_type: asOptionalString(options.pageType) ?? undefined,
+        entity_key: asOptionalString(options.entityKey) ?? undefined,
+        change_summary: asOptionalString(options.changeSummary) ?? undefined,
+        include_reviewed: Boolean(options.includeReviewed ?? false),
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
+        memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto",
+        limit: normalizeInt(options.limit ?? 25, 1, 100)
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
   }
 
   async getAgentSharedMemoryHealth(options: {
+    agentId?: string;
+    role?: string;
     spaceKey?: string;
+    includeReviewed?: boolean;
+    reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
   } = {}): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/health", {
       method: "GET",
       params: {
         project_id: this.projectId,
-        space_key: asOptionalString(options.spaceKey) ?? undefined
+        agent_id: asOptionalString(options.agentId) ?? undefined,
+        role: asOptionalString(options.role) ?? undefined,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        include_reviewed: Boolean(options.includeReviewed ?? false),
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
+        memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto"
       }
     });
   }

@@ -95,7 +95,7 @@ Why:
 
 ### Phase 4: True shared memory tiers
 
-Status: planned
+Status: started
 
 Deliverables:
 
@@ -143,6 +143,11 @@ Implemented:
 8. `POST /v1/agents/shared-memory/impact`
 9. `GET /v1/agents/shared-memory/health`
 10. compact `Operations` panel for shared-memory freshness / impacted agents
+11. explicit tier contract for shared-memory runtime surfaces:
+   - `published_org`
+   - `reviewed_team`
+   - `draft_private` (currently honest degraded mode until a private-memory corpus exists)
+12. publish-time impact preview for planned wiki changes before they land
 
 These endpoints are intentionally conservative:
 

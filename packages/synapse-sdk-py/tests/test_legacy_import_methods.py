@@ -575,6 +575,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             limit=9,
             include_reviewed=True,
             review_policy_mode="reviewed_plus_published",
+            memory_tier_mode="reviewed_team",
             max_workstreams=11,
             max_open_items=19,
             max_people_watch=7,
@@ -594,6 +595,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("limit"), 9)
         self.assertTrue(payload.get("include_reviewed"))
         self.assertEqual(payload.get("review_policy_mode"), "reviewed_plus_published")
+        self.assertEqual(payload.get("memory_tier_mode"), "reviewed_team")
         self.assertEqual(payload.get("max_workstreams"), 11)
         self.assertEqual(payload.get("max_open_items"), 19)
         self.assertEqual(payload.get("max_people_watch"), 7)
@@ -608,6 +610,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             space_key="logistics",
             include_reviewed=True,
             review_policy_mode="auto",
+            memory_tier_mode="published_org",
         )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/agents/shared-memory/invalidation")
@@ -619,6 +622,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("space_key"), "logistics")
         self.assertTrue(payload.get("include_reviewed"))
         self.assertEqual(payload.get("review_policy_mode"), "auto")
+        self.assertEqual(payload.get("memory_tier_mode"), "published_org")
 
     def test_get_agent_shared_memory_impact_posts_expected_payload(self) -> None:
         self.client.get_agent_shared_memory_impact(
@@ -628,6 +632,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             limit=12,
             include_reviewed=True,
             review_policy_mode="published_only",
+            memory_tier_mode="draft_private",
         )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/agents/shared-memory/impact")
@@ -640,15 +645,61 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("limit"), 12)
         self.assertTrue(payload.get("include_reviewed"))
         self.assertEqual(payload.get("review_policy_mode"), "published_only")
+        self.assertEqual(payload.get("memory_tier_mode"), "draft_private")
+
+    def test_preview_agent_shared_memory_publish_impact_posts_expected_payload(self) -> None:
+        self.client.preview_agent_shared_memory_publish_impact(
+            agent_id="logistics-assistant",
+            role="dispatcher",
+            space_key="logistics",
+            page_slug="logistics/process-playbooks",
+            page_title="Process Playbooks",
+            page_type="process",
+            entity_key="daily.report",
+            change_summary="Updated escalation policy for daily report workflow.",
+            include_reviewed=True,
+            review_policy_mode="auto",
+            memory_tier_mode="reviewed_team",
+            limit=7,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/publish-impact-preview")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("agent_id"), "logistics-assistant")
+        self.assertEqual(payload.get("role"), "dispatcher")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("page_slug"), "logistics/process-playbooks")
+        self.assertEqual(payload.get("page_title"), "Process Playbooks")
+        self.assertEqual(payload.get("page_type"), "process")
+        self.assertEqual(payload.get("entity_key"), "daily.report")
+        self.assertEqual(payload.get("change_summary"), "Updated escalation policy for daily report workflow.")
+        self.assertTrue(payload.get("include_reviewed"))
+        self.assertEqual(payload.get("review_policy_mode"), "auto")
+        self.assertEqual(payload.get("memory_tier_mode"), "reviewed_team")
+        self.assertEqual(payload.get("limit"), 7)
 
     def test_get_agent_shared_memory_health_scopes_project(self) -> None:
-        self.client.get_agent_shared_memory_health(space_key="logistics")
+        self.client.get_agent_shared_memory_health(
+            agent_id="logistics-assistant",
+            role="dispatcher",
+            space_key="logistics",
+            include_reviewed=True,
+            review_policy_mode="auto",
+            memory_tier_mode="reviewed_team",
+        )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/agents/shared-memory/health")
         self.assertEqual(call["method"], "GET")
         params = call["params"]
         self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("agent_id"), "logistics-assistant")
+        self.assertEqual(params.get("role"), "dispatcher")
         self.assertEqual(params.get("space_key"), "logistics")
+        self.assertTrue(params.get("include_reviewed"))
+        self.assertEqual(params.get("review_policy_mode"), "auto")
+        self.assertEqual(params.get("memory_tier_mode"), "reviewed_team")
 
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(

@@ -1423,6 +1423,7 @@ class SynapseClient:
         limit: int = 20,
         include_reviewed: bool = False,
         review_policy_mode: str = "auto",
+        memory_tier_mode: str = "auto",
         max_workstreams: int = 12,
         max_open_items: int = 25,
         max_people_watch: int = 15,
@@ -1440,6 +1441,7 @@ class SynapseClient:
             "limit": max(1, min(100, int(limit))),
             "include_reviewed": bool(include_reviewed),
             "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+            "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
             "max_workstreams": max(1, min(50, int(max_workstreams))),
             "max_open_items": max(1, min(200, int(max_open_items))),
             "max_people_watch": max(1, min(100, int(max_people_watch))),
@@ -1462,6 +1464,7 @@ class SynapseClient:
         space_key: str | None = None,
         include_reviewed: bool = False,
         review_policy_mode: str = "auto",
+        memory_tier_mode: str = "auto",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "project_id": self._config.project_id,
@@ -1470,6 +1473,7 @@ class SynapseClient:
             "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
             "include_reviewed": bool(include_reviewed),
             "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+            "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
         }
         return self._request_json(
             "/v1/agents/shared-memory/invalidation",
@@ -1487,6 +1491,7 @@ class SynapseClient:
         limit: int = 20,
         include_reviewed: bool = False,
         review_policy_mode: str = "auto",
+        memory_tier_mode: str = "auto",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "project_id": self._config.project_id,
@@ -1496,6 +1501,7 @@ class SynapseClient:
             "limit": max(1, min(100, int(limit))),
             "include_reviewed": bool(include_reviewed),
             "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+            "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
         }
         return self._request_json(
             "/v1/agents/shared-memory/impact",
@@ -1504,13 +1510,61 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def preview_agent_shared_memory_publish_impact(
+        self,
+        *,
+        agent_id: str | None = None,
+        role: str | None = None,
+        space_key: str | None = None,
+        page_slug: str | None = None,
+        page_title: str | None = None,
+        page_type: str | None = None,
+        entity_key: str | None = None,
+        change_summary: str | None = None,
+        include_reviewed: bool = False,
+        review_policy_mode: str = "auto",
+        memory_tier_mode: str = "auto",
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "agent_id": str(agent_id).strip() if agent_id is not None and str(agent_id).strip() else None,
+            "role": str(role).strip() if role is not None and str(role).strip() else None,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "page_slug": str(page_slug).strip() if page_slug is not None and str(page_slug).strip() else None,
+            "page_title": str(page_title).strip() if page_title is not None and str(page_title).strip() else None,
+            "page_type": str(page_type).strip() if page_type is not None and str(page_type).strip() else None,
+            "entity_key": str(entity_key).strip() if entity_key is not None and str(entity_key).strip() else None,
+            "change_summary": str(change_summary).strip() if change_summary is not None and str(change_summary).strip() else None,
+            "include_reviewed": bool(include_reviewed),
+            "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+            "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
+            "limit": max(1, min(100, int(limit))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/publish-impact-preview",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def get_agent_shared_memory_health(
         self,
         *,
+        agent_id: str | None = None,
+        role: str | None = None,
         space_key: str | None = None,
+        include_reviewed: bool = False,
+        review_policy_mode: str = "auto",
+        memory_tier_mode: str = "auto",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "project_id": self._config.project_id,
+            "agent_id": str(agent_id).strip() if agent_id is not None and str(agent_id).strip() else None,
+            "role": str(role).strip() if role is not None and str(role).strip() else None,
+            "include_reviewed": bool(include_reviewed),
+            "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+            "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
         }
         if space_key is not None and str(space_key).strip():
             params["space_key"] = str(space_key).strip()
