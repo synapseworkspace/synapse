@@ -11,6 +11,7 @@ try:
         _build_agent_reflection_claim_payloads,
         _build_data_sources_catalog_pages,
         _build_agent_capability_bootstrap_page,
+        _build_tooling_map_bootstrap_page,
         _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
         _build_project_wiki_richness_benchmark_from_rows,
@@ -52,6 +53,7 @@ except Exception:  # pragma: no cover
     _build_agent_reflection_claim_payloads = None
     _build_data_sources_catalog_pages = None
     _build_agent_capability_bootstrap_page = None
+    _build_tooling_map_bootstrap_page = None
     _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
     _build_project_wiki_richness_benchmark_from_rows = None
@@ -92,6 +94,7 @@ except Exception:  # pragma: no cover
     or _bootstrap_page_importance is None
     or _build_data_sources_catalog_pages is None
     or _build_agent_capability_bootstrap_page is None
+    or _build_tooling_map_bootstrap_page is None
     or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
     or _build_project_wiki_richness_benchmark_from_rows is None
@@ -1256,6 +1259,52 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Dispatch escalation", bucket["processes"])
         self.assertIn("maps_router", bucket["tools"])
 
+    def test_collect_agent_source_usage_reads_source_bindings_from_metadata(self) -> None:
+        assert _api_main is not None
+
+        class _BindingUsageCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM agent_directory_profiles" in text:
+                    self.mode = "profiles"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "profiles":
+                    return [
+                        (
+                            "ops_bot",
+                            [],
+                            ["Coordinates logistics workflow"],
+                            ["dispatch_console"],
+                            {
+                                "scenarios": ["warehouse sync"],
+                                "source_bindings": [{"source": "warehouse_sheet"}],
+                                "standing_orders": ["Warehouse intake reconciliation"],
+                                "allowed_actions": ["reconcile_inventory"],
+                            },
+                        )
+                    ]
+                return []
+
+        cursor = _BindingUsageCursor()
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._wiki_feature_table_exists = lambda cur, table: table == "public.agent_directory_profiles"
+            usage = _collect_agent_source_usage(cursor, project_id="omega_demo")
+        finally:
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        bucket = usage["warehouse_sheet"]
+        self.assertIn("ops_bot", bucket["agents"])
+        self.assertIn("Coordinates logistics workflow", bucket["capabilities"])
+        self.assertIn("Warehouse intake reconciliation", bucket["processes"])
+        self.assertIn("reconcile_inventory", bucket["actions"])
+
     def test_data_sources_catalog_pages_include_capability_and_process_impact(self) -> None:
         assert _api_main is not None
 
@@ -1422,6 +1471,133 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("## Reliability & Risk", detail_markdown)
         self.assertIn("Stale risk:", detail_markdown)
         self.assertIn("Downstream decisions:", detail_markdown)
+
+    def test_agent_capability_bootstrap_page_renders_grounded_operating_scope(self) -> None:
+        assert _api_main is not None
+
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_build_matrix = _api_main._build_agent_capability_matrix
+        original_orgchart = _api_main.get_agent_orgchart
+        original_load_bundles = _api_main._load_evidence_bundles_for_bootstrap
+        try:
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: True
+            _api_main._build_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "dispatch_bot",
+                    "display_name": "Dispatch Bot",
+                    "team": "Logistics",
+                    "role": "Dispatcher",
+                    "status": "active",
+                    "typical_actions": ["reroute delivery", "confirm access windows"],
+                    "escalation_rules": ["Escalate route blockers to on-call ops"],
+                    "tools": ["maps_router"],
+                    "registry_tools": ["dispatch_console"],
+                    "data_sources": ["orders_api"],
+                    "source_bindings": ["warehouse_sheet"],
+                    "limits": ["No reroute without valid access window"],
+                    "allowed_actions": ["reroute_delivery"],
+                    "approval_rules": ["Manual approval for VIP reroutes"],
+                    "static_config_keys": ["scheduler", "approvals"],
+                    "scheduled_tasks": ["Refresh route constraints (0 * * * *)"],
+                    "standing_orders": ["Dispatch escalation policy"],
+                    "integrations": ["Slack", "TMS"],
+                    "model_routing": ["primary: gpt-5.5", "fallback: gpt-5.4"],
+                    "prompt_signal": "Prioritize SLA-safe dispatch decisions.",
+                    "scenario_examples": ["yard access changes", "driver late on route"],
+                    "observed_strengths": ["Escalate yard access exceptions quickly"],
+                    "observed_decisions": ["Moved blocked route to fallback lane"],
+                    "observed_questions": ["Need doc for VIP reroute policy"],
+                    "observed_uncertainties": ["Unknown card-access override hours"],
+                    "observed_actions": ["publish fallback route update"],
+                    "latest_reflection_summary": "Updated yard access handling after repeated blockers.",
+                    "latest_reflection_outcome": "resolved",
+                    "reflection_count": 3,
+                    "confidence": 0.91,
+                }
+            ]
+            _api_main.get_agent_orgchart = lambda **kwargs: {
+                "nodes": [
+                    {
+                        "agent_id": "dispatch_bot",
+                        "display_name": "Dispatch Bot",
+                        "team": "Logistics",
+                        "role": "Dispatcher",
+                        "status": "active",
+                        "profile_slug": "agents/dispatch_bot",
+                    }
+                ],
+                "edges": [],
+                "teams": [{"team": "Logistics", "agents_total": 1}],
+            }
+            _api_main._load_evidence_bundles_for_bootstrap = lambda *args, **kwargs: [
+                {
+                    "bundle_key": "capability:dispatch_bot",
+                    "bundle_status": "ready",
+                    "support_count": 4,
+                    "suggested_page_type": "agent_profile",
+                    "entity_key": "dispatch_bot",
+                    "sample_claims": [{"claim_text": "Dispatch bot escalates yard-access exceptions before SLA breach."}],
+                }
+            ]
+            pages = _build_agent_capability_bootstrap_page(
+                object(),
+                project_id="omega_demo",
+                space_key="operations",
+                max_agents=10,
+            )
+        finally:
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_agent_capability_matrix = original_build_matrix
+            _api_main.get_agent_orgchart = original_orgchart
+            _api_main._load_evidence_bundles_for_bootstrap = original_load_bundles
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("Declared operating scope: Dispatch escalation policy; yard access changes; driver late on route; publish fallback route update", markdown)
+        self.assertIn("Guardrails / approvals: Manual approval for VIP reroutes; No reroute without valid access window; Escalate route blockers to on-call ops", markdown)
+        self.assertIn("Toolset: maps_router, dispatch_console", markdown)
+        self.assertIn("Data sources: orders_api, warehouse_sheet", markdown)
+        self.assertIn("Bundle-backed insights: Dispatch bot escalates yard-access exceptions before SLA breach.", markdown)
+
+    def test_tooling_map_bootstrap_page_uses_capability_process_and_source_context(self) -> None:
+        assert _api_main is not None
+
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_build_matrix = _api_main._build_agent_capability_matrix
+        try:
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: True
+            _api_main._build_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "dispatch_bot",
+                    "tools": ["maps_router"],
+                    "registry_tools": ["dispatch_console"],
+                    "scenario_examples": ["yard access changes"],
+                    "responsibilities": ["Plans dispatch routes"],
+                    "standing_orders": ["Dispatch escalation policy"],
+                    "observed_actions": ["publish fallback route update"],
+                    "data_sources": ["orders_api"],
+                    "source_bindings": ["warehouse_sheet"],
+                    "limits": ["No reroute without valid access window"],
+                    "approval_rules": ["Manual approval for VIP reroutes"],
+                    "escalation_rules": ["Escalate route blockers to on-call ops"],
+                }
+            ]
+            pages = _build_tooling_map_bootstrap_page(
+                object(),
+                project_id="omega_demo",
+                space_key="operations",
+                max_agents=10,
+            )
+        finally:
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_agent_capability_matrix = original_build_matrix
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("Capability / Scenario", markdown)
+        self.assertIn("Process / Sources", markdown)
+        self.assertIn("Plans dispatch routes", markdown)
+        self.assertIn("Dispatch escalation policy", markdown)
+        self.assertIn("orders_api", markdown)
+        self.assertIn("Manual approval for VIP reroutes", markdown)
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
@@ -1689,6 +1865,56 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("bundle_support=4", markdown)
         self.assertIn("bundle_status=ready", markdown)
         self.assertIn("- Tools used: maps_router", markdown)
+
+    def test_process_playbooks_bootstrap_page_uses_agent_profile_processes(self) -> None:
+        assert _api_main is not None
+
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_build_matrix = _api_main._build_agent_capability_matrix
+        original_runtime_matrix = _api_main._build_runtime_agent_capability_matrix
+        original_load_reflections = _api_main._load_recent_agent_reflection_signals
+        original_load_bundles = _api_main._load_evidence_bundles_for_bootstrap
+        original_table_exists = _api_main._wiki_feature_table_exists
+        try:
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: True
+            _api_main._build_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "dispatch_bot",
+                    "confidence": 0.88,
+                    "standing_orders": ["Dispatch escalation policy"],
+                    "scheduled_tasks": ["Refresh route constraints (0 * * * *)"],
+                    "observed_actions": ["publish fallback route update"],
+                    "approval_rules": ["Manual approval for VIP reroutes"],
+                    "escalation_rules": ["Escalate route blockers to on-call ops"],
+                    "scenario_examples": ["yard access changes"],
+                    "tools": ["maps_router"],
+                    "data_sources": ["orders_api"],
+                    "source_bindings": ["warehouse_sheet"],
+                }
+            ]
+            _api_main._build_runtime_agent_capability_matrix = lambda cur, project_id, max_agents: []
+            _api_main._load_recent_agent_reflection_signals = lambda *args, **kwargs: {}
+            _api_main._load_evidence_bundles_for_bootstrap = lambda *args, **kwargs: []
+            _api_main._wiki_feature_table_exists = lambda cur, table: False
+            pages = _build_process_playbooks_bootstrap_page(
+                object(),
+                project_id="omega_demo",
+                space_key="operations",
+                max_signals=10,
+            )
+        finally:
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_agent_capability_matrix = original_build_matrix
+            _api_main._build_runtime_agent_capability_matrix = original_runtime_matrix
+            _api_main._load_recent_agent_reflection_signals = original_load_reflections
+            _api_main._load_evidence_bundles_for_bootstrap = original_load_bundles
+            _api_main._wiki_feature_table_exists = original_table_exists
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("Dispatch escalation policy", markdown)
+        self.assertIn("Manual approval for VIP reroutes", markdown)
+        self.assertIn("warehouse_sheet", markdown)
+        self.assertIn("maps_router", markdown)
 
 
 if __name__ == "__main__":

@@ -31350,6 +31350,39 @@ def _collect_agent_source_usage(
 ) -> dict[str, dict[str, set[str]]]:
     usage: dict[str, dict[str, set[str]]] = {}
 
+    def _metadata_source_tokens(metadata: dict[str, Any]) -> list[str]:
+        collected: list[str] = []
+
+        def _collect(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item)
+                return
+            if isinstance(value, dict):
+                for field in ("source", "name", "binding", "id", "table", "namespace", "system", "title"):
+                    text = str(value.get(field) or "").strip()
+                    if text:
+                        collected.append(text[:180])
+                        break
+                return
+            text = str(value or "").strip()
+            if text:
+                collected.append(text[:180])
+
+        for key in ("source_bindings", "data_source_bindings", "integrations_map", "known_data_sources"):
+            _collect(metadata.get(key))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in collected:
+            marker = item.lower()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            deduped.append(item)
+            if len(deduped) >= 16:
+                break
+        return deduped
+
     def _ensure_bucket(token: str) -> dict[str, set[str]]:
         bucket = usage.get(token)
         if bucket is None:
@@ -31411,16 +31444,40 @@ def _collect_agent_source_usage(
             continue
         scenario_hints: list[str] = []
         metadata_scenarios = metadata.get("scenarios") if isinstance(metadata.get("scenarios"), list) else []
-        process_hints = [str(item or "").strip() for item in (metadata.get("processes") or []) if str(item or "").strip()]
-        action_hints = [str(item or "").strip() for item in (metadata.get("allowed_actions") or []) if str(item or "").strip()]
-        capability_hints = [str(item or "").strip() for item in responsibilities if str(item or "").strip()]
+        process_hints = [
+            str(item or "").strip()
+            for item in [
+                *(metadata.get("processes") or []),
+                *(metadata.get("standing_orders") or []),
+                *(metadata.get("runbooks") or []),
+                *(metadata.get("playbooks") or []),
+                *(metadata.get("scheduled_tasks") or []),
+            ]
+            if str(item or "").strip()
+        ]
+        action_hints = [
+            str(item or "").strip()
+            for item in [
+                *(metadata.get("allowed_actions") or []),
+                *(metadata.get("actions") or []),
+                *(metadata.get("workflow_actions") or []),
+            ]
+            if str(item or "").strip()
+        ]
+        capability_hints = [
+            str(item or "").strip()
+            for item in [*responsibilities, *(metadata.get("capabilities") or [])]
+            if str(item or "").strip()
+        ]
+        source_tokens = [str(item or "").strip() for item in data_sources if str(item or "").strip()]
+        source_tokens.extend(_metadata_source_tokens(metadata))
         for item in metadata_scenarios:
             value = str(item or "").strip()
             if value:
                 scenario_hints.append(value[:180])
                 if len(scenario_hints) >= 5:
                     break
-        for item in data_sources:
+        for item in source_tokens:
             token = str(item or "").strip().lower()
             if not token:
                 continue
@@ -31444,6 +31501,19 @@ def _collect_agent_source_usage(
                         action=action_hints[0] if action_hints else None,
                         process=process_hints[0] if process_hints else None,
                         tool=str(tools[0]).strip() if tools else None,
+                    )
+        for tool_name in [str(item or "").strip() for item in tools if str(item or "").strip()][:4]:
+            for token in source_tokens[:8]:
+                normalized = str(token or "").strip().lower()
+                if normalized:
+                    _register(
+                        normalized,
+                        agent_id=agent_id,
+                        scenario=scenario_hints[0] if scenario_hints else None,
+                        capability=capability_hints[0] if capability_hints else None,
+                        action=action_hints[0] if action_hints else None,
+                        process=process_hints[0] if process_hints else None,
+                        tool=tool_name,
                     )
 
     if _wiki_feature_table_exists(cur, "public.events"):
@@ -31643,6 +31713,10 @@ def _build_data_sources_catalog_pages(
             source_ref.lower(),
             source_type.lower(),
             str(config.get("sql_profile") or "").strip().lower(),
+            str(config.get("sql_profile_resolved_table") or "").strip().lower(),
+            str(config.get("sql_profile_table") or "").strip().lower(),
+            str(config.get("sql_table") or "").strip().lower(),
+            str(config.get("sql_dsn_env") or "").strip().lower(),
             str(config.get("source_system") or "").strip().lower(),
         }
         used_by: set[str] = set()
@@ -31722,6 +31796,8 @@ def _build_data_sources_catalog_pages(
             else (f"ready {bundle_ready} / candidate {bundle_candidate}" if bundle_matches else "n/a")
         )
         impact_summary = process_summary if process_summary != "n/a" else capability_summary
+        if impact_summary == "n/a" and action_summary != "n/a":
+            impact_summary = action_summary
         if impact_summary == "n/a":
             impact_summary = bundle_signal_summary
         downstream_decisions = "; ".join(bundle_decision_hints[:2]) if bundle_decision_hints else "n/a"
@@ -32147,6 +32223,7 @@ def _build_agent_capability_bootstrap_page(
             source_bindings = [str(v).strip() for v in (item.get("source_bindings") or []) if str(v).strip()]
             integrations = [str(v).strip() for v in (item.get("integrations") or []) if str(v).strip()]
             model_routing = [str(v).strip() for v in (item.get("model_routing") or []) if str(v).strip()]
+            registry_tools = [str(v).strip() for v in (item.get("registry_tools") or []) if str(v).strip()]
             prompt_signal = str(item.get("prompt_signal") or "").strip()
             observed_strengths = [str(v).strip() for v in (item.get("observed_strengths") or []) if str(v).strip()]
             observed_decisions = [str(v).strip() for v in (item.get("observed_decisions") or []) if str(v).strip()]
@@ -32173,19 +32250,31 @@ def _build_agent_capability_bootstrap_page(
                         break
                 if len(bundle_insights) >= 3:
                     break
+            all_tools = list(dict.fromkeys([*tools, *registry_tools]))[:10]
+            operating_scope = list(dict.fromkeys([*standing_orders, *scenarios, *observed_actions]))[:4]
+            governance_rules = list(dict.fromkeys([*approval_rules, *limits, *escalations]))[:5]
+            source_scope = list(dict.fromkeys([*data_sources, *source_bindings]))[:8]
             detail_lines = [
                 "",
                 f"### {display_name} (`{agent_id}`)",
                 f"- Team / Role: {team} / {role}",
-                f"- Typical actions: {'; '.join(actions[:3]) if actions else 'n/a'}",
-                f"- Escalation rules: {'; '.join(escalations[:2]) if escalations else 'n/a'}",
-                f"- Toolset: {', '.join(tools[:6]) if tools else 'n/a'}",
-                f"- Data sources: {', '.join(data_sources[:6]) if data_sources else 'n/a'}",
-                f"- Constraints: {'; '.join(limits[:3]) if limits else 'n/a'}",
-                f"- Allowed actions: {', '.join(allowed_actions[:6]) if allowed_actions else 'n/a'}",
-                f"- Approval rules: {', '.join(approval_rules[:4]) if approval_rules else 'n/a'}",
-                f"- Config keys: {', '.join(static_config_keys[:8]) if static_config_keys else 'n/a'}",
             ]
+            if actions:
+                detail_lines.append(f"- Typical actions: {'; '.join(actions[:4])}")
+            if operating_scope:
+                detail_lines.append(f"- Declared operating scope: {'; '.join(operating_scope[:4])}")
+            if escalations:
+                detail_lines.append(f"- Escalation rules: {'; '.join(escalations[:3])}")
+            if all_tools:
+                detail_lines.append(f"- Toolset: {', '.join(all_tools[:8])}")
+            if source_scope:
+                detail_lines.append(f"- Data sources: {', '.join(source_scope[:8])}")
+            if governance_rules:
+                detail_lines.append(f"- Guardrails / approvals: {'; '.join(governance_rules[:5])}")
+            if allowed_actions:
+                detail_lines.append(f"- Allowed actions: {', '.join(allowed_actions[:8])}")
+            if static_config_keys:
+                detail_lines.append(f"- Config keys: {', '.join(static_config_keys[:8])}")
             if scheduled_tasks:
                 detail_lines.append(f"- Scheduled tasks: {'; '.join(scheduled_tasks[:3])}")
             if standing_orders:
@@ -32198,7 +32287,8 @@ def _build_agent_capability_bootstrap_page(
                 detail_lines.append(f"- Integrations: {', '.join(integrations[:5])}")
             if prompt_signal:
                 detail_lines.append(f"- Prompt context: {prompt_signal[:200]}")
-            detail_lines.append(f"- Scenario examples: {'; '.join(scenarios[:2]) if scenarios else 'n/a'}")
+            if scenarios:
+                detail_lines.append(f"- Scenario examples: {'; '.join(scenarios[:3])}")
             if observed_actions:
                 detail_lines.append(f"- Observed workflow actions: {'; '.join(observed_actions[:3])}")
             if observed_strengths:
@@ -32220,6 +32310,8 @@ def _build_agent_capability_bootstrap_page(
                 detail_lines.append(
                     f"- Bundle-backed insights: {'; '.join(bundle_insights[:2]) if bundle_insights else 'Knowledge bundle linked; enrichment pending.'}"
                 )
+            if len(detail_lines) == 3:
+                detail_lines.append("- Capability discovery is still sparse; add explicit profile metadata or debrief signals to enrich this agent page.")
             lines.extend(detail_lines)
     else:
         lines.extend(
@@ -32265,12 +32357,26 @@ def _build_tooling_map_bootstrap_page(
         if not agent_id:
             continue
         tools = [str(tool).strip() for tool in (item.get("tools") or []) if str(tool).strip()]
+        registry_tools = [str(tool).strip() for tool in (item.get("registry_tools") or []) if str(tool).strip()]
+        all_tools = list(dict.fromkeys([*tools, *registry_tools]))[:24]
         scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+        capabilities = [str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()]
+        processes = [
+            str(v).strip()
+            for v in [*(item.get("standing_orders") or []), *(item.get("observed_actions") or [])]
+            if str(v).strip()
+        ]
+        sources = [
+            str(v).strip()
+            for v in [*(item.get("data_sources") or []), *(item.get("source_bindings") or [])]
+            if str(v).strip()
+        ]
         guardrails = [
             *[str(v).strip() for v in (item.get("limits") or []) if str(v).strip()],
             *[str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()],
+            *[str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()],
         ]
-        for tool in tools:
+        for tool in all_tools:
             key = tool.lower()
             bucket = tool_index.get(key)
             if bucket is None:
@@ -32278,12 +32384,21 @@ def _build_tooling_map_bootstrap_page(
                     "tool": tool,
                     "agents": set(),
                     "scenarios": set(),
+                    "capabilities": set(),
+                    "processes": set(),
+                    "sources": set(),
                     "guardrails": set(),
                 }
                 tool_index[key] = bucket
             bucket["agents"].add(agent_id)
-            for scenario in scenarios[:3]:
+            for scenario in [*scenarios[:2], *processes[:2]]:
                 bucket["scenarios"].add(scenario)
+            for capability in capabilities[:3]:
+                bucket["capabilities"].add(capability)
+            for process in processes[:3]:
+                bucket["processes"].add(process)
+            for source in sources[:3]:
+                bucket["sources"].add(source)
             for rule in guardrails[:3]:
                 bucket["guardrails"].add(rule)
 
@@ -32291,8 +32406,8 @@ def _build_tooling_map_bootstrap_page(
         "# Tooling Map",
         "",
         "## Registry",
-        "| Tool | Used By Agents | Purpose / Scenario | Guardrails |",
-        "|---|---|---|---|",
+        "| Tool | Used By Agents | Capability / Scenario | Process / Sources | Guardrails |",
+        "|---|---|---|---|---|",
     ]
     if tool_index:
         for _, bucket in sorted(
@@ -32300,17 +32415,25 @@ def _build_tooling_map_bootstrap_page(
             key=lambda item: (-len(item[1].get("agents") or []), str(item[1].get("tool") or "").lower()),
         )[:200]:
             agents = ", ".join(sorted(bucket["agents"])[:4]) if bucket["agents"] else "n/a"
-            scenario = "; ".join(sorted(bucket["scenarios"])[:2]) if bucket["scenarios"] else "n/a"
+            capability_or_scenario = "; ".join(
+                [*sorted(bucket["capabilities"])[:1], *sorted(bucket["scenarios"])[:1]]
+            ) or "n/a"
+            process_or_sources = "; ".join(
+                [*sorted(bucket["processes"])[:1], *sorted(bucket["sources"])[:1]]
+            ) or "n/a"
             guardrails = "; ".join(sorted(bucket["guardrails"])[:2]) if bucket["guardrails"] else "n/a"
-            lines.append(f"| `{bucket['tool']}` | {agents} | {scenario} | {guardrails} |")
+            lines.append(
+                f"| `{bucket['tool']}` | {agents} | {capability_or_scenario} | {process_or_sources} | {guardrails} |"
+            )
     else:
-        lines.append("| n/a | n/a | Runtime tool discovery pending | Register tools via `/v1/agents/register` |")
+        lines.append("| n/a | n/a | Runtime tool discovery pending | n/a | Register tools via `/v1/agents/register` |")
     lines.extend(
         [
             "",
             "## Governance",
             "- Any tool touching finance/compliance/customer identity should require approval or reviewer assignment.",
             "- Prefer policy/process backed actions over direct payload-driven decisions.",
+            "- Use this map to document which tool drives which workflow and where human approval boundaries start.",
             "",
         ]
     )
@@ -32485,6 +32608,11 @@ def _build_process_playbooks_bootstrap_page(
         days=45,
         max_agents=max(50, int(max_signals) * 6),
     )
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3))
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3))
     bundle_rows = _load_evidence_bundles_for_bootstrap(
         cur,
         project_id=project_id,
@@ -32766,6 +32894,73 @@ def _build_process_playbooks_bootstrap_page(
                     durable_rules[:2],
                     decisions[:2],
                     f"reflection_count={int(signal.get('count') or 0)}",
+                    limit=6,
+                ),
+            }
+        )
+        if len(playbooks) >= max(6, min(50, int(max_signals))):
+            break
+
+    for item in matrix[: max(6, min(30, int(max_signals) * 2))]:
+        agent_id = str(item.get("agent_id") or "").strip()
+        standing_orders = [str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()]
+        scheduled_tasks = [str(v).strip() for v in (item.get("scheduled_tasks") or []) if str(v).strip()]
+        observed_actions = [str(v).strip() for v in (item.get("observed_actions") or []) if str(v).strip()]
+        approval_rules = [str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()]
+        escalation_rules = [str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()]
+        scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+        tools_used = [str(v).strip() for v in (item.get("tools") or []) if str(v).strip()]
+        source_inputs = [
+            str(v).strip()
+            for v in [*(item.get("data_sources") or []), *(item.get("source_bindings") or [])]
+            if str(v).strip()
+        ]
+        if not standing_orders and not scheduled_tasks and not observed_actions:
+            continue
+        title_seed = standing_orders[0] if standing_orders else (scheduled_tasks[0] if scheduled_tasks else observed_actions[0])
+        normalized = _normalize_statement_text(f"{agent_id}:{title_seed}")[:200]
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        trigger = scenarios[0] if scenarios else f"{agent_id} receives a task in {title_seed}"
+        action = observed_actions[0] if observed_actions else title_seed
+        escalation = escalation_rules[0] if escalation_rules else "Escalate to human reviewer when workflow leaves approved scope."
+        human_loop = (
+            f"Human approval boundary: {'; '.join(approval_rules[:2])}"
+            if approval_rules
+            else "Human confirmation recommended if source freshness or policy confidence drops."
+        )
+        playbooks.append(
+            {
+                "title": _process_title(trigger, action, "process", [agent_id] if agent_id else []),
+                "purpose": "Document the real operating sequence declared in agent profile metadata and observed workflow history.",
+                "category": "process",
+                "owners": [agent_id] if agent_id else [],
+                "trigger": trigger,
+                "action": action,
+                "inputs": source_inputs[:4],
+                "steps": [
+                    f"Start with the declared operating scope: {title_seed}.",
+                    f"Execute workflow action: {action}.",
+                    "Write back outcome, affected entities, and any new exception to the wiki/debrief loop.",
+                ],
+                "exceptions": [f"Approval / guardrail: {rule}" for rule in approval_rules[:2]],
+                "output": standing_orders[0] if standing_orders else "workflow state updated and documented",
+                "escalation": escalation,
+                "verification": _verification_steps(
+                    standing_orders[0] if standing_orders else "",
+                    escalation,
+                    confidence=max(0.76, float(item.get('confidence') or 0.0)),
+                ),
+                "human_loop": human_loop,
+                "tools": tools_used[:5],
+                "artifacts": _extract_list_values(source_inputs[:3], scheduled_tasks[:2], limit=5),
+                "decision_refs": approval_rules[:2],
+                "evidence": _extract_list_values(
+                    standing_orders[:2],
+                    scheduled_tasks[:2],
+                    scenarios[:2],
+                    f"agent:{agent_id}" if agent_id else None,
                     limit=6,
                 ),
             }
@@ -33123,6 +33318,18 @@ def _build_operational_logic_bootstrap_page(
 ) -> list[dict[str, str]]:
     rows: list[tuple[Any, ...]] = []
     query_limit = max(20, min(1000, int(max_signals) * 10))
+    bundle_rows = _load_evidence_bundles_for_bootstrap(
+        cur,
+        project_id=project_id,
+        bundle_types=["process", "policy", "decision", "capability"],
+        statuses=["ready", "candidate"],
+        limit=max(12, min(120, int(max_signals) * 3)),
+    )
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(40, int(max_signals) * 2))
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(40, int(max_signals) * 2))
     if _wiki_feature_table_exists(cur, "public.claims"):
         cur.execute(
             """
@@ -33151,6 +33358,35 @@ def _build_operational_logic_bootstrap_page(
 
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
+    for bundle in bundle_rows:
+        sample_entry = None
+        for item in bundle.get("sample_claims") or []:
+            if isinstance(item, dict) and str(item.get("claim_text") or "").strip():
+                sample_entry = item
+                break
+        if sample_entry is None:
+            continue
+        claim_text = str(sample_entry.get("claim_text") or "").strip()
+        category = str(sample_entry.get("category") or bundle.get("bundle_type") or "operations").strip() or "operations"
+        metadata = sample_entry.get("metadata") if isinstance(sample_entry.get("metadata"), dict) else {}
+        confidence = float(metadata.get("llm_confidence") or metadata.get("confidence") or bundle.get("quality_score") or 0.0)
+        if not _is_high_signal_operational_logic_claim(claim_text=claim_text, category=category, metadata=metadata):
+            continue
+        normalized_key = _normalize_statement_text(claim_text)[:180]
+        if not normalized_key or normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+        entries.append(
+            {
+                "comment": claim_text[:180],
+                "signal": category,
+                "action_candidate": _derive_action_candidate(claim_text, category),
+                "escalation_rule": _derive_escalation_rule(claim_text, confidence, category),
+                "confidence": confidence,
+            }
+        )
+        if len(entries) >= max(5, min(200, int(max_signals))):
+            break
     for row in rows:
         if len(row) >= 3:
             claim_text = str(row[0] or "").strip()
@@ -33178,6 +33414,35 @@ def _build_operational_logic_bootstrap_page(
                 "action_candidate": _derive_action_candidate(claim_text, category),
                 "escalation_rule": _derive_escalation_rule(claim_text, confidence, category),
                 "confidence": confidence,
+            }
+        )
+        if len(entries) >= max(5, min(200, int(max_signals))):
+            break
+    for item in matrix[: max(6, min(20, int(max_signals) * 2))]:
+        standing_orders = [str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()]
+        approval_rules = [str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()]
+        observed_actions = [str(v).strip() for v in (item.get("observed_actions") or []) if str(v).strip()]
+        escalations = [str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()]
+        source_bindings = [str(v).strip() for v in (item.get("source_bindings") or []) if str(v).strip()]
+        if not standing_orders and not approval_rules and not observed_actions:
+            continue
+        comment = standing_orders[0] if standing_orders else (observed_actions[0] if observed_actions else approval_rules[0])
+        normalized_key = _normalize_statement_text(comment)[:180]
+        if not normalized_key or normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+        category = "process" if standing_orders or observed_actions else "policy"
+        action_candidate = observed_actions[0] if observed_actions else _derive_action_candidate(comment, category)
+        escalation = escalations[0] if escalations else _derive_escalation_rule(comment, 0.82, category)
+        if source_bindings:
+            action_candidate = f"{action_candidate} using {source_bindings[0]}"
+        entries.append(
+            {
+                "comment": comment[:180],
+                "signal": category,
+                "action_candidate": action_candidate,
+                "escalation_rule": escalation,
+                "confidence": max(0.78, float(item.get("confidence") or 0.0)),
             }
         )
         if len(entries) >= max(5, min(200, int(max_signals))):
