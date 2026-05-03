@@ -52,6 +52,7 @@ class SynthesisPackTests(unittest.TestCase):
     def test_logistics_pack_builds_company_context_extensions(self) -> None:
         pack = get_synthesis_pack("logistics_ops")
         payload = pack.build_company_context_extensions(
+            space_key="logistics",
             matrix_rows=[
                 {
                     "standing_orders": ["daily report", "incident monitor"],
@@ -86,6 +87,10 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any(str(item.get("knowledge_state") or "") == "contradicted" for item in candidate_canon_blocks))
         self.assertTrue(any("trust rule candidate" in str(item.get("summary") or "").lower() for item in candidate_canon_blocks))
         self.assertTrue(any("evidence_basis" in item for item in candidate_canon_blocks))
+        self.assertTrue(any(str(item.get("block_id") or "").startswith("logistics:") for item in candidate_canon_blocks))
+        self.assertTrue(any("logistics/" in str(item.get("target_page_slug") or "") for item in candidate_canon_blocks))
+        self.assertTrue(any(str(item.get("target_page_type") or "") == "source_of_truth" for item in candidate_canon_blocks))
+        self.assertTrue(any("promote" in str(item.get("promotion_path") or "").lower() or "keep" in str(item.get("promotion_path") or "").lower() for item in candidate_canon_blocks))
         self.assertTrue(any(str(item.get("state") or "") == "reviewed" for item in knowledge_lifecycle_summary))
         self.assertTrue(any(str(item.get("state") or "") == "contradicted" for item in knowledge_lifecycle_summary))
         self.assertTrue(any(str(item.get("topic") or "") == "source_of_truth_conflict" for item in contradiction_summaries))

@@ -41450,6 +41450,7 @@ def _build_company_operating_context_bootstrap_page(
             for name, total in sorted(domain_counts.items(), key=lambda pair: (-pair[1], pair[0]))[: max(5, min(30, int(max_signals)))]
         ]
     context_extensions = synthesis_pack.build_company_context_extensions(
+        space_key=space_key,
         matrix_rows=matrix,
         source_counts=source_counts,
         claims_rollup=claims_rollup,
@@ -41599,18 +41600,37 @@ def _build_company_operating_context_bootstrap_page(
                 + f"{str(item.get('resolution_rule') or '').replace('|', '/')} | "
                 + f"{str(item.get('evidence_basis') or '').replace('|', '/')} |"
             )
+    promotion_rows = [item for item in candidate_canon_blocks if str(item.get("target_page_type") or "").strip() or str(item.get("target_page_slug") or "").strip()]
+    if promotion_rows:
+        lines.extend(
+            [
+                "",
+                "## Canon Promotion Paths",
+                "| Block ID | Target Page Type | Target Page Slug | Recommended Promotion Path |",
+                "|---|---|---|---|",
+            ]
+        )
+        for item in promotion_rows[:8]:
+            lines.append(
+                "| "
+                + f"{str(item.get('block_id') or 'candidate').replace('|', '/')} | "
+                + f"{str(item.get('target_page_type') or '').replace('|', '/')} | "
+                + f"{str(item.get('target_page_slug') or '').replace('|', '/')} | "
+                + f"{str(item.get('promotion_path') or '').replace('|', '/')} |"
+            )
     if candidate_canon_blocks:
         lines.extend(
             [
                 "",
                 "## Candidate Canon Blocks",
-                "| Block Type | State | Confidence | Summary | Evidence Basis |",
-                "|---|---|---|---|---|",
+                "| Block ID | Block Type | State | Confidence | Summary | Evidence Basis |",
+                "|---|---|---|---|---|---|",
             ]
         )
         for item in candidate_canon_blocks[:8]:
             lines.append(
                 "| "
+                + f"{str(item.get('block_id') or 'candidate').replace('|', '/')} | "
                 + f"{str(item.get('block_type') or 'candidate').replace('|', '/')} | "
                 + f"{str(item.get('knowledge_state') or 'candidate').replace('|', '/')} | "
                 + f"{str(item.get('confidence') or 'unknown').replace('|', '/')} | "

@@ -71,6 +71,7 @@ Phase 2 (signal extraction)
 6. `in_progress` Memory-to-canon compiler:
    - repeated facts, repeated operator decisions, recurring exception patterns, contradiction resolution.
    - current slice surfaces candidate canon blocks in `Company Operating Context`.
+   - candidate canon blocks now carry target page classes/slugs and promotion-path hints.
 7. `planned` Humanization layer:
    - translate internal technical labels into company-readable summaries and titles.
 8. `in_progress` Knowledge quality lifecycle:

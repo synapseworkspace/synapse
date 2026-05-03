@@ -53,6 +53,7 @@ class SynthesisPack(Protocol):
     def build_company_context_extensions(
         self,
         *,
+        space_key: str | None,
         matrix_rows: list[dict[str, Any]] | None,
         source_counts: list[tuple[str, int]] | None,
         claims_rollup: list[tuple[str, int]] | None,
@@ -936,12 +937,13 @@ class GenericOpsSynthesisPack:
     def build_company_context_extensions(
         self,
         *,
+        space_key: str | None,
         matrix_rows: list[dict[str, Any]] | None,
         source_counts: list[tuple[str, int]] | None,
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del matrix_rows, source_counts, claims_rollup, normalize_statement_text
+        del space_key, matrix_rows, source_counts, claims_rollup, normalize_statement_text
         return {
             "snapshot_notes": [],
             "workflow_signals": [],
@@ -1728,11 +1730,13 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
     def build_company_context_extensions(
         self,
         *,
+        space_key: str | None,
         matrix_rows: list[dict[str, Any]] | None,
         source_counts: list[tuple[str, int]] | None,
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
+        normalized_space = re.sub(r"[^a-z0-9_/-]+", "-", str(space_key or "").strip().lower()).strip("-") or "company"
         workflow_counts: dict[str, int] = {}
         entity_buckets = {
             "Driver": ("driver",),
@@ -1838,10 +1842,16 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         knowledge_state_counts: dict[str, int] = {}
         contradiction_summaries: list[dict[str, Any]] = []
 
+        def _target_slug(leaf: str) -> str:
+            normalized_leaf = re.sub(r"[^a-z0-9_/-]+", "-", str(leaf or "").strip().lower()).strip("-") or "company-knowledge"
+            return f"{normalized_space}/{normalized_leaf}"
+
         def _append_canon_block(block: dict[str, Any]) -> None:
             state = str(block.get("knowledge_state") or "candidate").strip().lower() or "candidate"
             block["knowledge_state"] = state
             knowledge_state_counts[state] = int(knowledge_state_counts.get(state, 0)) + 1
+            if not str(block.get("block_id") or "").strip():
+                block["block_id"] = f"{normalized_space}:{str(block.get('block_type') or 'candidate').strip().lower()}"
             candidate_canon_blocks.append(block)
 
         top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
@@ -1850,6 +1860,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             _append_canon_block(
                 {
                     "block_type": "entity_overview",
+                    "target_page_type": "entity",
+                    "target_page_slug": _target_slug("how-the-logistics-operation-works"),
+                    "promotion_path": "Promote into the logistics operation overview after owner review confirms the entity framing.",
                     "knowledge_state": "reviewed" if strongest_entity_count >= 3 else "candidate",
                     "confidence": "medium",
                     "summary": f"Current logistics memory centers on {', '.join(top_entities)} as the main business entities.",
@@ -1864,6 +1877,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             _append_canon_block(
                 {
                     "block_type": "process_sop_candidate",
+                    "target_page_type": "process",
+                    "target_page_slug": _target_slug("daily-logistics-operating-cycle"),
+                    "promotion_path": "Promote into the daily operating cycle or a dedicated SOP page once trigger, owner, and exception path are explicit.",
                     "knowledge_state": "reviewed" if strongest_process_count >= 2 else "candidate",
                     "confidence": "medium",
                     "summary": f"The current {cadence} appears to revolve around {', '.join(top_processes)}.",
@@ -1888,6 +1904,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 _append_canon_block(
                     {
                         "block_type": "source_of_truth_rule",
+                        "target_page_type": "source_of_truth",
+                        "target_page_slug": _target_slug("trust-rules-for-logistics-data"),
+                        "promotion_path": "Promote into trust rules once source precedence and freshness language are reviewed by operators.",
                         "knowledge_state": source_truth_state,
                         "confidence": "medium",
                         "summary": f"Trust rule candidate: {'; '.join(summary_parts)}.",
@@ -1901,6 +1920,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             _append_canon_block(
                 {
                     "block_type": "known_exception",
+                    "target_page_type": "known_exception",
+                    "target_page_slug": _target_slug("known-pitfalls-and-working-heuristics"),
+                    "promotion_path": "Promote into the pitfalls/exception page after confirming that the pattern recurs in live operations.",
                     "knowledge_state": "reviewed" if strongest_exception_count >= 2 else "candidate",
                     "confidence": "low",
                     "summary": f"Recurring operational exceptions likely include {', '.join(top_exceptions)}.",
@@ -1915,6 +1937,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 _append_canon_block(
                     {
                         "block_type": "working_heuristic",
+                        "target_page_type": "known_exception",
+                        "target_page_slug": _target_slug("known-pitfalls-and-working-heuristics"),
+                        "promotion_path": "Promote into the working heuristics page once the pattern is stable enough to guide future operators.",
                         "knowledge_state": "reviewed" if strongest_claim_count >= 3 else "candidate",
                         "confidence": "low",
                         "summary": f"Company memory is repeatedly surfacing heuristics around {', '.join(top_claims)}.",
@@ -1932,6 +1957,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             _append_canon_block(
                 {
                     "block_type": "contradiction_watch",
+                    "target_page_type": "source_of_truth",
+                    "target_page_slug": _target_slug("trust-rules-for-logistics-data"),
+                    "promotion_path": "Keep in reviewed trust rules until the conflict is resolved or documented as an explicit override rule.",
                     "knowledge_state": contradiction_state,
                     "confidence": "medium" if contradiction_state == "contradicted" else "low",
                     "summary": contradiction_summary,
@@ -2072,12 +2100,13 @@ class SupportOpsSynthesisPack(GenericOpsSynthesisPack):
     def build_company_context_extensions(
         self,
         *,
+        space_key: str | None,
         matrix_rows: list[dict[str, Any]] | None,
         source_counts: list[tuple[str, int]] | None,
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del normalize_statement_text
+        del space_key, normalize_statement_text
         queue_signals = 0
         escalation_signals = 0
         for item in matrix_rows or []:
@@ -2219,12 +2248,13 @@ class SalesOpsSynthesisPack(GenericOpsSynthesisPack):
     def build_company_context_extensions(
         self,
         *,
+        space_key: str | None,
         matrix_rows: list[dict[str, Any]] | None,
         source_counts: list[tuple[str, int]] | None,
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del source_counts, claims_rollup, normalize_statement_text
+        del space_key, source_counts, claims_rollup, normalize_statement_text
         handoff_signals = 0
         qualification_signals = 0
         for item in matrix_rows or []:
@@ -2353,12 +2383,13 @@ class ComplianceOpsSynthesisPack(GenericOpsSynthesisPack):
     def build_company_context_extensions(
         self,
         *,
+        space_key: str | None,
         matrix_rows: list[dict[str, Any]] | None,
         source_counts: list[tuple[str, int]] | None,
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del source_counts, claims_rollup, normalize_statement_text
+        del space_key, source_counts, claims_rollup, normalize_statement_text
         control_signals = 0
         review_signals = 0
         for item in matrix_rows or []:

@@ -166,6 +166,7 @@ Current progress:
   - working heuristic candidates
 - lifecycle heuristics now classify candidate blocks into `candidate`, `reviewed`, `stale`, and `contradicted`
 - contradiction summaries now attach a recommended resolution rule for source-of-truth conflicts
+- candidate canon blocks now carry stable ids plus suggested target page class/slug for future promotion into canonical wiki pages
 
 ## Phase 4: Humanization Layer
 
