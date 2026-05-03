@@ -20341,6 +20341,26 @@ def get_selfhost_consistency_gate(
         }
     )
 
+    checks.append(
+        {
+            "key": "ui_feature_manifest_present",
+            "status": "ok" if declared_features else "warning",
+            "message": (
+                "UI feature manifest is present."
+                if declared_features
+                else "Web bundle did not declare UI features; this usually means a stale frontend bundle is still being served."
+            ),
+            "meta": {
+                "ui_features": sorted(declared_features),
+                "expected_feature_examples": [
+                    "synthesis_observability_panel",
+                    "adoption_synthesis_graph",
+                    "typed_synthesis_diagnostics",
+                ],
+            },
+        }
+    )
+
     route_ok = normalized_route in {"", "/wiki"} or normalized_route.startswith("/wiki/")
     checks.append(
         {
