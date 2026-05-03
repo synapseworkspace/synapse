@@ -2416,7 +2416,10 @@ def _render_agent_runbooks_markdown(*, profile: dict[str, Any]) -> str:
             escalation_mode = str(escalation.get("mode") or "").strip()
             if escalation_mode:
                 detail_parts.append(f"escalation `{escalation_mode}`")
-            lines.append(f"- `{label}`: {'; '.join(detail_parts)}")
+            lines.append(
+                f"- [`{label}`](/wiki/{profile.get('profile_slug')}/runbooks/{_slugify_segment(label or 'scheduled-task')}): "
+                f"{'; '.join(detail_parts)}"
+            )
     elif standing_orders:
         lines.extend([f"- {item}" for item in standing_orders[:6]])
     else:
@@ -2805,6 +2808,29 @@ def _sync_agent_directory_pages(
                 status="published",
                 change_summary=f"Synced agent scaffold page {suffix} for {profile.get('agent_id')}",
             )
+        metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+        scheduled_task_contracts = [task for task in (metadata.get("scheduled_task_contracts") or []) if isinstance(task, dict)]
+        scheduled_task_pages: list[dict[str, Any]] = []
+        for task in scheduled_task_contracts[:12]:
+            label = str(task.get("task_code") or task.get("builtin_task") or task.get("name") or "").strip()
+            if not label:
+                continue
+            task_slug = _slugify_segment(label)
+            page_result = _upsert_wiki_page_system(
+                cur,
+                project_id=project_id,
+                actor=actor,
+                slug=f"{profile_slug}/runbooks/{task_slug}",
+                title=f"{profile.get('display_name') or profile.get('agent_id')} SOP: {label}",
+                page_type="runbook",
+                entity_key=str(profile.get("agent_id") or profile_slug),
+                markdown=_render_agent_scheduled_task_runbook_markdown(profile=profile, task_contract=task),
+                status="published",
+                change_summary=f"Synced scheduled task runbook {label} for {profile.get('agent_id')}",
+            )
+            scheduled_task_pages.append({"task_code": label, "page": page_result})
+        if scheduled_task_pages:
+            page_results["scheduled_task_runbooks"] = scheduled_task_pages
 
     cur.execute(
         """
@@ -3106,6 +3132,63 @@ def _build_runtime_surface_tool_contracts(surface: AgentRuntimeSurfaceAgentIn) -
     return deduped
 
 
+def _render_agent_scheduled_task_runbook_markdown(
+    *,
+    profile: dict[str, Any],
+    task_contract: dict[str, Any],
+) -> str:
+    display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
+    task_code = str(task_contract.get("task_code") or task_contract.get("name") or "scheduled_task").strip() or "scheduled_task"
+    builtin_task = str(task_contract.get("builtin_task") or "").strip()
+    schedule_kind = str(task_contract.get("schedule_kind") or "").strip()
+    cron_expr = str(task_contract.get("cron_expr") or "").strip()
+    interval_seconds = str(task_contract.get("interval_seconds") or "").strip()
+    timezone_value = str(task_contract.get("timezone") or "").strip()
+    approval_mode = str(task_contract.get("standing_order_approval_mode") or "").strip()
+    program = str(task_contract.get("standing_order_program") or "").strip()
+    authority = _normalize_agent_directory_items(task_contract.get("standing_order_authority") or [], limit=6)
+    escalation = task_contract.get("standing_order_escalation") if isinstance(task_contract.get("standing_order_escalation"), dict) else {}
+    escalation_mode = str(escalation.get("mode") or "").strip()
+    source_hints = _runtime_surface_extract_items(
+        task_contract.get("source_hints") if isinstance(task_contract.get("source_hints"), list) else [],
+        fields=("source", "name", "binding", "id", "table"),
+        limit=8,
+    )
+    schedule_text = cron_expr or (f"every {interval_seconds}s" if interval_seconds else schedule_kind or "scheduled")
+    title = builtin_task or task_code
+    lines = [
+        f"# {display_name} SOP: {title}",
+        "",
+        "## Contract",
+        f"- Task code: `{task_code}`",
+        *( [f"- Builtin task: `{builtin_task}`"] if builtin_task else [] ),
+        f"- Schedule: `{schedule_text}`",
+        *( [f"- Timezone: `{timezone_value}`"] if timezone_value else [] ),
+        *( [f"- Standing-order program: `{program}`"] if program else [] ),
+        *( [f"- Approval mode: `{approval_mode}`"] if approval_mode else [] ),
+        *( [f"- Authority: {', '.join(authority)}"] if authority else [] ),
+        *( [f"- Escalation mode: `{escalation_mode}`"] if escalation_mode else [] ),
+        "",
+        "## SOP",
+        f"- Trigger: scheduled execution for `{task_code}`",
+        f"- Inputs: {'; '.join(source_hints) if source_hints else 'runtime task context + bound sources'}",
+        "- Steps:",
+        f"  - Wait for schedule trigger ({schedule_text}).",
+        f"  - Execute `{builtin_task or task_code}`.",
+        "  - Validate output against current policy/process expectations.",
+        "  - Record outcome and exceptions back into the wiki/debrief loop.",
+        "- Exceptions:",
+        *([f"  - Respect authority boundary: {', '.join(authority)}." ] if authority else ["  - Escalate if the workflow leaves approved scope."]),
+        *([f"  - Approval mode requires: {approval_mode}." ] if approval_mode and approval_mode.lower() not in {"", "none"} else []),
+        "- Outputs:",
+        f"  - Recurring workflow `{builtin_task or task_code}` completed and traceable.",
+        "- Escalation:",
+        f"  - {escalation_mode or 'Escalate to reviewer when output is risky, uncertain, or policy-changing.'}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def _build_agent_profile_from_runtime_surface(
     surface: AgentRuntimeSurfaceAgentIn,
     *,
@@ -3156,6 +3239,7 @@ def _build_agent_profile_from_runtime_surface(
         fields=("source", "name", "binding", "id", "title", "table"),
         limit=40,
     )
+    capability_contracts = _build_runtime_surface_capability_contracts(surface)
     scheduled_task_contracts = [_format_runtime_surface_task(task) for task in surface.scheduled_tasks or [] if isinstance(task, dict)]
     scheduled_task_contracts = _normalize_agent_directory_items(scheduled_task_contracts, limit=40)
     standing_orders = _runtime_surface_extract_items(
@@ -3174,10 +3258,44 @@ def _build_agent_profile_from_runtime_surface(
         limit=20,
     )
     tool_contracts = _build_runtime_surface_tool_contracts(surface)
+    source_binding_contracts = _normalize_source_binding_contracts(
+        [
+            *(surface.source_hints or []),
+            *[
+                source
+                for task in surface.scheduled_tasks or []
+                if isinstance(task, dict)
+                for source in (task.get("source_hints") or [])
+            ],
+            *[
+                {"source": source, "tools": [contract.get("name")], "capabilities": contract.get("capabilities"), "usage": contract.get("purpose")}
+                for contract in tool_contracts
+                if isinstance(contract, dict)
+                for source in (contract.get("sources") or [])
+            ],
+            *[
+                {"source": source, "capabilities": [contract.get("name")], "tools": contract.get("tools"), "processes": contract.get("processes")}
+                for contract in capability_contracts
+                if isinstance(contract, dict)
+                for source in (contract.get("sources") or [])
+            ],
+        ],
+        agent_id=agent_id,
+        fallback_capabilities=capability_registry,
+        fallback_processes=standing_orders,
+        fallback_tools=[str(item.get("name") or "").strip() for item in tool_contracts if isinstance(item, dict)],
+        limit=80,
+    )
     tools = _normalize_agent_directory_items(
         [
             *[str(item.get("name") or "").strip() for item in tool_contracts if isinstance(item, dict)],
             *action_surface,
+            *[
+                str(tool or "").strip()
+                for contract in capability_contracts
+                if isinstance(contract, dict)
+                for tool in (contract.get("tools") or [])
+            ],
         ],
         limit=80,
     )
@@ -3186,6 +3304,7 @@ def _build_agent_profile_from_runtime_surface(
             *capability_registry,
             *standing_orders,
             *scheduled_task_contracts,
+            *[str(contract.get("name") or "").strip() for contract in capability_contracts if isinstance(contract, dict)],
         ],
         limit=80,
     )
@@ -3212,9 +3331,11 @@ def _build_agent_profile_from_runtime_surface(
     metadata["scheduled_task_contracts"] = [task for task in surface.scheduled_tasks or [] if isinstance(task, dict)][:100]
     metadata["standing_orders"] = standing_orders
     metadata["capabilities"] = capability_registry
+    metadata["capability_contracts"] = capability_contracts
     metadata["allowed_actions"] = action_surface
-    metadata["source_bindings"] = source_hints
-    metadata["known_data_sources"] = source_hints
+    metadata["source_bindings"] = [str(item.get("source") or "").strip() for item in source_binding_contracts if str(item.get("source") or "").strip()][:80]
+    metadata["source_binding_contracts"] = source_binding_contracts
+    metadata["known_data_sources"] = list(dict.fromkeys([*source_hints, *metadata["source_bindings"]]))[:80]
     metadata["tool_registry"] = tool_contracts
     metadata["approval_rules"] = approval_contracts
     metadata["limits_contract"] = explicit_limits
@@ -4107,6 +4228,150 @@ def _build_agent_capability_matrix(
                 break
         return deduped
 
+
+def _normalize_source_binding_contracts(
+    values: list[Any] | None,
+    *,
+    agent_id: str | None = None,
+    fallback_capabilities: list[str] | None = None,
+    fallback_processes: list[str] | None = None,
+    fallback_tools: list[str] | None = None,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for value in values or []:
+        if isinstance(value, dict):
+            source_name = str(
+                value.get("source")
+                or value.get("name")
+                or value.get("binding")
+                or value.get("id")
+                or value.get("table")
+                or ""
+            ).strip()
+            if not source_name:
+                continue
+            contracts.append(
+                {
+                    "source": source_name[:180],
+                    "agent_id": str(value.get("agent_id") or agent_id or "").strip()[:180],
+                    "capabilities": _runtime_surface_extract_items(
+                        value.get("capabilities") if isinstance(value.get("capabilities"), list) else [value.get("capability")],
+                        fields=("name", "title", "description"),
+                        limit=6,
+                    ),
+                    "processes": _runtime_surface_extract_items(
+                        value.get("processes") if isinstance(value.get("processes"), list) else [value.get("process")],
+                        fields=("name", "title", "description"),
+                        limit=6,
+                    ),
+                    "tools": _runtime_surface_extract_items(
+                        value.get("tools") if isinstance(value.get("tools"), list) else [value.get("tool")],
+                        fields=("name", "tool", "id", "title"),
+                        limit=6,
+                    ),
+                    "usage": str(value.get("usage") or value.get("purpose") or value.get("description") or "").strip()[:220],
+                    "owner": str(value.get("owner") or "").strip()[:120],
+                }
+            )
+        else:
+            text = str(value or "").strip()
+            if not text:
+                continue
+            contracts.append(
+                {
+                    "source": text[:180],
+                    "agent_id": str(agent_id or "").strip()[:180],
+                    "capabilities": list(fallback_capabilities or [])[:6],
+                    "processes": list(fallback_processes or [])[:6],
+                    "tools": list(fallback_tools or [])[:6],
+                    "usage": "",
+                    "owner": "",
+                }
+            )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for contract in contracts:
+        marker = "|".join(
+            [
+                str(contract.get("source") or "").strip().lower(),
+                str(contract.get("agent_id") or "").strip().lower(),
+            ]
+        )
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(contract)
+        if len(deduped) >= max(1, int(limit)):
+            break
+    return deduped
+
+
+def _build_runtime_surface_capability_contracts(surface: AgentRuntimeSurfaceAgentIn) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for item in surface.capability_registry or []:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("capability") or item.get("id") or "").strip()
+            if not name:
+                continue
+            contracts.append(
+                {
+                    "name": name[:180],
+                    "scenarios": _runtime_surface_extract_items(
+                        item.get("scenarios") if isinstance(item.get("scenarios"), list) else [item.get("scenario")],
+                        fields=("name", "title", "description"),
+                        limit=6,
+                    ),
+                    "actions": _runtime_surface_extract_items(
+                        item.get("actions") if isinstance(item.get("actions"), list) else [item.get("action")],
+                        fields=("name", "action", "title", "description"),
+                        limit=6,
+                    ),
+                    "sources": _runtime_surface_extract_items(
+                        [
+                            *(item.get("source_hints") or []),
+                            *(item.get("data_sources") or []),
+                        ],
+                        fields=("source", "name", "binding", "id", "table"),
+                        limit=6,
+                    ),
+                    "tools": _runtime_surface_extract_items(
+                        item.get("tools") if isinstance(item.get("tools"), list) else [item.get("tool")],
+                        fields=("name", "tool", "id", "title"),
+                        limit=6,
+                    ),
+                    "processes": _runtime_surface_extract_items(
+                        item.get("processes") if isinstance(item.get("processes"), list) else [item.get("process")],
+                        fields=("name", "title", "description"),
+                        limit=6,
+                    ),
+                }
+            )
+        else:
+            text = str(item or "").strip()
+            if text:
+                contracts.append(
+                    {
+                        "name": text[:180],
+                        "scenarios": [],
+                        "actions": [],
+                        "sources": [],
+                        "tools": [],
+                        "processes": [],
+                    }
+                )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for contract in contracts:
+        marker = str(contract.get("name") or "").strip().lower()
+        if not marker or marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(contract)
+        if len(deduped) >= 40:
+            break
+    return deduped
+
     def _model_routing_hints(metadata: dict[str, Any]) -> list[str]:
         hints: list[str] = []
         for key in ("model", "model_name", "primary_model", "fallback_model", "default_model"):
@@ -4279,6 +4544,8 @@ def _build_agent_capability_matrix(
         static_config_keys = [str(key).strip() for key in list(static_config.keys())[:8] if str(key).strip()]
         registry_tools: list[str] = []
         tool_contracts = _tool_registry_contracts(metadata)
+        capability_contracts = [item for item in (metadata.get("capability_contracts") or []) if isinstance(item, dict)][:30]
+        source_binding_contracts = [item for item in (metadata.get("source_binding_contracts") or []) if isinstance(item, dict)][:40]
         tool_registry = metadata.get("tool_registry")
         if isinstance(tool_registry, list):
             for item in tool_registry:
@@ -4317,6 +4584,10 @@ def _build_agent_capability_matrix(
             limit=6,
             object_fields=("name", "source", "binding", "id", "title", "description"),
         )
+        for contract in source_binding_contracts:
+            source_name = str(contract.get("source") or "").strip()
+            if source_name:
+                source_bindings = list(dict.fromkeys([*source_bindings, source_name]))[:12]
         integrations = _metadata_list(
             metadata,
             keys=["integrations", "connectors", "external_systems"],
@@ -4349,6 +4620,46 @@ def _build_agent_capability_matrix(
                 cap = str(capability_text or "").strip()
                 if cap:
                     responsibilities = list(dict.fromkeys([*responsibilities, cap]))[:12]
+        for contract in capability_contracts:
+            capability_name = str(contract.get("name") or "").strip()
+            if capability_name:
+                responsibilities = list(dict.fromkeys([*responsibilities, capability_name]))[:12]
+            for scenario in contract.get("scenarios") or []:
+                text = str(scenario or "").strip()
+                if text:
+                    scenario_examples = list(dict.fromkeys([*scenario_examples, text]))[:8]
+            for action_name in contract.get("actions") or []:
+                text = str(action_name or "").strip()
+                if text:
+                    allowed_actions = list(dict.fromkeys([*allowed_actions, text]))[:20]
+            for source_name in contract.get("sources") or []:
+                text = str(source_name or "").strip()
+                if text:
+                    data_sources = list(dict.fromkeys([*data_sources, text]))[:24]
+            for tool_name in contract.get("tools") or []:
+                text = str(tool_name or "").strip()
+                if text:
+                    tools = list(dict.fromkeys([*tools, text]))[:24]
+            for process_name in contract.get("processes") or []:
+                text = str(process_name or "").strip()
+                if text:
+                    standing_orders = list(dict.fromkeys([*standing_orders, text]))[:12]
+        for contract in source_binding_contracts:
+            for source_name in [str(contract.get("source") or "").strip()]:
+                if source_name:
+                    data_sources = list(dict.fromkeys([*data_sources, source_name]))[:24]
+            for tool_name in contract.get("tools") or []:
+                text = str(tool_name or "").strip()
+                if text:
+                    tools = list(dict.fromkeys([*tools, text]))[:24]
+            for capability_name in contract.get("capabilities") or []:
+                text = str(capability_name or "").strip()
+                if text:
+                    responsibilities = list(dict.fromkeys([*responsibilities, text]))[:12]
+            for process_name in contract.get("processes") or []:
+                text = str(process_name or "").strip()
+                if text:
+                    standing_orders = list(dict.fromkeys([*standing_orders, text]))[:12]
         cur.execute(
             """
             SELECT
@@ -4458,6 +4769,8 @@ def _build_agent_capability_matrix(
                 "approval_rules": approval_rules[:20],
                 "registry_tools": registry_tools[:30],
                 "tool_contracts": tool_contracts[:20],
+                "capability_contracts": capability_contracts[:20],
+                "source_binding_contracts": source_binding_contracts[:20],
                 "scheduled_tasks": scheduled_tasks,
                 "scheduled_task_contracts": scheduled_task_contracts,
                 "standing_orders": standing_orders,
@@ -32027,6 +32340,13 @@ def _collect_agent_source_usage(
 
         for key in ("source_bindings", "data_source_bindings", "integrations_map", "known_data_sources"):
             _collect(metadata.get(key))
+        for contract in metadata.get("source_binding_contracts") or []:
+            if not isinstance(contract, dict):
+                continue
+            _collect(contract.get("source"))
+            _collect(contract.get("tools"))
+            _collect(contract.get("capabilities"))
+            _collect(contract.get("processes"))
         deduped: list[str] = []
         seen: set[str] = set()
         for item in collected:
@@ -32125,8 +32445,27 @@ def _collect_agent_source_usage(
             for item in [*responsibilities, *(metadata.get("capabilities") or [])]
             if str(item or "").strip()
         ]
+        for contract in metadata.get("capability_contracts") or []:
+            if not isinstance(contract, dict):
+                continue
+            capability_name = str(contract.get("name") or "").strip()
+            if capability_name:
+                capability_hints.append(capability_name)
+            for scenario in contract.get("scenarios") or []:
+                text = str(scenario or "").strip()
+                if text:
+                    scenario_hints.append(text[:180])
+            for action in contract.get("actions") or []:
+                text = str(action or "").strip()
+                if text:
+                    action_hints.append(text[:180])
+            for process in contract.get("processes") or []:
+                text = str(process or "").strip()
+                if text:
+                    process_hints.append(text[:180])
         source_tokens = [str(item or "").strip() for item in data_sources if str(item or "").strip()]
         source_tokens.extend(_metadata_source_tokens(metadata))
+        source_binding_contracts = [item for item in (metadata.get("source_binding_contracts") or []) if isinstance(item, dict)]
         for item in metadata_scenarios:
             value = str(item or "").strip()
             if value:
@@ -32171,6 +32510,22 @@ def _collect_agent_source_usage(
                         process=process_hints[0] if process_hints else None,
                         tool=tool_name,
                     )
+        for contract in source_binding_contracts[:20]:
+            contract_source = str(contract.get("source") or "").strip()
+            if not contract_source:
+                continue
+            contract_capability = next((str(v).strip() for v in (contract.get("capabilities") or []) if str(v).strip()), None)
+            contract_process = next((str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()), None)
+            contract_tool = next((str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()), None)
+            _register(
+                contract_source,
+                agent_id=agent_id,
+                scenario=scenario_hints[0] if scenario_hints else None,
+                capability=contract_capability or (capability_hints[0] if capability_hints else None),
+                action=action_hints[0] if action_hints else None,
+                process=contract_process or (process_hints[0] if process_hints else None),
+                tool=contract_tool or (str(tools[0]).strip() if tools else None),
+            )
 
     if _wiki_feature_table_exists(cur, "public.events"):
         cutoff = datetime.now(UTC) - timedelta(days=30)
@@ -32274,7 +32629,7 @@ def _build_data_sources_catalog_pages(
         source_ref: str,
         source_type: str,
         config: dict[str, Any],
-    ) -> dict[str, set[str]]:
+    ) -> dict[str, Any]:
         inferred = {
             "agents": set(),
             "scenarios": set(),
@@ -32282,6 +32637,7 @@ def _build_data_sources_catalog_pages(
             "actions": set(),
             "processes": set(),
             "tools": set(),
+            "contracts": [],
         }
         usage_tokens = {
             _normalize_statement_text(str(source_ref or "")),
@@ -32311,7 +32667,13 @@ def _build_data_sources_catalog_pages(
                 for value in (contract.get("sources") or [])
                 if str(value or "").strip()
             }
-            if usage_tokens.intersection(item_sources.union(contract_sources)):
+            binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
+            binding_sources = {
+                _normalize_statement_text(str(contract.get("source") or ""))
+                for contract in binding_contracts
+                if str(contract.get("source") or "").strip()
+            }
+            if usage_tokens.intersection(item_sources.union(contract_sources).union(binding_sources)):
                 inferred["agents"].add(agent_id)
                 inferred["scenarios"].update(set(item.get("scenario_examples") or []))
                 inferred["capabilities"].update(set(item.get("responsibilities") or []))
@@ -32320,6 +32682,10 @@ def _build_data_sources_catalog_pages(
                 inferred["processes"].update(set(item.get("standing_orders") or []))
                 inferred["processes"].update(set(item.get("scheduled_tasks") or []))
                 inferred["tools"].update(set(item.get("tools") or []))
+                for contract in binding_contracts:
+                    normalized_source = _normalize_statement_text(str(contract.get("source") or ""))
+                    if normalized_source and normalized_source in usage_tokens:
+                        inferred["contracts"].append(contract)
                 continue
             if _looks_like_knowledge_plane_source(source_type, source_ref, config):
                 runtime_active = bool(item.get("running_instances")) or str(item.get("status") or "").strip().lower() == "active"
@@ -32331,6 +32697,7 @@ def _build_data_sources_catalog_pages(
                     inferred["actions"].update(set(item.get("allowed_actions") or []))
                     inferred["tools"].update(set(item.get("tools") or []))
                     inferred["scenarios"].update(set(item.get("scenario_examples") or []))
+                    inferred["contracts"].extend(binding_contracts[:4])
         return inferred
 
     def _collect_bundle_source_tokens(bundle: dict[str, Any]) -> set[str]:
@@ -32460,6 +32827,7 @@ def _build_data_sources_catalog_pages(
         process_hints: set[str] = set()
         action_hints: set[str] = set()
         tool_hints: set[str] = set()
+        explicit_binding_contracts: list[dict[str, Any]] = []
         for token in usage_tokens:
             if not token:
                 continue
@@ -32486,6 +32854,7 @@ def _build_data_sources_catalog_pages(
                 process_hints.update(inferred_usage["processes"])
                 action_hints.update(inferred_usage["actions"])
                 tool_hints.update(inferred_usage["tools"])
+                explicit_binding_contracts = [item for item in (inferred_usage.get("contracts") or []) if isinstance(item, dict)]
         used_by_agents = ", ".join(sorted(used_by)[:4]) if used_by else "none"
         source_scenarios = "; ".join(sorted(scenario_hints)[:3]) if scenario_hints else "n/a"
         capability_summary = "; ".join(sorted(capability_hints)[:2]) if capability_hints else "n/a"
@@ -32552,6 +32921,18 @@ def _build_data_sources_catalog_pages(
         if impact_summary == "n/a":
             impact_summary = bundle_signal_summary
         downstream_decisions = "; ".join(bundle_decision_hints[:2]) if bundle_decision_hints else "n/a"
+        binding_summary = []
+        for contract in explicit_binding_contracts[:3]:
+            source_name = str(contract.get("source") or "").strip()
+            bits = []
+            if contract.get("capabilities"):
+                bits.append(f"capabilities: {', '.join(str(v) for v in (contract.get('capabilities') or [])[:2])}")
+            if contract.get("processes"):
+                bits.append(f"processes: {', '.join(str(v) for v in (contract.get('processes') or [])[:2])}")
+            if contract.get("tools"):
+                bits.append(f"tools: {', '.join(str(v) for v in (contract.get('tools') or [])[:2])}")
+            if source_name:
+                binding_summary.append(f"{source_name} -> {'; '.join(bits) if bits else 'agent usage'}")
         stale_risk = _source_stale_risk_label(freshness, bundle_ready=bundle_ready, used_by_count=len(used_by))
         human_review_boundary = (
             "Require human review before publishing policy/process pages driven by this source."
@@ -32596,6 +32977,7 @@ def _build_data_sources_catalog_pages(
                         *([f"- Actions: {action_summary}"] if action_summary != "n/a" else []),
                         *([f"- Process impact: {process_summary}"] if process_summary != "n/a" else []),
                         *([f"- Tools observed: {tool_summary}"] if tool_summary != "n/a" else []),
+                        *([f"- Explicit mappings: {' | '.join(binding_summary[:2])}"] if binding_summary else []),
                         "",
                         "## Knowledge Signals",
                         (

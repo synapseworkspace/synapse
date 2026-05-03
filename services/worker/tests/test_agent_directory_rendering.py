@@ -172,9 +172,7 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
                     "source_hints": ["logistics_world_model_latest"],
                 }
             ],
-            capability_registry=["documents_orders", "logistics_world_model"],
             action_surface=["outbound_messaging", "browser_automation"],
-            source_hints=["driver_shift_daily_latest", "driver_economy_daily_latest"],
             tool_manifest=[
                 {
                     "name": "controlled_exec",
@@ -184,6 +182,25 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
                     "source_hints": ["logistics_world_model_latest"],
                     "capabilities": ["route_reschedule_request"],
                 }
+            ],
+            source_hints=[
+                {
+                    "source": "driver_shift_daily_latest",
+                    "capabilities": ["documents_orders"],
+                    "processes": ["shift readiness control"],
+                    "tools": ["documents_orders_for_driver_day"],
+                },
+                "driver_economy_daily_latest",
+            ],
+            capability_registry=[
+                {
+                    "name": "documents_orders",
+                    "actions": ["prepare_shift_documents"],
+                    "source_hints": ["driver_shift_daily_latest"],
+                    "tools": ["documents_orders_for_driver_day"],
+                    "processes": ["shift readiness control"],
+                },
+                "logistics_world_model",
             ],
             model_routing={"primary": "gpt-5.5", "fallback": "gpt-5.4"},
         )
@@ -195,6 +212,8 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         metadata = profile["metadata"]
         self.assertIn("standing_order.logistics.incident.monitor", " ".join(metadata["scheduled_tasks"]))
         self.assertIn("controlled_exec", [item["name"] for item in metadata["tool_registry"]])
+        self.assertEqual(metadata["source_binding_contracts"][0]["source"], "driver_shift_daily_latest")
+        self.assertEqual(metadata["capability_contracts"][0]["name"], "documents_orders")
         self.assertEqual(metadata["runtime_overview"]["running_instances"], 6)
 
     def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
@@ -1374,6 +1393,7 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         profile = {
             "agent_id": "logistics-assistant",
             "display_name": "Logistics Assistant",
+            "profile_slug": "agents/logistics-assistant",
             "tools": ["kb_search"],
             "data_sources": ["driver_economy_daily_latest"],
             "limits": ["No direct execution outside approved standing orders."],
@@ -1395,6 +1415,7 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("0 12 * * *", markdown)
         self.assertIn("Escalate if report affects payroll review.", markdown)
         self.assertIn("Source: driver_economy_daily_latest", markdown)
+        self.assertIn("/wiki/agents/logistics-assistant/runbooks/standing-order-logistics-driver-economy-sheet", markdown)
 
     def test_data_sources_catalog_pages_include_capability_and_process_impact(self) -> None:
         assert _api_main is not None
@@ -1637,6 +1658,7 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("driver_economics", detail_markdown)
         self.assertIn("Daily driver economy sheet", detail_markdown)
         self.assertIn("inferred from runtime/control-plane contracts", detail_markdown)
+        self.assertIn("Explicit mappings:", detail_markdown)
 
     def test_agent_capability_bootstrap_page_renders_grounded_operating_scope(self) -> None:
         assert _api_main is not None
