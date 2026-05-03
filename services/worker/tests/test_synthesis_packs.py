@@ -69,6 +69,49 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in workflow_signals))
         self.assertTrue(any("connected source streams" in item.lower() for item in snapshot_notes))
 
+    def test_logistics_pack_does_not_leak_driver_economy_into_daily_report(self) -> None:
+        pack = get_synthesis_pack("logistics_ops")
+        playbook = {
+            "title": "Daily Report Playbook",
+            "purpose": "Document the process.",
+            "trigger": "Daily reporting workflow fires.",
+            "action": "logistics_daily_report",
+            "steps": ["Run task.", "Record result."],
+            "output": "Workflow done.",
+            "artifacts": ["driver_economy_daily_latest"],
+            "evidence": ["driver_economy_daily_latest"],
+        }
+        refined = pack.refine_process_playbook(
+            playbook=playbook,
+            source_kind="scheduled_task",
+            normalize_statement_text=_normalize,
+        )
+        self.assertTrue(
+            "digest" in str(refined["purpose"]).lower()
+            or "report" in str(refined["purpose"]).lower()
+        )
+        self.assertNotIn("driver economy workflow", str(refined["purpose"]).lower())
+
+    def test_logistics_pack_does_not_leak_driver_economy_into_comment_learning(self) -> None:
+        pack = get_synthesis_pack("logistics_ops")
+        playbook = {
+            "title": "Comment Signal Learning Playbook",
+            "purpose": "Document the process.",
+            "trigger": "Learning workflow fires.",
+            "action": "comment_signal_learning",
+            "steps": ["Run task.", "Record result."],
+            "output": "Workflow done.",
+            "artifacts": ["driver_economy_daily_latest"],
+            "evidence": ["driver_economy_daily_latest"],
+        }
+        refined = pack.refine_process_playbook(
+            playbook=playbook,
+            source_kind="scheduled_task",
+            normalize_statement_text=_normalize,
+        )
+        self.assertIn("comments", str(refined["purpose"]).lower())
+        self.assertNotIn("driver economy workflow", str(refined["purpose"]).lower())
+
     def test_support_pack_deepens_ticket_playbook(self) -> None:
         pack = get_synthesis_pack("support_ops")
         playbook = {

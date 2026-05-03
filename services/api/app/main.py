@@ -3431,6 +3431,13 @@ def _build_agent_profile_from_runtime_surface(
     metadata["runtime_surface_ingested_by"] = actor
     if surface.model_routing is not None:
         metadata["model_routing"] = surface.model_routing
+    inferred_spaces = _infer_runtime_surface_core_space_keys(surfaces=[surface], profiles=None)
+    if inferred_spaces:
+        inferred_space = _normalize_space_key(inferred_spaces[0], default="")
+        if inferred_space:
+            metadata["space_key"] = inferred_space
+            metadata["wiki_space_key"] = inferred_space
+            metadata.setdefault("domain", inferred_space)
 
     return {
         "agent_id": agent_id,
@@ -32583,6 +32590,12 @@ def _build_data_sources_catalog_pages(
         action_hints: set[str] = set()
         tool_hints: set[str] = set()
         explicit_binding_contracts: list[dict[str, Any]] = []
+        normalized_usage_tokens = {
+            _normalize_statement_text(token)
+            for token in usage_tokens
+            if str(token or "").strip()
+        }
+        normalized_usage_tokens = {token for token in normalized_usage_tokens if token}
         for token in usage_tokens:
             if not token:
                 continue
@@ -32593,6 +32606,42 @@ def _build_data_sources_catalog_pages(
             process_hints.update(set(usage_bucket.get("processes") or set()))
             action_hints.update(set(usage_bucket.get("actions") or set()))
             tool_hints.update(set(usage_bucket.get("tools") or set()))
+        for item in runtime_matrix:
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(item.get("agent_id") or "").strip()
+            if not agent_id:
+                continue
+            binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
+            matched_binding = False
+            for contract in binding_contracts:
+                normalized_source = _normalize_statement_text(str(contract.get("source") or ""))
+                if not normalized_source or normalized_source not in normalized_usage_tokens:
+                    continue
+                matched_binding = True
+                explicit_binding_contracts.append(contract)
+                used_by.add(agent_id)
+                capability_hints.update({str(v).strip() for v in (contract.get("capabilities") or []) if str(v).strip()})
+                process_hints.update({str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()})
+                tool_hints.update({str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()})
+            if matched_binding:
+                scenario_hints.update({str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()})
+                action_hints.update({str(v).strip() for v in (item.get("allowed_actions") or []) if str(v).strip()})
+            for contract in [entry for entry in (item.get("capability_contracts") or []) if isinstance(entry, dict)]:
+                source_tokens = {
+                    _normalize_statement_text(str(v or ""))
+                    for v in (contract.get("sources") or [])
+                    if str(v or "").strip()
+                }
+                if not source_tokens.intersection(normalized_usage_tokens):
+                    continue
+                used_by.add(agent_id)
+                capability_name = str(contract.get("name") or "").strip()
+                if capability_name:
+                    capability_hints.add(capability_name)
+                process_hints.update({str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()})
+                tool_hints.update({str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()})
+                scenario_hints.update({str(v).strip() for v in (contract.get("scenarios") or []) if str(v).strip()})
         usage_inferred = False
         if not used_by:
             inferred_usage = synthesis_pack.infer_source_usage_from_matrix(
@@ -33349,23 +33398,15 @@ def _build_tooling_map_bootstrap_page(
                     "sources": set(),
                     "guardrails": set(),
                     "purposes": set(),
+                    "structured": False,
                 }
                 tool_index[key] = bucket
             bucket["agents"].add(agent_id)
-            for scenario in [*scenarios[:2], *processes[:2]]:
-                bucket["scenarios"].add(scenario)
-            for capability in capabilities[:3]:
-                bucket["capabilities"].add(capability)
-            for process in processes[:3]:
-                bucket["processes"].add(process)
-            for source in sources[:3]:
-                bucket["sources"].add(source)
-            for rule in guardrails[:3]:
-                bucket["guardrails"].add(rule)
             for contract in capability_contracts:
                 tool_names = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
                 if tool not in tool_names:
                     continue
+                bucket["structured"] = True
                 capability_name = str(contract.get("name") or "").strip()
                 if capability_name:
                     bucket["capabilities"].add(capability_name[:120])
@@ -33379,6 +33420,7 @@ def _build_tooling_map_bootstrap_page(
                 tool_names = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
                 if tool not in tool_names:
                     continue
+                bucket["structured"] = True
                 source_name = str(contract.get("source") or "").strip()
                 if source_name:
                     bucket["sources"].add(source_name[:120])
@@ -33402,9 +33444,11 @@ def _build_tooling_map_bootstrap_page(
                     "sources": set(),
                     "guardrails": set(),
                     "purposes": set(),
+                    "structured": False,
                 }
                 tool_index[key] = bucket
             bucket["agents"].add(agent_id)
+            bucket["structured"] = True
             purpose = str(contract.get("purpose") or "").strip()
             if purpose:
                 bucket["purposes"].add(purpose[:140])
@@ -33424,6 +33468,21 @@ def _build_tooling_map_bootstrap_page(
                 text = str(value or "").strip()
                 if text:
                     bucket["guardrails"].add(text[:120])
+        for tool in all_tools:
+            key = tool.lower()
+            bucket = tool_index.get(key)
+            if bucket is None or bucket.get("structured"):
+                continue
+            for scenario in [*scenarios[:2], *processes[:2]]:
+                bucket["scenarios"].add(scenario)
+            for capability in capabilities[:2]:
+                bucket["capabilities"].add(capability)
+            for process in processes[:2]:
+                bucket["processes"].add(process)
+            for source in sources[:2]:
+                bucket["sources"].add(source)
+            for rule in guardrails[:2]:
+                bucket["guardrails"].add(rule)
 
     lines = [
         "# Tooling Map",
@@ -34049,7 +34108,7 @@ def _build_process_playbooks_bootstrap_page(
             escalation_metadata = task.get("standing_order_escalation") if isinstance(task.get("standing_order_escalation"), dict) else {}
             escalation_mode = str(escalation_metadata.get("mode") or "").strip()
             program = str(task.get("standing_order_program") or "").strip()
-            task_semantics = _build_task_contract_semantics(task)
+            task_semantics = _build_task_contract_semantics(task, pack_key=getattr(synthesis_pack, "key", None))
             trigger = str(task_semantics.get("trigger") or "").strip() or (
                 f"Scheduled task `{task_code or builtin_task}` runs on cron `{cron_expr}`"
                 if cron_expr

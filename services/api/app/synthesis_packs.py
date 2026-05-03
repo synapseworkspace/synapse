@@ -1089,8 +1089,6 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     str(playbook.get("trigger") or ""),
                     str(playbook.get("action") or ""),
                     str(playbook.get("output") or ""),
-                    " ".join(str(v).strip() for v in (playbook.get("artifacts") or []) if str(v).strip()),
-                    " ".join(str(v).strip() for v in (playbook.get("evidence") or []) if str(v).strip()),
                 ]
             )
         )
