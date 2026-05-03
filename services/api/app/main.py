@@ -2933,6 +2933,252 @@ def _list_project_core_space_keys(cur: Any, *, project_id: str) -> list[str]:
     return deduped or ["operations"]
 
 
+def _project_has_core_space_pages(cur: Any, *, project_id: str) -> bool:
+    if not _wiki_feature_table_exists(cur, "public.wiki_pages"):
+        return False
+    cur.execute(
+        """
+        SELECT 1
+        FROM wiki_pages
+        WHERE project_id = %s
+          AND position('/' in slug) > 0
+          AND (
+            slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+          )
+        LIMIT 1
+        """,
+        (
+            project_id,
+            "%/agent-capability-profile",
+            "%/tooling-map",
+            "%/data-sources-catalog",
+            "%/process-playbooks",
+            "%/company-operating-context",
+            "%/operational-logic-map",
+        ),
+    )
+    return cur.fetchone() is not None
+
+
+_RUNTIME_SURFACE_SPACE_STOPWORDS = {
+    "action",
+    "agent",
+    "ai",
+    "approval",
+    "assistant",
+    "authority",
+    "automation",
+    "binding",
+    "builtin",
+    "cargo",
+    "code",
+    "contract",
+    "control",
+    "cron",
+    "daily",
+    "data",
+    "day",
+    "decision",
+    "default",
+    "document",
+    "documents",
+    "driver",
+    "economy",
+    "entity",
+    "erp",
+    "exec",
+    "flow",
+    "graph",
+    "hint",
+    "incident",
+    "integration",
+    "kb",
+    "knowledge",
+    "latest",
+    "manifest",
+    "memory",
+    "model",
+    "monitor",
+    "notes",
+    "ops",
+    "order",
+    "orders",
+    "outbound",
+    "polling",
+    "postgres",
+    "process",
+    "program",
+    "readiness",
+    "registry",
+    "report",
+    "request",
+    "reschedule",
+    "route",
+    "runtime",
+    "scheduler",
+    "scenario",
+    "search",
+    "service",
+    "shift",
+    "sheet",
+    "source",
+    "standing",
+    "state",
+    "surface",
+    "sync",
+    "system",
+    "task",
+    "tool",
+    "tools",
+    "usage",
+    "v1",
+    "workflow",
+    "world",
+}
+
+_RUNTIME_SURFACE_SPACE_GENERIC = {"general", "operations", "runtime", "agents"}
+_RUNTIME_SURFACE_PREFERRED_SPACE_TOKENS = {
+    "billing",
+    "compliance",
+    "dispatch",
+    "finance",
+    "hr",
+    "legal",
+    "logistics",
+    "marketing",
+    "procurement",
+    "sales",
+    "security",
+    "support",
+    "warehouse",
+}
+
+
+def _extract_runtime_surface_space_candidates(*values: Any) -> list[str]:
+    weighted: dict[str, int] = {}
+
+    def _bump(token: str, weight: int) -> None:
+        normalized = _normalize_space_key(token, default="")
+        if not normalized or normalized in _RUNTIME_SURFACE_SPACE_STOPWORDS:
+            return
+        if len(normalized) < 3:
+            return
+        weighted[normalized] = int(weighted.get(normalized, 0)) + int(weight)
+
+    def _scan(value: Any, *, preferred_weight: int = 3, general_weight: int = 1) -> None:
+        if isinstance(value, list):
+            for item in value:
+                _scan(item, preferred_weight=preferred_weight, general_weight=general_weight)
+            return
+        if isinstance(value, dict):
+            for field in (
+                "space_key",
+                "wiki_space_key",
+                "domain",
+                "team",
+                "task_code",
+                "builtin_task",
+                "standing_order_program",
+                "name",
+                "capability",
+                "process",
+                "source",
+            ):
+                if field in value:
+                    _scan(value.get(field), preferred_weight=preferred_weight, general_weight=general_weight)
+            for field in ("capabilities", "processes", "tools", "sources", "source_hints"):
+                if field in value:
+                    _scan(value.get(field), preferred_weight=preferred_weight, general_weight=general_weight)
+            return
+        text = str(value or "").strip().lower()
+        if not text:
+            return
+        explicit = _normalize_space_key(text, default="")
+        explicit_ok = (
+            explicit
+            and "." not in text
+            and ":" not in text
+            and len([part for part in re.split(r"[^a-z0-9]+", text) if part]) <= 2
+        )
+        if explicit_ok and explicit not in _RUNTIME_SURFACE_SPACE_GENERIC and explicit not in _RUNTIME_SURFACE_SPACE_STOPWORDS:
+            _bump(explicit, preferred_weight + 1)
+        chunks = re.split(r"[^a-z0-9]+", text)
+        for idx, chunk in enumerate(chunks):
+            token = _normalize_space_key(chunk, default="")
+            if not token:
+                continue
+            if token in {"standing", "order", "scheduled", "builtin", "task"} and idx + 1 < len(chunks):
+                next_token = _normalize_space_key(chunks[idx + 1], default="")
+                if next_token:
+                    _bump(next_token, preferred_weight + 2)
+                continue
+            weight = preferred_weight if token in _RUNTIME_SURFACE_PREFERRED_SPACE_TOKENS else general_weight
+            _bump(token, weight)
+
+    for value in values:
+        _scan(value)
+    ranked = sorted(weighted.items(), key=lambda item: (-item[1], item[0]))
+    return [token for token, _ in ranked[:6]]
+
+
+def _infer_runtime_surface_core_space_keys(
+    *,
+    surfaces: list[Any] | None = None,
+    profiles: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    for surface in surfaces or []:
+        if surface is None:
+            continue
+        runtime_overview = surface.runtime_overview if hasattr(surface, "runtime_overview") and isinstance(surface.runtime_overview, dict) else {}
+        metadata = surface.metadata if hasattr(surface, "metadata") and isinstance(surface.metadata, dict) else {}
+        candidates.extend(
+            _extract_runtime_surface_space_candidates(
+                getattr(surface, "team", None),
+                getattr(surface, "role", None),
+                runtime_overview.get("org_code"),
+                runtime_overview.get("domain"),
+                metadata.get("space_key"),
+                metadata.get("wiki_space_key"),
+                metadata.get("domain"),
+                getattr(surface, "scheduled_tasks", None),
+                getattr(surface, "standing_orders", None),
+                getattr(surface, "capability_registry", None),
+                getattr(surface, "source_hints", None),
+            )
+        )
+    for profile in profiles or []:
+        if not isinstance(profile, dict):
+            continue
+        metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+        candidates.extend(
+            _extract_runtime_surface_space_candidates(
+                profile.get("team"),
+                profile.get("role"),
+                metadata.get("space_key"),
+                metadata.get("wiki_space_key"),
+                metadata.get("scheduled_task_contracts"),
+                metadata.get("standing_orders"),
+                metadata.get("capability_contracts"),
+                metadata.get("source_binding_contracts"),
+            )
+        )
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        normalized = _normalize_space_key(item, default="")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped or ["operations"]
+
+
 def _serialize_agent_profile_row(row: tuple[Any, ...]) -> dict[str, Any]:
     metadata = row[11] if isinstance(row[11], dict) else {}
     return {
@@ -4125,6 +4371,16 @@ def _build_runtime_agent_capability_matrix(
                     ]
                 )
             )[:6]
+        routing_hints: list[str] = []
+        routing = metadata.get("model_routing")
+        if isinstance(routing, dict):
+            for key in ("primary", "default", "fallback", "secondary", "strategy", "mode"):
+                value = str(routing.get(key) or "").strip()
+                if value:
+                    routing_hints.append(f"{key}: {value}"[:220])
+        elif isinstance(routing, str) and routing.strip():
+            routing_hints.append(routing.strip()[:220])
+
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -4806,6 +5062,104 @@ def _build_runtime_surface_capability_contracts(surface: AgentRuntimeSurfaceAgen
             }
         )
     matrix.sort(key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("agent_id") or "")))
+    return matrix
+
+
+def _build_agent_directory_profile_fallback_matrix(
+    cur: Any,
+    *,
+    project_id: str,
+    max_agents: int,
+) -> list[dict[str, Any]]:
+    if not _agent_directory_table_exists_from_cursor(cur):
+        return []
+    cur.execute(
+        """
+        SELECT
+          agent_id,
+          display_name,
+          team,
+          role,
+          status,
+          responsibilities,
+          tools,
+          data_sources,
+          limits,
+          metadata
+        FROM agent_directory_profiles
+        WHERE project_id = %s
+        ORDER BY updated_at DESC
+        LIMIT %s
+        """,
+        (project_id, max(1, min(5000, int(max_agents)))),
+    )
+    rows = cur.fetchall() or []
+    matrix: list[dict[str, Any]] = []
+    for row in rows:
+        agent_id = str(row[0] or "").strip()
+        if not agent_id:
+            continue
+        metadata = row[9] if isinstance(row[9], dict) else {}
+        runtime_overview = metadata.get("runtime_overview") if isinstance(metadata.get("runtime_overview"), dict) else {}
+        try:
+            running_instances = max(0, int(runtime_overview.get("running_instances") or 0))
+        except (TypeError, ValueError):
+            running_instances = 0
+        matrix.append(
+            {
+                "agent_id": agent_id,
+                "display_name": str(row[1] or agent_id).strip() or agent_id,
+                "team": str(row[2] or "").strip() or "Unassigned",
+                "role": str(row[3] or "").strip() or "Agent",
+                "status": str(row[4] or "active").strip() or "active",
+                "responsibilities": row[5] if isinstance(row[5], list) else [],
+                "tools": row[6] if isinstance(row[6], list) else [],
+                "data_sources": row[7] if isinstance(row[7], list) else [],
+                "limits": row[8] if isinstance(row[8], list) else [],
+                "allowed_actions": metadata.get("allowed_actions") if isinstance(metadata.get("allowed_actions"), list) else [],
+                "approval_rules": metadata.get("approval_rules") if isinstance(metadata.get("approval_rules"), list) else [],
+                "registry_tools": [
+                    str(item.get("tool") or item.get("name") or "").strip()
+                    for item in (metadata.get("tool_registry") or [])
+                    if isinstance(item, dict) and str(item.get("tool") or item.get("name") or "").strip()
+                ][:20],
+                "tool_contracts": [item for item in (metadata.get("tool_registry") or []) if isinstance(item, dict)][:20],
+                "capability_contracts": [item for item in (metadata.get("capability_contracts") or []) if isinstance(item, dict)][:20],
+                "source_binding_contracts": [item for item in (metadata.get("source_binding_contracts") or []) if isinstance(item, dict)][:20],
+                "scheduled_tasks": metadata.get("scheduled_tasks") if isinstance(metadata.get("scheduled_tasks"), list) else [],
+                "scheduled_task_contracts": [item for item in (metadata.get("scheduled_task_contracts") or []) if isinstance(item, dict)][:20],
+                "standing_orders": metadata.get("standing_orders") if isinstance(metadata.get("standing_orders"), list) else [],
+                "source_bindings": metadata.get("source_bindings") if isinstance(metadata.get("source_bindings"), list) else [],
+                "integrations": metadata.get("integrations") if isinstance(metadata.get("integrations"), list) else [],
+                "model_routing": routing_hints[:6],
+                "runtime_mode": str(runtime_overview.get("runtime_mode") or "").strip() or None,
+                "running_instances": running_instances,
+                "prompt_signal": str(
+                    metadata.get("system_prompt")
+                    or metadata.get("prompt")
+                    or metadata.get("instructions")
+                    or metadata.get("agent_prompt")
+                    or ""
+                ).strip()
+                or None,
+                "static_config_keys": [
+                    str(key).strip()
+                    for key in list((metadata.get("config") or {}).keys())[:8]
+                    if isinstance(metadata.get("config"), dict) and str(key).strip()
+                ],
+                "confidence": 0.8 if running_instances > 0 else 0.65,
+                "observed_strengths": [],
+                "observed_decisions": [],
+                "observed_escalations": [],
+                "observed_questions": [],
+                "observed_uncertainties": [],
+                "observed_actions": [],
+                "latest_reflection_summary": str((metadata.get("latest_reflection") or {}).get("summary") or "").strip() or None,
+                "latest_reflection_outcome": str((metadata.get("latest_reflection") or {}).get("outcome") or "").strip() or None,
+                "reflection_count": 0,
+                "evidence": [],
+            }
+        )
     return matrix
 
 
@@ -32625,11 +32979,25 @@ def _build_data_sources_catalog_pages(
 
     def _infer_runtime_usage_from_matrix(
         *,
-        matrix_rows: list[dict[str, Any]],
+        matrix_rows: list[dict[str, Any]] | None,
         source_ref: str,
         source_type: str,
         config: dict[str, Any],
     ) -> dict[str, Any]:
+        def _safe_items(value: Any) -> list[Any]:
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return value
+            if isinstance(value, tuple):
+                return list(value)
+            if isinstance(value, set):
+                return list(value)
+            if isinstance(value, dict):
+                return [value]
+            text = str(value or "").strip()
+            return [text] if text else []
+
         inferred = {
             "agents": set(),
             "scenarios": set(),
@@ -32648,26 +33016,28 @@ def _build_data_sources_catalog_pages(
             _normalize_statement_text(str(config.get("sql_table") or "")),
         }
         usage_tokens = {token for token in usage_tokens if token}
-        for item in matrix_rows:
+        for item in matrix_rows or []:
+            if not isinstance(item, dict):
+                continue
             agent_id = str(item.get("agent_id") or "").strip()
             if not agent_id:
                 continue
             item_sources = {
                 _normalize_statement_text(str(value or ""))
                 for value in [
-                    *(item.get("data_sources") or []),
-                    *(item.get("source_bindings") or []),
+                    *_safe_items(item.get("data_sources")),
+                    *_safe_items(item.get("source_bindings")),
                 ]
                 if str(value or "").strip()
             }
             contract_sources = {
                 _normalize_statement_text(str(value or ""))
-                for contract in (item.get("tool_contracts") or [])
+                for contract in _safe_items(item.get("tool_contracts"))
                 if isinstance(contract, dict)
-                for value in (contract.get("sources") or [])
+                for value in _safe_items(contract.get("sources"))
                 if str(value or "").strip()
             }
-            binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
+            binding_contracts = [contract for contract in _safe_items(item.get("source_binding_contracts")) if isinstance(contract, dict)]
             binding_sources = {
                 _normalize_statement_text(str(contract.get("source") or ""))
                 for contract in binding_contracts
@@ -32675,13 +33045,13 @@ def _build_data_sources_catalog_pages(
             }
             if usage_tokens.intersection(item_sources.union(contract_sources).union(binding_sources)):
                 inferred["agents"].add(agent_id)
-                inferred["scenarios"].update(set(item.get("scenario_examples") or []))
-                inferred["capabilities"].update(set(item.get("responsibilities") or []))
-                inferred["actions"].update(set(item.get("allowed_actions") or []))
-                inferred["actions"].update(set(item.get("observed_actions") or []))
-                inferred["processes"].update(set(item.get("standing_orders") or []))
-                inferred["processes"].update(set(item.get("scheduled_tasks") or []))
-                inferred["tools"].update(set(item.get("tools") or []))
+                inferred["scenarios"].update({str(v).strip() for v in _safe_items(item.get("scenario_examples")) if str(v).strip()})
+                inferred["capabilities"].update({str(v).strip() for v in _safe_items(item.get("responsibilities")) if str(v).strip()})
+                inferred["actions"].update({str(v).strip() for v in _safe_items(item.get("allowed_actions")) if str(v).strip()})
+                inferred["actions"].update({str(v).strip() for v in _safe_items(item.get("observed_actions")) if str(v).strip()})
+                inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("standing_orders")) if str(v).strip()})
+                inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("scheduled_tasks")) if str(v).strip()})
+                inferred["tools"].update({str(v).strip() for v in _safe_items(item.get("tools")) if str(v).strip()})
                 for contract in binding_contracts:
                     normalized_source = _normalize_statement_text(str(contract.get("source") or ""))
                     if normalized_source and normalized_source in usage_tokens:
@@ -32691,12 +33061,12 @@ def _build_data_sources_catalog_pages(
                 runtime_active = bool(item.get("running_instances")) or str(item.get("status") or "").strip().lower() == "active"
                 if runtime_active:
                     inferred["agents"].add(agent_id)
-                    inferred["capabilities"].update(set(item.get("responsibilities") or []))
-                    inferred["processes"].update(set(item.get("standing_orders") or []))
-                    inferred["processes"].update(set(item.get("scheduled_tasks") or []))
-                    inferred["actions"].update(set(item.get("allowed_actions") or []))
-                    inferred["tools"].update(set(item.get("tools") or []))
-                    inferred["scenarios"].update(set(item.get("scenario_examples") or []))
+                    inferred["capabilities"].update({str(v).strip() for v in _safe_items(item.get("responsibilities")) if str(v).strip()})
+                    inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("standing_orders")) if str(v).strip()})
+                    inferred["processes"].update({str(v).strip() for v in _safe_items(item.get("scheduled_tasks")) if str(v).strip()})
+                    inferred["actions"].update({str(v).strip() for v in _safe_items(item.get("allowed_actions")) if str(v).strip()})
+                    inferred["tools"].update({str(v).strip() for v in _safe_items(item.get("tools")) if str(v).strip()})
+                    inferred["scenarios"].update({str(v).strip() for v in _safe_items(item.get("scenario_examples")) if str(v).strip()})
                     inferred["contracts"].extend(binding_contracts[:4])
         return inferred
 
@@ -33239,6 +33609,8 @@ def _build_agent_capability_bootstrap_page(
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
         matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(cur, project_id=project_id, max_agents=max_agents)
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
 
@@ -33366,6 +33738,7 @@ def _build_agent_capability_bootstrap_page(
             model_routing = [str(v).strip() for v in (item.get("model_routing") or []) if str(v).strip()]
             registry_tools = [str(v).strip() for v in (item.get("registry_tools") or []) if str(v).strip()]
             tool_contracts = [contract for contract in (item.get("tool_contracts") or []) if isinstance(contract, dict)]
+            capability_contracts = [contract for contract in (item.get("capability_contracts") or []) if isinstance(contract, dict)]
             prompt_signal = str(item.get("prompt_signal") or "").strip()
             observed_strengths = [str(v).strip() for v in (item.get("observed_strengths") or []) if str(v).strip()]
             observed_decisions = [str(v).strip() for v in (item.get("observed_decisions") or []) if str(v).strip()]
@@ -33450,6 +33823,22 @@ def _build_agent_capability_bootstrap_page(
                     contract_bits.append(snippet)
                 if contract_bits:
                     detail_lines.append(f"- Registered tool contracts: {'; '.join(contract_bits[:3])}")
+            if capability_contracts:
+                capability_bits: list[str] = []
+                for contract in capability_contracts[:4]:
+                    capability_name = str(contract.get("name") or "").strip()
+                    if not capability_name:
+                        continue
+                    processes = [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]
+                    sources = [str(v).strip() for v in (contract.get("sources") or []) if str(v).strip()]
+                    snippet = capability_name
+                    if processes:
+                        snippet = f"{snippet} [{processes[0][:60]}]"
+                    if sources:
+                        snippet = f"{snippet} (source: {sources[0][:60]})"
+                    capability_bits.append(snippet)
+                if capability_bits:
+                    detail_lines.append(f"- Declared capability contracts: {'; '.join(capability_bits[:4])}")
             if prompt_signal:
                 detail_lines.append(f"- Prompt context: {prompt_signal[:200]}")
             if scenarios:
@@ -33513,6 +33902,8 @@ def _build_tooling_map_bootstrap_page(
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
         matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(cur, project_id=project_id, max_agents=max_agents)
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
 
@@ -33525,6 +33916,8 @@ def _build_tooling_map_bootstrap_page(
         registry_tools = [str(tool).strip() for tool in (item.get("registry_tools") or []) if str(tool).strip()]
         all_tools = list(dict.fromkeys([*tools, *registry_tools]))[:24]
         tool_contracts = [contract for contract in (item.get("tool_contracts") or []) if isinstance(contract, dict)]
+        capability_contracts = [contract for contract in (item.get("capability_contracts") or []) if isinstance(contract, dict)]
+        source_binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
         scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
         capabilities = [str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()]
         processes = [
@@ -33568,6 +33961,30 @@ def _build_tooling_map_bootstrap_page(
                 bucket["sources"].add(source)
             for rule in guardrails[:3]:
                 bucket["guardrails"].add(rule)
+            for contract in capability_contracts:
+                tool_names = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
+                if tool not in tool_names:
+                    continue
+                capability_name = str(contract.get("name") or "").strip()
+                if capability_name:
+                    bucket["capabilities"].add(capability_name[:120])
+                for scenario in [str(v).strip() for v in (contract.get("scenarios") or []) if str(v).strip()]:
+                    bucket["scenarios"].add(scenario[:120])
+                for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
+                    bucket["processes"].add(process[:120])
+                for source in [str(v).strip() for v in (contract.get("sources") or []) if str(v).strip()]:
+                    bucket["sources"].add(source[:120])
+            for contract in source_binding_contracts:
+                tool_names = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
+                if tool not in tool_names:
+                    continue
+                source_name = str(contract.get("source") or "").strip()
+                if source_name:
+                    bucket["sources"].add(source_name[:120])
+                for capability in [str(v).strip() for v in (contract.get("capabilities") or []) if str(v).strip()]:
+                    bucket["capabilities"].add(capability[:120])
+                for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
+                    bucket["processes"].add(process[:120])
         for contract in tool_contracts:
             tool_name = str(contract.get("tool") or "").strip()
             if not tool_name:
@@ -33816,6 +34233,12 @@ def _build_process_playbooks_bootstrap_page(
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
         matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3))
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(
+                cur,
+                project_id=project_id,
+                max_agents=max(50, int(max_signals) * 3),
+            )
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3))
     bundle_rows = _load_evidence_bundles_for_bootstrap(
@@ -34366,6 +34789,8 @@ def _build_company_operating_context_bootstrap_page(
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
         matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=200)
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(cur, project_id=project_id, max_agents=200)
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=200)
     team_rollup: dict[str, int] = {}
@@ -34390,6 +34815,19 @@ def _build_company_operating_context_bootstrap_page(
             (project_id, max(5, min(30, int(max_signals)))),
         )
         claims_rollup = [(str(row[0] or "general"), int(row[1] or 0)) for row in (cur.fetchall() or [])]
+    if not claims_rollup and matrix:
+        domain_counts: dict[str, int] = {}
+        for item in matrix:
+            for contract in [entry for entry in (item.get("capability_contracts") or []) if isinstance(entry, dict)]:
+                capability_name = str(contract.get("name") or "").strip().lower()
+                if capability_name:
+                    domain_counts[capability_name] = int(domain_counts.get(capability_name, 0)) + 1
+            for process_name in [str(v).strip().lower() for v in (item.get("standing_orders") or []) if str(v).strip()]:
+                domain_counts[process_name] = int(domain_counts.get(process_name, 0)) + 1
+        claims_rollup = [
+            (name, total)
+            for name, total in sorted(domain_counts.items(), key=lambda pair: (-pair[1], pair[0]))[: max(5, min(30, int(max_signals)))]
+        ]
 
     lines = [
         "# Company Operating Context",
@@ -34619,6 +35057,12 @@ def _build_operational_logic_bootstrap_page(
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
         matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(40, int(max_signals) * 2))
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(
+                cur,
+                project_id=project_id,
+                max_agents=max(40, int(max_signals) * 2),
+            )
     if not matrix:
         matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(40, int(max_signals) * 2))
     if _wiki_feature_table_exists(cur, "public.claims"):
@@ -47230,7 +47674,18 @@ def sync_agent_runtime_surface(
                         for item in (payload.refresh_space_keys or [])
                         if _normalize_space_key(item, default="")
                     ]
-                    target_spaces = requested_spaces or _list_project_core_space_keys(cur, project_id=payload.project_id)
+                    target_spaces = list(requested_spaces)
+                    if not target_spaces:
+                        existing_spaces = (
+                            _list_project_core_space_keys(cur, project_id=payload.project_id)
+                            if _project_has_core_space_pages(cur, project_id=payload.project_id)
+                            else []
+                        )
+                        inferred_spaces = _infer_runtime_surface_core_space_keys(
+                            surfaces=list(payload.agents or []),
+                            profiles=profiles,
+                        )
+                        target_spaces = existing_spaces or inferred_spaces or ["operations"]
                     seen_spaces: set[str] = set()
                     for space_key in target_spaces:
                         normalized_space = _normalize_space_key(space_key, default="")

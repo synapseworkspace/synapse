@@ -11,6 +11,7 @@ try:
         _bootstrap_page_importance,
         _build_agent_reflection_claim_payloads,
         _build_agent_profile_from_runtime_surface,
+        _build_agent_directory_profile_fallback_matrix,
         _build_data_sources_catalog_pages,
         _build_agent_capability_bootstrap_page,
         _build_tooling_map_bootstrap_page,
@@ -35,6 +36,7 @@ try:
         _compute_agent_capability_confidence,
         _derive_runtime_agent_responsibilities,
         _derive_runtime_agent_role,
+        _infer_runtime_surface_core_space_keys,
         _draft_matches_bulk_filter,
         _evaluate_agent_capability_bootstrap_contract,
         _is_daily_summary_like_draft_row,
@@ -57,6 +59,7 @@ except Exception:  # pragma: no cover
     _bootstrap_page_importance = None
     _build_agent_reflection_claim_payloads = None
     _build_agent_profile_from_runtime_surface = None
+    _build_agent_directory_profile_fallback_matrix = None
     _build_data_sources_catalog_pages = None
     _build_agent_capability_bootstrap_page = None
     _build_tooling_map_bootstrap_page = None
@@ -81,6 +84,7 @@ except Exception:  # pragma: no cover
     _compute_agent_capability_confidence = None
     _derive_runtime_agent_responsibilities = None
     _derive_runtime_agent_role = None
+    _infer_runtime_surface_core_space_keys = None
     _draft_matches_bulk_filter = None
     _evaluate_agent_capability_bootstrap_contract = None
     _is_daily_summary_like_draft_row = None
@@ -118,6 +122,7 @@ except Exception:  # pragma: no cover
     or _page_type_freshness_thresholds is None
     or _build_agent_reflection_claim_payloads is None
     or _build_agent_profile_from_runtime_surface is None
+    or _build_agent_directory_profile_fallback_matrix is None
     or _prepend_bootstrap_publish_notice is None
     or _build_project_wiki_quality_report_from_rows is None
     or AgentReflectionSubmitRequest is None
@@ -126,6 +131,7 @@ except Exception:  # pragma: no cover
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
     or _derive_runtime_agent_role is None
+    or _infer_runtime_surface_core_space_keys is None
     or _draft_matches_bulk_filter is None
     or _evaluate_agent_capability_bootstrap_contract is None
     or _is_daily_summary_like_draft_row is None
@@ -215,6 +221,33 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(metadata["source_binding_contracts"][0]["source"], "driver_shift_daily_latest")
         self.assertEqual(metadata["capability_contracts"][0]["name"], "documents_orders")
         self.assertEqual(metadata["runtime_overview"]["running_instances"], 6)
+
+    def test_runtime_surface_space_inference_prefers_domain_token(self) -> None:
+        surface = AgentRuntimeSurfaceAgentIn(
+            agent_id="logistics-assistant",
+            team="operations",
+            scheduled_tasks=[
+                {
+                    "task_code": "standing_order.logistics.incident.monitor",
+                    "builtin_task": "logistics_incident_monitor",
+                },
+                {
+                    "task_code": "standing_order.logistics.driver_economy_sheet",
+                    "builtin_task": "driver_economy_report_to_sheet",
+                },
+            ],
+            capability_registry=[
+                {
+                    "name": "documents_orders",
+                    "processes": ["daily report", "incident monitor"],
+                    "source_hints": ["postgres_sql:memory_items:polling"],
+                },
+                "logistics_world_model",
+            ],
+        )
+        spaces = _infer_runtime_surface_core_space_keys(surfaces=[surface], profiles=[])
+        self.assertEqual(spaces[0], "logistics")
+        self.assertNotIn("standing-order-logistics-incident-monitor", spaces)
 
     def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
         scope = _bundle_promotion_scope_for_page_type("process")
