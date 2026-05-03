@@ -9065,6 +9065,13 @@ export default function App() {
                                     : "no pages planned"}.
                                 </Text>
                               ) : null}
+                              <Text size="xs" c="dimmed">
+                                Preview sync preset will use {selectedAdoptionBusinessProfile?.label || "the selected profile"} and seed{" "}
+                                {selectedAdoptionBusinessProfile?.default_space_key || effectiveBusinessSpaceKey}
+                                {selectedAdoptionBusinessProfile?.role_template_key
+                                  ? ` with ${selectedAdoptionBusinessProfile.role_template_key} template defaults`
+                                  : ""}.
+                              </Text>
                             </Stack>
                           </Paper>
                           <Group gap="xs" wrap="wrap">
@@ -11889,6 +11896,12 @@ export default function App() {
                     >
                       Preview starter pages
                     </Button>
+                    {starterBootstrapPreview?.dry_run ? (
+                      <Text size="xs" c="dimmed">
+                        Preview ready: {Number(starterBootstrapPreview.plan?.pages_total || 0)} page(s) in{" "}
+                        {starterBootstrapPreview.space_key || effectiveBusinessSpaceKey}. Apply will keep the same profile defaults.
+                      </Text>
+                    ) : null}
                   </Stack>
                 ) : null}
               </Stack>
