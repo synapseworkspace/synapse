@@ -69,6 +69,42 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in workflow_signals))
         self.assertTrue(any("connected source streams" in item.lower() for item in snapshot_notes))
 
+    def test_support_pack_deepens_ticket_playbook(self) -> None:
+        pack = get_synthesis_pack("support_ops")
+        playbook = {
+            "title": "Ticket Escalation Playbook",
+            "purpose": "Document the process.",
+            "trigger": "Queue rule fires.",
+            "action": "ticket_escalation_review",
+            "steps": ["Run task.", "Record result."],
+            "output": "Workflow done.",
+        }
+        refined = pack.refine_process_playbook(
+            playbook=playbook,
+            source_kind="scheduled_task",
+            normalize_statement_text=_normalize,
+        )
+        self.assertIn("support", str(refined["purpose"]).lower())
+        self.assertTrue(any("customer" in str(step).lower() or "queue" in str(step).lower() for step in refined["steps"]))
+
+    def test_sales_pack_deepens_handoff_playbook(self) -> None:
+        pack = get_synthesis_pack("sales_ops")
+        playbook = {
+            "title": "Deal Handoff Playbook",
+            "purpose": "Document the process.",
+            "trigger": "Handoff workflow fires.",
+            "action": "deal_handoff_review",
+            "steps": ["Run task.", "Record result."],
+            "output": "Workflow done.",
+        }
+        refined = pack.refine_process_playbook(
+            playbook=playbook,
+            source_kind="scheduled_task",
+            normalize_statement_text=_normalize,
+        )
+        self.assertIn("revenue", str(refined["purpose"]).lower())
+        self.assertTrue(any("handoff" in str(step).lower() or "stage" in str(step).lower() for step in refined["steps"]))
+
 
 if __name__ == "__main__":
     unittest.main()

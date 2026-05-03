@@ -258,7 +258,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "key": "support_center",
         "label": "Support Center",
         "description": "Triage, escalation, customer communication, and incident response heavy support organizations.",
-        "synthesis_pack": "generic_ops",
+        "synthesis_pack": "support_ops",
         "starter_profile": "support_ops",
         "role_template_key": "support_ops",
         "default_space_key": "support",
@@ -270,7 +270,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "key": "sales_revenue_ops",
         "label": "Sales / Revenue Ops",
         "description": "Qualification, stage management, and sales-to-success handoff driven teams.",
-        "synthesis_pack": "generic_ops",
+        "synthesis_pack": "sales_ops",
         "starter_profile": "sales_ops",
         "role_template_key": "sales_ops",
         "default_space_key": "sales",
@@ -1353,9 +1353,245 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         }
 
 
+class SupportOpsSynthesisPack(GenericOpsSynthesisPack):
+    key = "support_ops"
+
+    def derive_task_semantics(
+        self,
+        task_contract: dict[str, Any],
+        *,
+        normalize_items: NormalizeItemsFn,
+        extract_runtime_items: ExtractRuntimeItemsFn,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        semantics = _build_generic_task_semantics(
+            task_contract,
+            normalize_items=normalize_items,
+            extract_runtime_items=extract_runtime_items,
+        )
+        task_code = str(task_contract.get("task_code") or task_contract.get("name") or "").strip()
+        builtin_task = str(task_contract.get("builtin_task") or "").strip()
+        program = str(task_contract.get("standing_order_program") or "").strip()
+        tokens = normalize_statement_text(" ".join([task_code, builtin_task, program]))
+        if "ticket" in tokens or "incident" in tokens or "escalat" in tokens:
+            semantics.update(
+                {
+                    "purpose": "Run a recurring support workflow that keeps queue routing, escalation, and customer communication consistent.",
+                    "trigger": f"Recurring support workflow runs on `{semantics['schedule_text']}` and reviews open queue or incident signals.",
+                    "steps": [
+                        "Load the latest ticket, queue, or escalation context for the workflow window.",
+                        "Route or escalate work according to the declared support policy and queue ownership.",
+                        "Record customer-visible next action, blocking dependency, or required handoff.",
+                        "Write back the updated support state for the next operator or automation cycle.",
+                    ],
+                    "outputs": "Support workflow state refreshed with owner, escalation path, and customer-visible next step.",
+                }
+            )
+        return semantics
+
+    def refine_process_playbook(
+        self,
+        *,
+        playbook: dict[str, Any],
+        source_kind: str,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_kind
+        refined = dict(playbook)
+        tokens = normalize_statement_text(
+            " ".join(
+                [
+                    str(refined.get("title") or ""),
+                    str(refined.get("trigger") or ""),
+                    str(refined.get("action") or ""),
+                    str(refined.get("output") or ""),
+                ]
+            )
+        )
+        if "ticket" in tokens or "incident" in tokens or "escalat" in tokens:
+            refined.update(
+                {
+                    "purpose": "Turn recurring ticket or escalation patterns into reusable support operating procedures.",
+                    "steps": [
+                        "Capture the incoming issue, severity, affected customer scope, and current SLA posture.",
+                        "Route the work to the right queue, owner, or escalation path based on the declared support rules.",
+                        "Record the customer-visible next step and any blocking dependencies before handoff.",
+                        "Close the loop with an explicit resolution or escalation note for the next operator.",
+                    ],
+                    "output": "Ticket or escalation state updated with owner, SLA posture, and customer-visible next action.",
+                    "verification": [
+                        "Confirm routing matched the intended queue or escalation policy.",
+                        "Verify the customer-visible status and next checkpoint were recorded clearly.",
+                    ],
+                }
+            )
+        elif "daily" in tokens and "report" in tokens:
+            refined.update(
+                {
+                    "purpose": "Produce a recurring support operations digest with queue pressure, blockers, escalations, and customer-impact signals.",
+                    "steps": [
+                        "Collect queue metrics, blocker counts, escalation summaries, and unresolved customer-impact signals.",
+                        "Assemble the support operating digest for the intended review audience.",
+                        "Highlight SLA breaches, at-risk tickets, and repeated failure patterns that need human action.",
+                        "Publish the digest and attach the expected follow-up path.",
+                    ],
+                    "output": "Published support operations digest with queue health, escalations, and follow-up actions.",
+                }
+            )
+        return refined
+
+    def build_company_context_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_counts: list[tuple[str, int]] | None,
+        claims_rollup: list[tuple[str, int]] | None,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del normalize_statement_text
+        queue_signals = 0
+        escalation_signals = 0
+        for item in matrix_rows or []:
+            if not isinstance(item, dict):
+                continue
+            queue_signals += len([str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()])
+            escalation_signals += len([str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()])
+        return {
+            "snapshot_notes": [
+                f"Queue-oriented recurring workflows observed: {queue_signals}.",
+                f"Explicit escalation boundaries observed: {escalation_signals}.",
+            ],
+            "workflow_signals": [],
+            "principles": [
+                "Customer-facing escalations should stay explicit, time-bounded, and tied to queue ownership.",
+                "Support workflows should prefer reusable routing rules over one-off operator memory.",
+                "Resolution notes should be written so the next human or agent can resume without hidden context.",
+            ],
+        }
+
+
+class SalesOpsSynthesisPack(GenericOpsSynthesisPack):
+    key = "sales_ops"
+
+    def derive_task_semantics(
+        self,
+        task_contract: dict[str, Any],
+        *,
+        normalize_items: NormalizeItemsFn,
+        extract_runtime_items: ExtractRuntimeItemsFn,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        semantics = _build_generic_task_semantics(
+            task_contract,
+            normalize_items=normalize_items,
+            extract_runtime_items=extract_runtime_items,
+        )
+        task_code = str(task_contract.get("task_code") or task_contract.get("name") or "").strip()
+        builtin_task = str(task_contract.get("builtin_task") or "").strip()
+        program = str(task_contract.get("standing_order_program") or "").strip()
+        tokens = normalize_statement_text(" ".join([task_code, builtin_task, program]))
+        if "deal" in tokens or "qualification" in tokens or "handoff" in tokens or "revenue" in tokens:
+            semantics.update(
+                {
+                    "purpose": "Run a recurring revenue-ops workflow that keeps qualification, stage movement, and handoffs explicit.",
+                    "trigger": f"Recurring revenue-ops workflow runs on `{semantics['schedule_text']}` and reviews the current deal or handoff state.",
+                    "steps": [
+                        "Load the latest qualification, stage, or handoff context for the workflow window.",
+                        "Check required criteria before changing ownership, stage, or downstream handoff status.",
+                        "Surface blockers, missing context, or revenue-risk exceptions before advancing the workflow.",
+                        "Write back the next stage decision or handoff package for the next owner.",
+                    ],
+                    "outputs": "Revenue workflow updated with explicit owner, next stage, and missing context signals.",
+                }
+            )
+        return semantics
+
+    def refine_process_playbook(
+        self,
+        *,
+        playbook: dict[str, Any],
+        source_kind: str,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_kind
+        refined = dict(playbook)
+        tokens = normalize_statement_text(
+            " ".join(
+                [
+                    str(refined.get("title") or ""),
+                    str(refined.get("trigger") or ""),
+                    str(refined.get("action") or ""),
+                    str(refined.get("output") or ""),
+                ]
+            )
+        )
+        if "deal" in tokens or "handoff" in tokens or "qualification" in tokens or "revenue" in tokens:
+            refined.update(
+                {
+                    "purpose": "Convert recurring qualification, stage-management, and handoff work into reusable revenue operations SOPs.",
+                    "steps": [
+                        "Capture the current deal stage, owner, and any missing qualification signal.",
+                        "Validate that the required stage criteria or handoff inputs are present before advancing.",
+                        "Escalate exceptions such as missing stakeholders, unclear scope, or revenue-risk blockers.",
+                        "Record the next stage decision or handoff package in a reusable way for the next operator.",
+                    ],
+                    "output": "Deal or handoff state updated with explicit next step, owner, and missing qualification gaps.",
+                    "verification": [
+                        "Confirm the stage transition or handoff matched the declared revenue-ops policy.",
+                        "Verify missing context was surfaced before downstream teams inherited the workflow.",
+                    ],
+                }
+            )
+        elif "daily" in tokens and "report" in tokens:
+            refined.update(
+                {
+                    "purpose": "Produce a recurring revenue-ops digest with pipeline movement, blockers, and handoff risk.",
+                    "steps": [
+                        "Collect the latest pipeline movement, qualification gaps, and pending handoff blockers.",
+                        "Assemble the digest for sales, revenue operations, or success stakeholders.",
+                        "Highlight stalled deals, at-risk handoffs, and missing data needed for stage progression.",
+                        "Publish the digest and attach the next follow-up expectations.",
+                    ],
+                    "output": "Published revenue-ops digest with pipeline movement, handoff blockers, and next actions.",
+                }
+            )
+        return refined
+
+    def build_company_context_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_counts: list[tuple[str, int]] | None,
+        claims_rollup: list[tuple[str, int]] | None,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_counts, claims_rollup, normalize_statement_text
+        handoff_signals = 0
+        qualification_signals = 0
+        for item in matrix_rows or []:
+            if not isinstance(item, dict):
+                continue
+            handoff_signals += len([str(v).strip() for v in (item.get("standing_orders") or []) if "handoff" in str(v).lower()])
+            qualification_signals += len([str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()])
+        return {
+            "snapshot_notes": [
+                f"Revenue handoff workflows observed: {handoff_signals}.",
+                f"Qualification/capability signals observed: {qualification_signals}.",
+            ],
+            "workflow_signals": [],
+            "principles": [
+                "Qualification and stage changes should be explicit enough that downstream teams inherit clean context.",
+                "Revenue handoffs should capture commitments, blockers, and owner transitions without hidden operator knowledge.",
+                "Pipeline summaries should surface risk and missing context before they become customer-facing failures.",
+            ],
+        }
+
+
 _PACKS: dict[str, SynthesisPack] = {
     "generic_ops": GenericOpsSynthesisPack(),
     "logistics_ops": LogisticsOpsSynthesisPack(),
+    "support_ops": SupportOpsSynthesisPack(),
+    "sales_ops": SalesOpsSynthesisPack(),
 }
 
 

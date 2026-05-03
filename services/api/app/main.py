@@ -2501,8 +2501,8 @@ def _render_agent_changelog_markdown(*, profile: dict[str, Any], actor: str) -> 
     )
 
 
-def _build_task_contract_semantics(task_contract: dict[str, Any]) -> dict[str, Any]:
-    return get_synthesis_pack("logistics_ops").derive_task_semantics(
+def _build_task_contract_semantics(task_contract: dict[str, Any], *, pack_key: str | None = None) -> dict[str, Any]:
+    return get_synthesis_pack(pack_key).derive_task_semantics(
         task_contract,
         normalize_items=lambda value: _normalize_agent_directory_items(value, limit=6),
         extract_runtime_items=_runtime_surface_extract_items,
@@ -2514,6 +2514,10 @@ def _synthesis_pack_for_space_key(space_key: str | None) -> Any:
     normalized = _normalize_space_key(space_key or "", default="operations")
     if normalized == "logistics":
         return get_synthesis_pack("logistics_ops")
+    if normalized == "support":
+        return get_synthesis_pack("support_ops")
+    if normalized == "sales":
+        return get_synthesis_pack("sales_ops")
     return get_synthesis_pack("generic_ops")
 
 
@@ -2991,7 +2995,7 @@ def _infer_runtime_surface_core_space_keys(
     surfaces: list[Any] | None = None,
     profiles: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    return get_synthesis_pack("logistics_ops").infer_core_space_keys(
+    return get_synthesis_pack("generic_ops").infer_core_space_keys(
         surfaces=surfaces,
         profiles=profiles,
         normalize_space_key=lambda value: _normalize_space_key(value, default=""),
@@ -3207,7 +3211,25 @@ def _render_agent_scheduled_task_runbook_markdown(
     builtin_task = str(task_contract.get("builtin_task") or "").strip()
     timezone_value = str(task_contract.get("timezone") or "").strip()
     program = str(task_contract.get("standing_order_program") or "").strip()
-    semantics = _build_task_contract_semantics(task_contract)
+    metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+    pack_key = None
+    for candidate in (
+        metadata.get("space_key"),
+        metadata.get("wiki_space_key"),
+        metadata.get("domain"),
+        (metadata.get("runtime_overview") or {}).get("domain") if isinstance(metadata.get("runtime_overview"), dict) else None,
+    ):
+        normalized = _normalize_space_key(candidate, default="")
+        if normalized == "logistics":
+            pack_key = "logistics_ops"
+            break
+        if normalized == "support":
+            pack_key = "support_ops"
+            break
+        if normalized == "sales":
+            pack_key = "sales_ops"
+            break
+    semantics = _build_task_contract_semantics(task_contract, pack_key=pack_key)
     title = str(semantics.get("title") or builtin_task or task_code).strip() or task_code
     authority = [str(v).strip() for v in (semantics.get("authority") or []) if str(v).strip()]
     approval_mode = str(semantics.get("approval_mode") or "").strip()
@@ -32430,6 +32452,7 @@ def _build_data_sources_catalog_pages(
     space_key: str,
     max_sources: int,
 ) -> list[dict[str, str]]:
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
     def _collect_bundle_source_tokens(bundle: dict[str, Any]) -> set[str]:
         metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
         tokens: set[str] = set()
@@ -32570,7 +32593,7 @@ def _build_data_sources_catalog_pages(
             tool_hints.update(set(usage_bucket.get("tools") or set()))
         usage_inferred = False
         if not used_by:
-            inferred_usage = get_synthesis_pack("logistics_ops").infer_source_usage_from_matrix(
+            inferred_usage = synthesis_pack.infer_source_usage_from_matrix(
                 matrix_rows=runtime_matrix,
                 source_ref=source_ref,
                 source_type=source_type,
