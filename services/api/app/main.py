@@ -5101,6 +5101,15 @@ def _build_agent_directory_profile_fallback_matrix(
             continue
         metadata = row[9] if isinstance(row[9], dict) else {}
         runtime_overview = metadata.get("runtime_overview") if isinstance(metadata.get("runtime_overview"), dict) else {}
+        routing_hints: list[str] = []
+        routing = metadata.get("model_routing")
+        if isinstance(routing, dict):
+            for key in ("primary", "default", "fallback", "secondary", "strategy", "mode"):
+                value = str(routing.get(key) or "").strip()
+                if value:
+                    routing_hints.append(f"{key}: {value}"[:220])
+        elif isinstance(routing, str) and routing.strip():
+            routing_hints.append(routing.strip()[:220])
         try:
             running_instances = max(0, int(runtime_overview.get("running_instances") or 0))
         except (TypeError, ValueError):
