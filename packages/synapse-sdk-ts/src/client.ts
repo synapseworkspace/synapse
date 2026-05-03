@@ -1270,6 +1270,26 @@ export class SynapseClient {
     });
   }
 
+  async getWikiChangeFeed(options: {
+    spaceKey?: string;
+    since?: string;
+    sinceHours?: number;
+    limit?: number;
+    includeReviewed?: boolean;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/wiki/change-feed", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        since: asOptionalString(options.since) ?? undefined,
+        since_hours: normalizeInt(options.sinceHours ?? 24, 1, 24 * 30),
+        limit: normalizeInt(options.limit ?? 20, 1, 100),
+        include_reviewed: Boolean(options.includeReviewed ?? false)
+      }
+    });
+  }
+
   async syncWikiStateSnapshot(options: {
     updatedBy: string;
     spaceKey?: string;
@@ -1299,6 +1319,44 @@ export class SynapseClient {
         max_open_items: normalizeInt(options.maxOpenItems ?? 25, 1, 200),
         max_people_watch: normalizeInt(options.maxPeopleWatch ?? 15, 1, 100),
         max_metrics: normalizeInt(options.maxMetrics ?? 12, 1, 100)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async hydrateAgentSharedMemory(options: {
+    agentId?: string;
+    role?: string;
+    spaceKey?: string;
+    since?: string;
+    sinceHours?: number;
+    limit?: number;
+    includeReviewed?: boolean;
+    maxWorkstreams?: number;
+    maxOpenItems?: number;
+    maxPeopleWatch?: number;
+    maxMetrics?: number;
+    maxItemsPerSection?: number;
+    freshnessDays?: number;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/hydrate", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        agent_id: asOptionalString(options.agentId) ?? undefined,
+        role: asOptionalString(options.role) ?? undefined,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        since: asOptionalString(options.since) ?? undefined,
+        since_hours: normalizeInt(options.sinceHours ?? 24, 1, 24 * 30),
+        limit: normalizeInt(options.limit ?? 20, 1, 100),
+        include_reviewed: Boolean(options.includeReviewed ?? false),
+        max_workstreams: normalizeInt(options.maxWorkstreams ?? 12, 1, 50),
+        max_open_items: normalizeInt(options.maxOpenItems ?? 25, 1, 200),
+        max_people_watch: normalizeInt(options.maxPeopleWatch ?? 15, 1, 100),
+        max_metrics: normalizeInt(options.maxMetrics ?? 12, 1, 100),
+        max_items_per_section: normalizeInt(options.maxItemsPerSection ?? 5, 1, 20),
+        freshness_days: normalizeInt(options.freshnessDays ?? 14, 1, 90)
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });

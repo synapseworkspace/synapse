@@ -1352,6 +1352,31 @@ class SynapseClient:
             params=params,
         )
 
+    def get_wiki_change_feed(
+        self,
+        *,
+        space_key: str | None = None,
+        since: str | None = None,
+        since_hours: int = 24,
+        limit: int = 20,
+        include_reviewed: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "since_hours": max(1, min(24 * 30, int(since_hours))),
+            "limit": max(1, min(100, int(limit))),
+            "include_reviewed": bool(include_reviewed),
+        }
+        if space_key is not None and str(space_key).strip():
+            params["space_key"] = str(space_key).strip()
+        if since is not None and str(since).strip():
+            params["since"] = str(since).strip()
+        return self._request_json(
+            "/v1/wiki/change-feed",
+            method="GET",
+            params=params,
+        )
+
     def sync_wiki_state_snapshot(
         self,
         *,
@@ -1382,6 +1407,46 @@ class SynapseClient:
             payload["space_key"] = str(space_key).strip()
         return self._request_json(
             "/v1/wiki/state/sync",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def hydrate_agent_shared_memory(
+        self,
+        *,
+        agent_id: str | None = None,
+        role: str | None = None,
+        space_key: str | None = None,
+        since: str | None = None,
+        since_hours: int = 24,
+        limit: int = 20,
+        include_reviewed: bool = False,
+        max_workstreams: int = 12,
+        max_open_items: int = 25,
+        max_people_watch: int = 15,
+        max_metrics: int = 12,
+        max_items_per_section: int = 5,
+        freshness_days: int = 14,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "agent_id": str(agent_id).strip() if agent_id is not None and str(agent_id).strip() else None,
+            "role": str(role).strip() if role is not None and str(role).strip() else None,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "since": str(since).strip() if since is not None and str(since).strip() else None,
+            "since_hours": max(1, min(24 * 30, int(since_hours))),
+            "limit": max(1, min(100, int(limit))),
+            "include_reviewed": bool(include_reviewed),
+            "max_workstreams": max(1, min(50, int(max_workstreams))),
+            "max_open_items": max(1, min(200, int(max_open_items))),
+            "max_people_watch": max(1, min(100, int(max_people_watch))),
+            "max_metrics": max(1, min(100, int(max_metrics))),
+            "max_items_per_section": max(1, min(20, int(max_items_per_section))),
+            "freshness_days": max(1, min(90, int(freshness_days))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/hydrate",
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),

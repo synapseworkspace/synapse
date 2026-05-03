@@ -547,6 +547,58 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("max_people_watch"), 8)
         self.assertEqual(payload.get("max_metrics"), 6)
 
+    def test_get_wiki_change_feed_scopes_project_and_filters(self) -> None:
+        self.client.get_wiki_change_feed(
+            space_key="operations",
+            since="2026-05-03T10:00:00Z",
+            since_hours=12,
+            limit=15,
+            include_reviewed=True,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/wiki/change-feed")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "operations")
+        self.assertEqual(params.get("since"), "2026-05-03T10:00:00Z")
+        self.assertEqual(params.get("since_hours"), 12)
+        self.assertEqual(params.get("limit"), 15)
+        self.assertTrue(params.get("include_reviewed"))
+
+    def test_hydrate_agent_shared_memory_posts_expected_payload(self) -> None:
+        self.client.hydrate_agent_shared_memory(
+            agent_id="logistics-assistant",
+            role="dispatcher",
+            space_key="logistics",
+            since_hours=18,
+            limit=9,
+            include_reviewed=True,
+            max_workstreams=11,
+            max_open_items=19,
+            max_people_watch=7,
+            max_metrics=5,
+            max_items_per_section=4,
+            freshness_days=10,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/hydrate")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("agent_id"), "logistics-assistant")
+        self.assertEqual(payload.get("role"), "dispatcher")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("since_hours"), 18)
+        self.assertEqual(payload.get("limit"), 9)
+        self.assertTrue(payload.get("include_reviewed"))
+        self.assertEqual(payload.get("max_workstreams"), 11)
+        self.assertEqual(payload.get("max_open_items"), 19)
+        self.assertEqual(payload.get("max_people_watch"), 7)
+        self.assertEqual(payload.get("max_metrics"), 5)
+        self.assertEqual(payload.get("max_items_per_section"), 4)
+        self.assertEqual(payload.get("freshness_days"), 10)
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",

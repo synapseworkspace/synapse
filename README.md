@@ -39,6 +39,9 @@ Synapse is middleware between your agent runtime (OpenClaw, LangGraph, CrewAI, c
 
 This is your live **single source of truth** for agent behavior.
 
+Shared-memory direction:
+- [docs/shared-memory-roadmap.md](docs/shared-memory-roadmap.md)
+
 ### What Synapse now compiles
 
 Synapse is no longer just `event -> draft`.

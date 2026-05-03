@@ -1150,6 +1150,23 @@ class WikiStateSnapshotSyncRequest(BaseModel):
     max_metrics: int = Field(default=12, ge=1, le=100)
 
 
+class AgentSharedMemoryHydrationRequest(BaseModel):
+    project_id: str
+    agent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    role: str | None = Field(default=None, min_length=1, max_length=256)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    since: str | None = Field(default=None, min_length=1, max_length=64)
+    since_hours: int = Field(default=24, ge=1, le=24 * 30)
+    limit: int = Field(default=20, ge=1, le=100)
+    include_reviewed: bool = False
+    max_workstreams: int = Field(default=12, ge=1, le=50)
+    max_open_items: int = Field(default=25, ge=1, le=200)
+    max_people_watch: int = Field(default=15, ge=1, le=100)
+    max_metrics: int = Field(default=12, ge=1, le=100)
+    max_items_per_section: int = Field(default=5, ge=1, le=20)
+    freshness_days: int = Field(default=14, ge=1, le=90)
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -10842,6 +10859,251 @@ def _build_wiki_onboarding_pack(
             "fresh_changes": fresh_changes[:section_limit],
         },
         "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _parse_change_feed_since(*, since: str | None, since_hours: int) -> datetime:
+    if isinstance(since, str) and since.strip():
+        raw_value = since.strip()
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail={"code": "change_feed_since_invalid", "since": raw_value}) from exc
+    return datetime.now(UTC) - timedelta(hours=max(1, min(24 * 30, int(since_hours))))
+
+
+def _normalize_shared_memory_event_type(*, version: int, status: str) -> str:
+    normalized_status = str(status or "").strip().lower() or "published"
+    if version <= 1:
+        if normalized_status == "published":
+            return "page_published"
+        if normalized_status == "reviewed":
+            return "page_reviewed"
+        return "page_created"
+    if normalized_status == "published":
+        return "page_updated"
+    if normalized_status == "reviewed":
+        return "page_re_reviewed"
+    return "page_changed"
+
+
+def _build_wiki_change_feed(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    since: str | None = None,
+    since_hours: int = 24,
+    limit: int = 20,
+    include_reviewed: bool = False,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    since_dt = _parse_change_feed_since(since=since, since_hours=since_hours)
+    normalized_limit = max(1, min(100, int(limit)))
+    allowed_statuses = ["published"]
+    if bool(include_reviewed):
+        allowed_statuses.append("reviewed")
+
+    rows: list[dict[str, Any]] = []
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              p.id::text,
+              p.title,
+              p.slug,
+              p.entity_key,
+              p.page_type,
+              p.status,
+              p.updated_at,
+              p.current_version,
+              v.version,
+              v.created_at,
+              COALESCE(v.created_by, '') AS created_by,
+              COALESCE(v.change_summary, '') AS change_summary,
+              COALESCE(v.source, '') AS source
+            FROM wiki_page_versions v
+            JOIN wiki_pages p ON p.id = v.page_id
+            WHERE p.project_id = %s
+              AND p.status = ANY(%s::text[])
+              AND v.created_at >= %s
+        """
+        params: list[Any] = [normalized_project, allowed_statuses, since_dt]
+        if normalized_space:
+            sql += " AND lower(p.slug) LIKE %s"
+            params.append(f"{normalized_space}/%")
+        sql += """
+            ORDER BY v.created_at DESC, p.slug ASC, v.version DESC
+            LIMIT %s
+        """
+        params.append(normalized_limit)
+        cur.execute(sql, tuple(params))
+        fetched = cur.fetchall() or []
+
+    event_counts: dict[str, int] = {}
+    page_type_counts: dict[str, int] = {}
+    for row in fetched:
+        page_status = str(row[5] or "published").strip().lower() or "published"
+        version = int(row[8] or 0)
+        event_type = _normalize_shared_memory_event_type(version=version, status=page_status)
+        page_type = str(row[4] or "operations").strip().lower() or "operations"
+        changed_at = row[9] if isinstance(row[9], datetime) else row[6]
+        change_summary = str(row[11] or "").strip()
+        rows.append(
+            {
+                "event_type": event_type,
+                "changed_at": changed_at.astimezone(UTC).isoformat() if isinstance(changed_at, datetime) else None,
+                "changed_by": str(row[10] or "").strip() or None,
+                "change_summary": change_summary or None,
+                "page": {
+                    "id": str(row[0]),
+                    "title": str(row[1] or row[2] or ""),
+                    "slug": str(row[2] or ""),
+                    "entity_key": str(row[3] or "") or None,
+                    "page_type": page_type,
+                    "status": page_status,
+                    "current_version": int(row[7] or 0),
+                    "version": version,
+                },
+                "origin": {
+                    "source": str(row[12] or "").strip() or None,
+                    "mode": "published_knowledge" if page_status == "published" else "reviewed_knowledge",
+                },
+            }
+        )
+        event_counts[event_type] = int(event_counts.get(event_type, 0)) + 1
+        page_type_counts[page_type] = int(page_type_counts.get(page_type, 0)) + 1
+
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "since": since_dt.isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "items": rows,
+        "summary": {
+            "items_total": len(rows),
+            "event_type_counts": event_counts,
+            "page_type_counts": page_type_counts,
+            "status_scope": allowed_statuses,
+        },
+    }
+
+
+def _resolve_shared_memory_role(
+    conn,
+    *,
+    project_id: str,
+    agent_id: str | None,
+    role: str | None,
+) -> str | None:
+    normalized_role = str(role or "").strip()
+    if normalized_role:
+        return normalized_role
+    normalized_agent_id = str(agent_id or "").strip()
+    if not normalized_agent_id or not _agent_directory_table_exists(conn):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT role
+            FROM agent_directory_profiles
+            WHERE project_id = %s
+              AND lower(agent_id) = lower(%s)
+            LIMIT 1
+            """,
+            (project_id, normalized_agent_id),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    value = str(row[0] or "").strip()
+    return value or None
+
+
+def _build_agent_shared_memory_hydration(
+    conn,
+    *,
+    project_id: str,
+    agent_id: str | None = None,
+    role: str | None = None,
+    space_key: str | None = None,
+    since: str | None = None,
+    since_hours: int = 24,
+    limit: int = 20,
+    include_reviewed: bool = False,
+    max_workstreams: int = 12,
+    max_open_items: int = 25,
+    max_people_watch: int = 15,
+    max_metrics: int = 12,
+    max_items_per_section: int = 5,
+    freshness_days: int = 14,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    resolved_role = _resolve_shared_memory_role(conn, project_id=normalized_project, agent_id=agent_id, role=role)
+    state_snapshot = _build_wiki_state_snapshot(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        max_workstreams=max_workstreams,
+        max_open_items=max_open_items,
+        max_people_watch=max_people_watch,
+        max_metrics=max_metrics,
+    )
+    onboarding_pack = _build_wiki_onboarding_pack(
+        conn,
+        project_id=normalized_project,
+        role=resolved_role,
+        max_items_per_section=max_items_per_section,
+        freshness_days=freshness_days,
+    )
+    change_feed = _build_wiki_change_feed(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        since=since,
+        since_hours=since_hours,
+        limit=limit,
+        include_reviewed=include_reviewed,
+    )
+    changed_entities: list[str] = []
+    changed_slugs: list[str] = []
+    for item in change_feed.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        page = item.get("page") if isinstance(item.get("page"), dict) else {}
+        entity_key = str(page.get("entity_key") or "").strip()
+        slug = str(page.get("slug") or "").strip()
+        if entity_key and entity_key not in changed_entities:
+            changed_entities.append(entity_key)
+        if slug and slug not in changed_slugs:
+            changed_slugs.append(slug)
+        if len(changed_entities) >= 12 and len(changed_slugs) >= 12:
+            break
+
+    return {
+        "project_id": normalized_project,
+        "agent_id": str(agent_id or "").strip() or None,
+        "role": resolved_role,
+        "space_key": _normalize_space_key(space_key or "", default="") or None,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "shared_memory": {
+            "state_snapshot": state_snapshot,
+            "onboarding_pack": onboarding_pack,
+            "change_feed": change_feed,
+            "retrieval_hints": {
+                "changed_entity_keys": changed_entities,
+                "changed_page_slugs": changed_slugs,
+                "suggested_mode": "published_only" if not include_reviewed else "reviewed_plus_published",
+            },
+        },
     }
 
 
@@ -26084,6 +26346,55 @@ def sync_wiki_state_snapshot(payload: WikiStateSnapshotSyncRequest) -> dict[str,
             max_metrics=int(payload.max_metrics),
         )
     return {"status": "ok", **result}
+
+
+@app.get("/v1/wiki/change-feed")
+def get_wiki_change_feed(
+    project_id: str,
+    space_key: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    since_hours: int = Query(default=24, ge=1, le=24 * 30),
+    limit: int = Query(default=20, ge=1, le=100),
+    include_reviewed: bool = Query(default=False),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _build_wiki_change_feed(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            since=since,
+            since_hours=since_hours,
+            limit=limit,
+            include_reviewed=include_reviewed,
+        )
+
+
+@app.post("/v1/agents/shared-memory/hydrate", response_model=None)
+def hydrate_agent_shared_memory(payload: AgentSharedMemoryHydrationRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _build_agent_shared_memory_hydration(
+            conn,
+            project_id=normalized_project,
+            agent_id=payload.agent_id,
+            role=payload.role,
+            space_key=payload.space_key,
+            since=payload.since,
+            since_hours=int(payload.since_hours),
+            limit=int(payload.limit),
+            include_reviewed=bool(payload.include_reviewed),
+            max_workstreams=int(payload.max_workstreams),
+            max_open_items=int(payload.max_open_items),
+            max_people_watch=int(payload.max_people_watch),
+            max_metrics=int(payload.max_metrics),
+            max_items_per_section=int(payload.max_items_per_section),
+            freshness_days=int(payload.freshness_days),
+        )
 
 
 @app.get("/v1/wiki/pages/{slug}")
