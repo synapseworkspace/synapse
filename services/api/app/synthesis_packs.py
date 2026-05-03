@@ -951,6 +951,7 @@ class GenericOpsSynthesisPack:
             "exception_signals": [],
             "candidate_canon_blocks": [],
             "knowledge_lifecycle_summary": [],
+            "contradiction_summaries": [],
             "principles": [
                 "Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
                 "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
@@ -1835,6 +1836,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         ][:6]
         candidate_canon_blocks: list[dict[str, Any]] = []
         knowledge_state_counts: dict[str, int] = {}
+        contradiction_summaries: list[dict[str, Any]] = []
 
         def _append_canon_block(block: dict[str, Any]) -> None:
             state = str(block.get("knowledge_state") or "candidate").strip().lower() or "candidate"
@@ -1936,6 +1938,20 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "evidence_basis": "Exception patterns mention stale/conflicting data and source-trust signals show mixed evidence posture.",
                 }
             )
+            resolution_rule = (
+                f"Prefer {', '.join(canonical_sources[:2])} for live state; use {', '.join(derived_sources[:2])} as secondary/operator context until the mismatch is resolved."
+                if contradiction_state == "contradicted" and canonical_sources and derived_sources
+                else "Refresh or validate the weaker source before promoting it into canonical company knowledge."
+            )
+            contradiction_summaries.append(
+                {
+                    "topic": "source_of_truth_conflict",
+                    "knowledge_state": contradiction_state,
+                    "summary": contradiction_summary,
+                    "resolution_rule": resolution_rule,
+                    "evidence_basis": "Built from source trust signals plus stale/conflict exception patterns.",
+                }
+            )
         knowledge_lifecycle_summary = [
             {"state": state, "count": total}
             for state, total in sorted(
@@ -1957,6 +1973,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             "exception_signals": exception_signals,
             "candidate_canon_blocks": candidate_canon_blocks,
             "knowledge_lifecycle_summary": knowledge_lifecycle_summary,
+            "contradiction_summaries": contradiction_summaries,
             "principles": [
                 "Recurring dispatch, incident, and reporting workflows should be captured as reusable SOPs instead of staying trapped inside runtime chatter.",
                 "Source freshness and authority matter: logistics actions should prefer the latest operational source of truth before acting.",

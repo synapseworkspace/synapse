@@ -74,6 +74,7 @@ class SynthesisPackTests(unittest.TestCase):
         exception_signals = payload.get("exception_signals") or []
         candidate_canon_blocks = payload.get("candidate_canon_blocks") or []
         knowledge_lifecycle_summary = payload.get("knowledge_lifecycle_summary") or []
+        contradiction_summaries = payload.get("contradiction_summaries") or []
         self.assertTrue(any("dispatch" in item.lower() or "incident" in item.lower() for item in principles))
         self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in workflow_signals))
         self.assertTrue(any("connected source streams" in item.lower() for item in snapshot_notes))
@@ -87,6 +88,8 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("evidence_basis" in item for item in candidate_canon_blocks))
         self.assertTrue(any(str(item.get("state") or "") == "reviewed" for item in knowledge_lifecycle_summary))
         self.assertTrue(any(str(item.get("state") or "") == "contradicted" for item in knowledge_lifecycle_summary))
+        self.assertTrue(any(str(item.get("topic") or "") == "source_of_truth_conflict" for item in contradiction_summaries))
+        self.assertTrue(any("prefer" in str(item.get("resolution_rule") or "").lower() or "refresh" in str(item.get("resolution_rule") or "").lower() for item in contradiction_summaries))
 
     def test_logistics_pack_does_not_leak_driver_economy_into_daily_report(self) -> None:
         pack = get_synthesis_pack("logistics_ops")

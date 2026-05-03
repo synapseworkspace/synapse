@@ -165,6 +165,7 @@ Current progress:
   - known-exception candidates
   - working heuristic candidates
 - lifecycle heuristics now classify candidate blocks into `candidate`, `reviewed`, `stale`, and `contradicted`
+- contradiction summaries now attach a recommended resolution rule for source-of-truth conflicts
 
 ## Phase 4: Humanization Layer
 

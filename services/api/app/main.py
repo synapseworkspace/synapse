@@ -41463,6 +41463,7 @@ def _build_company_operating_context_bootstrap_page(
     exception_signals = [item for item in (context_extensions.get("exception_signals") or []) if isinstance(item, dict)]
     candidate_canon_blocks = [item for item in (context_extensions.get("candidate_canon_blocks") or []) if isinstance(item, dict)]
     knowledge_lifecycle_summary = [item for item in (context_extensions.get("knowledge_lifecycle_summary") or []) if isinstance(item, dict)]
+    contradiction_summaries = [item for item in (context_extensions.get("contradiction_summaries") or []) if isinstance(item, dict)]
     principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
 
     lines = [
@@ -41580,6 +41581,24 @@ def _build_company_operating_context_bootstrap_page(
         )
         for item in knowledge_lifecycle_summary[:8]:
             lines.append(f"| {str(item.get('state') or 'candidate').replace('|', '/')} | {int(item.get('count') or 0)} |")
+    if contradiction_summaries:
+        lines.extend(
+            [
+                "",
+                "## Contradiction and Resolution Signals",
+                "| Topic | State | Summary | Recommended Resolution | Evidence Basis |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for item in contradiction_summaries[:8]:
+            lines.append(
+                "| "
+                + f"{str(item.get('topic') or 'conflict').replace('|', '/')} | "
+                + f"{str(item.get('knowledge_state') or 'candidate').replace('|', '/')} | "
+                + f"{str(item.get('summary') or '').replace('|', '/')} | "
+                + f"{str(item.get('resolution_rule') or '').replace('|', '/')} | "
+                + f"{str(item.get('evidence_basis') or '').replace('|', '/')} |"
+            )
     if candidate_canon_blocks:
         lines.extend(
             [
