@@ -1386,6 +1386,42 @@ export class SynapseClient {
     });
   }
 
+  async getAgentSharedMemoryImpact(options: {
+    spaceKey?: string;
+    since?: string;
+    sinceHours?: number;
+    limit?: number;
+    includeReviewed?: boolean;
+    reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/impact", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        since: asOptionalString(options.since) ?? undefined,
+        since_hours: normalizeInt(options.sinceHours ?? 24, 1, 24 * 30),
+        limit: normalizeInt(options.limit ?? 20, 1, 100),
+        include_reviewed: Boolean(options.includeReviewed ?? false),
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto"
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async getAgentSharedMemoryHealth(options: {
+    spaceKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/health", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined
+      }
+    });
+  }
+
   async getAdoptionPipelineVisibility(options: {
     days?: number;
     sourceSystems?: string[];

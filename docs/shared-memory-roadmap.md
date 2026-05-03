@@ -113,7 +113,7 @@ Why:
 
 ### Phase 5: Fanout and operator controls
 
-Status: planned
+Status: started
 
 Deliverables:
 
@@ -140,6 +140,9 @@ Implemented:
 5. best-effort `Wiki State Snapshot` refresh after published page create/update
 6. role-aware review scope resolution (`auto` -> trusted roles may read `reviewed`)
 7. change-feed delta classification + relevance scoring for agent-facing freshness checks
+8. `POST /v1/agents/shared-memory/impact`
+9. `GET /v1/agents/shared-memory/health`
+10. compact `Operations` panel for shared-memory freshness / impacted agents
 
 These endpoints are intentionally conservative:
 

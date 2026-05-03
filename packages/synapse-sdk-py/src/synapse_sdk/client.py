@@ -1478,6 +1478,48 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def get_agent_shared_memory_impact(
+        self,
+        *,
+        space_key: str | None = None,
+        since: str | None = None,
+        since_hours: int = 24,
+        limit: int = 20,
+        include_reviewed: bool = False,
+        review_policy_mode: str = "auto",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "since": str(since).strip() if since is not None and str(since).strip() else None,
+            "since_hours": max(1, min(24 * 30, int(since_hours))),
+            "limit": max(1, min(100, int(limit))),
+            "include_reviewed": bool(include_reviewed),
+            "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/impact",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def get_agent_shared_memory_health(
+        self,
+        *,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+        }
+        if space_key is not None and str(space_key).strip():
+            params["space_key"] = str(space_key).strip()
+        return self._request_json(
+            "/v1/agents/shared-memory/health",
+            method="GET",
+            params=params,
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",

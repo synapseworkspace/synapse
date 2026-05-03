@@ -1340,6 +1340,51 @@ type AdoptionSynthesisGraphPayload = {
   process_playbooks_summary?: AdoptionDiagnosticsSummary;
 };
 
+type SharedMemoryImpactPayload = {
+  project_id: string;
+  space_key?: string | null;
+  generated_at?: string | null;
+  summary?: {
+    agents_scanned?: number;
+    impacted_agents?: number;
+    high_impact_agents?: number;
+    changed_pages?: number;
+  };
+  change_feed_summary?: {
+    total?: number;
+    by_delta_kind?: Record<string, number>;
+  };
+  impacted_agents?: Array<{
+    agent_id?: string;
+    display_name?: string;
+    role?: string | null;
+    team?: string | null;
+    impact_score?: number;
+    relevant_changes?: Array<{
+      slug?: string | null;
+      delta_kind?: string | null;
+      score?: number;
+      reasons?: string[];
+    }>;
+  }>;
+};
+
+type SharedMemoryHealthPayload = {
+  project_id: string;
+  space_key?: string | null;
+  generated_at?: string | null;
+  metrics?: {
+    active_agents?: number;
+    roster_agents?: number;
+    published_pages?: number;
+    state_snapshot_slug?: string | null;
+    state_snapshot_updated_at?: string | null;
+    latest_change_at?: string | null;
+    snapshot_lag_minutes?: number | null;
+    knowledge_snapshots_total?: number;
+  };
+};
+
 type LegacyImportSource = {
   id: string;
   project_id: string;
@@ -2423,6 +2468,10 @@ export default function App() {
   const [loadingEnterpriseReadiness, setLoadingEnterpriseReadiness] = useState(false);
   const [adoptionSynthesisGraph, setAdoptionSynthesisGraph] = useState<AdoptionSynthesisGraphPayload | null>(null);
   const [loadingAdoptionSynthesisGraph, setLoadingAdoptionSynthesisGraph] = useState(false);
+  const [sharedMemoryImpact, setSharedMemoryImpact] = useState<SharedMemoryImpactPayload | null>(null);
+  const [loadingSharedMemoryImpact, setLoadingSharedMemoryImpact] = useState(false);
+  const [sharedMemoryHealth, setSharedMemoryHealth] = useState<SharedMemoryHealthPayload | null>(null);
+  const [loadingSharedMemoryHealth, setLoadingSharedMemoryHealth] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [adoptionSyncPresetResult, setAdoptionSyncPresetResult] = useState<AdoptionSyncPresetPayload | null>(null);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
@@ -3138,6 +3187,68 @@ export default function App() {
     }
     return items.slice(0, 3);
   }, [adoptionSynthesisGraph]);
+  const sharedMemorySummaryCards = useMemo(() => {
+    const impactSummary = sharedMemoryImpact?.summary || {};
+    const healthMetrics = sharedMemoryHealth?.metrics || {};
+    const lagMinutes = Number(healthMetrics.snapshot_lag_minutes ?? 0);
+    const lagColor =
+      healthMetrics.snapshot_lag_minutes == null ? "gray" : lagMinutes >= 120 ? "red" : lagMinutes >= 30 ? "orange" : "teal";
+    const impacted = Number(impactSummary.impacted_agents || 0);
+    const scanned = Number(impactSummary.agents_scanned || 0);
+    return [
+      {
+        key: "lag",
+        title: "Snapshot lag",
+        color: lagColor,
+        stat:
+          healthMetrics.snapshot_lag_minutes == null
+            ? "n/a"
+            : lagMinutes >= 120
+              ? `${Math.round(lagMinutes / 60)}h`
+              : `${Math.round(lagMinutes)}m`,
+        detail: "latest change vs snapshot",
+      },
+      {
+        key: "impact",
+        title: "Impacted",
+        color: impacted > 0 ? "orange" : "teal",
+        stat: `${impacted}/${scanned}`,
+        detail: "agents with relevant fresh changes",
+      },
+      {
+        key: "high",
+        title: "High impact",
+        color: Number(impactSummary.high_impact_agents || 0) > 0 ? "orange" : "teal",
+        stat: `${Number(impactSummary.high_impact_agents || 0)}`,
+        detail: "agents likely worth immediate refresh",
+      },
+      {
+        key: "pages",
+        title: "Changed pages",
+        color: Number(impactSummary.changed_pages || 0) > 0 ? "cyan" : "gray",
+        stat: `${Number(impactSummary.changed_pages || 0)}`,
+        detail: "recent pages in current scope",
+      },
+    ];
+  }, [sharedMemoryHealth, sharedMemoryImpact]);
+  const sharedMemoryConcerns = useMemo(() => {
+    const metrics = sharedMemoryHealth?.metrics || {};
+    const summary = sharedMemoryImpact?.summary || {};
+    const items: string[] = [];
+    const lagMinutes = Number(metrics.snapshot_lag_minutes || 0);
+    if (metrics.snapshot_lag_minutes != null && lagMinutes >= 30) {
+      items.push(
+        `State snapshot lags behind the latest published change by ${lagMinutes >= 120 ? `${Math.round(lagMinutes / 60)}h` : `${Math.round(lagMinutes)}m`}.`,
+      );
+    }
+    if (!metrics.state_snapshot_slug) {
+      items.push("No shared state snapshot page is materialized for the current space yet.");
+    }
+    if (Number(summary.high_impact_agents || 0) > 0) {
+      items.push(`${Number(summary.high_impact_agents || 0)} agent(s) are in the high-impact refresh bucket right now.`);
+    }
+    return items.slice(0, 3);
+  }, [sharedMemoryHealth, sharedMemoryImpact]);
 
   const scopedDrafts = useMemo(
     () =>
@@ -4719,6 +4830,58 @@ export default function App() {
     }
   }, [apiUrl, observabilitySpaceKey, projectId]);
 
+  const loadSharedMemoryImpact = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setSharedMemoryImpact(null);
+      return;
+    }
+    setLoadingSharedMemoryImpact(true);
+    try {
+      const payload = await apiFetch<SharedMemoryImpactPayload>(apiUrl, "/v1/agents/shared-memory/impact", {
+        method: "POST",
+        idempotencyKey: randomKey(),
+        body: {
+          project_id: project,
+          space_key: observabilitySpaceKey,
+          since_hours: 72,
+          limit: 40,
+          include_reviewed: false,
+          review_policy_mode: "auto",
+        },
+      });
+      setSharedMemoryImpact(payload);
+    } catch {
+      setSharedMemoryImpact(null);
+    } finally {
+      setLoadingSharedMemoryImpact(false);
+    }
+  }, [apiUrl, observabilitySpaceKey, projectId]);
+
+  const loadSharedMemoryHealth = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setSharedMemoryHealth(null);
+      return;
+    }
+    setLoadingSharedMemoryHealth(true);
+    try {
+      const query = new URLSearchParams({
+        project_id: project,
+        space_key: observabilitySpaceKey,
+      });
+      const payload = await apiFetch<SharedMemoryHealthPayload>(
+        apiUrl,
+        `/v1/agents/shared-memory/health?${query.toString()}`,
+      );
+      setSharedMemoryHealth(payload);
+    } catch {
+      setSharedMemoryHealth(null);
+    } finally {
+      setLoadingSharedMemoryHealth(false);
+    }
+  }, [apiUrl, observabilitySpaceKey, projectId]);
+
   const applyPolicyQuickLoopPreset = useCallback(
     async (dryRun: boolean) => {
       const project = projectId.trim();
@@ -5732,13 +5895,17 @@ export default function App() {
   useEffect(() => {
     if (!projectId.trim()) {
       setAdoptionSynthesisGraph(null);
+      setSharedMemoryImpact(null);
+      setSharedMemoryHealth(null);
       return;
     }
     if (coreWorkspaceRoute !== "operations") {
       return;
     }
     void loadAdoptionSynthesisGraph();
-  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, projectId]);
+    void loadSharedMemoryImpact();
+    void loadSharedMemoryHealth();
+  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, loadSharedMemoryHealth, loadSharedMemoryImpact, projectId]);
 
   useEffect(() => {
     void loadSelfhostConsistency();
@@ -10138,6 +10305,116 @@ export default function App() {
                                 <Text size="xs" c="dimmed">
                                   Synthesis graph snapshot is unavailable yet. Run runtime-surface sync or refresh once core adoption
                                   diagnostics are populated.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
+                          <Paper withBorder p="xs" radius="md" id="operations-shared-memory-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Stack gap={0}>
+                                  <Text size="sm" fw={700}>
+                                    Shared memory freshness
+                                  </Text>
+                                  <Text size="xs" c="dimmed">
+                                    Fresh-change impact and snapshot lag for {observabilitySpaceKey}, so operators can see which agents are
+                                    most likely behind on recent published knowledge.
+                                  </Text>
+                                </Stack>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="lime"
+                                  loading={loadingSharedMemoryImpact || loadingSharedMemoryHealth}
+                                  onClick={() => {
+                                    void loadSharedMemoryImpact();
+                                    void loadSharedMemoryHealth();
+                                  }}
+                                >
+                                  Refresh memory
+                                </Button>
+                              </Group>
+                              {sharedMemoryImpact || sharedMemoryHealth ? (
+                                <>
+                                  <SimpleGrid cols={{ base: 2, sm: 4 }} spacing={6}>
+                                    {sharedMemorySummaryCards.map((card) => (
+                                      <Paper key={`shared-memory-card-${card.key}`} withBorder p="xs" radius="md">
+                                        <Stack gap={4}>
+                                          <Group justify="space-between" align="center" wrap="nowrap">
+                                            <Text size="xs" fw={700}>
+                                              {card.title}
+                                            </Text>
+                                            <Badge size="xs" variant="light" color={card.color}>
+                                              {card.stat}
+                                            </Badge>
+                                          </Group>
+                                          <Text size="xs" c="dimmed">
+                                            {card.detail}
+                                          </Text>
+                                        </Stack>
+                                      </Paper>
+                                    ))}
+                                  </SimpleGrid>
+                                  {Array.isArray(sharedMemoryImpact?.impacted_agents) && sharedMemoryImpact?.impacted_agents.length > 0 ? (
+                                    <Stack gap={4}>
+                                      {sharedMemoryImpact.impacted_agents.slice(0, 3).map((agent) => (
+                                        <Paper
+                                          key={`shared-memory-impact-${agent.agent_id || agent.display_name || "agent"}`}
+                                          withBorder
+                                          p="xs"
+                                          radius="md"
+                                        >
+                                          <Stack gap={3}>
+                                            <Group justify="space-between" align="center" wrap="wrap">
+                                              <Text size="xs" fw={700}>
+                                                {agent.display_name || agent.agent_id || "unknown agent"}
+                                              </Text>
+                                              <Badge
+                                                size="xs"
+                                                variant="light"
+                                                color={Number(agent.impact_score || 0) >= 0.7 ? "orange" : "cyan"}
+                                              >
+                                                score {Number(agent.impact_score || 0).toFixed(2)}
+                                              </Badge>
+                                            </Group>
+                                            <Text size="xs" c="dimmed">
+                                              {(agent.role || "no role")} • {(agent.team || "unassigned team")}
+                                            </Text>
+                                            <Text size="xs" c="dimmed">
+                                              {(agent.relevant_changes || [])
+                                                .slice(0, 2)
+                                                .map((item) => item.slug || item.delta_kind || "change")
+                                                .join(" • ") || "No specific pages surfaced yet."}
+                                            </Text>
+                                          </Stack>
+                                        </Paper>
+                                      ))}
+                                    </Stack>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      No agents currently look strongly impacted by fresh changes in this space.
+                                    </Text>
+                                  )}
+                                  {sharedMemoryConcerns.length > 0 ? (
+                                    <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
+                                      <Stack gap={2}>
+                                        {sharedMemoryConcerns.map((item, index) => (
+                                          <Text key={`shared-memory-concern-${index}`} size="xs">
+                                            {item}
+                                          </Text>
+                                        ))}
+                                      </Stack>
+                                    </Alert>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      Shared memory looks reasonably fresh for the current space: snapshot lag is low and no urgent refresh
+                                      cluster stands out.
+                                    </Text>
+                                  )}
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Shared-memory diagnostics are unavailable yet. Publish or sync current space knowledge first, then refresh.
                                 </Text>
                               )}
                             </Stack>

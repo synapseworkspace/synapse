@@ -620,6 +620,36 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertTrue(payload.get("include_reviewed"))
         self.assertEqual(payload.get("review_policy_mode"), "auto")
 
+    def test_get_agent_shared_memory_impact_posts_expected_payload(self) -> None:
+        self.client.get_agent_shared_memory_impact(
+            space_key="logistics",
+            since="2026-05-03T08:00:00Z",
+            since_hours=16,
+            limit=12,
+            include_reviewed=True,
+            review_policy_mode="published_only",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/impact")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("since"), "2026-05-03T08:00:00Z")
+        self.assertEqual(payload.get("since_hours"), 16)
+        self.assertEqual(payload.get("limit"), 12)
+        self.assertTrue(payload.get("include_reviewed"))
+        self.assertEqual(payload.get("review_policy_mode"), "published_only")
+
+    def test_get_agent_shared_memory_health_scopes_project(self) -> None:
+        self.client.get_agent_shared_memory_health(space_key="logistics")
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/health")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "logistics")
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",

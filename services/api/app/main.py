@@ -1177,6 +1177,16 @@ class AgentSharedMemoryInvalidationRequest(BaseModel):
     review_policy_mode: str = Field(default="auto", pattern="^(auto|published_only|reviewed_plus_published)$")
 
 
+class SharedMemoryImpactRequest(BaseModel):
+    project_id: str
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    since: str | None = Field(default=None, min_length=1, max_length=64)
+    since_hours: int = Field(default=24, ge=1, le=24 * 30)
+    limit: int = Field(default=20, ge=1, le=100)
+    include_reviewed: bool = False
+    review_policy_mode: str = Field(default="auto", pattern="^(auto|published_only|reviewed_plus_published)$")
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -11331,6 +11341,249 @@ def _load_shared_memory_agent_context(
     context["tools"] = [str(item).strip() for item in (row[2] if isinstance(row[2], list) else []) if str(item).strip()][:24]
     context["data_sources"] = [str(item).strip() for item in (row[3] if isinstance(row[3], list) else []) if str(item).strip()][:24]
     return context
+
+
+def _load_shared_memory_agent_roster(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    if not _agent_directory_table_exists(conn):
+        return []
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT agent_id, display_name, team, role, status, responsibilities, tools, data_sources, last_seen_at
+            FROM agent_directory_profiles
+            WHERE project_id = %s
+              AND status IN ('active', 'idle')
+            ORDER BY
+              CASE status WHEN 'active' THEN 0 ELSE 1 END,
+              last_seen_at DESC NULLS LAST,
+              agent_id ASC
+            LIMIT %s
+            """,
+            (project_id, max(1, min(500, int(limit)))),
+        )
+        rows = cur.fetchall() or []
+    roster: list[dict[str, Any]] = []
+    for row in rows:
+        responsibilities = [str(item).strip() for item in (row[5] if isinstance(row[5], list) else []) if str(item).strip()][:24]
+        tools = [str(item).strip() for item in (row[6] if isinstance(row[6], list) else []) if str(item).strip()][:24]
+        data_sources = [str(item).strip() for item in (row[7] if isinstance(row[7], list) else []) if str(item).strip()][:24]
+        roster.append(
+            {
+                "agent_id": str(row[0] or "").strip(),
+                "display_name": str(row[1] or row[0] or "").strip(),
+                "team": str(row[2] or "").strip() or None,
+                "role": str(row[3] or "").strip() or None,
+                "status": str(row[4] or "").strip() or None,
+                "responsibilities": responsibilities,
+                "tools": tools,
+                "data_sources": data_sources,
+                "last_seen_at": row[8].astimezone(UTC).isoformat() if isinstance(row[8], datetime) else None,
+                "space_key": normalized_space or None,
+            }
+        )
+    return roster
+
+
+def _score_shared_memory_relevance(
+    *,
+    change_item: dict[str, Any],
+    agent_context: dict[str, Any],
+) -> dict[str, Any]:
+    page = change_item.get("page") if isinstance(change_item.get("page"), dict) else {}
+    delta_kind = str(change_item.get("delta_kind") or "").strip().lower()
+    change_summary = str(change_item.get("change_summary") or "").strip()
+    reasons: list[str] = []
+    score = 0.2
+    agent_tokens = _shared_memory_tokens(
+        agent_context.get("role"),
+        agent_context.get("team"),
+        agent_context.get("responsibilities"),
+        agent_context.get("tools"),
+        agent_context.get("data_sources"),
+    )
+    change_tokens = _shared_memory_tokens(
+        page.get("title"),
+        page.get("slug"),
+        page.get("entity_key"),
+        page.get("page_type"),
+        change_summary,
+        delta_kind,
+    )
+    overlap = sorted(agent_tokens & change_tokens)
+    if overlap:
+        score += min(0.45, float(len(overlap)) * 0.12)
+        reasons.append(f"token_overlap:{', '.join(overlap[:4])}")
+    agent_space = str(agent_context.get("space_key") or "").strip().lower()
+    page_slug = str(page.get("slug") or "").strip().lower()
+    if agent_space and page_slug.startswith(f"{agent_space}/"):
+        score += 0.2
+        reasons.append("same_space")
+    if delta_kind in {"policy_change", "process_change", "incident_change", "operational_rule_change"}:
+        score += 0.15
+        reasons.append(f"delta_kind:{delta_kind}")
+    score = round(max(0.0, min(1.0, score)), 4)
+    return {"score": score, "reasons": reasons[:6]}
+
+
+def _build_shared_memory_impact(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    since: str | None = None,
+    since_hours: int = 24,
+    limit: int = 20,
+    include_reviewed: bool = False,
+    review_policy_mode: str = "auto",
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    roster = _load_shared_memory_agent_roster(conn, project_id=normalized_project, space_key=space_key, limit=200)
+    effective_include_reviewed = bool(include_reviewed)
+    feed = _build_wiki_change_feed(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        since=since,
+        since_hours=since_hours,
+        limit=limit,
+        include_reviewed=effective_include_reviewed,
+    )
+    items = [item for item in (feed.get("items") or []) if isinstance(item, dict)]
+    impacted_agents: list[dict[str, Any]] = []
+    high_impact_agents = 0
+    impacted_page_slugs: set[str] = set()
+    for agent in roster:
+        role = str(agent.get("role") or "").strip() or None
+        review_scope = _resolve_shared_memory_review_scope(
+            include_reviewed=effective_include_reviewed,
+            review_policy_mode=review_policy_mode,
+            resolved_role=role,
+        )
+        relevant: list[dict[str, Any]] = []
+        for item in items:
+            relevance = _score_shared_memory_relevance(change_item=item, agent_context=agent)
+            if float(relevance.get("score") or 0.0) < 0.45:
+                continue
+            page = item.get("page") if isinstance(item.get("page"), dict) else {}
+            slug = str(page.get("slug") or "").strip()
+            if slug:
+                impacted_page_slugs.add(slug)
+            relevant.append(
+                {
+                    "slug": slug or None,
+                    "delta_kind": str(item.get("delta_kind") or "").strip() or None,
+                    "score": float(relevance.get("score") or 0.0),
+                    "reasons": list(relevance.get("reasons") or [])[:4],
+                }
+            )
+        if not relevant:
+            continue
+        relevant.sort(key=lambda item: (-float(item.get("score") or 0.0), str(item.get("slug") or "")))
+        top_score = float(relevant[0].get("score") or 0.0)
+        if top_score >= 0.7:
+            high_impact_agents += 1
+        impacted_agents.append(
+            {
+                "agent_id": str(agent.get("agent_id") or ""),
+                "display_name": str(agent.get("display_name") or agent.get("agent_id") or ""),
+                "role": role,
+                "team": agent.get("team"),
+                "review_scope": review_scope,
+                "impact_score": round(top_score, 4),
+                "relevant_changes": relevant[:5],
+            }
+        )
+    impacted_agents.sort(key=lambda item: (-float(item.get("impact_score") or 0.0), str(item.get("agent_id") or "")))
+    return {
+        "project_id": normalized_project,
+        "space_key": _normalize_space_key(space_key or "", default="") or None,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": {
+            "agents_scanned": len(roster),
+            "impacted_agents": len(impacted_agents),
+            "high_impact_agents": high_impact_agents,
+            "changed_pages": len(impacted_page_slugs),
+        },
+        "change_feed_summary": feed.get("summary") if isinstance(feed.get("summary"), dict) else {},
+        "impacted_agents": impacted_agents[:50],
+    }
+
+
+def _build_shared_memory_health_metrics(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    invalidation = _build_shared_memory_invalidation_marker(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        include_reviewed=False,
+    )
+    state_snapshot = _build_wiki_state_snapshot(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        max_workstreams=12,
+        max_open_items=25,
+        max_people_watch=15,
+        max_metrics=12,
+    )
+    state_page_slug = str(state_snapshot.get("target_slug") or "")
+    state_page_updated_at: str | None = None
+    if state_page_slug:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT updated_at
+                FROM wiki_pages
+                WHERE project_id = %s
+                  AND slug = %s
+                LIMIT 1
+                """,
+                (normalized_project, state_page_slug),
+            )
+            row = cur.fetchone()
+            if row is not None and isinstance(row[0], datetime):
+                state_page_updated_at = row[0].astimezone(UTC).isoformat()
+    lag_minutes: float | None = None
+    if invalidation.get("latest_change_at") and state_page_updated_at:
+        try:
+            latest_change = datetime.fromisoformat(str(invalidation["latest_change_at"]).replace("Z", "+00:00"))
+            snapshot_change = datetime.fromisoformat(str(state_page_updated_at).replace("Z", "+00:00"))
+            lag_minutes = max(0.0, (latest_change - snapshot_change).total_seconds() / 60.0)
+        except Exception:
+            lag_minutes = None
+    roster = _load_shared_memory_agent_roster(conn, project_id=normalized_project, space_key=space_key, limit=500)
+    active_agents = [item for item in roster if str(item.get("status") or "").strip().lower() == "active"]
+    return {
+        "project_id": normalized_project,
+        "space_key": _normalize_space_key(space_key or "", default="") or None,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "metrics": {
+            "active_agents": len(active_agents),
+            "roster_agents": len(roster),
+            "published_pages": int(invalidation.get("pages_total") or 0),
+            "state_snapshot_slug": state_page_slug or None,
+            "state_snapshot_updated_at": state_page_updated_at,
+            "latest_change_at": invalidation.get("latest_change_at"),
+            "snapshot_lag_minutes": round(lag_minutes, 2) if lag_minutes is not None else None,
+            "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
+        },
+    }
 
 
 def _build_agent_shared_memory_hydration(
@@ -26798,6 +27051,40 @@ def get_agent_shared_memory_invalidation(payload: AgentSharedMemoryInvalidationR
             ),
             "review_scope": review_scope,
         }
+
+
+@app.post("/v1/agents/shared-memory/impact", response_model=None)
+def get_agent_shared_memory_impact(payload: SharedMemoryImpactRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _build_shared_memory_impact(
+            conn,
+            project_id=normalized_project,
+            space_key=payload.space_key,
+            since=payload.since,
+            since_hours=int(payload.since_hours),
+            limit=int(payload.limit),
+            include_reviewed=bool(payload.include_reviewed),
+            review_policy_mode=str(payload.review_policy_mode or "auto"),
+        )
+
+
+@app.get("/v1/agents/shared-memory/health")
+def get_agent_shared_memory_health(
+    project_id: str,
+    space_key: str | None = Query(default=None),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _build_shared_memory_health_metrics(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+        )
 
 
 @app.get("/v1/wiki/pages/{slug}")
