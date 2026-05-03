@@ -3674,7 +3674,7 @@ export default function App() {
         scrollElementIntoViewWithRetry("wiki-review-assignments", 12, 140);
       }
       if (projectParam) {
-        if (!params.has("wiki_space")) setSelectedSpaceKey(null);
+        if (!params.has("wiki_space") && !pathState.pageSlug) setSelectedSpaceKey(null);
         if (!params.has("wiki_status")) setPageStatusFilter(null);
         if (!params.has("wiki_updated_by")) setPageUpdatedByFilter("");
         if (!params.has("wiki_with_open_drafts")) setOpenPagesOnly(false);

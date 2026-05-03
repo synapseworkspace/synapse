@@ -79,6 +79,7 @@ Reverse-proxy contract for base-path deployments:
 - `/synapse/assets/*` must be served directly from the same Synapse `web` origin and must not be rewritten to another static site or stale bundle.
 - SPA fallback (`/synapse/wiki`, `/synapse/operations`, nested review URLs) may resolve to `index.html`, but `build.json` and `/assets/*` must remain file-backed paths.
 - `index.html` / SPA fallback responses should be non-cacheable, while hashed `/assets/*` responses should remain long-cache immutable.
+- Direct wiki deep-links like `/synapse/wiki/<page-slug>` may trigger browser asset requests under nested paths such as `/synapse/wiki/<page-slug>/assets/*`; these must still reach the same live Synapse web bundle and must not be blocked or rewritten to another origin.
 
 Supported self-host workspace entry forms:
 - `/synapse/wiki`
