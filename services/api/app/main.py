@@ -2510,6 +2510,13 @@ def _build_task_contract_semantics(task_contract: dict[str, Any]) -> dict[str, A
     )
 
 
+def _synthesis_pack_for_space_key(space_key: str | None) -> Any:
+    normalized = _normalize_space_key(space_key or "", default="operations")
+    if normalized == "logistics":
+        return get_synthesis_pack("logistics_ops")
+    return get_synthesis_pack("generic_ops")
+
+
 def _upsert_wiki_page_system(
     cur: Any,
     *,
@@ -33430,6 +33437,8 @@ def _build_process_playbooks_bootstrap_page(
     space_key: str,
     max_signals: int,
 ) -> list[dict[str, str]]:
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
+
     def _extract_process_triplet(claim_text: str, metadata: dict[str, Any]) -> dict[str, Any]:
         operator_decision = metadata.get("operator_decision") if isinstance(metadata.get("operator_decision"), dict) else {}
         metadata_triplet = metadata.get("process_triplet") if isinstance(metadata.get("process_triplet"), dict) else None
@@ -33708,8 +33717,7 @@ def _build_process_playbooks_bootstrap_page(
             merged_metadata.get("session_id"),
             limit=5,
         )
-        playbooks.append(
-            {
+        playbook = {
                 "title": _process_title(trigger, action, category, owner_agents),
                 "purpose": _purpose_for_category(category),
                 "category": category,
@@ -33728,6 +33736,12 @@ def _build_process_playbooks_bootstrap_page(
                 "decision_refs": decision_refs,
                 "evidence": evidence_summary,
             }
+        playbooks.append(
+            synthesis_pack.refine_process_playbook(
+                playbook=playbook,
+                source_kind="bundle",
+                normalize_statement_text=_normalize_statement_text,
+            )
         )
         if len(playbooks) >= max(6, min(50, int(max_signals))):
             break
@@ -33802,8 +33816,7 @@ def _build_process_playbooks_bootstrap_page(
             limit=4,
         )
         artifacts = _extract_list_values(source_refs, ticket_ids, metadata.get("task_id"), metadata.get("session_id"), limit=5)
-        playbooks.append(
-            {
+        playbook = {
                 "title": _process_title(trigger, action, category, owner_agents),
                 "purpose": _purpose_for_category(category),
                 "category": category,
@@ -33822,6 +33835,12 @@ def _build_process_playbooks_bootstrap_page(
                 "decision_refs": decision_refs,
                 "evidence": evidence_summary,
             }
+        playbooks.append(
+            synthesis_pack.refine_process_playbook(
+                playbook=playbook,
+                source_kind="claim",
+                normalize_statement_text=_normalize_statement_text,
+            )
         )
         if len(playbooks) >= max(6, min(50, int(max_signals))):
             break
@@ -33846,8 +33865,7 @@ def _build_process_playbooks_bootstrap_page(
         if escalations:
             exceptions.append(f"Escalate when {escalations[0]}")
         human_loop = _human_loop_guidance(category, escalations[0] if escalations else "repeat failures", confidence=0.81, exceptions=exceptions)
-        playbooks.append(
-            {
+        playbook = {
                 "title": _process_title(trigger, action, category, [agent_id]),
                 "purpose": "Capture durable operator knowledge discovered during agent debriefs and turn it into reusable SOP.",
                 "category": category,
@@ -33879,6 +33897,12 @@ def _build_process_playbooks_bootstrap_page(
                     limit=6,
                 ),
             }
+        playbooks.append(
+            synthesis_pack.refine_process_playbook(
+                playbook=playbook,
+                source_kind="reflection",
+                normalize_statement_text=_normalize_statement_text,
+            )
         )
         if len(playbooks) >= max(6, min(50, int(max_signals))):
             break
@@ -33913,8 +33937,7 @@ def _build_process_playbooks_bootstrap_page(
             if approval_rules
             else "Human confirmation recommended if source freshness or policy confidence drops."
         )
-        playbooks.append(
-            {
+        playbook = {
                 "title": _process_title(trigger, action, "process", [agent_id] if agent_id else []),
                 "purpose": "Document the real operating sequence declared in agent profile metadata and observed workflow history.",
                 "category": "process",
@@ -33947,6 +33970,12 @@ def _build_process_playbooks_bootstrap_page(
                     limit=6,
                 ),
             }
+        playbooks.append(
+            synthesis_pack.refine_process_playbook(
+                playbook=playbook,
+                source_kind="profile_declared",
+                normalize_statement_text=_normalize_statement_text,
+            )
         )
         if len(playbooks) >= max(6, min(50, int(max_signals))):
             break
@@ -34001,8 +34030,7 @@ def _build_process_playbooks_bootstrap_page(
             escalation = escalation_rules[0] if escalation_rules else "Escalate to reviewer when scheduled workflow produces a risky or uncertain output."
             if escalation_mode:
                 escalation = f"{escalation} Control-plane escalation mode: `{escalation_mode}`."
-            playbooks.append(
-                {
+            playbook = {
                     "title": _process_title(trigger, action, "process", [agent_id] if agent_id else []),
                     "purpose": purpose,
                     "category": "process",
@@ -34030,6 +34058,12 @@ def _build_process_playbooks_bootstrap_page(
                     "decision_refs": _extract_list_values(program, *authority[:2], limit=4),
                     "evidence": _extract_list_values(task_code, builtin_task, cron_expr, interval_seconds, program, limit=6),
                 }
+            playbooks.append(
+                synthesis_pack.refine_process_playbook(
+                    playbook=playbook,
+                    source_kind="scheduled_task",
+                    normalize_statement_text=_normalize_statement_text,
+                )
             )
             if len(playbooks) >= max(6, min(50, int(max_signals))):
                 break
@@ -34125,6 +34159,7 @@ def _build_company_operating_context_bootstrap_page(
     space_key: str,
     max_signals: int,
 ) -> list[dict[str, str]]:
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
     source_counts: list[tuple[str, int]] = []
     if _legacy_import_sources_table_exists_from_cursor(cur):
         cur.execute(
@@ -34183,6 +34218,15 @@ def _build_company_operating_context_bootstrap_page(
             (name, total)
             for name, total in sorted(domain_counts.items(), key=lambda pair: (-pair[1], pair[0]))[: max(5, min(30, int(max_signals)))]
         ]
+    context_extensions = synthesis_pack.build_company_context_extensions(
+        matrix_rows=matrix,
+        source_counts=source_counts,
+        claims_rollup=claims_rollup,
+        normalize_statement_text=_normalize_statement_text,
+    )
+    snapshot_notes = [str(v).strip() for v in (context_extensions.get("snapshot_notes") or []) if str(v).strip()]
+    workflow_signals = [item for item in (context_extensions.get("workflow_signals") or []) if isinstance(item, dict)]
+    principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
 
     lines = [
         "# Company Operating Context",
@@ -34192,6 +34236,7 @@ def _build_company_operating_context_bootstrap_page(
         f"- Active agents discovered: `{len(matrix)}`",
         f"- Running instances observed: `{running_instances_total}`",
         f"- Connected data sources: `{sum(count for _, count in source_counts)}`",
+        *[f"- {note}" for note in snapshot_notes[:4]],
         "",
         "## Team Topology",
         "| Team | Agents |",
@@ -34228,13 +34273,26 @@ def _build_company_operating_context_bootstrap_page(
             lines.append(f"| `{source_type}` | {int(total)} |")
     else:
         lines.append("| `n/a` | 0 |")
+    if workflow_signals:
+        lines.extend(
+            [
+                "",
+                "## Recurring Workflow Signals",
+                "| Workflow | Signals |",
+                "|---|---:|",
+            ]
+        )
+        for item in workflow_signals[:8]:
+            lines.append(f"| {str(item.get('label') or 'workflow').replace('|', '/')} | {int(item.get('count') or 0)} |")
     lines.extend(
         [
             "",
             "## Core Operating Principles",
-            "- Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
-            "- Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
-            "- Agent actions should be constrained by tool guardrails and approval rules.",
+            *[f"- {item}" for item in (principles or [
+                "Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
+                "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
+                "Agent actions should be constrained by tool guardrails and approval rules.",
+            ])],
             "",
         ]
     )

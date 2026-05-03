@@ -42,6 +42,23 @@ class SynthesisPack(Protocol):
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]: ...
 
+    def refine_process_playbook(
+        self,
+        *,
+        playbook: dict[str, Any],
+        source_kind: str,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]: ...
+
+    def build_company_context_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_counts: list[tuple[str, int]] | None,
+        claims_rollup: list[tuple[str, int]] | None,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]: ...
+
     def default_space_for_starter_profile(self, profile: str) -> str: ...
 
     def wiki_space_template_catalog(self) -> list[dict[str, Any]]: ...
@@ -607,6 +624,35 @@ class GenericOpsSynthesisPack:
                     inferred["contracts"].extend(binding_contracts[:4])
         return inferred
 
+    def refine_process_playbook(
+        self,
+        *,
+        playbook: dict[str, Any],
+        source_kind: str,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_kind, normalize_statement_text
+        return dict(playbook)
+
+    def build_company_context_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_counts: list[tuple[str, int]] | None,
+        claims_rollup: list[tuple[str, int]] | None,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del matrix_rows, source_counts, claims_rollup, normalize_statement_text
+        return {
+            "snapshot_notes": [],
+            "workflow_signals": [],
+            "principles": [
+                "Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
+                "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
+                "Agent actions should be constrained by tool guardrails and approval rules.",
+            ],
+        }
+
     def default_space_for_starter_profile(self, profile: str) -> str:
         return _STARTER_PROFILE_DEFAULT_SPACES.get(str(profile or "").strip().lower(), "operations")
 
@@ -988,6 +1034,25 @@ class GenericOpsSynthesisPack:
 class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
     key = "logistics_ops"
 
+    def _process_playbook_tokens(
+        self,
+        playbook: dict[str, Any],
+        *,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> str:
+        return normalize_statement_text(
+            " ".join(
+                [
+                    str(playbook.get("title") or ""),
+                    str(playbook.get("trigger") or ""),
+                    str(playbook.get("action") or ""),
+                    str(playbook.get("output") or ""),
+                    " ".join(str(v).strip() for v in (playbook.get("artifacts") or []) if str(v).strip()),
+                    " ".join(str(v).strip() for v in (playbook.get("evidence") or []) if str(v).strip()),
+                ]
+            )
+        )
+
     def derive_task_semantics(
         self,
         task_contract: dict[str, Any],
@@ -1123,6 +1188,169 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             )
 
         return semantics
+
+    def refine_process_playbook(
+        self,
+        *,
+        playbook: dict[str, Any],
+        source_kind: str,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_kind
+        refined = dict(playbook)
+        tokens = self._process_playbook_tokens(refined, normalize_statement_text=normalize_statement_text)
+        inputs = [str(v).strip() for v in (refined.get("inputs") or []) if str(v).strip()]
+        tools = [str(v).strip() for v in (refined.get("tools") or []) if str(v).strip()]
+        artifacts = [str(v).strip() for v in (refined.get("artifacts") or []) if str(v).strip()]
+        evidence = [str(v).strip() for v in (refined.get("evidence") or []) if str(v).strip()]
+
+        if "incident" in tokens and "monitor" in tokens:
+            refined.update(
+                {
+                    "purpose": "Continuously watch live logistics risk signals and escalate emerging incidents before they affect dispatch, SLA, or customer communication.",
+                    "steps": [
+                        "Load the latest incident-like signals, unresolved blockers, and active logistics alerts.",
+                        "Check whether any active incident crossed recurrence, severity, or response thresholds.",
+                        "Notify the configured authority and update the incident state when escalation is required.",
+                        "Record unresolved blockers and the explicit next owner before the next monitor cycle.",
+                    ],
+                    "output": "Updated incident state with explicit escalation notes, next owner, and remaining blockers.",
+                    "verification": [
+                        "Confirm whether incident status changed, stayed stable, or intentionally remained under watch.",
+                        "Verify escalation routing matches the configured authority and standing-order mode.",
+                    ],
+                }
+            )
+        elif "driver" in tokens and "economy" in tokens:
+            refined.update(
+                {
+                    "purpose": "Refresh the recurring driver economy workflow so operations can review cost and performance drift on a stable cadence.",
+                    "inputs": list(dict.fromkeys([*inputs, "driver economy metrics", "shift performance context"]))[:6],
+                    "steps": [
+                        "Collect the latest driver economy metrics and supporting shift context for the reporting window.",
+                        "Rebuild or refresh the target report or sheet used by operations.",
+                        "Highlight anomalies, missing inputs, or unusual cost drift before downstream use.",
+                        "Publish the refreshed report and log any exception that needs follow-up.",
+                    ],
+                    "output": "Updated driver economy report or sheet ready for operations or finance review.",
+                    "verification": [
+                        "Confirm the report window and source freshness match the intended daily or shift cycle.",
+                        "Verify anomalies and missing inputs were surfaced explicitly instead of buried in generic output.",
+                    ],
+                }
+            )
+        elif "daily" in tokens and "report" in tokens:
+            refined.update(
+                {
+                    "purpose": "Produce the recurring logistics operating digest with blockers, escalations, and current-day movement.",
+                    "steps": [
+                        "Collect the latest activity metrics, blockers, escalations, and durable changes for the reporting window.",
+                        "Assemble the report in the expected operational format or destination system.",
+                        "Highlight missed thresholds, open incidents, and human follow-ups that still need action.",
+                        "Publish the report and link follow-up tasks or wiki updates where needed.",
+                    ],
+                    "output": "Published daily report with current blockers, escalations, and activity summary.",
+                    "verification": [
+                        "Confirm the report covers the intended audience and reporting window.",
+                        "Verify important blockers and escalations were surfaced directly, not diluted into generic prose.",
+                    ],
+                }
+            )
+        elif ("cargo" in tokens and "sync" in tokens) or ("erp" in tokens and "sync" in tokens):
+            refined.update(
+                {
+                    "purpose": "Synchronize ERP or cargo-facing notes so downstream logistics decisions run on current operational state.",
+                    "inputs": list(dict.fromkeys([*inputs, "ERP notes", "cargo state", "dispatch context"]))[:6],
+                    "steps": [
+                        "Load the latest cargo, ERP-facing, and dispatch-side state for the workflow window.",
+                        "Apply the synchronization routine for notes, status, or derived fields.",
+                        "Detect mismatches or failed writes before declaring the sync complete.",
+                        "Record synchronization outcome and unresolved deltas for follow-up.",
+                    ],
+                    "output": "ERP and cargo notes synchronized with mismatches explicitly recorded.",
+                    "verification": [
+                        "Confirm the target ERP or cargo system reflects the newly synchronized state.",
+                        "Check that failed or partial updates were escalated instead of silently ignored.",
+                    ],
+                }
+            )
+        elif "document" in tokens and ("shift" in tokens or "readiness" in tokens):
+            refined.update(
+                {
+                    "purpose": "Check driver or shift document readiness before dispatch or operational handoff starts.",
+                    "inputs": list(dict.fromkeys([*inputs, "driver documents", "shift roster", "readiness checklist"]))[:6],
+                    "steps": [
+                        "Load the latest driver or shift document set and the readiness checklist.",
+                        "Detect missing, expired, or inconsistent documents before the shift proceeds.",
+                        "Escalate unresolved readiness blockers to the configured authority.",
+                        "Record the final readiness state and any missing artifacts for the next operator.",
+                    ],
+                    "output": "Document readiness state updated with explicit blockers and escalation notes.",
+                    "verification": [
+                        "Confirm every required document is either present or escalated.",
+                        "Verify the final readiness note is visible to the next operator or agent.",
+                    ],
+                }
+            )
+        elif "comment" in tokens and ("signal" in tokens or "learning" in tokens):
+            refined.update(
+                {
+                    "purpose": "Distill recurring logistics comments into reusable signals that improve future playbooks and durable knowledge.",
+                    "steps": [
+                        "Review fresh operational comments and isolate recurring patterns from one-off chatter.",
+                        "Separate reusable logistics signals from transactional or ephemeral updates.",
+                        "Link high-signal findings to the affected process, source, or decision surface.",
+                        "Write back the synthesized findings for wiki promotion or human review.",
+                    ],
+                    "output": "Structured learning signals ready for knowledge promotion and follow-up review.",
+                }
+            )
+        refined["tools"] = list(dict.fromkeys([*tools]))[:6]
+        refined["artifacts"] = list(dict.fromkeys([*artifacts]))[:6]
+        refined["evidence"] = list(dict.fromkeys([*evidence]))[:6]
+        return refined
+
+    def build_company_context_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_counts: list[tuple[str, int]] | None,
+        claims_rollup: list[tuple[str, int]] | None,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        workflow_counts: dict[str, int] = {}
+        for item in matrix_rows or []:
+            if not isinstance(item, dict):
+                continue
+            for value in [*(item.get("standing_orders") or []), *(item.get("scheduled_tasks") or [])]:
+                text = str(value or "").strip()
+                if not text:
+                    continue
+                normalized = normalize_statement_text(text)
+                label = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+                if not normalized or not label:
+                    continue
+                workflow_counts[label] = int(workflow_counts.get(label, 0)) + 1
+        workflow_signals = [
+            {"label": name, "count": total}
+            for name, total in sorted(workflow_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:6]
+        ]
+        source_total = sum(int(total or 0) for _, total in (source_counts or []))
+        domain_total = sum(int(total or 0) for _, total in (claims_rollup or []))
+        snapshot_notes = [
+            f"Recurring workflows observed: {len(workflow_signals)}.",
+            f"Connected source streams contributing to logistics knowledge: {source_total}.",
+            f"Operational domain signals currently tracked: {domain_total}.",
+        ]
+        return {
+            "snapshot_notes": snapshot_notes,
+            "workflow_signals": workflow_signals,
+            "principles": [
+                "Recurring dispatch, incident, and reporting workflows should be captured as reusable SOPs instead of staying trapped inside runtime chatter.",
+                "Source freshness and authority matter: logistics actions should prefer the latest operational source of truth before acting.",
+                "Escalation should remain explicit whenever route, SLA, access, or customer-impact risk crosses the approved boundary.",
+            ],
+        }
 
 
 _PACKS: dict[str, SynthesisPack] = {
