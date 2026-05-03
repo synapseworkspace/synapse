@@ -1350,6 +1350,16 @@ type SharedMemoryImpactPayload = {
     high_impact_agents?: number;
     changed_pages?: number;
   };
+  fanout_plan?: {
+    summary?: {
+      impacted_agents?: number;
+      refresh_now_agents?: number;
+      queue_next_task_agents?: number;
+    };
+    top_roles?: Array<{ role?: string; count?: number }>;
+    top_teams?: Array<{ team?: string; count?: number }>;
+    top_delta_kinds?: Array<{ delta_kind?: string; count?: number }>;
+  };
   change_feed_summary?: {
     total?: number;
     by_delta_kind?: Record<string, number>;
@@ -1365,6 +1375,12 @@ type SharedMemoryImpactPayload = {
       delta_kind?: string | null;
       score?: number;
       reasons?: string[];
+      delta_objects?: Array<{
+        kind?: string;
+        label?: string;
+        importance?: string;
+        action_hint?: string;
+      }>;
     }>;
   }>;
 };
@@ -1377,12 +1393,60 @@ type SharedMemoryHealthPayload = {
     active_agents?: number;
     roster_agents?: number;
     published_pages?: number;
+    scoped_pages?: number;
+    draft_items_visible?: number;
     state_snapshot_slug?: string | null;
     state_snapshot_updated_at?: string | null;
     latest_change_at?: string | null;
+    latest_private_draft_at?: string | null;
     snapshot_lag_minutes?: number | null;
     knowledge_snapshots_total?: number;
   };
+};
+
+type SharedMemoryPublishImpactPreviewPayload = {
+  project_id: string;
+  generated_at?: string | null;
+  tier_scope?: {
+    tier?: string;
+    requested_tier?: string | null;
+    supported?: boolean;
+    degraded?: boolean;
+  };
+  preview_change?: {
+    delta_kind?: string | null;
+    change_summary?: string | null;
+    delta_objects?: Array<{
+      kind?: string;
+      label?: string;
+      importance?: string;
+      action_hint?: string;
+    }>;
+    page?: {
+      title?: string | null;
+      slug?: string | null;
+      page_type?: string | null;
+      entity_key?: string | null;
+    };
+  };
+  fanout_plan?: {
+    summary?: {
+      impacted_agents?: number;
+      refresh_now_agents?: number;
+      queue_next_task_agents?: number;
+    };
+    top_roles?: Array<{ role?: string; count?: number }>;
+    top_teams?: Array<{ team?: string; count?: number }>;
+    top_delta_kinds?: Array<{ delta_kind?: string; count?: number }>;
+  };
+  impacted_agents?: Array<{
+    agent_id?: string;
+    display_name?: string;
+    role?: string | null;
+    team?: string | null;
+    impact_score?: number;
+    reasons?: string[];
+  }>;
 };
 
 type LegacyImportSource = {
@@ -2472,6 +2536,8 @@ export default function App() {
   const [loadingSharedMemoryImpact, setLoadingSharedMemoryImpact] = useState(false);
   const [sharedMemoryHealth, setSharedMemoryHealth] = useState<SharedMemoryHealthPayload | null>(null);
   const [loadingSharedMemoryHealth, setLoadingSharedMemoryHealth] = useState(false);
+  const [sharedMemoryPublishPreview, setSharedMemoryPublishPreview] = useState<SharedMemoryPublishImpactPreviewPayload | null>(null);
+  const [loadingSharedMemoryPublishPreview, setLoadingSharedMemoryPublishPreview] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [adoptionSyncPresetResult, setAdoptionSyncPresetResult] = useState<AdoptionSyncPresetPayload | null>(null);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
@@ -3246,6 +3312,9 @@ export default function App() {
     }
     if (Number(summary.high_impact_agents || 0) > 0) {
       items.push(`${Number(summary.high_impact_agents || 0)} agent(s) are in the high-impact refresh bucket right now.`);
+    }
+    if (Number(metrics.draft_items_visible || 0) > 0) {
+      items.push(`${Number(metrics.draft_items_visible || 0)} private/team draft delta(s) are currently visible in this scope.`);
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);
@@ -4882,6 +4951,42 @@ export default function App() {
     }
   }, [apiUrl, observabilitySpaceKey, projectId]);
 
+  const loadSharedMemoryPublishPreview = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project || !selectedPageSlug) {
+      setSharedMemoryPublishPreview(null);
+      return;
+    }
+    setLoadingSharedMemoryPublishPreview(true);
+    try {
+      const payload = await apiFetch<SharedMemoryPublishImpactPreviewPayload>(
+        apiUrl,
+        "/v1/agents/shared-memory/publish-impact-preview",
+        {
+          method: "POST",
+          idempotencyKey: randomKey(),
+          body: {
+            project_id: project,
+            space_key: pageGroupKey(selectedPageSlug),
+            page_slug: selectedPageSlug,
+            page_title: selectedPageDetail?.page?.title || selectedPageSlug,
+            page_type: selectedPageDetail?.page?.page_type || "operations",
+            entity_key: selectedPageDetail?.page?.entity_key || null,
+            change_summary: `Planned publish/update preview for ${selectedPageDetail?.page?.title || selectedPageSlug}.`,
+            review_policy_mode: "auto",
+            memory_tier_mode: "reviewed_team",
+            limit: 8,
+          },
+        },
+      );
+      setSharedMemoryPublishPreview(payload);
+    } catch {
+      setSharedMemoryPublishPreview(null);
+    } finally {
+      setLoadingSharedMemoryPublishPreview(false);
+    }
+  }, [apiUrl, projectId, selectedPageDetail?.page?.entity_key, selectedPageDetail?.page?.page_type, selectedPageDetail?.page?.title, selectedPageSlug]);
+
   const applyPolicyQuickLoopPreset = useCallback(
     async (dryRun: boolean) => {
       const project = projectId.trim();
@@ -5897,6 +6002,7 @@ export default function App() {
       setAdoptionSynthesisGraph(null);
       setSharedMemoryImpact(null);
       setSharedMemoryHealth(null);
+      setSharedMemoryPublishPreview(null);
       return;
     }
     if (coreWorkspaceRoute !== "operations") {
@@ -5905,7 +6011,8 @@ export default function App() {
     void loadAdoptionSynthesisGraph();
     void loadSharedMemoryImpact();
     void loadSharedMemoryHealth();
-  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, loadSharedMemoryHealth, loadSharedMemoryImpact, projectId]);
+    void loadSharedMemoryPublishPreview();
+  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, loadSharedMemoryHealth, loadSharedMemoryImpact, loadSharedMemoryPublishPreview, projectId]);
 
   useEffect(() => {
     void loadSelfhostConsistency();
@@ -10395,6 +10502,64 @@ export default function App() {
                                       No agents currently look strongly impacted by fresh changes in this space.
                                     </Text>
                                   )}
+                                  {selectedPageSlug ? (
+                                    <Paper withBorder p="xs" radius="md">
+                                      <Stack gap={4}>
+                                        <Group justify="space-between" align="center" wrap="wrap">
+                                          <Text size="xs" fw={700}>
+                                            Publish impact preview
+                                          </Text>
+                                          <Button
+                                            size="xs"
+                                            variant="subtle"
+                                            color="lime"
+                                            loading={loadingSharedMemoryPublishPreview}
+                                            onClick={() => void loadSharedMemoryPublishPreview()}
+                                          >
+                                            Refresh preview
+                                          </Button>
+                                        </Group>
+                                        {sharedMemoryPublishPreview ? (
+                                          <>
+                                            <Text size="xs" c="dimmed">
+                                              {(sharedMemoryPublishPreview.preview_change?.page?.title || selectedPageSlug)} •{" "}
+                                              {(sharedMemoryPublishPreview.preview_change?.delta_kind || "knowledge_change")}
+                                            </Text>
+                                            {Array.isArray(sharedMemoryPublishPreview.preview_change?.delta_objects) &&
+                                            sharedMemoryPublishPreview.preview_change?.delta_objects.length > 0 ? (
+                                              <Group gap={6} wrap="wrap">
+                                                {sharedMemoryPublishPreview.preview_change?.delta_objects.slice(0, 3).map((item, index) => (
+                                                  <Badge
+                                                    key={`shared-memory-preview-delta-${index}`}
+                                                    size="xs"
+                                                    variant="light"
+                                                    color={item.importance === "high" ? "orange" : "cyan"}
+                                                  >
+                                                    {item.kind || "delta"} · {item.action_hint || "refresh_context"}
+                                                  </Badge>
+                                                ))}
+                                              </Group>
+                                            ) : null}
+                                            <Text size="xs" c="dimmed">
+                                              Fanout: {Number(sharedMemoryPublishPreview.fanout_plan?.summary?.refresh_now_agents || 0)} refresh now •{" "}
+                                              {Number(sharedMemoryPublishPreview.fanout_plan?.summary?.queue_next_task_agents || 0)} next-task refresh
+                                            </Text>
+                                            <Text size="xs" c="dimmed">
+                                              Top roles:{" "}
+                                              {(sharedMemoryPublishPreview.fanout_plan?.top_roles || [])
+                                                .slice(0, 3)
+                                                .map((item) => `${item.role || "unassigned"} ${Number(item.count || 0)}`)
+                                                .join(" • ") || "n/a"}
+                                            </Text>
+                                          </>
+                                        ) : (
+                                          <Text size="xs" c="dimmed">
+                                            Select a page in Operations to preview which agents a publish/update would most likely affect.
+                                          </Text>
+                                        )}
+                                      </Stack>
+                                    </Paper>
+                                  ) : null}
                                   {sharedMemoryConcerns.length > 0 ? (
                                     <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
                                       <Stack gap={2}>

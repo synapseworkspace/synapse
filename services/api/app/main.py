@@ -10935,6 +10935,153 @@ def _shared_memory_tokens(*values: Any) -> set[str]:
     return tokens
 
 
+def _derive_shared_memory_delta_objects(
+    *,
+    delta_kind: str,
+    page_type: str,
+    slug: str,
+    entity_key: str | None,
+    change_summary: str | None,
+    status: str | None,
+) -> list[dict[str, Any]]:
+    normalized_delta = str(delta_kind or "").strip().lower()
+    normalized_page_type = str(page_type or "").strip().lower() or "operations"
+    normalized_slug = str(slug or "").strip()
+    normalized_entity = str(entity_key or "").strip() or None
+    normalized_summary = str(change_summary or "").strip()
+    normalized_status = str(status or "").strip().lower() or None
+    titleish = normalized_entity or normalized_slug or normalized_page_type
+    if normalized_delta == "policy_change":
+        return [
+            {
+                "kind": "rule_change",
+                "label": normalized_summary or f"Policy update for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "high",
+                "action_hint": "refresh_policy_context",
+            }
+        ]
+    if normalized_delta == "process_change":
+        action_hint = "refresh_playbook_context"
+        if normalized_status in {"pending_review", "blocked_conflict"}:
+            action_hint = "review_draft_process_delta"
+        return [
+            {
+                "kind": "playbook_change",
+                "label": normalized_summary or f"Process update for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "high" if normalized_page_type in {"process", "runbook"} else "medium",
+                "action_hint": action_hint,
+            }
+        ]
+    if normalized_delta == "source_map_change":
+        return [
+            {
+                "kind": "source_contract_change",
+                "label": normalized_summary or f"Source mapping update for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "medium",
+                "action_hint": "refresh_source_context",
+            }
+        ]
+    if normalized_delta == "agent_profile_change":
+        return [
+            {
+                "kind": "agent_role_change",
+                "label": normalized_summary or f"Agent profile update for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "medium",
+                "action_hint": "refresh_agent_profile",
+            }
+        ]
+    if normalized_delta == "decision_change":
+        return [
+            {
+                "kind": "decision_log_change",
+                "label": normalized_summary or f"Decision change for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "medium",
+                "action_hint": "refresh_decision_context",
+            }
+        ]
+    if normalized_delta == "incident_change":
+        return [
+            {
+                "kind": "incident_update",
+                "label": normalized_summary or f"Incident update for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "high",
+                "action_hint": "refresh_incident_context",
+            }
+        ]
+    if normalized_delta == "operational_rule_change":
+        return [
+            {
+                "kind": "escalation_change",
+                "label": normalized_summary or f"Operational rule update for {titleish}.",
+                "entity_ref": normalized_entity,
+                "importance": "high",
+                "action_hint": "refresh_operational_rules",
+            }
+        ]
+    return [
+        {
+            "kind": "knowledge_change",
+            "label": normalized_summary or f"Knowledge update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "medium",
+            "action_hint": "refresh_context",
+        }
+    ]
+
+
+def _build_shared_memory_fanout_plan(
+    *,
+    impacted_agents: list[dict[str, Any]],
+    delta_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    role_counts: dict[str, int] = {}
+    team_counts: dict[str, int] = {}
+    refresh_now = 0
+    queue_next_task = 0
+    delta_kind_counts: dict[str, int] = {}
+    for item in delta_items:
+        delta_kind = str(item.get("delta_kind") or "").strip() or "knowledge_change"
+        delta_kind_counts[delta_kind] = int(delta_kind_counts.get(delta_kind, 0)) + 1
+    for agent in impacted_agents:
+        role = str(agent.get("role") or "unassigned").strip() or "unassigned"
+        team = str(agent.get("team") or "unassigned").strip() or "unassigned"
+        role_counts[role] = int(role_counts.get(role, 0)) + 1
+        team_counts[team] = int(team_counts.get(team, 0)) + 1
+        score = float(agent.get("impact_score") or 0.0)
+        if score >= 0.7:
+            refresh_now += 1
+        else:
+            queue_next_task += 1
+    top_roles = [
+        {"role": role, "count": count}
+        for role, count in sorted(role_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    ]
+    top_teams = [
+        {"team": team, "count": count}
+        for team, count in sorted(team_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+    ]
+    top_delta_kinds = [
+        {"delta_kind": kind, "count": count}
+        for kind, count in sorted(delta_kind_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+    ]
+    return {
+        "summary": {
+            "impacted_agents": len(impacted_agents),
+            "refresh_now_agents": refresh_now,
+            "queue_next_task_agents": queue_next_task,
+        },
+        "top_roles": top_roles,
+        "top_teams": top_teams,
+        "top_delta_kinds": top_delta_kinds,
+    }
+
+
 def _normalize_shared_memory_delta_kind(*, page_type: str, slug: str, change_summary: str) -> str:
     normalized_page_type = str(page_type or "").strip().lower()
     normalized_slug = str(slug or "").strip().lower()
@@ -11098,6 +11245,130 @@ def _shared_memory_private_drafts_available(conn) -> bool:
         return _wiki_feature_table_exists(cur, "public.wiki_draft_changes")
 
 
+def _derive_shared_memory_delta_objects(
+    *,
+    delta_kind: str,
+    page_type: str,
+    slug: str,
+    entity_key: str | None,
+    change_summary: str | None,
+    status: str | None,
+) -> list[dict[str, Any]]:
+    normalized_delta = str(delta_kind or "").strip().lower()
+    normalized_page_type = str(page_type or "").strip().lower() or "operations"
+    normalized_slug = str(slug or "").strip()
+    normalized_entity = str(entity_key or "").strip() or None
+    normalized_summary = str(change_summary or "").strip()
+    normalized_status = str(status or "").strip().lower() or None
+    titleish = normalized_entity or normalized_slug or normalized_page_type
+    if normalized_delta == "policy_change":
+        return [{
+            "kind": "rule_change",
+            "label": normalized_summary or f"Policy update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "high",
+            "action_hint": "refresh_policy_context",
+        }]
+    if normalized_delta == "process_change":
+        return [{
+            "kind": "playbook_change",
+            "label": normalized_summary or f"Process update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "high" if normalized_page_type in {"process", "runbook"} else "medium",
+            "action_hint": "review_draft_process_delta" if normalized_status in {"pending_review", "blocked_conflict"} else "refresh_playbook_context",
+        }]
+    if normalized_delta == "source_map_change":
+        return [{
+            "kind": "source_contract_change",
+            "label": normalized_summary or f"Source mapping update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "medium",
+            "action_hint": "refresh_source_context",
+        }]
+    if normalized_delta == "agent_profile_change":
+        return [{
+            "kind": "agent_role_change",
+            "label": normalized_summary or f"Agent profile update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "medium",
+            "action_hint": "refresh_agent_profile",
+        }]
+    if normalized_delta == "decision_change":
+        return [{
+            "kind": "decision_log_change",
+            "label": normalized_summary or f"Decision change for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "medium",
+            "action_hint": "refresh_decision_context",
+        }]
+    if normalized_delta == "incident_change":
+        return [{
+            "kind": "incident_update",
+            "label": normalized_summary or f"Incident update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "high",
+            "action_hint": "refresh_incident_context",
+        }]
+    if normalized_delta == "operational_rule_change":
+        return [{
+            "kind": "escalation_change",
+            "label": normalized_summary or f"Operational rule update for {titleish}.",
+            "entity_ref": normalized_entity,
+            "importance": "high",
+            "action_hint": "refresh_operational_rules",
+        }]
+    return [{
+        "kind": "knowledge_change",
+        "label": normalized_summary or f"Knowledge update for {titleish}.",
+        "entity_ref": normalized_entity,
+        "importance": "medium",
+        "action_hint": "refresh_context",
+    }]
+
+
+def _build_shared_memory_fanout_plan(
+    *,
+    impacted_agents: list[dict[str, Any]],
+    delta_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    role_counts: dict[str, int] = {}
+    team_counts: dict[str, int] = {}
+    delta_kind_counts: dict[str, int] = {}
+    refresh_now = 0
+    queue_next_task = 0
+    for item in delta_items:
+        delta_kind = str(item.get("delta_kind") or "").strip() or "knowledge_change"
+        delta_kind_counts[delta_kind] = int(delta_kind_counts.get(delta_kind, 0)) + 1
+    for agent in impacted_agents:
+        role = str(agent.get("role") or "unassigned").strip() or "unassigned"
+        team = str(agent.get("team") or "unassigned").strip() or "unassigned"
+        role_counts[role] = int(role_counts.get(role, 0)) + 1
+        team_counts[team] = int(team_counts.get(team, 0)) + 1
+        if float(agent.get("impact_score") or 0.0) >= 0.7:
+            refresh_now += 1
+        else:
+            queue_next_task += 1
+    return {
+        "summary": {
+            "impacted_agents": len(impacted_agents),
+            "refresh_now_agents": refresh_now,
+            "queue_next_task_agents": queue_next_task,
+        },
+        "top_roles": [
+            {"role": role, "count": count}
+            for role, count in sorted(role_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ],
+        "top_teams": [
+            {"team": team, "count": count}
+            for team, count in sorted(team_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ],
+        "top_delta_kinds": [
+            {"delta_kind": kind, "count": count}
+            for kind, count in sorted(delta_kind_counts.items(), key=lambda item: (-item[1], item[0]))[:6]
+        ],
+    }
+
+
 def _build_shared_memory_draft_feed(
     conn,
     *,
@@ -11222,6 +11493,14 @@ def _build_shared_memory_draft_feed(
                     "decision": str(row[3] or "").strip() or None,
                     "confidence": float(row[5] or 0.0),
                 },
+                "delta_objects": _derive_shared_memory_delta_objects(
+                    delta_kind=delta_kind,
+                    page_type=page_type,
+                    slug=slug,
+                    entity_key=str(row[9] or "").strip() or None,
+                    change_summary=change_summary,
+                    status=draft_status,
+                ),
             }
         )
         status_counts[draft_status] = int(status_counts.get(draft_status, 0)) + 1
@@ -11372,6 +11651,14 @@ def _build_wiki_change_feed(
                     "source": str(row[12] or "").strip() or None,
                     "mode": "published_knowledge" if page_status == "published" else "reviewed_knowledge",
                 },
+                "delta_objects": _derive_shared_memory_delta_objects(
+                    delta_kind=delta_kind,
+                    page_type=page_type,
+                    slug=str(row[2] or ""),
+                    entity_key=str(row[3] or "") or None,
+                    change_summary=change_summary,
+                    status=page_status,
+                ),
             }
         )
 
@@ -11913,6 +12200,7 @@ def _build_shared_memory_impact(
         },
         "change_feed_summary": feed.get("summary") if isinstance(feed.get("summary"), dict) else {},
         "tier_scope": tier_scope,
+        "fanout_plan": _build_shared_memory_fanout_plan(impacted_agents=impacted_agents, delta_items=items),
         "impacted_agents": impacted_agents[:50],
     }
 
@@ -11953,6 +12241,14 @@ def _build_shared_memory_publish_impact_preview(
         entity_key=entity_key,
         change_summary=change_summary,
     )
+    preview_item["delta_objects"] = _derive_shared_memory_delta_objects(
+        delta_kind=str(preview_item.get("delta_kind") or ""),
+        page_type=str(((preview_item.get("page") or {}) if isinstance(preview_item.get("page"), dict) else {}).get("page_type") or ""),
+        slug=str(((preview_item.get("page") or {}) if isinstance(preview_item.get("page"), dict) else {}).get("slug") or ""),
+        entity_key=str(((preview_item.get("page") or {}) if isinstance(preview_item.get("page"), dict) else {}).get("entity_key") or "") or None,
+        change_summary=str(preview_item.get("change_summary") or ""),
+        status="preview",
+    )
     roster = _load_shared_memory_agent_roster(conn, project_id=normalized_project, space_key=space_key, limit=200)
     impacted_agents: list[dict[str, Any]] = []
     for agent in roster:
@@ -11980,6 +12276,7 @@ def _build_shared_memory_publish_impact_preview(
             "impacted_agents": len(impacted_agents),
             "high_impact_agents": sum(1 for item in impacted_agents if float(item.get("impact_score") or 0.0) >= 0.7),
         },
+        "fanout_plan": _build_shared_memory_fanout_plan(impacted_agents=impacted_agents, delta_items=[preview_item]),
         "impacted_agents": impacted_agents[: max(1, min(100, int(limit)))],
     }
 
