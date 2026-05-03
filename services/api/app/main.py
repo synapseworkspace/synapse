@@ -11970,6 +11970,30 @@ def _company_knowledge_section_markers(block_id: str) -> tuple[str, str]:
     )
 
 
+def _company_knowledge_managed_region_markers() -> tuple[str, str]:
+    return (
+        "<!-- synapse:company-knowledge-managed-start -->",
+        "<!-- synapse:company-knowledge-managed-end -->",
+    )
+
+
+def _company_knowledge_group_spec(block: dict[str, Any]) -> tuple[str, str, int, int]:
+    block_type = str(block.get("block_type") or "").strip().lower()
+    target_page_type = str(block.get("target_page_type") or "").strip().lower()
+    contradiction_topic = str(block.get("contradiction_topic") or "").strip().lower()
+    if block_type in {"source_of_truth_rule"} or target_page_type == "source_of_truth":
+        return ("source_of_truth", "Source-of-truth rules", 10, 10)
+    if block_type in {"contradiction_watch"} or contradiction_topic:
+        return ("contradictions", "Open contradictions and follow-ups", 20, 20)
+    if block_type in {"process_sop_candidate"} or target_page_type == "process":
+        return ("process", "Process canon candidates", 30, 30)
+    if block_type in {"entity_overview"} or target_page_type == "entity":
+        return ("entities", "Business entities", 40, 40)
+    if block_type in {"known_exception", "working_heuristic"} or target_page_type == "known_exception":
+        return ("heuristics", "Known exceptions and heuristics", 50, 50)
+    return ("general", "Additional company knowledge", 90, 90)
+
+
 def _strip_leading_h1(markdown: str) -> str:
     lines = str(markdown or "").splitlines()
     while lines and not str(lines[0]).strip():
@@ -11992,9 +12016,11 @@ def _render_company_knowledge_candidate_section(candidate: dict[str, Any]) -> st
     body = _strip_leading_h1(page_markdown)
     if not body:
         body = "## Summary\n- Pending company knowledge summary.\n"
+    group_key, group_title, group_order, section_order = _company_knowledge_group_spec(candidate)
     section_lines = [
         start_marker,
-        f"## {title}",
+        f"<!-- synapse:company-knowledge-meta group={group_key} group_title={group_title} group_order={group_order} section_order={section_order} title={title} -->",
+        f"### {title}",
         "",
         body,
         end_marker,
@@ -12002,21 +12028,102 @@ def _render_company_knowledge_candidate_section(candidate: dict[str, Any]) -> st
     return "\n".join(section_lines).strip() + "\n"
 
 
+def _extract_company_knowledge_managed_sections(markdown: str) -> list[dict[str, Any]]:
+    pattern = re.compile(
+        r"<!-- synapse:company-knowledge-start (?P<block_id>[^>]+) -->\s*(?P<body>.*?)<!-- synapse:company-knowledge-end (?P=block_id) -->\s*",
+        re.DOTALL,
+    )
+    sections: list[dict[str, Any]] = []
+    for match in pattern.finditer(str(markdown or "")):
+        block_id = str(match.group("block_id") or "").strip()
+        body = str(match.group("body") or "").strip()
+        meta_match = re.search(
+            r"<!-- synapse:company-knowledge-meta group=(?P<group>[^ ]+) group_title=(?P<group_title>.*?) group_order=(?P<group_order>\d+) section_order=(?P<section_order>\d+) title=(?P<title>.*?) -->",
+            body,
+        )
+        group_key = ""
+        group_title = ""
+        group_order = 90
+        section_order = 90
+        title = ""
+        if meta_match:
+            group_key = str(meta_match.group("group") or "").strip()
+            group_title = str(meta_match.group("group_title") or "").strip()
+            group_order = int(meta_match.group("group_order") or 90)
+            section_order = int(meta_match.group("section_order") or 90)
+            title = str(meta_match.group("title") or "").strip()
+        else:
+            inferred = _company_knowledge_group_spec({"block_type": block_id.split(":")[-1]})
+            group_key, group_title, group_order, section_order = inferred
+            heading_match = re.search(r"^###\s+(.+)$", body, re.MULTILINE)
+            title = str(heading_match.group(1) or "").strip() if heading_match else block_id
+        sections.append(
+            {
+                "block_id": block_id,
+                "raw": match.group(0).strip(),
+                "group_key": group_key or "general",
+                "group_title": group_title or "Additional company knowledge",
+                "group_order": group_order,
+                "section_order": section_order,
+                "title": title or block_id,
+            }
+        )
+    return sections
+
+
 def _merge_company_knowledge_candidate_into_markdown(existing_markdown: str, candidate: dict[str, Any]) -> str:
-    section_markdown = _render_company_knowledge_candidate_section(candidate)
     current = str(existing_markdown or "").strip()
     if not current:
         return str(candidate.get("page_markdown") or "").strip() or _build_company_knowledge_candidate_markdown(candidate)
-    start_marker, end_marker = _company_knowledge_section_markers(str(candidate.get("block_id") or ""))
-    pattern = re.compile(
-        rf"{re.escape(start_marker)}.*?{re.escape(end_marker)}\s*",
-        re.DOTALL,
+    managed_start, managed_end = _company_knowledge_managed_region_markers()
+    managed_sections = {
+        str(item.get("block_id") or ""): item
+        for item in _extract_company_knowledge_managed_sections(current)
+        if str(item.get("block_id") or "").strip()
+    }
+    new_raw = _render_company_knowledge_candidate_section(candidate).strip()
+    new_meta = _extract_company_knowledge_managed_sections(new_raw)
+    if new_meta:
+        managed_sections[str(new_meta[0].get("block_id") or "")] = new_meta[0]
+    base_content = re.sub(
+        rf"{re.escape(managed_start)}.*?{re.escape(managed_end)}\s*",
+        "",
+        current,
+        flags=re.DOTALL,
     )
-    if pattern.search(current):
-        merged = pattern.sub(section_markdown, current)
-        return merged.strip() + "\n"
-    spacer = "\n\n" if not current.endswith("\n") else "\n"
-    return f"{current}{spacer}{section_markdown}".strip() + "\n"
+    for item in list(managed_sections.values()):
+        start_marker, end_marker = _company_knowledge_section_markers(str(item.get("block_id") or ""))
+        base_content = re.sub(
+            rf"{re.escape(start_marker)}.*?{re.escape(end_marker)}\s*",
+            "",
+            base_content,
+            flags=re.DOTALL,
+        )
+    ordered_sections = sorted(
+        managed_sections.values(),
+        key=lambda item: (
+            int(item.get("group_order") or 90),
+            str(item.get("group_title") or "").lower(),
+            int(item.get("section_order") or 90),
+            str(item.get("title") or "").lower(),
+        ),
+    )
+    grouped_lines: list[str] = [managed_start]
+    current_group = None
+    for item in ordered_sections:
+        group_title = str(item.get("group_title") or "Additional company knowledge").strip()
+        if group_title != current_group:
+            if current_group is not None:
+                grouped_lines.append("")
+            grouped_lines.extend([f"## {group_title}", ""])
+            current_group = group_title
+        grouped_lines.extend([str(item.get("raw") or "").strip(), ""])
+    grouped_lines.append(managed_end)
+    managed_region = "\n".join(line for line in grouped_lines if line is not None).strip()
+    base_content = base_content.strip()
+    if not base_content:
+        return managed_region + "\n"
+    return f"{base_content}\n\n{managed_region}\n".strip() + "\n"
 
 
 def _build_company_knowledge_candidate_markdown(candidate: dict[str, Any]) -> str:

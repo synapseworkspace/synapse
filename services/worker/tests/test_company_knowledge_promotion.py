@@ -27,7 +27,8 @@ class CompanyKnowledgePromotionTests(unittest.TestCase):
         }
         rendered = _render_company_knowledge_candidate_section(candidate)
         self.assertIn("<!-- synapse:company-knowledge-start logistics:source_of_truth_rule -->", rendered)
-        self.assertIn("## Which systems to trust for live logistics state", rendered)
+        self.assertIn("### Which systems to trust for live logistics state", rendered)
+        self.assertIn("<!-- synapse:company-knowledge-meta group=source_of_truth", rendered)
         self.assertIn("Prefer ERP for live route state.", rendered)
         self.assertIn("<!-- synapse:company-knowledge-end logistics:source_of_truth_rule -->", rendered)
 
@@ -41,6 +42,8 @@ class CompanyKnowledgePromotionTests(unittest.TestCase):
         merged = _merge_company_knowledge_candidate_into_markdown(existing, candidate)
         self.assertIn("# Trust Rules for Logistics Data", merged)
         self.assertIn("## Existing Rule", merged)
+        self.assertIn("<!-- synapse:company-knowledge-managed-start -->", merged)
+        self.assertIn("## Source-of-truth rules", merged)
         self.assertIn("<!-- synapse:company-knowledge-start logistics:source_of_truth_rule -->", merged)
         self.assertIn("Prefer ERP for live route state.", merged)
 
@@ -48,7 +51,7 @@ class CompanyKnowledgePromotionTests(unittest.TestCase):
         existing = """# Trust Rules for Logistics Data
 
 <!-- synapse:company-knowledge-start logistics:source_of_truth_rule -->
-## Which systems to trust for live logistics state
+### Which systems to trust for live logistics state
 
 ## Summary
 - Old rule.
@@ -63,6 +66,31 @@ class CompanyKnowledgePromotionTests(unittest.TestCase):
         self.assertNotIn("Old rule.", merged)
         self.assertEqual(merged.count("<!-- synapse:company-knowledge-start logistics:source_of_truth_rule -->"), 1)
         self.assertIn("Prefer ERP for live route state.", merged)
+        self.assertEqual(merged.count("## Source-of-truth rules"), 1)
+
+    def test_merge_groups_sections_in_stable_order(self) -> None:
+        existing = "# Trust Rules for Logistics Data\n"
+        contradiction = {
+            "block_id": "logistics:contradiction_watch",
+            "block_type": "contradiction_watch",
+            "contradiction_topic": "source_of_truth_conflict",
+            "human_title": "Source-of-truth conflicts that still need resolution",
+            "page_markdown": "# Source-of-truth conflicts that still need resolution\n\n## Summary\n- Follow up on stale sheets.\n",
+        }
+        source_rule = {
+            "block_id": "logistics:source_of_truth_rule",
+            "block_type": "source_of_truth_rule",
+            "target_page_type": "source_of_truth",
+            "human_title": "Which systems to trust for live logistics state",
+            "page_markdown": "# Which systems to trust for live logistics state\n\n## Summary\n- Prefer ERP for live route state.\n",
+        }
+        merged = _merge_company_knowledge_candidate_into_markdown(existing, contradiction)
+        merged = _merge_company_knowledge_candidate_into_markdown(merged, source_rule)
+        self.assertLess(merged.index("## Source-of-truth rules"), merged.index("## Open contradictions and follow-ups"))
+        self.assertLess(
+            merged.index("Which systems to trust for live logistics state"),
+            merged.index("Source-of-truth conflicts that still need resolution"),
+        )
 
     def test_candidate_markdown_includes_manual_review_resolution(self) -> None:
         markdown = _build_company_knowledge_candidate_markdown(
