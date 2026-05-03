@@ -2043,6 +2043,88 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("orders_api", markdown)
         self.assertIn("Manual approval for VIP reroutes", markdown)
 
+    def test_tooling_map_bootstrap_page_prefers_structured_runtime_matches(self) -> None:
+        assert _api_main is not None
+
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_build_matrix = _api_main._build_agent_capability_matrix
+        try:
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: True
+            _api_main._build_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "logistics-assistant",
+                    "tools": ["erp_routes_slice", "kb_search"],
+                    "registry_tools": ["driver_cargo_state_for_day"],
+                    "scenario_examples": ["dispatch route review"],
+                    "responsibilities": ["driver_vehicle", "driver_cargo_state"],
+                    "standing_orders": [
+                        "standing_order.logistics.erp_cargo_notes_sync",
+                        "standing_order.logistics.daily_report",
+                    ],
+                    "observed_actions": ["reconcile cargo notes with ERP state"],
+                    "data_sources": ["driver_cargo_state_latest", "postgres_sql:ops_kb_items:polling"],
+                    "source_bindings": ["postgres_sql:memory_items:polling"],
+                    "limits": ["controlled exec blocked by role policy"],
+                    "approval_rules": ["browser automation requires confirmation"],
+                    "escalation_rules": ["Escalate ERP write failures to dispatcher"],
+                    "tool_contracts": [
+                        {
+                            "tool": "erp_routes_slice",
+                            "purpose": "Inspect ERP route and cargo slice for dispatch changes",
+                            "sources": ["driver_cargo_state_latest"],
+                            "capabilities": ["route_reschedule_request"],
+                            "guardrails": ["controlled exec blocked by role policy"],
+                        },
+                        {
+                            "tool": "kb_search",
+                            "purpose": "Search recurring logistics knowledge and operator notes",
+                            "sources": ["postgres_sql:ops_kb_items:polling"],
+                            "capabilities": ["comment_signal_learning"],
+                            "guardrails": ["outbound messaging requires confirmation"],
+                        },
+                    ],
+                    "capability_contracts": [
+                        {
+                            "name": "route_reschedule_request",
+                            "tools": ["erp routes slice"],
+                            "processes": ["standing_order.logistics.erp_cargo_notes_sync"],
+                            "sources": ["driver_cargo_state_latest"],
+                        },
+                        {
+                            "name": "comment_signal_learning",
+                            "tools": ["kb search"],
+                            "processes": ["standing_order.logistics.comment_signal_learning"],
+                            "sources": ["postgres_sql:ops_kb_items:polling"],
+                        },
+                    ],
+                    "source_binding_contracts": [
+                        {
+                            "source": "postgres_sql:ops_kb_items:polling",
+                            "agent_id": "logistics-assistant",
+                            "capabilities": ["comment_signal_learning"],
+                            "processes": ["standing_order.logistics.comment_signal_learning"],
+                            "tools": ["kb_search"],
+                        }
+                    ],
+                }
+            ]
+            pages = _build_tooling_map_bootstrap_page(
+                object(),
+                project_id="hw_ai_agents",
+                space_key="logistics",
+                max_agents=10,
+            )
+        finally:
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_agent_capability_matrix = original_build_matrix
+
+        markdown = str(pages[0].get("markdown") or "")
+        self.assertIn("route reschedule request", markdown)
+        self.assertIn("erp cargo notes sync", markdown)
+        self.assertIn("comment signal learning", markdown)
+        self.assertIn("ops kb items polling", markdown)
+        self.assertIn("controlled exec blocked by role policy", markdown)
+
     def test_normalize_operating_label_strips_schedule_noise(self) -> None:
         assert _api_main is not None
         label = _api_main._normalize_operating_label(

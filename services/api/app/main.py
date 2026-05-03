@@ -1486,6 +1486,92 @@ def _related_operating_labels(
     return []
 
 
+def _operating_label_tokens(text: Any, *, kind: str = "generic") -> set[str]:
+    normalized = _normalize_operating_label(text, kind=kind)
+    if not normalized:
+        return set()
+    stopwords = {
+        "for",
+        "the",
+        "and",
+        "with",
+        "task",
+        "tool",
+        "sync",
+        "state",
+        "latest",
+        "daily",
+        "allowed",
+        "enabled",
+        "requires",
+        "confirmation",
+        "policy",
+    }
+    return {
+        token
+        for token in normalized.split()
+        if token and len(token) >= 2 and token not in stopwords
+    }
+
+
+def _tool_alias_match_score(tool: str, candidate: Any) -> int:
+    normalized_tool = _normalize_operating_label(tool, kind="tool")
+    normalized_candidate = _normalize_operating_label(candidate, kind="tool")
+    if not normalized_tool or not normalized_candidate:
+        return 0
+    if normalized_tool == normalized_candidate:
+        return 100
+    tool_tokens = _operating_label_tokens(normalized_tool, kind="tool")
+    candidate_tokens = _operating_label_tokens(normalized_candidate, kind="tool")
+    if not tool_tokens or not candidate_tokens:
+        if normalized_tool in normalized_candidate or normalized_candidate in normalized_tool:
+            return 70
+        return 0
+    overlap = len(tool_tokens.intersection(candidate_tokens))
+    if overlap <= 0:
+        if normalized_tool in normalized_candidate or normalized_candidate in normalized_tool:
+            return 65
+        return 0
+    if overlap == min(len(tool_tokens), len(candidate_tokens)):
+        return 90
+    if overlap >= 2:
+        return 70 + overlap
+    return 45
+
+
+def _best_contract_matches(
+    tool: str,
+    contracts: list[dict[str, Any]],
+    *,
+    alias_fields: tuple[str, ...],
+    max_items: int = 3,
+    min_score: int = 45,
+) -> list[dict[str, Any]]:
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for contract in contracts:
+        if not isinstance(contract, dict):
+            continue
+        aliases: list[str] = []
+        for field in alias_fields:
+            raw = contract.get(field)
+            if isinstance(raw, list):
+                aliases.extend(str(item).strip() for item in raw if str(item).strip())
+            else:
+                value = str(raw or "").strip()
+                if value:
+                    aliases.append(value)
+        best_score = max((_tool_alias_match_score(tool, alias) for alias in aliases), default=0)
+        if best_score >= min_score:
+            ranked.append((best_score, contract))
+    ranked.sort(
+        key=lambda item: (
+            -item[0],
+            str(item[1].get(alias_fields[0]) or item[1].get("name") or item[1].get("tool") or "").lower(),
+        )
+    )
+    return [contract for _, contract in ranked[:max_items]]
+
+
 def _section_heading_from_key(section_key: str) -> str:
     return " ".join(chunk.capitalize() for chunk in section_key.replace("_", " ").split())
 
@@ -33500,10 +33586,48 @@ def _build_tooling_map_bootstrap_page(
                 }
                 tool_index[key] = bucket
             bucket["agents"].add(agent_id)
-            for contract in capability_contracts:
-                tool_names = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
-                if tool not in tool_names:
-                    continue
+            matched_tool_contracts = _best_contract_matches(tool, tool_contracts, alias_fields=("tool", "name"), max_items=3)
+            matched_capability_contracts = _best_contract_matches(
+                tool,
+                capability_contracts,
+                alias_fields=("tools", "name"),
+                max_items=4,
+            )
+            matched_source_binding_contracts = _best_contract_matches(
+                tool,
+                source_binding_contracts,
+                alias_fields=("tools",),
+                max_items=4,
+            )
+            matched_capability_names = {
+                _normalize_operating_label(str(contract.get("name") or ""), kind="capability")
+                for contract in matched_capability_contracts
+                if str(contract.get("name") or "").strip()
+            }
+            for contract in matched_tool_contracts:
+                bucket["structured"] = True
+                purpose = str(contract.get("purpose") or "").strip()
+                if purpose:
+                    bucket["purposes"].add(purpose[:140])
+                for value in contract.get("scenarios") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        bucket["scenarios"].add(text[:120])
+                for value in contract.get("capabilities") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        normalized = _normalize_operating_label(text, kind="capability")[:120]
+                        bucket["capabilities"].add(normalized)
+                        matched_capability_names.add(normalized)
+                for value in contract.get("sources") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        bucket["sources"].add(_normalize_operating_label(text, kind="source")[:120])
+                for value in contract.get("guardrails") or []:
+                    text = str(value or "").strip()
+                    if text:
+                        bucket["guardrails"].add(text[:120])
+            for contract in matched_capability_contracts:
                 bucket["structured"] = True
                 capability_name = str(contract.get("name") or "").strip()
                 if capability_name:
@@ -33515,8 +33639,18 @@ def _build_tooling_map_bootstrap_page(
                 for source in [str(v).strip() for v in (contract.get("sources") or []) if str(v).strip()]:
                     bucket["sources"].add(_normalize_operating_label(source, kind="source")[:120])
             for contract in source_binding_contracts:
-                tool_names = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
-                if tool not in tool_names:
+                contract_capabilities = {
+                    _normalize_operating_label(str(v).strip(), kind="capability")
+                    for v in (contract.get("capabilities") or [])
+                    if str(v).strip()
+                }
+                if contract in matched_source_binding_contracts:
+                    matched = True
+                elif matched_capability_names and contract_capabilities.intersection(matched_capability_names):
+                    matched = True
+                else:
+                    matched = False
+                if not matched:
                     continue
                 bucket["structured"] = True
                 source_name = str(contract.get("source") or "").strip()
@@ -33527,7 +33661,7 @@ def _build_tooling_map_bootstrap_page(
                 for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
                     bucket["processes"].add(_normalize_operating_label(process, kind="process")[:120])
         for contract in tool_contracts:
-            tool_name = str(contract.get("tool") or "").strip()
+            tool_name = str(contract.get("tool") or contract.get("name") or "").strip()
             if not tool_name:
                 continue
             key = tool_name.lower()
