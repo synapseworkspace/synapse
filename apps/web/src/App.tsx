@@ -1395,10 +1395,12 @@ type SharedMemoryHealthPayload = {
     published_pages?: number;
     scoped_pages?: number;
     draft_items_visible?: number;
+    materialized_entries_visible?: number;
     state_snapshot_slug?: string | null;
     state_snapshot_updated_at?: string | null;
     latest_change_at?: string | null;
     latest_private_draft_at?: string | null;
+    latest_materialized_entry_at?: string | null;
     snapshot_lag_minutes?: number | null;
     knowledge_snapshots_total?: number;
   };
@@ -3315,6 +3317,9 @@ export default function App() {
     }
     if (Number(metrics.draft_items_visible || 0) > 0) {
       items.push(`${Number(metrics.draft_items_visible || 0)} private/team draft delta(s) are currently visible in this scope.`);
+    }
+    if (Number(metrics.materialized_entries_visible || 0) > 0) {
+      items.push(`${Number(metrics.materialized_entries_visible || 0)} long-lived private/team memory entr${Number(metrics.materialized_entries_visible || 0) === 1 ? "y is" : "ies are"} active in this scope.`);
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);

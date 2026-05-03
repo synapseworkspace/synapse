@@ -1206,6 +1206,29 @@ class SharedMemoryPublishImpactPreviewRequest(BaseModel):
     limit: int = Field(default=25, ge=1, le=100)
 
 
+class SharedMemoryEntryUpsertRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    entry_id: int | None = Field(default=None, ge=1)
+    title: str = Field(min_length=1, max_length=512)
+    summary: str = Field(min_length=1, max_length=4000)
+    content: str | None = Field(default=None, max_length=20000)
+    visibility_tier: str = Field(default="reviewed_team", pattern="^(reviewed_team|draft_private)$")
+    status: str = Field(default="active", pattern="^(active|archived)$")
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    owner_agent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    role_scope: str | None = Field(default=None, min_length=1, max_length=256)
+    team_scope: str | None = Field(default=None, min_length=1, max_length=128)
+    entity_key: str | None = Field(default=None, min_length=1, max_length=512)
+    page_slug: str | None = Field(default=None, min_length=1, max_length=512)
+    delta_kind: str = Field(default="knowledge_change", min_length=1, max_length=128)
+    action_hint: str | None = Field(default=None, min_length=1, max_length=256)
+    importance: str = Field(default="medium", pattern="^(low|medium|high)$")
+    source_kind: str = Field(default="agent_note", min_length=1, max_length=128)
+    source_ref: str | None = Field(default=None, min_length=1, max_length=512)
+    metadata: dict[str, Any] | None = None
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -4662,6 +4685,14 @@ def _agent_daily_worklogs_table_exists(conn) -> bool:
     return bool(_AGENT_DAILY_WORKLOGS_TABLE_EXISTS)
 
 
+def _shared_memory_entries_table_exists(conn) -> bool:
+    global _SHARED_MEMORY_ENTRIES_TABLE_EXISTS
+    if _SHARED_MEMORY_ENTRIES_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _SHARED_MEMORY_ENTRIES_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.shared_memory_entries")
+    return bool(_SHARED_MEMORY_ENTRIES_TABLE_EXISTS)
+
+
 def _render_agent_folder_markdown(
     *,
     profile: dict[str, Any],
@@ -7902,6 +7933,7 @@ _SCIM_DIRECTORY_USERS_TABLE_EXISTS: bool | None = None
 _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
 _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
+_SHARED_MEMORY_ENTRIES_TABLE_EXISTS: bool | None = None
 _PUBLIC_TABLE_EXISTS_CACHE: dict[str, bool] = {}
 _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
@@ -11225,6 +11257,50 @@ def _resolve_shared_memory_tier_scope(
     }
 
 
+def _shared_memory_private_tier_materialized(conn) -> bool:
+    return _shared_memory_private_drafts_available(conn) or _shared_memory_entries_table_exists(conn)
+
+
+def _shared_memory_visible_entry_tiers(tier_scope: dict[str, Any] | None) -> list[str]:
+    normalized_tier = str((tier_scope or {}).get("tier") or "").strip().lower()
+    if normalized_tier == "draft_private":
+        return ["reviewed_team", "draft_private"]
+    if normalized_tier == "reviewed_team":
+        return ["reviewed_team"]
+    return []
+
+
+def _build_shared_memory_entry_scope_clause(
+    *,
+    agent_id: str | None,
+    team: str | None,
+    role: str | None,
+) -> tuple[str, list[Any]]:
+    normalized_agent_id = str(agent_id or "").strip()
+    normalized_team = str(team or "").strip()
+    normalized_role = str(role or "").strip()
+    if not normalized_agent_id and not normalized_team and not normalized_role:
+        return ("", [])
+    return (
+        """
+        AND (
+          (owner_agent_id IS NULL AND team_scope IS NULL AND role_scope IS NULL)
+          OR (owner_agent_id IS NOT NULL AND %s <> '' AND lower(owner_agent_id) = lower(%s))
+          OR (team_scope IS NOT NULL AND %s <> '' AND lower(team_scope) = lower(%s))
+          OR (role_scope IS NOT NULL AND %s <> '' AND lower(role_scope) = lower(%s))
+        )
+        """,
+        [
+            normalized_agent_id,
+            normalized_agent_id,
+            normalized_team,
+            normalized_team,
+            normalized_role,
+            normalized_role,
+        ],
+    )
+
+
 def _normalize_shared_memory_event_type(*, version: int, status: str) -> str:
     normalized_status = str(status or "").strip().lower() or "published"
     if version <= 1:
@@ -11243,6 +11319,434 @@ def _normalize_shared_memory_event_type(*, version: int, status: str) -> str:
 def _shared_memory_private_drafts_available(conn) -> bool:
     with conn.cursor() as cur:
         return _wiki_feature_table_exists(cur, "public.wiki_draft_changes")
+
+
+def _build_materialized_shared_memory_entries_feed(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    since: str | None = None,
+    since_hours: int = 24,
+    limit: int = 20,
+    tier_scope: dict[str, Any] | None = None,
+    resolved_role: str | None = None,
+    agent_context: dict[str, Any] | None = None,
+    include_archived: bool = False,
+    visible_tiers_override: list[str] | None = None,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    since_dt = _parse_change_feed_since(since=since, since_hours=since_hours)
+    normalized_limit = max(1, min(100, int(limit)))
+    visible_tiers = [str(item).strip().lower() for item in (visible_tiers_override or []) if str(item).strip()]
+    if not visible_tiers:
+        visible_tiers = _shared_memory_visible_entry_tiers(tier_scope)
+    if not normalized_project or not visible_tiers or not _shared_memory_entries_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "space_key": normalized_space or None,
+            "since": since_dt.isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
+            "items": [],
+            "summary": {
+                "items_total": 0,
+                "tier_counts": {},
+                "tier_scope": visible_tiers,
+                "supported": _shared_memory_entries_table_exists(conn),
+            },
+        }
+    agent_id = str((agent_context or {}).get("agent_id") or "").strip() or None
+    team = str((agent_context or {}).get("team") or "").strip() or None
+    scope_clause, scope_params = _build_shared_memory_entry_scope_clause(
+        agent_id=agent_id,
+        team=team,
+        role=resolved_role,
+    )
+    with conn.cursor() as cur:
+        sql = f"""
+            SELECT
+              id,
+              visibility_tier,
+              status,
+              space_key,
+              owner_agent_id,
+              role_scope,
+              team_scope,
+              title,
+              summary,
+              content,
+              entity_key,
+              page_slug,
+              delta_kind,
+              action_hint,
+              importance,
+              source_kind,
+              source_ref,
+              metadata,
+              created_by,
+              updated_by,
+              created_at,
+              updated_at
+            FROM shared_memory_entries
+            WHERE project_id = %s
+              AND (%s OR status = 'active')
+              AND visibility_tier = ANY(%s::text[])
+              AND updated_at >= %s
+              {scope_clause}
+        """
+        params: list[Any] = [normalized_project, bool(include_archived), visible_tiers, since_dt, *scope_params]
+        if normalized_space:
+            sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
+            params.append(normalized_space)
+        sql += """
+            ORDER BY updated_at DESC, id DESC
+            LIMIT %s
+        """
+        params.append(normalized_limit)
+        cur.execute(sql, tuple(params))
+        fetched = cur.fetchall() or []
+    tier_counts: dict[str, int] = {}
+    items: list[dict[str, Any]] = []
+    for row in fetched:
+        visibility_tier = str(row[1] or "reviewed_team").strip().lower() or "reviewed_team"
+        tier_counts[visibility_tier] = int(tier_counts.get(visibility_tier, 0)) + 1
+        page_slug = str(row[11] or "").strip()
+        page_type = "memory"
+        if page_slug:
+            page_type = "operations" if "/" in page_slug else "memory"
+        change_summary = str(row[8] or "").strip()
+        delta_kind = str(row[12] or "").strip().lower() or "knowledge_change"
+        changed_at = row[21].astimezone(UTC).isoformat() if isinstance(row[21], datetime) else None
+        item = {
+            "event_type": "materialized_memory_entry",
+            "delta_kind": delta_kind,
+            "changed_at": changed_at,
+            "changed_by": str(row[19] or row[18] or "").strip() or None,
+            "change_summary": change_summary or None,
+            "page": {
+                "id": f"memory-entry:{int(row[0])}",
+                "title": str(row[7] or page_slug or f"Memory entry {row[0]}").strip(),
+                "slug": page_slug or f"shared-memory/entries/{int(row[0])}",
+                "entity_key": str(row[10] or "").strip() or None,
+                "page_type": page_type,
+                "status": "private_memory",
+                "current_version": 1,
+                "version": 1,
+            },
+            "origin": {
+                "source": str(row[15] or "").strip() or None,
+                "source_ref": str(row[16] or "").strip() or None,
+                "mode": "materialized_private_memory" if visibility_tier == "draft_private" else "materialized_team_memory",
+                "entry_id": int(row[0]),
+                "visibility_tier": visibility_tier,
+            },
+            "memory_entry": {
+                "id": int(row[0]),
+                "visibility_tier": visibility_tier,
+                "space_key": str(row[3] or "").strip() or None,
+                "owner_agent_id": str(row[4] or "").strip() or None,
+                "role_scope": str(row[5] or "").strip() or None,
+                "team_scope": str(row[6] or "").strip() or None,
+                "status": str(row[2] or "").strip() or "active",
+                "summary": change_summary or None,
+                "content": str(row[9] or "").strip() or None,
+                "action_hint": str(row[13] or "").strip() or None,
+                "importance": str(row[14] or "").strip() or "medium",
+                "metadata": row[17] if isinstance(row[17], dict) else {},
+            },
+        }
+        item["delta_objects"] = _derive_shared_memory_delta_objects(
+            delta_kind=delta_kind,
+            page_type=page_type,
+            slug=str(item["page"]["slug"]),
+            entity_key=str(item["page"]["entity_key"] or "") or None,
+            change_summary=change_summary,
+            status="active",
+        )
+        if agent_context is not None:
+            item["relevance"] = _score_shared_memory_relevance(change_item=item, agent_context=agent_context)
+        else:
+            item["relevance"] = {"score": 0.35, "reasons": [f"tier:{visibility_tier}"]}
+        if str(row[13] or "").strip() and item["delta_objects"]:
+            item["delta_objects"][0]["action_hint"] = str(row[13] or "").strip()
+        if str(row[14] or "").strip() and item["delta_objects"]:
+            item["delta_objects"][0]["importance"] = str(row[14] or "").strip()
+        items.append(item)
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "since": since_dt.isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "items": items,
+        "summary": {
+            "items_total": len(items),
+            "tier_counts": tier_counts,
+            "tier_scope": visible_tiers,
+            "supported": True,
+        },
+    }
+
+
+def _upsert_shared_memory_entry(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str,
+    entry_id: int | None,
+    title: str,
+    summary: str,
+    content: str | None,
+    visibility_tier: str,
+    status: str,
+    space_key: str | None,
+    owner_agent_id: str | None,
+    role_scope: str | None,
+    team_scope: str | None,
+    entity_key: str | None,
+    page_slug: str | None,
+    delta_kind: str,
+    action_hint: str | None,
+    importance: str,
+    source_kind: str,
+    source_ref: str | None,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not _shared_memory_entries_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "shared_memory_entries_unavailable"})
+    normalized_project = str(project_id or "").strip()
+    normalized_actor = str(updated_by or "").strip()
+    if not normalized_project or not normalized_actor:
+        raise HTTPException(status_code=422, detail={"code": "project_id_and_updated_by_required"})
+    normalized_visibility = str(visibility_tier or "reviewed_team").strip().lower() or "reviewed_team"
+    normalized_status = str(status or "active").strip().lower() or "active"
+    normalized_space = _normalize_space_key(space_key or "", default="") or None
+    normalized_page_slug = _normalize_wiki_slug(page_slug, page_slug or title) if str(page_slug or "").strip() else None
+    normalized_delta = str(delta_kind or "knowledge_change").strip().lower() or "knowledge_change"
+    normalized_metadata = metadata if isinstance(metadata, dict) else {}
+    with conn.cursor() as cur:
+        if entry_id is None:
+            cur.execute(
+                """
+                INSERT INTO shared_memory_entries (
+                  project_id,
+                  visibility_tier,
+                  status,
+                  space_key,
+                  owner_agent_id,
+                  role_scope,
+                  team_scope,
+                  title,
+                  summary,
+                  content,
+                  entity_key,
+                  page_slug,
+                  delta_kind,
+                  action_hint,
+                  importance,
+                  source_kind,
+                  source_ref,
+                  metadata,
+                  created_by,
+                  updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at, updated_at
+                """,
+                (
+                    normalized_project,
+                    normalized_visibility,
+                    normalized_status,
+                    normalized_space,
+                    str(owner_agent_id or "").strip() or None,
+                    str(role_scope or "").strip() or None,
+                    str(team_scope or "").strip() or None,
+                    str(title or "").strip(),
+                    str(summary or "").strip(),
+                    str(content or "").strip() or None,
+                    str(entity_key or "").strip() or None,
+                    normalized_page_slug,
+                    normalized_delta,
+                    str(action_hint or "").strip() or None,
+                    str(importance or "medium").strip().lower() or "medium",
+                    str(source_kind or "agent_note").strip().lower() or "agent_note",
+                    str(source_ref or "").strip() or None,
+                    Jsonb(normalized_metadata),
+                    normalized_actor,
+                    normalized_actor,
+                ),
+            )
+            row = cur.fetchone()
+            created = True
+        else:
+            cur.execute(
+                """
+                UPDATE shared_memory_entries
+                SET visibility_tier = %s,
+                    status = %s,
+                    space_key = %s,
+                    owner_agent_id = %s,
+                    role_scope = %s,
+                    team_scope = %s,
+                    title = %s,
+                    summary = %s,
+                    content = %s,
+                    entity_key = %s,
+                    page_slug = %s,
+                    delta_kind = %s,
+                    action_hint = %s,
+                    importance = %s,
+                    source_kind = %s,
+                    source_ref = %s,
+                    metadata = %s,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND project_id = %s
+                RETURNING id, created_at, updated_at
+                """,
+                (
+                    normalized_visibility,
+                    normalized_status,
+                    normalized_space,
+                    str(owner_agent_id or "").strip() or None,
+                    str(role_scope or "").strip() or None,
+                    str(team_scope or "").strip() or None,
+                    str(title or "").strip(),
+                    str(summary or "").strip(),
+                    str(content or "").strip() or None,
+                    str(entity_key or "").strip() or None,
+                    normalized_page_slug,
+                    normalized_delta,
+                    str(action_hint or "").strip() or None,
+                    str(importance or "medium").strip().lower() or "medium",
+                    str(source_kind or "agent_note").strip().lower() or "agent_note",
+                    str(source_ref or "").strip() or None,
+                    Jsonb(normalized_metadata),
+                    normalized_actor,
+                    int(entry_id),
+                    normalized_project,
+                ),
+            )
+            row = cur.fetchone()
+            created = False
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "shared_memory_entry_not_found", "entry_id": entry_id})
+    return {
+        "status": "created" if created else "updated",
+        "project_id": normalized_project,
+        "entry": {
+            "id": int(row[0]),
+            "visibility_tier": normalized_visibility,
+            "status": normalized_status,
+            "space_key": normalized_space,
+            "title": str(title or "").strip(),
+            "summary": str(summary or "").strip(),
+            "content": str(content or "").strip() or None,
+            "entity_key": str(entity_key or "").strip() or None,
+            "page_slug": normalized_page_slug,
+            "delta_kind": normalized_delta,
+            "action_hint": str(action_hint or "").strip() or None,
+            "importance": str(importance or "medium").strip().lower() or "medium",
+            "source_kind": str(source_kind or "agent_note").strip().lower() or "agent_note",
+            "source_ref": str(source_ref or "").strip() or None,
+            "owner_agent_id": str(owner_agent_id or "").strip() or None,
+            "role_scope": str(role_scope or "").strip() or None,
+            "team_scope": str(team_scope or "").strip() or None,
+            "metadata": normalized_metadata,
+            "created_at": row[1].astimezone(UTC).isoformat() if isinstance(row[1], datetime) else None,
+            "updated_at": row[2].astimezone(UTC).isoformat() if isinstance(row[2], datetime) else None,
+            "updated_by": normalized_actor,
+        },
+    }
+
+
+def _list_shared_memory_entries(
+    conn,
+    *,
+    project_id: str,
+    agent_id: str | None = None,
+    role: str | None = None,
+    space_key: str | None = None,
+    visibility_tier: str | None = None,
+    include_archived: bool = False,
+    limit: int = 50,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_entries_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "space_key": _normalize_space_key(space_key or "", default="") or None,
+            "entries": [],
+            "summary": {"entries_total": 0, "supported": False},
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+    resolved_role = _resolve_shared_memory_role(conn, project_id=normalized_project, agent_id=agent_id, role=role)
+    agent_context = _load_shared_memory_agent_context(
+        conn,
+        project_id=normalized_project,
+        agent_id=agent_id,
+        resolved_role=resolved_role,
+        space_key=space_key,
+    )
+    tier_scope = {
+        "tier": str(visibility_tier or "draft_private").strip().lower() or "draft_private",
+    }
+    if str(visibility_tier or "").strip().lower() == "reviewed_team":
+        tier_scope["tier"] = "reviewed_team"
+    feed = _build_materialized_shared_memory_entries_feed(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        since_hours=24 * 30,
+        limit=max(1, min(200, int(limit))),
+        tier_scope=tier_scope,
+        resolved_role=resolved_role,
+        agent_context=agent_context,
+        include_archived=include_archived,
+        visible_tiers_override=[str(visibility_tier).strip().lower()] if str(visibility_tier or "").strip() else None,
+    )
+    entries = []
+    for item in feed.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        memory_entry = item.get("memory_entry") if isinstance(item.get("memory_entry"), dict) else {}
+        entries.append(
+            {
+                "entry_id": memory_entry.get("id"),
+                "title": ((item.get("page") or {}) if isinstance(item.get("page"), dict) else {}).get("title"),
+                "summary": memory_entry.get("summary"),
+                "content": memory_entry.get("content"),
+                "visibility_tier": memory_entry.get("visibility_tier"),
+                "space_key": memory_entry.get("space_key"),
+                "owner_agent_id": memory_entry.get("owner_agent_id"),
+                "role_scope": memory_entry.get("role_scope"),
+                "team_scope": memory_entry.get("team_scope"),
+                "delta_kind": item.get("delta_kind"),
+                "action_hint": memory_entry.get("action_hint"),
+                "importance": memory_entry.get("importance"),
+                "source_kind": ((item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}).get("source"),
+                "source_ref": ((item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}).get("source_ref"),
+                "page_slug": ((item.get("page") or {}) if isinstance(item.get("page"), dict) else {}).get("slug"),
+                "entity_key": ((item.get("page") or {}) if isinstance(item.get("page"), dict) else {}).get("entity_key"),
+                "metadata": memory_entry.get("metadata") if isinstance(memory_entry.get("metadata"), dict) else {},
+                "updated_at": item.get("changed_at"),
+                "relevance": item.get("relevance") if isinstance(item.get("relevance"), dict) else None,
+            }
+        )
+    return {
+        "project_id": normalized_project,
+        "space_key": _normalize_space_key(space_key or "", default="") or None,
+        "entries": entries,
+        "summary": {
+            "entries_total": len(entries),
+            "supported": True,
+            "tier_scope": _shared_memory_visible_entry_tiers(tier_scope),
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
 
 
 def _derive_shared_memory_delta_objects(
@@ -11663,6 +12167,22 @@ def _build_wiki_change_feed(
         )
 
     private_draft_summary: dict[str, Any] | None = None
+    materialized_entry_summary: dict[str, Any] | None = None
+    materialized_feed = _build_materialized_shared_memory_entries_feed(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        since=since,
+        since_hours=since_hours,
+        limit=normalized_limit,
+        tier_scope=effective_tier_scope,
+        resolved_role=resolved_role,
+        agent_context=agent_context,
+    )
+    materialized_items = [item for item in (materialized_feed.get("items") or []) if isinstance(item, dict)]
+    if materialized_items:
+        rows.extend(materialized_items)
+        materialized_entry_summary = materialized_feed.get("summary") if isinstance(materialized_feed.get("summary"), dict) else None
     if bool(effective_tier_scope.get("include_private_drafts")):
         draft_feed = _build_shared_memory_draft_feed(
             conn,
@@ -11677,6 +12197,12 @@ def _build_wiki_change_feed(
         draft_items = [item for item in (draft_feed.get("items") or []) if isinstance(item, dict)]
         rows.extend(draft_items)
         private_draft_summary = draft_feed.get("summary") if isinstance(draft_feed.get("summary"), dict) else None
+        rows.sort(
+            key=lambda item: str(item.get("changed_at") or ""),
+            reverse=True,
+        )
+        rows = rows[:normalized_limit]
+    elif materialized_items:
         rows.sort(
             key=lambda item: str(item.get("changed_at") or ""),
             reverse=True,
@@ -11706,6 +12232,7 @@ def _build_wiki_change_feed(
             "requested_tier": str(effective_tier_scope.get("requested_tier") or "") or None,
             "tier_supported": bool(effective_tier_scope.get("supported", True)),
             "private_draft_summary": private_draft_summary,
+            "materialized_entry_summary": materialized_entry_summary,
         },
     }
 
@@ -11764,6 +12291,8 @@ def _build_shared_memory_invalidation_marker(
     snapshots_total = int(snapshot_row[0] or 0)
     draft_items_total = 0
     latest_private_draft_at: str | None = None
+    materialized_entries_total = 0
+    latest_materialized_entry_at: str | None = None
     if bool((tier_scope or {}).get("include_private_drafts")) and _shared_memory_private_drafts_available(conn):
         with conn.cursor() as cur:
             sql = """
@@ -11790,6 +12319,35 @@ def _build_shared_memory_invalidation_marker(
             latest_private_draft_at = draft_row[1].astimezone(UTC).isoformat()
         if latest_private_draft_at and (latest_change_at is None or latest_private_draft_at > latest_change_at):
             latest_change_at = latest_private_draft_at
+    visible_entry_tiers = _shared_memory_visible_entry_tiers(tier_scope)
+    if visible_entry_tiers and _shared_memory_entries_table_exists(conn):
+        agent_id = str((agent_context or {}).get("agent_id") or "").strip() or None
+        team = str((agent_context or {}).get("team") or "").strip() or None
+        scope_clause, scope_params = _build_shared_memory_entry_scope_clause(
+            agent_id=agent_id,
+            team=team,
+            role=resolved_role,
+        )
+        with conn.cursor() as cur:
+            sql = f"""
+                SELECT COUNT(*)::bigint, MAX(updated_at)
+                FROM shared_memory_entries
+                WHERE project_id = %s
+                  AND status = 'active'
+                  AND visibility_tier = ANY(%s::text[])
+                  {scope_clause}
+            """
+            params: list[Any] = [normalized_project, visible_entry_tiers, *scope_params]
+            if normalized_space:
+                sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
+                params.append(normalized_space)
+            cur.execute(sql, tuple(params))
+            materialized_row = cur.fetchone() or (0, None)
+        materialized_entries_total = int(materialized_row[0] or 0)
+        if isinstance(materialized_row[1], datetime):
+            latest_materialized_entry_at = materialized_row[1].astimezone(UTC).isoformat()
+        if latest_materialized_entry_at and (latest_change_at is None or latest_materialized_entry_at > latest_change_at):
+            latest_change_at = latest_materialized_entry_at
     relevance_summary: dict[str, Any] | None = None
     if agent_context is not None:
         recent_feed = _build_wiki_change_feed(
@@ -11846,6 +12404,8 @@ def _build_shared_memory_invalidation_marker(
         "knowledge_snapshots_total": snapshots_total,
         "draft_items_total": draft_items_total,
         "latest_private_draft_at": latest_private_draft_at,
+        "materialized_entries_total": materialized_entries_total,
+        "latest_materialized_entry_at": latest_materialized_entry_at,
         "relevance": relevance_summary,
         "generated_at": datetime.now(UTC).isoformat(),
     }
@@ -12120,7 +12680,7 @@ def _build_shared_memory_impact(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=None,
-        draft_private_supported=_shared_memory_private_drafts_available(conn),
+        draft_private_supported=_shared_memory_private_tier_materialized(conn),
     )
     effective_include_reviewed = bool(tier_scope.get("include_reviewed"))
     feed = _build_wiki_change_feed(
@@ -12150,7 +12710,7 @@ def _build_shared_memory_impact(
             review_policy_mode=review_policy_mode,
             memory_tier_mode=memory_tier_mode,
             resolved_role=role,
-            draft_private_supported=_shared_memory_private_drafts_available(conn),
+            draft_private_supported=_shared_memory_private_tier_materialized(conn),
         )
         relevant: list[dict[str, Any]] = []
         for item in items:
@@ -12231,7 +12791,7 @@ def _build_shared_memory_publish_impact_preview(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=resolved_role,
-        draft_private_supported=_shared_memory_private_drafts_available(conn),
+        draft_private_supported=_shared_memory_private_tier_materialized(conn),
     )
     preview_item = _build_shared_memory_preview_change_item(
         space_key=space_key,
@@ -12301,7 +12861,14 @@ def _build_shared_memory_health_metrics(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=resolved_role,
-        draft_private_supported=_shared_memory_private_drafts_available(conn),
+        draft_private_supported=_shared_memory_private_tier_materialized(conn),
+    )
+    agent_context = _load_shared_memory_agent_context(
+        conn,
+        project_id=normalized_project,
+        agent_id=agent_id,
+        resolved_role=resolved_role,
+        space_key=space_key,
     )
     invalidation = _build_shared_memory_invalidation_marker(
         conn,
@@ -12310,6 +12877,8 @@ def _build_shared_memory_health_metrics(
         include_reviewed=bool(tier_scope.get("include_reviewed")),
         status_scope=list(tier_scope.get("status_scope") or []),
         tier_scope=tier_scope,
+        resolved_role=resolved_role,
+        agent_context=agent_context,
     )
     state_snapshot = _build_wiki_state_snapshot(
         conn,
@@ -12358,10 +12927,12 @@ def _build_shared_memory_health_metrics(
             "published_pages": int(invalidation.get("pages_total") or 0),
             "scoped_pages": int(invalidation.get("pages_total") or 0),
             "draft_items_visible": int(invalidation.get("draft_items_total") or 0),
+            "materialized_entries_visible": int(invalidation.get("materialized_entries_total") or 0),
             "state_snapshot_slug": state_page_slug or None,
             "state_snapshot_updated_at": state_page_updated_at,
             "latest_change_at": invalidation.get("latest_change_at"),
             "latest_private_draft_at": invalidation.get("latest_private_draft_at"),
+            "latest_materialized_entry_at": invalidation.get("latest_materialized_entry_at"),
             "snapshot_lag_minutes": round(lag_minutes, 2) if lag_minutes is not None else None,
             "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
         },
@@ -12402,7 +12973,7 @@ def _build_agent_shared_memory_hydration(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=resolved_role,
-        draft_private_supported=_shared_memory_private_drafts_available(conn),
+        draft_private_supported=_shared_memory_private_tier_materialized(conn),
     )
     effective_include_reviewed = bool(tier_scope.get("include_reviewed"))
     agent_context = _load_shared_memory_agent_context(
@@ -27835,7 +28406,7 @@ def get_agent_shared_memory_invalidation(payload: AgentSharedMemoryInvalidationR
             review_policy_mode=str(payload.review_policy_mode or "auto"),
             memory_tier_mode=str(payload.memory_tier_mode or "auto"),
             resolved_role=resolved_role,
-            draft_private_supported=_shared_memory_private_drafts_available(conn),
+            draft_private_supported=_shared_memory_private_tier_materialized(conn),
         )
         agent_context = _load_shared_memory_agent_context(
             conn,
@@ -27927,6 +28498,63 @@ def get_agent_shared_memory_health(
             include_reviewed=include_reviewed,
             review_policy_mode=review_policy_mode,
             memory_tier_mode=memory_tier_mode,
+        )
+
+
+@app.post("/v1/agents/shared-memory/entries", response_model=None)
+def upsert_agent_shared_memory_entry(payload: SharedMemoryEntryUpsertRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _upsert_shared_memory_entry(
+            conn,
+            project_id=normalized_project,
+            updated_by=payload.updated_by,
+            entry_id=payload.entry_id,
+            title=payload.title,
+            summary=payload.summary,
+            content=payload.content,
+            visibility_tier=payload.visibility_tier,
+            status=payload.status,
+            space_key=payload.space_key,
+            owner_agent_id=payload.owner_agent_id,
+            role_scope=payload.role_scope,
+            team_scope=payload.team_scope,
+            entity_key=payload.entity_key,
+            page_slug=payload.page_slug,
+            delta_kind=payload.delta_kind,
+            action_hint=payload.action_hint,
+            importance=payload.importance,
+            source_kind=payload.source_kind,
+            source_ref=payload.source_ref,
+            metadata=payload.metadata,
+        )
+
+
+@app.get("/v1/agents/shared-memory/entries")
+def list_agent_shared_memory_entries(
+    project_id: str,
+    agent_id: str | None = Query(default=None),
+    role: str | None = Query(default=None),
+    space_key: str | None = Query(default=None),
+    visibility_tier: str | None = Query(default=None, pattern="^(reviewed_team|draft_private)$"),
+    include_archived: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _list_shared_memory_entries(
+            conn,
+            project_id=normalized_project,
+            agent_id=agent_id,
+            role=role,
+            space_key=space_key,
+            visibility_tier=visibility_tier,
+            include_archived=include_archived,
+            limit=limit,
         )
 
 

@@ -1474,6 +1474,78 @@ export class SynapseClient {
     });
   }
 
+  async upsertAgentSharedMemoryEntry(options: {
+    updatedBy: string;
+    title: string;
+    summary: string;
+    content?: string;
+    visibilityTier?: "reviewed_team" | "draft_private" | string;
+    status?: "active" | "archived" | string;
+    entryId?: number;
+    spaceKey?: string;
+    ownerAgentId?: string;
+    roleScope?: string;
+    teamScope?: string;
+    entityKey?: string;
+    pageSlug?: string;
+    deltaKind?: string;
+    actionHint?: string;
+    importance?: "low" | "medium" | "high" | string;
+    sourceKind?: string;
+    sourceRef?: string;
+    metadata?: Record<string, unknown>;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/entries", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: String(options.updatedBy || "").trim(),
+        entry_id: options.entryId == null ? undefined : normalizeInt(options.entryId, 1, Number.MAX_SAFE_INTEGER),
+        title: String(options.title || "").trim(),
+        summary: String(options.summary || "").trim(),
+        content: asOptionalString(options.content) ?? undefined,
+        visibility_tier: String(options.visibilityTier ?? "reviewed_team").trim().toLowerCase() || "reviewed_team",
+        status: String(options.status ?? "active").trim().toLowerCase() || "active",
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        owner_agent_id: asOptionalString(options.ownerAgentId) ?? undefined,
+        role_scope: asOptionalString(options.roleScope) ?? undefined,
+        team_scope: asOptionalString(options.teamScope) ?? undefined,
+        entity_key: asOptionalString(options.entityKey) ?? undefined,
+        page_slug: asOptionalString(options.pageSlug) ?? undefined,
+        delta_kind: String(options.deltaKind ?? "knowledge_change").trim().toLowerCase() || "knowledge_change",
+        action_hint: asOptionalString(options.actionHint) ?? undefined,
+        importance: String(options.importance ?? "medium").trim().toLowerCase() || "medium",
+        source_kind: String(options.sourceKind ?? "agent_note").trim().toLowerCase() || "agent_note",
+        source_ref: asOptionalString(options.sourceRef) ?? undefined,
+        metadata: options.metadata ?? {}
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async listAgentSharedMemoryEntries(options: {
+    agentId?: string;
+    role?: string;
+    spaceKey?: string;
+    visibilityTier?: "reviewed_team" | "draft_private" | string;
+    includeArchived?: boolean;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/entries", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        agent_id: asOptionalString(options.agentId) ?? undefined,
+        role: asOptionalString(options.role) ?? undefined,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        visibility_tier: asOptionalString(options.visibilityTier)?.toLowerCase() ?? undefined,
+        include_archived: Boolean(options.includeArchived ?? false),
+        limit: normalizeInt(options.limit ?? 50, 1, 200)
+      }
+    });
+  }
+
   async getAdoptionPipelineVisibility(options: {
     days?: number;
     sourceSystems?: string[];

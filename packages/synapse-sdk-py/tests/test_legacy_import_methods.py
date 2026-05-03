@@ -701,6 +701,73 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(params.get("review_policy_mode"), "auto")
         self.assertEqual(params.get("memory_tier_mode"), "reviewed_team")
 
+    def test_upsert_agent_shared_memory_entry_posts_expected_payload(self) -> None:
+        self.client.upsert_agent_shared_memory_entry(
+            updated_by="ops_admin",
+            entry_id=12,
+            title="Dispatch handoff note",
+            summary="Escalate route-gap checks before first wave dispatch.",
+            content="Gap checks should happen before 07:30 handoff.",
+            visibility_tier="draft_private",
+            status="active",
+            space_key="logistics",
+            owner_agent_id="logistics-assistant",
+            role_scope="dispatcher",
+            team_scope="ops",
+            entity_key="dispatch.handoff",
+            page_slug="logistics/process-playbooks",
+            delta_kind="process_change",
+            action_hint="refresh_playbook_context",
+            importance="high",
+            source_kind="agent_note",
+            source_ref="shift-briefing",
+            metadata={"channel": "night-shift"},
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/entries")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("entry_id"), 12)
+        self.assertEqual(payload.get("title"), "Dispatch handoff note")
+        self.assertEqual(payload.get("summary"), "Escalate route-gap checks before first wave dispatch.")
+        self.assertEqual(payload.get("content"), "Gap checks should happen before 07:30 handoff.")
+        self.assertEqual(payload.get("visibility_tier"), "draft_private")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("owner_agent_id"), "logistics-assistant")
+        self.assertEqual(payload.get("role_scope"), "dispatcher")
+        self.assertEqual(payload.get("team_scope"), "ops")
+        self.assertEqual(payload.get("entity_key"), "dispatch.handoff")
+        self.assertEqual(payload.get("page_slug"), "logistics/process-playbooks")
+        self.assertEqual(payload.get("delta_kind"), "process_change")
+        self.assertEqual(payload.get("action_hint"), "refresh_playbook_context")
+        self.assertEqual(payload.get("importance"), "high")
+        self.assertEqual(payload.get("source_kind"), "agent_note")
+        self.assertEqual(payload.get("source_ref"), "shift-briefing")
+        self.assertEqual(payload.get("metadata"), {"channel": "night-shift"})
+
+    def test_list_agent_shared_memory_entries_scopes_project(self) -> None:
+        self.client.list_agent_shared_memory_entries(
+            agent_id="logistics-assistant",
+            role="dispatcher",
+            space_key="logistics",
+            visibility_tier="reviewed_team",
+            include_archived=True,
+            limit=17,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/entries")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("agent_id"), "logistics-assistant")
+        self.assertEqual(params.get("role"), "dispatcher")
+        self.assertEqual(params.get("space_key"), "logistics")
+        self.assertEqual(params.get("visibility_tier"), "reviewed_team")
+        self.assertTrue(params.get("include_archived"))
+        self.assertEqual(params.get("limit"), 17)
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",

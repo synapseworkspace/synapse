@@ -150,9 +150,10 @@ Implemented:
 12. publish-time impact preview for planned wiki changes before they land
 13. `draft_private` now reads real draft-backed deltas from `wiki_draft_changes` for trusted roles, instead of staying a pure degraded no-op
 14. shared-memory changes now carry typed `delta_objects` plus compact `fanout_plan` summaries for publish preview / operator routing
+15. long-lived `shared_memory_entries` now back private/team memory with materialized entries that runtimes can write and later hydrate alongside wiki deltas
 
 Current limitation:
-- this is still a draft-backed private delta layer, not yet a fully separate long-lived private/team memory corpus
+- private/team memory now has materialized entry backing, but still lacks push/fanout hooks and a richer write-back lifecycle beyond the first entry APIs
 
 These endpoints are intentionally conservative:
 

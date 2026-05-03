@@ -1574,6 +1574,83 @@ class SynapseClient:
             params=params,
         )
 
+    def upsert_agent_shared_memory_entry(
+        self,
+        *,
+        updated_by: str,
+        title: str,
+        summary: str,
+        content: str | None = None,
+        visibility_tier: str = "reviewed_team",
+        status: str = "active",
+        entry_id: int | None = None,
+        space_key: str | None = None,
+        owner_agent_id: str | None = None,
+        role_scope: str | None = None,
+        team_scope: str | None = None,
+        entity_key: str | None = None,
+        page_slug: str | None = None,
+        delta_kind: str = "knowledge_change",
+        action_hint: str | None = None,
+        importance: str = "medium",
+        source_kind: str = "agent_note",
+        source_ref: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip(),
+            "entry_id": int(entry_id) if entry_id is not None else None,
+            "title": str(title).strip(),
+            "summary": str(summary).strip(),
+            "content": str(content).strip() if content is not None and str(content).strip() else None,
+            "visibility_tier": str(visibility_tier or "reviewed_team").strip().lower() or "reviewed_team",
+            "status": str(status or "active").strip().lower() or "active",
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "owner_agent_id": str(owner_agent_id).strip() if owner_agent_id is not None and str(owner_agent_id).strip() else None,
+            "role_scope": str(role_scope).strip() if role_scope is not None and str(role_scope).strip() else None,
+            "team_scope": str(team_scope).strip() if team_scope is not None and str(team_scope).strip() else None,
+            "entity_key": str(entity_key).strip() if entity_key is not None and str(entity_key).strip() else None,
+            "page_slug": str(page_slug).strip() if page_slug is not None and str(page_slug).strip() else None,
+            "delta_kind": str(delta_kind or "knowledge_change").strip().lower() or "knowledge_change",
+            "action_hint": str(action_hint).strip() if action_hint is not None and str(action_hint).strip() else None,
+            "importance": str(importance or "medium").strip().lower() or "medium",
+            "source_kind": str(source_kind or "agent_note").strip().lower() or "agent_note",
+            "source_ref": str(source_ref).strip() if source_ref is not None and str(source_ref).strip() else None,
+            "metadata": metadata if isinstance(metadata, dict) else {},
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/entries",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def list_agent_shared_memory_entries(
+        self,
+        *,
+        agent_id: str | None = None,
+        role: str | None = None,
+        space_key: str | None = None,
+        visibility_tier: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "agent_id": str(agent_id).strip() if agent_id is not None and str(agent_id).strip() else None,
+            "role": str(role).strip() if role is not None and str(role).strip() else None,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "visibility_tier": str(visibility_tier).strip().lower() if visibility_tier is not None and str(visibility_tier).strip() else None,
+            "include_archived": bool(include_archived),
+            "limit": max(1, min(200, int(limit))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/entries",
+            method="GET",
+            params=params,
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",
