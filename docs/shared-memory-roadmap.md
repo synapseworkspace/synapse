@@ -146,8 +146,12 @@ Implemented:
 11. explicit tier contract for shared-memory runtime surfaces:
    - `published_org`
    - `reviewed_team`
-   - `draft_private` (currently honest degraded mode until a private-memory corpus exists)
+   - `draft_private`
 12. publish-time impact preview for planned wiki changes before they land
+13. `draft_private` now reads real draft-backed deltas from `wiki_draft_changes` for trusted roles, instead of staying a pure degraded no-op
+
+Current limitation:
+- this is still a draft-backed private delta layer, not yet a fully separate long-lived private/team memory corpus
 
 These endpoints are intentionally conservative:
 

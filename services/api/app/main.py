@@ -10995,6 +10995,7 @@ def _resolve_shared_memory_tier_scope(
     review_policy_mode: str,
     memory_tier_mode: str,
     resolved_role: str | None,
+    draft_private_supported: bool = False,
 ) -> dict[str, Any]:
     normalized_tier = str(memory_tier_mode or "auto").strip().lower() or "auto"
     normalized_role = str(resolved_role or "").strip().lower()
@@ -11038,6 +11039,15 @@ def _resolve_shared_memory_tier_scope(
             "supported": True,
         }
     if normalized_tier == "draft_private":
+        if normalized_role in trusted_review_roles and draft_private_supported:
+            return {
+                "tier": "draft_private",
+                "include_reviewed": True,
+                "include_private_drafts": True,
+                "status_scope": ["published", "reviewed"],
+                "reason": "explicit_tier",
+                "supported": True,
+            }
         effective_tier = "reviewed_team" if normalized_role in trusted_review_roles else "published_org"
         status_scope = ["published", "reviewed"] if effective_tier == "reviewed_team" else ["published"]
         return {
@@ -11046,8 +11056,8 @@ def _resolve_shared_memory_tier_scope(
             "include_reviewed": effective_tier == "reviewed_team",
             "include_private_drafts": False,
             "status_scope": status_scope,
-            "reason": "private_tier_not_materialized",
-            "supported": supports_private,
+            "reason": "private_tier_not_materialized" if not draft_private_supported else "role_restricted",
+            "supported": draft_private_supported,
             "degraded": True,
         }
     review_scope = _resolve_shared_memory_review_scope(
@@ -11083,6 +11093,154 @@ def _normalize_shared_memory_event_type(*, version: int, status: str) -> str:
     return "page_changed"
 
 
+def _shared_memory_private_drafts_available(conn) -> bool:
+    with conn.cursor() as cur:
+        return _wiki_feature_table_exists(cur, "public.wiki_draft_changes")
+
+
+def _build_shared_memory_draft_feed(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    since: str | None = None,
+    since_hours: int = 24,
+    limit: int = 20,
+    resolved_role: str | None = None,
+    agent_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not _shared_memory_private_drafts_available(conn):
+        return {
+            "project_id": str(project_id or "").strip(),
+            "space_key": _normalize_space_key(space_key or "", default="") or None,
+            "since": _parse_change_feed_since(since=since, since_hours=since_hours).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
+            "items": [],
+            "summary": {
+                "items_total": 0,
+                "draft_status_counts": {},
+                "status_scope": ["pending_review", "blocked_conflict"],
+                "tier": "draft_private",
+                "supported": False,
+            },
+        }
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    since_dt = _parse_change_feed_since(since=since, since_hours=since_hours)
+    normalized_limit = max(1, min(100, int(limit)))
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              d.id::text,
+              d.status,
+              d.updated_at,
+              d.decision,
+              d.rationale,
+              d.confidence,
+              COALESCE(p.id::text, ''),
+              COALESCE(p.title, ''),
+              COALESCE(p.slug, ''),
+              COALESCE(p.entity_key, c.entity_key, ''),
+              COALESCE(p.page_type, c.category, 'operations'),
+              COALESCE(c.claim_text, '')
+            FROM wiki_draft_changes d
+            LEFT JOIN wiki_pages p ON p.id = d.page_id
+            LEFT JOIN claims c ON c.id = d.claim_id
+            WHERE d.project_id = %s
+              AND d.status = ANY(%s::text[])
+              AND d.updated_at >= %s
+        """
+        params: list[Any] = [normalized_project, ["pending_review", "blocked_conflict"], since_dt]
+        if normalized_space:
+            sql += " AND (lower(COALESCE(p.slug, '')) LIKE %s)"
+            params.append(f"{normalized_space}/%")
+        sql += """
+            ORDER BY d.updated_at DESC, d.id DESC
+            LIMIT %s
+        """
+        params.append(normalized_limit)
+        cur.execute(sql, tuple(params))
+        fetched = cur.fetchall() or []
+    rows: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    for row in fetched:
+        draft_status = str(row[1] or "").strip().lower() or "pending_review"
+        page_type = str(row[10] or "operations").strip().lower() or "operations"
+        changed_at = row[2]
+        change_summary = str(row[4] or row[11] or "").strip()
+        slug = str(row[8] or "").strip()
+        title = str(row[7] or slug or "Draft memory change").strip()
+        delta_kind = _normalize_shared_memory_delta_kind(
+            page_type=page_type,
+            slug=slug,
+            change_summary=change_summary,
+        )
+        event_type = "draft_conflict_change" if draft_status == "blocked_conflict" else "draft_pending_change"
+        reasons: list[str] = []
+        relevance_score = 0.25
+        if agent_context:
+            role_tokens = _shared_memory_tokens(
+                resolved_role,
+                agent_context.get("team"),
+                agent_context.get("responsibilities"),
+                agent_context.get("tools"),
+                agent_context.get("data_sources"),
+            )
+            page_tokens = _shared_memory_tokens(title, slug, row[9], change_summary, page_type, delta_kind)
+            overlap = sorted(role_tokens & page_tokens)
+            if overlap:
+                relevance_score += min(0.45, float(len(overlap)) * 0.12)
+                reasons.append(f"token_overlap:{', '.join(overlap[:4])}")
+            if str(agent_context.get("space_key") or "").strip().lower() and slug.lower().startswith(
+                f"{str(agent_context.get('space_key') or '').strip().lower()}/"
+            ):
+                relevance_score += 0.2
+                reasons.append("same_space")
+        relevance_score = round(max(0.0, min(1.0, relevance_score)), 4)
+        rows.append(
+            {
+                "event_type": event_type,
+                "delta_kind": delta_kind,
+                "changed_at": changed_at.astimezone(UTC).isoformat() if isinstance(changed_at, datetime) else None,
+                "changed_by": None,
+                "change_summary": change_summary or None,
+                "relevance": {"score": relevance_score, "reasons": reasons[:6]},
+                "page": {
+                    "id": str(row[6] or row[0] or ""),
+                    "title": title,
+                    "slug": slug,
+                    "entity_key": str(row[9] or "").strip() or None,
+                    "page_type": page_type,
+                    "status": draft_status,
+                    "current_version": 0,
+                    "version": 0,
+                },
+                "origin": {
+                    "source": "wiki_draft_changes",
+                    "mode": "draft_private_memory",
+                    "draft_id": str(row[0] or ""),
+                    "decision": str(row[3] or "").strip() or None,
+                    "confidence": float(row[5] or 0.0),
+                },
+            }
+        )
+        status_counts[draft_status] = int(status_counts.get(draft_status, 0)) + 1
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "since": since_dt.isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "items": rows,
+        "summary": {
+            "items_total": len(rows),
+            "draft_status_counts": status_counts,
+            "status_scope": ["pending_review", "blocked_conflict"],
+            "tier": "draft_private",
+            "supported": True,
+        },
+    }
+
+
 def _build_wiki_change_feed(
     conn,
     *,
@@ -11104,6 +11262,7 @@ def _build_wiki_change_feed(
     normalized_space = _normalize_space_key(space_key or "", default="")
     since_dt = _parse_change_feed_since(since=since, since_hours=since_hours)
     normalized_limit = max(1, min(100, int(limit)))
+    effective_tier_scope = tier_scope or {}
     allowed_statuses = [str(item).strip().lower() for item in (status_scope or []) if str(item).strip()]
     if not allowed_statuses:
         allowed_statuses = ["published"]
@@ -11145,8 +11304,6 @@ def _build_wiki_change_feed(
         cur.execute(sql, tuple(params))
         fetched = cur.fetchall() or []
 
-    event_counts: dict[str, int] = {}
-    page_type_counts: dict[str, int] = {}
     for row in fetched:
         page_status = str(row[5] or "published").strip().lower() or "published"
         version = int(row[8] or 0)
@@ -11217,6 +11374,33 @@ def _build_wiki_change_feed(
                 },
             }
         )
+
+    private_draft_summary: dict[str, Any] | None = None
+    if bool(effective_tier_scope.get("include_private_drafts")):
+        draft_feed = _build_shared_memory_draft_feed(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            since=since,
+            since_hours=since_hours,
+            limit=normalized_limit,
+            resolved_role=resolved_role,
+            agent_context=agent_context,
+        )
+        draft_items = [item for item in (draft_feed.get("items") or []) if isinstance(item, dict)]
+        rows.extend(draft_items)
+        private_draft_summary = draft_feed.get("summary") if isinstance(draft_feed.get("summary"), dict) else None
+        rows.sort(
+            key=lambda item: str(item.get("changed_at") or ""),
+            reverse=True,
+        )
+        rows = rows[:normalized_limit]
+    event_counts: dict[str, int] = {}
+    page_type_counts: dict[str, int] = {}
+    for item in rows:
+        event_type = str(item.get("event_type") or "").strip() or "page_changed"
+        page = item.get("page") if isinstance(item.get("page"), dict) else {}
+        page_type = str(page.get("page_type") or "operations").strip().lower() or "operations"
         event_counts[event_type] = int(event_counts.get(event_type, 0)) + 1
         page_type_counts[page_type] = int(page_type_counts.get(page_type, 0)) + 1
 
@@ -11231,9 +11415,10 @@ def _build_wiki_change_feed(
             "event_type_counts": event_counts,
             "page_type_counts": page_type_counts,
             "status_scope": allowed_statuses,
-            "tier": str((tier_scope or {}).get("tier") or ""),
-            "requested_tier": str((tier_scope or {}).get("requested_tier") or "") or None,
-            "tier_supported": bool((tier_scope or {}).get("supported", True)),
+            "tier": str(effective_tier_scope.get("tier") or ""),
+            "requested_tier": str(effective_tier_scope.get("requested_tier") or "") or None,
+            "tier_supported": bool(effective_tier_scope.get("supported", True)),
+            "private_draft_summary": private_draft_summary,
         },
     }
 
@@ -11290,6 +11475,34 @@ def _build_shared_memory_invalidation_marker(
     latest_change_at = row[1].astimezone(UTC).isoformat() if isinstance(row[1], datetime) else None
     max_version = int(row[2] or 0)
     snapshots_total = int(snapshot_row[0] or 0)
+    draft_items_total = 0
+    latest_private_draft_at: str | None = None
+    if bool((tier_scope or {}).get("include_private_drafts")) and _shared_memory_private_drafts_available(conn):
+        with conn.cursor() as cur:
+            sql = """
+                SELECT COUNT(*)::bigint, MAX(updated_at)
+                FROM wiki_draft_changes
+                WHERE project_id = %s
+                  AND status = ANY(%s::text[])
+            """
+            params: list[Any] = [normalized_project, ["pending_review", "blocked_conflict"]]
+            if normalized_space:
+                sql = """
+                    SELECT COUNT(*)::bigint, MAX(d.updated_at)
+                    FROM wiki_draft_changes d
+                    LEFT JOIN wiki_pages p ON p.id = d.page_id
+                    WHERE d.project_id = %s
+                      AND d.status = ANY(%s::text[])
+                      AND lower(COALESCE(p.slug, '')) LIKE %s
+                """
+                params.append(f"{normalized_space}/%")
+            cur.execute(sql, tuple(params))
+            draft_row = cur.fetchone() or (0, None)
+        draft_items_total = int(draft_row[0] or 0)
+        if isinstance(draft_row[1], datetime):
+            latest_private_draft_at = draft_row[1].astimezone(UTC).isoformat()
+        if latest_private_draft_at and (latest_change_at is None or latest_private_draft_at > latest_change_at):
+            latest_change_at = latest_private_draft_at
     relevance_summary: dict[str, Any] | None = None
     if agent_context is not None:
         recent_feed = _build_wiki_change_feed(
@@ -11344,6 +11557,8 @@ def _build_shared_memory_invalidation_marker(
         "pages_total": pages_total,
         "max_version": max_version,
         "knowledge_snapshots_total": snapshots_total,
+        "draft_items_total": draft_items_total,
+        "latest_private_draft_at": latest_private_draft_at,
         "relevance": relevance_summary,
         "generated_at": datetime.now(UTC).isoformat(),
     }
@@ -11618,6 +11833,7 @@ def _build_shared_memory_impact(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=None,
+        draft_private_supported=_shared_memory_private_drafts_available(conn),
     )
     effective_include_reviewed = bool(tier_scope.get("include_reviewed"))
     feed = _build_wiki_change_feed(
@@ -11647,6 +11863,7 @@ def _build_shared_memory_impact(
             review_policy_mode=review_policy_mode,
             memory_tier_mode=memory_tier_mode,
             resolved_role=role,
+            draft_private_supported=_shared_memory_private_drafts_available(conn),
         )
         relevant: list[dict[str, Any]] = []
         for item in items:
@@ -11726,6 +11943,7 @@ def _build_shared_memory_publish_impact_preview(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=resolved_role,
+        draft_private_supported=_shared_memory_private_drafts_available(conn),
     )
     preview_item = _build_shared_memory_preview_change_item(
         space_key=space_key,
@@ -11786,6 +12004,7 @@ def _build_shared_memory_health_metrics(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=resolved_role,
+        draft_private_supported=_shared_memory_private_drafts_available(conn),
     )
     invalidation = _build_shared_memory_invalidation_marker(
         conn,
@@ -11841,9 +12060,11 @@ def _build_shared_memory_health_metrics(
             "roster_agents": len(roster),
             "published_pages": int(invalidation.get("pages_total") or 0),
             "scoped_pages": int(invalidation.get("pages_total") or 0),
+            "draft_items_visible": int(invalidation.get("draft_items_total") or 0),
             "state_snapshot_slug": state_page_slug or None,
             "state_snapshot_updated_at": state_page_updated_at,
             "latest_change_at": invalidation.get("latest_change_at"),
+            "latest_private_draft_at": invalidation.get("latest_private_draft_at"),
             "snapshot_lag_minutes": round(lag_minutes, 2) if lag_minutes is not None else None,
             "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
         },
@@ -11884,6 +12105,7 @@ def _build_agent_shared_memory_hydration(
         review_policy_mode=review_policy_mode,
         memory_tier_mode=memory_tier_mode,
         resolved_role=resolved_role,
+        draft_private_supported=_shared_memory_private_drafts_available(conn),
     )
     effective_include_reviewed = bool(tier_scope.get("include_reviewed"))
     agent_context = _load_shared_memory_agent_context(
@@ -27316,6 +27538,7 @@ def get_agent_shared_memory_invalidation(payload: AgentSharedMemoryInvalidationR
             review_policy_mode=str(payload.review_policy_mode or "auto"),
             memory_tier_mode=str(payload.memory_tier_mode or "auto"),
             resolved_role=resolved_role,
+            draft_private_supported=_shared_memory_private_drafts_available(conn),
         )
         agent_context = _load_shared_memory_agent_context(
             conn,
