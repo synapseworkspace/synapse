@@ -599,6 +599,19 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("max_items_per_section"), 4)
         self.assertEqual(payload.get("freshness_days"), 10)
 
+    def test_get_agent_shared_memory_invalidation_posts_expected_payload(self) -> None:
+        self.client.get_agent_shared_memory_invalidation(
+            space_key="logistics",
+            include_reviewed=True,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/invalidation")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertTrue(payload.get("include_reviewed"))
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",

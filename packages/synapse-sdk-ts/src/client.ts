@@ -1362,6 +1362,22 @@ export class SynapseClient {
     });
   }
 
+  async getAgentSharedMemoryInvalidation(options: {
+    spaceKey?: string;
+    includeReviewed?: boolean;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/invalidation", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        include_reviewed: Boolean(options.includeReviewed ?? false)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async getAdoptionPipelineVisibility(options: {
     days?: number;
     sourceSystems?: string[];

@@ -52,7 +52,7 @@ Why first:
 
 ### Phase 2: Better freshness and lower lag
 
-Status: planned
+Status: started
 
 Deliverables:
 
@@ -64,6 +64,7 @@ Deliverables:
    - hydration freshness
    - changed-page coverage
    - stale snapshot lag
+4. cheap invalidation polling surface for runtimes
 
 Why:
 
@@ -135,6 +136,8 @@ Implemented:
 1. `GET /v1/wiki/change-feed`
 2. `POST /v1/agents/shared-memory/hydrate`
 3. Python/TypeScript SDK helpers
+4. `POST /v1/agents/shared-memory/invalidation`
+5. best-effort `Wiki State Snapshot` refresh after published page create/update
 
 These endpoints are intentionally conservative:
 

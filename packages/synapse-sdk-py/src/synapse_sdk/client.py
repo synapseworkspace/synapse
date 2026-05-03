@@ -1452,6 +1452,24 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def get_agent_shared_memory_invalidation(
+        self,
+        *,
+        space_key: str | None = None,
+        include_reviewed: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "include_reviewed": bool(include_reviewed),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/invalidation",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",

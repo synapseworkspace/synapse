@@ -1167,6 +1167,12 @@ class AgentSharedMemoryHydrationRequest(BaseModel):
     freshness_days: int = Field(default=14, ge=1, le=90)
 
 
+class AgentSharedMemoryInvalidationRequest(BaseModel):
+    project_id: str
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    include_reviewed: bool = False
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -10995,6 +11001,116 @@ def _build_wiki_change_feed(
     }
 
 
+def _build_shared_memory_invalidation_marker(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    include_reviewed: bool = False,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    allowed_statuses = ["published"]
+    if bool(include_reviewed):
+        allowed_statuses.append("reviewed")
+
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              COUNT(*)::bigint AS pages_total,
+              COALESCE(MAX(v.created_at), MAX(p.updated_at)) AS latest_change_at,
+              COALESCE(MAX(p.current_version), 0)::bigint AS max_version
+            FROM wiki_pages p
+            LEFT JOIN wiki_page_versions v ON v.page_id = p.id AND v.version = p.current_version
+            WHERE p.project_id = %s
+              AND p.status = ANY(%s::text[])
+        """
+        params: list[Any] = [normalized_project, allowed_statuses]
+        if normalized_space:
+            sql += " AND lower(p.slug) LIKE %s"
+            params.append(f"{normalized_space}/%")
+        cur.execute(sql, tuple(params))
+        row = cur.fetchone() or (0, None, 0)
+        cur.execute(
+            """
+            SELECT COUNT(*)::bigint
+            FROM knowledge_snapshots
+            WHERE project_id = %s
+            """,
+            (normalized_project,),
+        )
+        snapshot_row = cur.fetchone() or (0,)
+
+    pages_total = int(row[0] or 0)
+    latest_change_at = row[1].astimezone(UTC).isoformat() if isinstance(row[1], datetime) else None
+    max_version = int(row[2] or 0)
+    snapshots_total = int(snapshot_row[0] or 0)
+    token = ":".join(
+        [
+            normalized_project,
+            normalized_space or "global",
+            "reviewed" if include_reviewed else "published",
+            latest_change_at or "none",
+            str(max_version),
+            str(pages_total),
+        ]
+    )
+    return {
+        "token": token,
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "status_scope": allowed_statuses,
+        "latest_change_at": latest_change_at,
+        "pages_total": pages_total,
+        "max_version": max_version,
+        "knowledge_snapshots_total": snapshots_total,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _maybe_refresh_shared_memory_state_snapshot(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str,
+    page_slug: str | None,
+    page_type: str | None,
+    page_status: str | None,
+) -> dict[str, Any] | None:
+    normalized_status = str(page_status or "").strip().lower()
+    normalized_page_type = str(page_type or "").strip().lower()
+    if normalized_status != "published":
+        return None
+    if normalized_page_type == "state":
+        return None
+    normalized_slug = str(page_slug or "").strip()
+    if not normalized_slug:
+        return None
+    space_key = _wiki_space_key_from_slug(normalized_slug)
+    try:
+        result = _sync_wiki_state_snapshot_page(
+            conn,
+            project_id=project_id,
+            updated_by=updated_by,
+            space_key=space_key,
+            status="published",
+        )
+        return {
+            "status": "refreshed",
+            "space_key": space_key,
+            "state_page_slug": str(result.get("state_page_slug") or ""),
+            "generated_at": str(result.get("generated_at") or datetime.now(UTC).isoformat()),
+        }
+    except Exception as exc:
+        return {
+            "status": "refresh_failed",
+            "space_key": space_key,
+            "error": str(exc),
+        }
+
+
 def _resolve_shared_memory_role(
     conn,
     *,
@@ -11095,6 +11211,12 @@ def _build_agent_shared_memory_hydration(
         "space_key": _normalize_space_key(space_key or "", default="") or None,
         "generated_at": datetime.now(UTC).isoformat(),
         "shared_memory": {
+            "invalidation": _build_shared_memory_invalidation_marker(
+                conn,
+                project_id=normalized_project,
+                space_key=space_key,
+                include_reviewed=include_reviewed,
+            ),
             "state_snapshot": state_snapshot,
             "onboarding_pack": onboarding_pack,
             "change_feed": change_feed,
@@ -23207,6 +23329,22 @@ def create_wiki_page(
                 }
                 if publish_enrichment is not None:
                     response["publish_enrichment"] = publish_enrichment
+                shared_memory_refresh = _maybe_refresh_shared_memory_state_snapshot(
+                    conn,
+                    project_id=payload.project_id,
+                    updated_by=payload.created_by,
+                    page_slug=slug,
+                    page_type=page_type,
+                    page_status=status,
+                )
+                if shared_memory_refresh is not None:
+                    response["shared_memory_refresh"] = shared_memory_refresh
+                    response["shared_memory_invalidation"] = _build_shared_memory_invalidation_marker(
+                        conn,
+                        project_id=payload.project_id,
+                        space_key=_wiki_space_key_from_slug(slug),
+                        include_reviewed=False,
+                    )
                 if source_ownership_advisories > 0:
                     response["source_ownership_advisories"] = source_ownership_advisories
                 mark_request_completed(
@@ -23740,6 +23878,22 @@ def update_wiki_page(
                     if process_simulation_result is not None:
                         response["process_simulation"] = process_simulation_result
                         response["process_simulation_acknowledged"] = bool(payload.confirm_high_risk_publish)
+                    shared_memory_refresh = _maybe_refresh_shared_memory_state_snapshot(
+                        conn,
+                        project_id=payload.project_id,
+                        updated_by=payload.updated_by,
+                        page_slug=existing_slug,
+                        page_type=next_page_type,
+                        page_status=next_status,
+                    )
+                    if shared_memory_refresh is not None:
+                        response["shared_memory_refresh"] = shared_memory_refresh
+                        response["shared_memory_invalidation"] = _build_shared_memory_invalidation_marker(
+                            conn,
+                            project_id=payload.project_id,
+                            space_key=space_key,
+                            include_reviewed=False,
+                        )
                     notification_ids = _insert_wiki_notifications(
                         cur,
                         project_id=payload.project_id,
@@ -26395,6 +26549,23 @@ def hydrate_agent_shared_memory(payload: AgentSharedMemoryHydrationRequest) -> d
             max_items_per_section=int(payload.max_items_per_section),
             freshness_days=int(payload.freshness_days),
         )
+
+
+@app.post("/v1/agents/shared-memory/invalidation", response_model=None)
+def get_agent_shared_memory_invalidation(payload: AgentSharedMemoryInvalidationRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return {
+            "status": "ok",
+            "invalidation": _build_shared_memory_invalidation_marker(
+                conn,
+                project_id=normalized_project,
+                space_key=payload.space_key,
+                include_reviewed=bool(payload.include_reviewed),
+            ),
+        }
 
 
 @app.get("/v1/wiki/pages/{slug}")
