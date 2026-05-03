@@ -1484,6 +1484,41 @@ type SharedMemoryMaintenanceRunResult = {
   details: string[];
 };
 
+type CompanyKnowledgeCandidateRecord = {
+  candidate_id?: number;
+  block_id?: string;
+  block_type?: string;
+  knowledge_state?: string;
+  state_source?: string;
+  confidence?: string;
+  summary?: string;
+  evidence_basis?: string;
+  target_page_type?: string | null;
+  target_page_slug?: string | null;
+  promotion_path?: string | null;
+  contradiction_topic?: string | null;
+  note?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  canonical_page_slug?: string | null;
+  updated_at?: string | null;
+};
+
+type CompanyKnowledgeCandidatesPayload = {
+  status?: string;
+  project_id: string;
+  space_key?: string | null;
+  summary?: {
+    candidates_total?: number;
+    supported?: boolean;
+    synced_blocks?: number;
+    state_counts?: Array<{ state?: string; count?: number }>;
+    lifecycle_states?: Array<{ state?: string; count?: number }>;
+  };
+  candidates?: CompanyKnowledgeCandidateRecord[];
+  generated_at?: string | null;
+};
+
 type LegacyImportSource = {
   id: string;
   project_id: string;
@@ -2574,6 +2609,10 @@ export default function App() {
   const [loadingEnterpriseReadiness, setLoadingEnterpriseReadiness] = useState(false);
   const [adoptionSynthesisGraph, setAdoptionSynthesisGraph] = useState<AdoptionSynthesisGraphPayload | null>(null);
   const [loadingAdoptionSynthesisGraph, setLoadingAdoptionSynthesisGraph] = useState(false);
+  const [companyKnowledgeCandidates, setCompanyKnowledgeCandidates] = useState<CompanyKnowledgeCandidatesPayload | null>(null);
+  const [loadingCompanyKnowledgeCandidates, setLoadingCompanyKnowledgeCandidates] = useState(false);
+  const [syncingCompanyKnowledgeCandidates, setSyncingCompanyKnowledgeCandidates] = useState(false);
+  const [runningCompanyKnowledgeActionKey, setRunningCompanyKnowledgeActionKey] = useState<string | null>(null);
   const [sharedMemoryImpact, setSharedMemoryImpact] = useState<SharedMemoryImpactPayload | null>(null);
   const [loadingSharedMemoryImpact, setLoadingSharedMemoryImpact] = useState(false);
   const [sharedMemoryHealth, setSharedMemoryHealth] = useState<SharedMemoryHealthPayload | null>(null);
@@ -3299,6 +3338,73 @@ export default function App() {
     }
     return items.slice(0, 3);
   }, [adoptionSynthesisGraph]);
+  const companyKnowledgeSummaryCards = useMemo(() => {
+    const summary = companyKnowledgeCandidates?.summary || {};
+    const lifecycleCounts = Array.isArray(summary.lifecycle_states) ? summary.lifecycle_states : Array.isArray(summary.state_counts) ? summary.state_counts : [];
+    const stateCount = (state: string) =>
+      Number(
+        lifecycleCounts.find((item) => String(item.state || "").trim().toLowerCase() === state)?.count || 0,
+      );
+    const total = Number(summary.candidates_total || companyKnowledgeCandidates?.candidates?.length || 0);
+    const reviewed = stateCount("reviewed");
+    const canonical = stateCount("canonical");
+    const contradicted = stateCount("contradicted");
+    const stale = stateCount("stale");
+    return [
+      {
+        key: "total",
+        title: "Candidates",
+        color: total > 0 ? "cyan" : "gray",
+        stat: `${total}`,
+        detail: "persisted company knowledge blocks",
+      },
+      {
+        key: "reviewed",
+        title: "Reviewed",
+        color: reviewed > 0 ? "teal" : "gray",
+        stat: `${reviewed}`,
+        detail: "stable enough for guided promotion",
+      },
+      {
+        key: "canonical",
+        title: "Canonical",
+        color: canonical > 0 ? "grape" : "gray",
+        stat: `${canonical}`,
+        detail: "manually promoted company knowledge",
+      },
+      {
+        key: "exceptions",
+        title: "Conflicts / stale",
+        color: contradicted > 0 ? "orange" : stale > 0 ? "yellow" : "teal",
+        stat: `${contradicted}/${stale}`,
+        detail: "contradicted vs stale candidates",
+      },
+    ];
+  }, [companyKnowledgeCandidates]);
+  const companyKnowledgeConcerns = useMemo(() => {
+    const summary = companyKnowledgeCandidates?.summary || {};
+    const lifecycleCounts = Array.isArray(summary.lifecycle_states) ? summary.lifecycle_states : Array.isArray(summary.state_counts) ? summary.state_counts : [];
+    const stateCount = (state: string) =>
+      Number(
+        lifecycleCounts.find((item) => String(item.state || "").trim().toLowerCase() === state)?.count || 0,
+      );
+    const items: string[] = [];
+    const contradicted = stateCount("contradicted");
+    const stale = stateCount("stale");
+    const candidate = stateCount("candidate");
+    const reviewed = stateCount("reviewed");
+    const canonical = stateCount("canonical");
+    if (contradicted > 0) {
+      items.push(`${contradicted} company knowledge candidate(s) are contradicted and need an explicit source-of-truth decision.`);
+    }
+    if (stale > 0) {
+      items.push(`${stale} persisted candidate(s) went stale because the latest compiler sync no longer supports them strongly.`);
+    }
+    if (candidate > reviewed + canonical) {
+      items.push("Most company knowledge is still candidate-only; review and promotion coverage is still thin.");
+    }
+    return items.slice(0, 3);
+  }, [companyKnowledgeCandidates]);
   const sharedMemorySummaryCards = useMemo(() => {
     const impactSummary = sharedMemoryImpact?.summary || {};
     const healthMetrics = sharedMemoryHealth?.metrics || {};
@@ -4979,6 +5085,133 @@ export default function App() {
     }
   }, [apiUrl, observabilitySpaceKey, projectId]);
 
+  const loadCompanyKnowledgeCandidates = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setCompanyKnowledgeCandidates(null);
+      return;
+    }
+    setLoadingCompanyKnowledgeCandidates(true);
+    try {
+      const query = new URLSearchParams({
+        project_id: project,
+        space_key: observabilitySpaceKey,
+        limit: "12",
+      });
+      const payload = await apiFetch<CompanyKnowledgeCandidatesPayload>(
+        apiUrl,
+        `/v1/adoption/company-knowledge/candidates?${query.toString()}`,
+      );
+      setCompanyKnowledgeCandidates(payload);
+    } catch {
+      setCompanyKnowledgeCandidates(null);
+    } finally {
+      setLoadingCompanyKnowledgeCandidates(false);
+    }
+  }, [apiUrl, observabilitySpaceKey, projectId]);
+
+  const syncCompanyKnowledgeCandidates = useCallback(async () => {
+    const project = projectId.trim();
+    const actor = reviewer.trim() || "ops_manager";
+    if (!project) {
+      setCompanyKnowledgeCandidates(null);
+      return;
+    }
+    setSyncingCompanyKnowledgeCandidates(true);
+    try {
+      await apiFetch<CompanyKnowledgeCandidatesPayload>(apiUrl, "/v1/adoption/company-knowledge/candidates/sync", {
+        method: "POST",
+        idempotencyKey: randomKey(),
+        body: {
+          project_id: project,
+          updated_by: actor,
+          space_key: observabilitySpaceKey,
+          max_signals: 12,
+        },
+      });
+      await loadCompanyKnowledgeCandidates();
+    } catch (error) {
+      notifications.show({
+        color: "red",
+        title: "Company knowledge sync failed",
+        message: String(error),
+      });
+    } finally {
+      setSyncingCompanyKnowledgeCandidates(false);
+    }
+  }, [apiUrl, loadCompanyKnowledgeCandidates, observabilitySpaceKey, projectId, reviewer]);
+
+  const promoteCompanyKnowledgeCandidate = useCallback(
+    async (
+      candidate: CompanyKnowledgeCandidateRecord,
+      {
+        knowledgeState,
+        promoteToWiki,
+        wikiStatus,
+      }: {
+        knowledgeState: "reviewed" | "canonical";
+        promoteToWiki: boolean;
+        wikiStatus: "reviewed" | "published";
+      },
+    ) => {
+      const project = projectId.trim();
+      const actor = reviewer.trim() || "ops_manager";
+      const candidateId = Number(candidate.candidate_id || 0);
+      if (!project || !candidateId) {
+        notifications.show({
+          color: "red",
+          title: "Candidate action unavailable",
+          message: "Project ID or candidate id is missing.",
+        });
+        return;
+      }
+      const actionKey = `${candidateId}:${knowledgeState}:${promoteToWiki ? "wiki" : "state"}`;
+      setRunningCompanyKnowledgeActionKey(actionKey);
+      try {
+        const payload = await apiFetch<{
+          candidate?: { canonical_page_slug?: string | null; knowledge_state?: string | null };
+          wiki_page?: { status?: string; page?: { slug?: string | null } | null } | null;
+        }>(
+          apiUrl,
+          `/v1/adoption/company-knowledge/candidates/${candidateId}/promote`,
+          {
+            method: "POST",
+            idempotencyKey: randomKey(),
+            body: {
+              project_id: project,
+              updated_by: actor,
+              knowledge_state: knowledgeState,
+              promote_to_wiki: promoteToWiki,
+              wiki_status: wikiStatus,
+              note: promoteToWiki
+                ? `Promoted from Operations UI by ${actor}.`
+                : `Lifecycle state updated from Operations UI by ${actor}.`,
+            },
+          },
+        );
+        notifications.show({
+          color: "teal",
+          title: promoteToWiki ? "Candidate promoted to wiki" : "Candidate state updated",
+          message:
+            payload.candidate?.canonical_page_slug ||
+            payload.wiki_page?.page?.slug ||
+            payload.candidate?.knowledge_state ||
+            "Company knowledge candidate updated.",
+        });
+        await loadCompanyKnowledgeCandidates();
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Company knowledge action failed",
+          message: String(error),
+        });
+      } finally {
+        setRunningCompanyKnowledgeActionKey(null);
+      }
+    },
+    [apiUrl, loadCompanyKnowledgeCandidates, projectId, reviewer],
+  );
+
   const loadSharedMemoryImpact = useCallback(async () => {
     const project = projectId.trim();
     if (!project) {
@@ -6215,6 +6448,7 @@ export default function App() {
   useEffect(() => {
     if (!projectId.trim()) {
       setAdoptionSynthesisGraph(null);
+      setCompanyKnowledgeCandidates(null);
       setSharedMemoryImpact(null);
       setSharedMemoryHealth(null);
       setSharedMemoryPublishPreview(null);
@@ -6224,8 +6458,9 @@ export default function App() {
       return;
     }
     void loadAdoptionSynthesisGraph();
+    void loadCompanyKnowledgeCandidates();
     void refreshSharedMemoryDiagnostics();
-  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, projectId, refreshSharedMemoryDiagnostics]);
+  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, loadCompanyKnowledgeCandidates, projectId, refreshSharedMemoryDiagnostics]);
 
   useEffect(() => {
     void loadSelfhostConsistency();
@@ -10625,6 +10860,186 @@ export default function App() {
                                 <Text size="xs" c="dimmed">
                                   Synthesis graph snapshot is unavailable yet. Run runtime-surface sync or refresh once core adoption
                                   diagnostics are populated.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
+                          <Paper withBorder p="xs" radius="md" id="operations-company-knowledge-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Stack gap={0}>
+                                  <Text size="sm" fw={700}>
+                                    Company knowledge candidates
+                                  </Text>
+                                  <Text size="xs" c="dimmed">
+                                    Persisted business-facing knowledge blocks for {observabilitySpaceKey}. This is the bridge from runtime memory
+                                    into real org-wiki pages.
+                                  </Text>
+                                </Stack>
+                                <Group gap={6} wrap="wrap">
+                                  <Button
+                                    size="xs"
+                                    variant="subtle"
+                                    color="cyan"
+                                    loading={loadingCompanyKnowledgeCandidates}
+                                    onClick={() => void loadCompanyKnowledgeCandidates()}
+                                  >
+                                    Refresh list
+                                  </Button>
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    color="violet"
+                                    loading={syncingCompanyKnowledgeCandidates}
+                                    onClick={() => void syncCompanyKnowledgeCandidates()}
+                                  >
+                                    Sync candidates
+                                  </Button>
+                                </Group>
+                              </Group>
+                              {companyKnowledgeCandidates ? (
+                                <>
+                                  <SimpleGrid cols={{ base: 2, sm: 4 }} spacing={6}>
+                                    {companyKnowledgeSummaryCards.map((card) => (
+                                      <Paper key={`company-knowledge-card-${card.key}`} withBorder p="xs" radius="md">
+                                        <Stack gap={4}>
+                                          <Group justify="space-between" align="center" wrap="nowrap">
+                                            <Text size="xs" fw={700}>
+                                              {card.title}
+                                            </Text>
+                                            <Badge size="xs" variant="light" color={card.color}>
+                                              {card.stat}
+                                            </Badge>
+                                          </Group>
+                                          <Text size="xs" c="dimmed">
+                                            {card.detail}
+                                          </Text>
+                                        </Stack>
+                                      </Paper>
+                                    ))}
+                                  </SimpleGrid>
+                                  {companyKnowledgeConcerns.length > 0 ? (
+                                    <Alert variant="light" color="orange">
+                                      <Stack gap={2}>
+                                        {companyKnowledgeConcerns.map((item, index) => (
+                                          <Text key={`company-knowledge-concern-${index}`} size="xs">
+                                            {item}
+                                          </Text>
+                                        ))}
+                                      </Stack>
+                                    </Alert>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      Candidate knowledge looks reasonably healthy: persisted blocks have clear lifecycle states and promotion targets.
+                                    </Text>
+                                  )}
+                                  {Array.isArray(companyKnowledgeCandidates.candidates) && companyKnowledgeCandidates.candidates.length > 0 ? (
+                                    <Stack gap={6}>
+                                      {companyKnowledgeCandidates.candidates.slice(0, 5).map((candidate) => {
+                                        const candidateId = Number(candidate.candidate_id || 0);
+                                        const reviewActionKey = `${candidateId}:reviewed:state`;
+                                        const promoteActionKey = `${candidateId}:canonical:wiki`;
+                                        return (
+                                          <Paper
+                                            key={`company-knowledge-candidate-${candidateId || candidate.block_id || "candidate"}`}
+                                            withBorder
+                                            p="xs"
+                                            radius="md"
+                                          >
+                                            <Stack gap={4}>
+                                              <Group justify="space-between" align="center" wrap="wrap">
+                                                <Stack gap={0}>
+                                                  <Text size="xs" fw={700}>
+                                                    {candidate.block_type || "candidate"} {candidate.block_id ? `· ${candidate.block_id}` : ""}
+                                                  </Text>
+                                                  <Text size="xs" c="dimmed">
+                                                    {(candidate.target_page_type || "page pending")} →{" "}
+                                                    {candidate.target_page_slug || "target slug pending"}
+                                                  </Text>
+                                                </Stack>
+                                                <Group gap={6} wrap="wrap">
+                                                  <Badge
+                                                    size="xs"
+                                                    variant="light"
+                                                    color={
+                                                      candidate.knowledge_state === "canonical"
+                                                        ? "grape"
+                                                        : candidate.knowledge_state === "reviewed"
+                                                          ? "teal"
+                                                          : candidate.knowledge_state === "contradicted"
+                                                            ? "orange"
+                                                            : candidate.knowledge_state === "stale"
+                                                              ? "yellow"
+                                                              : "gray"
+                                                    }
+                                                  >
+                                                    {candidate.knowledge_state || "candidate"}
+                                                  </Badge>
+                                                  <Badge size="xs" variant="light" color="gray">
+                                                    {candidate.confidence || "unknown"}
+                                                  </Badge>
+                                                </Group>
+                                              </Group>
+                                              <Text size="xs">{candidate.summary || "Pending summary."}</Text>
+                                              <Text size="xs" c="dimmed">
+                                                Evidence: {candidate.evidence_basis || "pending evidence basis"}
+                                              </Text>
+                                              {candidate.contradiction_topic ? (
+                                                <Text size="xs" c="dimmed">
+                                                  Contradiction topic: {candidate.contradiction_topic}
+                                                </Text>
+                                              ) : null}
+                                              <Text size="xs" c="dimmed">
+                                                Promotion path: {candidate.promotion_path || "pending explicit owner review"}
+                                              </Text>
+                                              <Group gap={6} wrap="wrap">
+                                                <Button
+                                                  size="xs"
+                                                  variant="subtle"
+                                                  color="teal"
+                                                  loading={runningCompanyKnowledgeActionKey === reviewActionKey}
+                                                  disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== reviewActionKey)}
+                                                  onClick={() =>
+                                                    void promoteCompanyKnowledgeCandidate(candidate, {
+                                                      knowledgeState: "reviewed",
+                                                      promoteToWiki: false,
+                                                      wikiStatus: "reviewed",
+                                                    })
+                                                  }
+                                                >
+                                                  Mark reviewed
+                                                </Button>
+                                                <Button
+                                                  size="xs"
+                                                  variant="light"
+                                                  color="grape"
+                                                  loading={runningCompanyKnowledgeActionKey === promoteActionKey}
+                                                  disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== promoteActionKey)}
+                                                  onClick={() =>
+                                                    void promoteCompanyKnowledgeCandidate(candidate, {
+                                                      knowledgeState: "canonical",
+                                                      promoteToWiki: true,
+                                                      wikiStatus: "reviewed",
+                                                    })
+                                                  }
+                                                >
+                                                  Promote to wiki
+                                                </Button>
+                                              </Group>
+                                            </Stack>
+                                          </Paper>
+                                        );
+                                      })}
+                                    </Stack>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      No persisted company knowledge candidates yet. Run sync to materialize the current compiler output.
+                                    </Text>
+                                  )}
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Company knowledge candidates are unavailable yet. Sync the current space to materialize persisted candidates.
                                 </Text>
                               )}
                             </Stack>
