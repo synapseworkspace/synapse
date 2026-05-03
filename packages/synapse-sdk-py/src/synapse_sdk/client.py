@@ -1846,6 +1846,28 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def process_agent_shared_memory_entry_lifecycle(
+        self,
+        *,
+        updated_by: str | None = None,
+        dry_run: bool = True,
+        limit: int = 50,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None,
+            "dry_run": bool(dry_run),
+            "limit": max(1, min(500, int(limit))),
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/entries/process-lifecycle",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def ack_agent_shared_memory_fanout(
         self,
         *,

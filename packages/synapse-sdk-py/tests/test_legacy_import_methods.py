@@ -929,6 +929,23 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("limit"), 12)
         self.assertEqual(payload.get("space_key"), "logistics")
 
+    def test_process_agent_shared_memory_entry_lifecycle_posts_expected_payload(self) -> None:
+        self.client.process_agent_shared_memory_entry_lifecycle(
+            updated_by="ops_admin",
+            dry_run=False,
+            limit=23,
+            space_key="logistics",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/entries/process-lifecycle")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("limit"), 23)
+        self.assertEqual(payload.get("space_key"), "logistics")
+
     def test_ack_agent_shared_memory_fanout_posts_expected_payload(self) -> None:
         self.client.ack_agent_shared_memory_fanout(
             runtime_id="dispatcher-runtime",

@@ -1397,6 +1397,8 @@ type SharedMemoryHealthPayload = {
     draft_items_visible?: number;
     materialized_entries_visible?: number;
     materialized_entries_inactive?: number;
+    materialized_entries_due_expire?: number;
+    materialized_entries_expiring_soon?: number;
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
     fanout_pending_queue?: number;
@@ -3334,6 +3336,12 @@ export default function App() {
     }
     if (Number(metrics.materialized_entries_inactive || 0) > 0) {
       items.push(`${Number(metrics.materialized_entries_inactive || 0)} private/team memory entr${Number(metrics.materialized_entries_inactive || 0) === 1 ? "y is" : "ies are"} lifecycle-complete (resolved, superseded, expired, or archived).`);
+    }
+    if (Number(metrics.materialized_entries_due_expire || 0) > 0) {
+      items.push(`${Number(metrics.materialized_entries_due_expire || 0)} active private/team memory entr${Number(metrics.materialized_entries_due_expire || 0) === 1 ? "y is" : "ies are"} past due for expiry processing.`);
+    }
+    if (Number(metrics.materialized_entries_expiring_soon || 0) > 0) {
+      items.push(`${Number(metrics.materialized_entries_expiring_soon || 0)} active private/team memory entr${Number(metrics.materialized_entries_expiring_soon || 0) === 1 ? "y expires" : "ies expire"} within 24 hours.`);
     }
     if (Number(metrics.fanout_hooks_enabled || 0) === 0) {
       items.push("No runtime fanout hooks are enabled yet, so shared memory still depends on polling/invalidation checks.");

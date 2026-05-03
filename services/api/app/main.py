@@ -1291,6 +1291,14 @@ class SharedMemoryFanoutPendingProcessRequest(BaseModel):
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
 
 
+class SharedMemoryEntryLifecycleProcessRequest(BaseModel):
+    project_id: str
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+    dry_run: bool = True
+    limit: int = Field(default=50, ge=1, le=500)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+
+
 class SharedMemoryFanoutAckRequest(BaseModel):
     project_id: str
     runtime_id: str = Field(min_length=1, max_length=256)
@@ -12957,6 +12965,97 @@ def _process_pending_shared_memory_fanout_deliveries(
     }
 
 
+def _process_due_shared_memory_entry_lifecycle(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str | None,
+    dry_run: bool,
+    limit: int,
+    space_key: str | None,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    actor = str(updated_by or "shared_memory_lifecycle").strip()[:256] or "shared_memory_lifecycle"
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_entries_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "shared_memory_entries_unavailable"})
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              id,
+              title,
+              visibility_tier,
+              status,
+              space_key,
+              page_slug,
+              entity_key,
+              expires_at,
+              lifecycle_reason
+            FROM shared_memory_entries
+            WHERE project_id = %s
+              AND status = 'active'
+              AND expires_at IS NOT NULL
+              AND expires_at <= NOW()
+        """
+        params: list[Any] = [normalized_project]
+        if normalized_space:
+            sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
+            params.append(normalized_space)
+        sql += " ORDER BY expires_at ASC, id ASC LIMIT %s"
+        params.append(max(1, min(1000, int(limit))))
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        entry = {
+            "entry_id": int(row[0]),
+            "title": str(row[1] or "").strip() or f"Entry {row[0]}",
+            "visibility_tier": str(row[2] or "").strip() or "reviewed_team",
+            "status": str(row[3] or "").strip() or "active",
+            "space_key": str(row[4] or "").strip() or None,
+            "page_slug": str(row[5] or "").strip() or None,
+            "entity_key": str(row[6] or "").strip() or None,
+            "expires_at": row[7].astimezone(UTC).isoformat() if isinstance(row[7], datetime) else None,
+            "lifecycle_reason": str(row[8] or "").strip() or None,
+        }
+        entries.append(entry)
+    if not dry_run and entries:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE shared_memory_entries
+                SET status = 'expired',
+                    lifecycle_reason = COALESCE(NULLIF(lifecycle_reason, ''), 'Expired by shared-memory lifecycle processor.'),
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE project_id = %s
+                  AND status = 'active'
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= NOW()
+                  AND id = ANY(%s::bigint[])
+                """,
+                (
+                    actor,
+                    normalized_project,
+                    [int(item["entry_id"]) for item in entries],
+                ),
+            )
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "dry_run": bool(dry_run),
+        "summary": {
+            "entries_due": len(entries),
+            "expired_now": 0 if dry_run else len(entries),
+        },
+        "entries": entries,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _build_shared_memory_fanout_dispatch_payload(
     conn,
     *,
@@ -14407,6 +14506,8 @@ def _build_shared_memory_health_metrics(
     fanout_unacked_recent = 0
     fanout_ack_lag_minutes: float | None = None
     fanout_pending_queue = 0
+    materialized_entries_due_expire = 0
+    materialized_entries_expiring_soon = 0
     if _shared_memory_fanout_deliveries_table_exists(conn):
         with conn.cursor() as cur:
             sql = """
@@ -14484,6 +14585,41 @@ def _build_shared_memory_health_metrics(
         fanout_refreshed_recent = int(ack_row[1] or 0)
         fanout_ack_lag_minutes = float(ack_row[2]) if ack_row[2] is not None else None
     fanout_unacked_recent = max(0, fanout_delivered_recent - fanout_acks_recent)
+    if visible_entry_tiers and _shared_memory_entries_table_exists(conn):
+        agent_id = str((agent_context or {}).get("agent_id") or "").strip() or None
+        team = str((agent_context or {}).get("team") or "").strip() or None
+        scope_clause, scope_params = _build_shared_memory_entry_scope_clause(
+            agent_id=agent_id,
+            team=team,
+            role=resolved_role,
+        )
+        with conn.cursor() as cur:
+            sql = f"""
+                SELECT
+                  COUNT(*) FILTER (
+                    WHERE status = 'active'
+                      AND expires_at IS NOT NULL
+                      AND expires_at <= NOW()
+                  )::bigint,
+                  COUNT(*) FILTER (
+                    WHERE status = 'active'
+                      AND expires_at IS NOT NULL
+                      AND expires_at > NOW()
+                      AND expires_at <= NOW() + INTERVAL '24 hours'
+                  )::bigint
+                FROM shared_memory_entries
+                WHERE project_id = %s
+                  AND visibility_tier = ANY(%s::text[])
+                  {scope_clause}
+            """
+            params = [normalized_project, visible_entry_tiers, *scope_params]
+            if _normalize_space_key(space_key or "", default=""):
+                sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
+                params.append(_normalize_space_key(space_key or "", default=""))
+            cur.execute(sql, tuple(params))
+            lifecycle_row = cur.fetchone() or (0, 0)
+        materialized_entries_due_expire = int(lifecycle_row[0] or 0)
+        materialized_entries_expiring_soon = int(lifecycle_row[1] or 0)
     return {
         "project_id": normalized_project,
         "space_key": _normalize_space_key(space_key or "", default="") or None,
@@ -14497,6 +14633,8 @@ def _build_shared_memory_health_metrics(
             "draft_items_visible": int(invalidation.get("draft_items_total") or 0),
             "materialized_entries_visible": int(invalidation.get("materialized_entries_total") or 0),
             "materialized_entries_inactive": int(invalidation.get("materialized_entries_inactive") or 0),
+            "materialized_entries_due_expire": materialized_entries_due_expire,
+            "materialized_entries_expiring_soon": materialized_entries_expiring_soon,
             "state_snapshot_slug": state_page_slug or None,
             "state_snapshot_updated_at": state_page_updated_at,
             "latest_change_at": invalidation.get("latest_change_at"),
@@ -30321,6 +30459,22 @@ def process_pending_agent_shared_memory_fanout_deliveries(payload: SharedMemoryF
         raise HTTPException(status_code=422, detail={"code": "project_id_required"})
     with get_conn() as conn:
         return _process_pending_shared_memory_fanout_deliveries(
+            conn,
+            project_id=normalized_project,
+            updated_by=payload.updated_by,
+            dry_run=bool(payload.dry_run),
+            limit=int(payload.limit),
+            space_key=payload.space_key,
+        )
+
+
+@app.post("/v1/agents/shared-memory/entries/process-lifecycle", response_model=None)
+def process_agent_shared_memory_entry_lifecycle(payload: SharedMemoryEntryLifecycleProcessRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _process_due_shared_memory_entry_lifecycle(
             conn,
             project_id=normalized_project,
             updated_by=payload.updated_by,

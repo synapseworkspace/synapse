@@ -1729,6 +1729,26 @@ export class SynapseClient {
     });
   }
 
+  async processAgentSharedMemoryEntryLifecycle(options: {
+    updatedBy?: string;
+    dryRun?: boolean;
+    limit?: number;
+    spaceKey?: string;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/entries/process-lifecycle", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: asOptionalString(options.updatedBy) ?? undefined,
+        dry_run: Boolean(options.dryRun ?? true),
+        limit: normalizeInt(options.limit ?? 50, 1, 500),
+        space_key: asOptionalString(options.spaceKey) ?? undefined
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async ackAgentSharedMemoryFanout(options: {
     runtimeId: string;
     ackStatus?: "accepted" | "refreshed" | "ignored" | "failed" | string;
