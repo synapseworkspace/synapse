@@ -1595,6 +1595,10 @@ class SynapseClient:
         importance: str = "medium",
         source_kind: str = "agent_note",
         source_ref: str | None = None,
+        superseded_by_entry_id: int | None = None,
+        resolved_at: str | None = None,
+        expires_at: str | None = None,
+        lifecycle_reason: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -1617,6 +1621,10 @@ class SynapseClient:
             "importance": str(importance or "medium").strip().lower() or "medium",
             "source_kind": str(source_kind or "agent_note").strip().lower() or "agent_note",
             "source_ref": str(source_ref).strip() if source_ref is not None and str(source_ref).strip() else None,
+            "superseded_by_entry_id": int(superseded_by_entry_id) if superseded_by_entry_id is not None else None,
+            "resolved_at": str(resolved_at).strip() if resolved_at is not None and str(resolved_at).strip() else None,
+            "expires_at": str(expires_at).strip() if expires_at is not None and str(expires_at).strip() else None,
+            "lifecycle_reason": str(lifecycle_reason).strip() if lifecycle_reason is not None and str(lifecycle_reason).strip() else None,
             "metadata": metadata if isinstance(metadata, dict) else {},
         }
         return self._request_json(
@@ -1633,6 +1641,7 @@ class SynapseClient:
         role: str | None = None,
         space_key: str | None = None,
         visibility_tier: str | None = None,
+        status_filter: str | None = None,
         include_archived: bool = False,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -1642,6 +1651,7 @@ class SynapseClient:
             "role": str(role).strip() if role is not None and str(role).strip() else None,
             "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
             "visibility_tier": str(visibility_tier).strip().lower() if visibility_tier is not None and str(visibility_tier).strip() else None,
+            "status_filter": str(status_filter).strip().lower() if status_filter is not None and str(status_filter).strip() else None,
             "include_archived": bool(include_archived),
             "limit": max(1, min(200, int(limit))),
         }

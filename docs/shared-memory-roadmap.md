@@ -156,9 +156,10 @@ Implemented:
 18. hook-level retry policy (`max attempts` + `backoff`) and due-retry processing now let shared-memory fanout move from ad-hoc retries toward a real delivery loop
 19. runtime fanout payloads now carry per-delivery correlation IDs, and runtimes can report `accepted/refreshed/ignored/failed` acknowledgements back through `POST /v1/agents/shared-memory/fanout-acks`, so health can distinguish “sent” from “actually applied”
 20. fanout dispatch now supports queued delivery (`enqueue_only=true`) plus a dedicated pending-delivery processor, so shared-memory push can move from inline-only execution toward a real delivery queue
+21. materialized private/team memory entries now support richer lifecycle states (`superseded`, `resolved`, `expired`, `archived`) plus lifecycle metadata (`superseded_by`, `resolved_at`, `expires_at`, `reason`), so working memory can age out or close cleanly instead of living forever as `active`
 
 Current limitation:
-- private/team memory now has materialized entry backing, fanout retry/backoff, runtime ack freshness, and queued delivery foundation, but still lacks richer write-back lifecycle semantics and stronger background execution guarantees beyond manual/explicit queue processing
+- private/team memory now has materialized entry backing, lifecycle states, fanout retry/backoff, runtime ack freshness, and queued delivery foundation, but still lacks stronger background execution guarantees beyond manual/explicit queue processing
 
 These endpoints are intentionally conservative:
 

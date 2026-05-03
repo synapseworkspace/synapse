@@ -1215,7 +1215,7 @@ class SharedMemoryEntryUpsertRequest(BaseModel):
     summary: str = Field(min_length=1, max_length=4000)
     content: str | None = Field(default=None, max_length=20000)
     visibility_tier: str = Field(default="reviewed_team", pattern="^(reviewed_team|draft_private)$")
-    status: str = Field(default="active", pattern="^(active|archived)$")
+    status: str = Field(default="active", pattern="^(active|superseded|resolved|expired|archived)$")
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
     owner_agent_id: str | None = Field(default=None, min_length=1, max_length=256)
     role_scope: str | None = Field(default=None, min_length=1, max_length=256)
@@ -1227,6 +1227,10 @@ class SharedMemoryEntryUpsertRequest(BaseModel):
     importance: str = Field(default="medium", pattern="^(low|medium|high)$")
     source_kind: str = Field(default="agent_note", min_length=1, max_length=128)
     source_ref: str | None = Field(default=None, min_length=1, max_length=512)
+    superseded_by_entry_id: int | None = Field(default=None, ge=1)
+    resolved_at: datetime | None = None
+    expires_at: datetime | None = None
+    lifecycle_reason: str | None = Field(default=None, max_length=2000)
     metadata: dict[str, Any] | None = None
 
 
@@ -11434,6 +11438,7 @@ def _build_materialized_shared_memory_entries_feed(
     agent_context: dict[str, Any] | None = None,
     include_archived: bool = False,
     visible_tiers_override: list[str] | None = None,
+    status_filter: str | None = None,
 ) -> dict[str, Any]:
     normalized_project = str(project_id or "").strip()
     normalized_space = _normalize_space_key(space_key or "", default="")
@@ -11464,6 +11469,8 @@ def _build_materialized_shared_memory_entries_feed(
         role=resolved_role,
     )
     with conn.cursor() as cur:
+        normalized_status_filter = str(status_filter or "").strip().lower()
+        include_inactive = bool(include_archived) or (normalized_status_filter not in {"", "active"})
         sql = f"""
             SELECT
               id,
@@ -11484,6 +11491,10 @@ def _build_materialized_shared_memory_entries_feed(
               source_kind,
               source_ref,
               metadata,
+              superseded_by_entry_id,
+              resolved_at,
+              expires_at,
+              lifecycle_reason,
               created_by,
               updated_by,
               created_at,
@@ -11495,7 +11506,10 @@ def _build_materialized_shared_memory_entries_feed(
               AND updated_at >= %s
               {scope_clause}
         """
-        params: list[Any] = [normalized_project, bool(include_archived), visible_tiers, since_dt, *scope_params]
+        params: list[Any] = [normalized_project, include_inactive, visible_tiers, since_dt, *scope_params]
+        if normalized_status_filter:
+            sql += " AND status = %s"
+            params.append(normalized_status_filter)
         if normalized_space:
             sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
             params.append(normalized_space)
@@ -11517,12 +11531,12 @@ def _build_materialized_shared_memory_entries_feed(
             page_type = "operations" if "/" in page_slug else "memory"
         change_summary = str(row[8] or "").strip()
         delta_kind = str(row[12] or "").strip().lower() or "knowledge_change"
-        changed_at = row[21].astimezone(UTC).isoformat() if isinstance(row[21], datetime) else None
+        changed_at = row[25].astimezone(UTC).isoformat() if isinstance(row[25], datetime) else None
         item = {
             "event_type": "materialized_memory_entry",
             "delta_kind": delta_kind,
             "changed_at": changed_at,
-            "changed_by": str(row[19] or row[18] or "").strip() or None,
+            "changed_by": str(row[23] or row[22] or "").strip() or None,
             "change_summary": change_summary or None,
             "page": {
                 "id": f"memory-entry:{int(row[0])}",
@@ -11554,6 +11568,10 @@ def _build_materialized_shared_memory_entries_feed(
                 "action_hint": str(row[13] or "").strip() or None,
                 "importance": str(row[14] or "").strip() or "medium",
                 "metadata": row[17] if isinstance(row[17], dict) else {},
+                "superseded_by_entry_id": int(row[18]) if row[18] is not None else None,
+                "resolved_at": row[19].astimezone(UTC).isoformat() if isinstance(row[19], datetime) else None,
+                "expires_at": row[20].astimezone(UTC).isoformat() if isinstance(row[20], datetime) else None,
+                "lifecycle_reason": str(row[21] or "").strip() or None,
             },
         }
         item["delta_objects"] = _derive_shared_memory_delta_objects(
@@ -11562,7 +11580,7 @@ def _build_materialized_shared_memory_entries_feed(
             slug=str(item["page"]["slug"]),
             entity_key=str(item["page"]["entity_key"] or "") or None,
             change_summary=change_summary,
-            status="active",
+            status=str(row[2] or "active").strip().lower() or "active",
         )
         if agent_context is not None:
             item["relevance"] = _score_shared_memory_relevance(change_item=item, agent_context=agent_context)
@@ -11610,6 +11628,10 @@ def _upsert_shared_memory_entry(
     importance: str,
     source_kind: str,
     source_ref: str | None,
+    superseded_by_entry_id: int | None,
+    resolved_at: datetime | None,
+    expires_at: datetime | None,
+    lifecycle_reason: str | None,
     metadata: dict[str, Any] | None,
 ) -> dict[str, Any]:
     if not _shared_memory_entries_table_exists(conn):
@@ -11646,11 +11668,15 @@ def _upsert_shared_memory_entry(
                   importance,
                   source_kind,
                   source_ref,
+                  superseded_by_entry_id,
+                  resolved_at,
+                  expires_at,
+                  lifecycle_reason,
                   metadata,
                   created_by,
                   updated_by
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, created_at, updated_at
                 """,
                 (
@@ -11671,6 +11697,10 @@ def _upsert_shared_memory_entry(
                     str(importance or "medium").strip().lower() or "medium",
                     str(source_kind or "agent_note").strip().lower() or "agent_note",
                     str(source_ref or "").strip() or None,
+                    int(superseded_by_entry_id) if superseded_by_entry_id is not None else None,
+                    resolved_at,
+                    expires_at,
+                    str(lifecycle_reason or "").strip() or None,
                     Jsonb(normalized_metadata),
                     normalized_actor,
                     normalized_actor,
@@ -11698,6 +11728,10 @@ def _upsert_shared_memory_entry(
                     importance = %s,
                     source_kind = %s,
                     source_ref = %s,
+                    superseded_by_entry_id = %s,
+                    resolved_at = %s,
+                    expires_at = %s,
+                    lifecycle_reason = %s,
                     metadata = %s,
                     updated_by = %s,
                     updated_at = NOW()
@@ -11722,6 +11756,10 @@ def _upsert_shared_memory_entry(
                     str(importance or "medium").strip().lower() or "medium",
                     str(source_kind or "agent_note").strip().lower() or "agent_note",
                     str(source_ref or "").strip() or None,
+                    int(superseded_by_entry_id) if superseded_by_entry_id is not None else None,
+                    resolved_at,
+                    expires_at,
+                    str(lifecycle_reason or "").strip() or None,
                     Jsonb(normalized_metadata),
                     normalized_actor,
                     int(entry_id),
@@ -11750,6 +11788,10 @@ def _upsert_shared_memory_entry(
             "importance": str(importance or "medium").strip().lower() or "medium",
             "source_kind": str(source_kind or "agent_note").strip().lower() or "agent_note",
             "source_ref": str(source_ref or "").strip() or None,
+            "superseded_by_entry_id": int(superseded_by_entry_id) if superseded_by_entry_id is not None else None,
+            "resolved_at": resolved_at.astimezone(UTC).isoformat() if isinstance(resolved_at, datetime) else None,
+            "expires_at": expires_at.astimezone(UTC).isoformat() if isinstance(expires_at, datetime) else None,
+            "lifecycle_reason": str(lifecycle_reason or "").strip() or None,
             "owner_agent_id": str(owner_agent_id or "").strip() or None,
             "role_scope": str(role_scope or "").strip() or None,
             "team_scope": str(team_scope or "").strip() or None,
@@ -11769,6 +11811,7 @@ def _list_shared_memory_entries(
     role: str | None = None,
     space_key: str | None = None,
     visibility_tier: str | None = None,
+    status_filter: str | None = None,
     include_archived: bool = False,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -11807,6 +11850,7 @@ def _list_shared_memory_entries(
         agent_context=agent_context,
         include_archived=include_archived,
         visible_tiers_override=[str(visibility_tier).strip().lower()] if str(visibility_tier or "").strip() else None,
+        status_filter=status_filter,
     )
     entries = []
     for item in feed.get("items") or []:
@@ -11820,6 +11864,7 @@ def _list_shared_memory_entries(
                 "summary": memory_entry.get("summary"),
                 "content": memory_entry.get("content"),
                 "visibility_tier": memory_entry.get("visibility_tier"),
+                "status": memory_entry.get("status"),
                 "space_key": memory_entry.get("space_key"),
                 "owner_agent_id": memory_entry.get("owner_agent_id"),
                 "role_scope": memory_entry.get("role_scope"),
@@ -11831,6 +11876,10 @@ def _list_shared_memory_entries(
                 "source_ref": ((item.get("origin") or {}) if isinstance(item.get("origin"), dict) else {}).get("source_ref"),
                 "page_slug": ((item.get("page") or {}) if isinstance(item.get("page"), dict) else {}).get("slug"),
                 "entity_key": ((item.get("page") or {}) if isinstance(item.get("page"), dict) else {}).get("entity_key"),
+                "superseded_by_entry_id": memory_entry.get("superseded_by_entry_id"),
+                "resolved_at": memory_entry.get("resolved_at"),
+                "expires_at": memory_entry.get("expires_at"),
+                "lifecycle_reason": memory_entry.get("lifecycle_reason"),
                 "metadata": memory_entry.get("metadata") if isinstance(memory_entry.get("metadata"), dict) else {},
                 "updated_at": item.get("changed_at"),
                 "relevance": item.get("relevance") if isinstance(item.get("relevance"), dict) else None,
@@ -13713,6 +13762,7 @@ def _build_shared_memory_invalidation_marker(
     draft_items_total = 0
     latest_private_draft_at: str | None = None
     materialized_entries_total = 0
+    materialized_entries_inactive = 0
     latest_materialized_entry_at: str | None = None
     if bool((tier_scope or {}).get("include_private_drafts")) and _shared_memory_private_drafts_available(conn):
         with conn.cursor() as cur:
@@ -13751,10 +13801,12 @@ def _build_shared_memory_invalidation_marker(
         )
         with conn.cursor() as cur:
             sql = f"""
-                SELECT COUNT(*)::bigint, MAX(updated_at)
+                SELECT
+                  COUNT(*) FILTER (WHERE status = 'active')::bigint,
+                  COUNT(*) FILTER (WHERE status <> 'active')::bigint,
+                  MAX(updated_at)
                 FROM shared_memory_entries
                 WHERE project_id = %s
-                  AND status = 'active'
                   AND visibility_tier = ANY(%s::text[])
                   {scope_clause}
             """
@@ -13763,10 +13815,11 @@ def _build_shared_memory_invalidation_marker(
                 sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
                 params.append(normalized_space)
             cur.execute(sql, tuple(params))
-            materialized_row = cur.fetchone() or (0, None)
+            materialized_row = cur.fetchone() or (0, 0, None)
         materialized_entries_total = int(materialized_row[0] or 0)
-        if isinstance(materialized_row[1], datetime):
-            latest_materialized_entry_at = materialized_row[1].astimezone(UTC).isoformat()
+        materialized_entries_inactive = int(materialized_row[1] or 0)
+        if isinstance(materialized_row[2], datetime):
+            latest_materialized_entry_at = materialized_row[2].astimezone(UTC).isoformat()
         if latest_materialized_entry_at and (latest_change_at is None or latest_materialized_entry_at > latest_change_at):
             latest_change_at = latest_materialized_entry_at
     relevance_summary: dict[str, Any] | None = None
@@ -13826,6 +13879,7 @@ def _build_shared_memory_invalidation_marker(
         "draft_items_total": draft_items_total,
         "latest_private_draft_at": latest_private_draft_at,
         "materialized_entries_total": materialized_entries_total,
+        "materialized_entries_inactive": materialized_entries_inactive,
         "latest_materialized_entry_at": latest_materialized_entry_at,
         "relevance": relevance_summary,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -14442,6 +14496,7 @@ def _build_shared_memory_health_metrics(
             "scoped_pages": int(invalidation.get("pages_total") or 0),
             "draft_items_visible": int(invalidation.get("draft_items_total") or 0),
             "materialized_entries_visible": int(invalidation.get("materialized_entries_total") or 0),
+            "materialized_entries_inactive": int(invalidation.get("materialized_entries_inactive") or 0),
             "state_snapshot_slug": state_page_slug or None,
             "state_snapshot_updated_at": state_page_updated_at,
             "latest_change_at": invalidation.get("latest_change_at"),
@@ -30052,6 +30107,10 @@ def upsert_agent_shared_memory_entry(payload: SharedMemoryEntryUpsertRequest) ->
             importance=payload.importance,
             source_kind=payload.source_kind,
             source_ref=payload.source_ref,
+            superseded_by_entry_id=payload.superseded_by_entry_id,
+            resolved_at=payload.resolved_at,
+            expires_at=payload.expires_at,
+            lifecycle_reason=payload.lifecycle_reason,
             metadata=payload.metadata,
         )
 
@@ -30063,6 +30122,7 @@ def list_agent_shared_memory_entries(
     role: str | None = Query(default=None),
     space_key: str | None = Query(default=None),
     visibility_tier: str | None = Query(default=None, pattern="^(reviewed_team|draft_private)$"),
+    status_filter: str | None = Query(default=None, pattern="^(active|superseded|resolved|expired|archived)$"),
     include_archived: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
@@ -30077,6 +30137,7 @@ def list_agent_shared_memory_entries(
             role=role,
             space_key=space_key,
             visibility_tier=visibility_tier,
+            status_filter=status_filter,
             include_archived=include_archived,
             limit=limit,
         )

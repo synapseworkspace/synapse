@@ -1480,7 +1480,7 @@ export class SynapseClient {
     summary: string;
     content?: string;
     visibilityTier?: "reviewed_team" | "draft_private" | string;
-    status?: "active" | "archived" | string;
+    status?: "active" | "superseded" | "resolved" | "expired" | "archived" | string;
     entryId?: number;
     spaceKey?: string;
     ownerAgentId?: string;
@@ -1493,6 +1493,10 @@ export class SynapseClient {
     importance?: "low" | "medium" | "high" | string;
     sourceKind?: string;
     sourceRef?: string;
+    supersededByEntryId?: number;
+    resolvedAt?: string;
+    expiresAt?: string;
+    lifecycleReason?: string;
     metadata?: Record<string, unknown>;
     idempotencyKey?: string;
   }): Promise<Record<string, unknown>> {
@@ -1518,6 +1522,11 @@ export class SynapseClient {
         importance: String(options.importance ?? "medium").trim().toLowerCase() || "medium",
         source_kind: String(options.sourceKind ?? "agent_note").trim().toLowerCase() || "agent_note",
         source_ref: asOptionalString(options.sourceRef) ?? undefined,
+        superseded_by_entry_id:
+          options.supersededByEntryId == null ? undefined : normalizeInt(options.supersededByEntryId, 1, Number.MAX_SAFE_INTEGER),
+        resolved_at: asOptionalString(options.resolvedAt) ?? undefined,
+        expires_at: asOptionalString(options.expiresAt) ?? undefined,
+        lifecycle_reason: asOptionalString(options.lifecycleReason) ?? undefined,
         metadata: options.metadata ?? {}
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
@@ -1529,6 +1538,7 @@ export class SynapseClient {
     role?: string;
     spaceKey?: string;
     visibilityTier?: "reviewed_team" | "draft_private" | string;
+    statusFilter?: "active" | "superseded" | "resolved" | "expired" | "archived" | string;
     includeArchived?: boolean;
     limit?: number;
   } = {}): Promise<Record<string, unknown>> {
@@ -1540,6 +1550,7 @@ export class SynapseClient {
         role: asOptionalString(options.role) ?? undefined,
         space_key: asOptionalString(options.spaceKey) ?? undefined,
         visibility_tier: asOptionalString(options.visibilityTier)?.toLowerCase() ?? undefined,
+        status_filter: asOptionalString(options.statusFilter)?.toLowerCase() ?? undefined,
         include_archived: Boolean(options.includeArchived ?? false),
         limit: normalizeInt(options.limit ?? 50, 1, 200)
       }

@@ -709,7 +709,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             summary="Escalate route-gap checks before first wave dispatch.",
             content="Gap checks should happen before 07:30 handoff.",
             visibility_tier="draft_private",
-            status="active",
+            status="resolved",
             space_key="logistics",
             owner_agent_id="logistics-assistant",
             role_scope="dispatcher",
@@ -721,6 +721,10 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             importance="high",
             source_kind="agent_note",
             source_ref="shift-briefing",
+            superseded_by_entry_id=18,
+            resolved_at="2026-05-03T18:30:00Z",
+            expires_at="2026-05-10T18:30:00Z",
+            lifecycle_reason="Replaced by the stabilized handoff policy.",
             metadata={"channel": "night-shift"},
         )
         call = self.client.calls[-1]
@@ -734,6 +738,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("summary"), "Escalate route-gap checks before first wave dispatch.")
         self.assertEqual(payload.get("content"), "Gap checks should happen before 07:30 handoff.")
         self.assertEqual(payload.get("visibility_tier"), "draft_private")
+        self.assertEqual(payload.get("status"), "resolved")
         self.assertEqual(payload.get("space_key"), "logistics")
         self.assertEqual(payload.get("owner_agent_id"), "logistics-assistant")
         self.assertEqual(payload.get("role_scope"), "dispatcher")
@@ -745,6 +750,10 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("importance"), "high")
         self.assertEqual(payload.get("source_kind"), "agent_note")
         self.assertEqual(payload.get("source_ref"), "shift-briefing")
+        self.assertEqual(payload.get("superseded_by_entry_id"), 18)
+        self.assertEqual(payload.get("resolved_at"), "2026-05-03T18:30:00Z")
+        self.assertEqual(payload.get("expires_at"), "2026-05-10T18:30:00Z")
+        self.assertEqual(payload.get("lifecycle_reason"), "Replaced by the stabilized handoff policy.")
         self.assertEqual(payload.get("metadata"), {"channel": "night-shift"})
 
     def test_list_agent_shared_memory_entries_scopes_project(self) -> None:
@@ -753,6 +762,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             role="dispatcher",
             space_key="logistics",
             visibility_tier="reviewed_team",
+            status_filter="resolved",
             include_archived=True,
             limit=17,
         )
@@ -765,6 +775,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(params.get("role"), "dispatcher")
         self.assertEqual(params.get("space_key"), "logistics")
         self.assertEqual(params.get("visibility_tier"), "reviewed_team")
+        self.assertEqual(params.get("status_filter"), "resolved")
         self.assertTrue(params.get("include_archived"))
         self.assertEqual(params.get("limit"), 17)
 

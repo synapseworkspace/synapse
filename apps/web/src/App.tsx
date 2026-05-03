@@ -1396,6 +1396,7 @@ type SharedMemoryHealthPayload = {
     scoped_pages?: number;
     draft_items_visible?: number;
     materialized_entries_visible?: number;
+    materialized_entries_inactive?: number;
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
     fanout_pending_queue?: number;
@@ -3330,6 +3331,9 @@ export default function App() {
     }
     if (Number(metrics.materialized_entries_visible || 0) > 0) {
       items.push(`${Number(metrics.materialized_entries_visible || 0)} long-lived private/team memory entr${Number(metrics.materialized_entries_visible || 0) === 1 ? "y is" : "ies are"} active in this scope.`);
+    }
+    if (Number(metrics.materialized_entries_inactive || 0) > 0) {
+      items.push(`${Number(metrics.materialized_entries_inactive || 0)} private/team memory entr${Number(metrics.materialized_entries_inactive || 0) === 1 ? "y is" : "ies are"} lifecycle-complete (resolved, superseded, expired, or archived).`);
     }
     if (Number(metrics.fanout_hooks_enabled || 0) === 0) {
       items.push("No runtime fanout hooks are enabled yet, so shared memory still depends on polling/invalidation checks.");
