@@ -949,6 +949,7 @@ class GenericOpsSynthesisPack:
             "process_signals": [],
             "trust_signals": [],
             "exception_signals": [],
+            "candidate_canon_blocks": [],
             "principles": [
                 "Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
                 "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
@@ -1831,6 +1832,76 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             for label, total in sorted(exception_counts.items(), key=lambda item: (-item[1], item[0].lower()))
             if int(total) > 0
         ][:6]
+        candidate_canon_blocks: list[dict[str, Any]] = []
+
+        top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
+        if top_entities:
+            candidate_canon_blocks.append(
+                {
+                    "block_type": "entity_overview",
+                    "knowledge_state": "candidate",
+                    "confidence": "medium",
+                    "summary": f"Current logistics memory centers on {', '.join(top_entities)} as the main business entities.",
+                    "evidence_basis": "Repeated mentions across scheduled workflows, responsibilities, and claim rollups.",
+                }
+            )
+
+        top_processes = [str(item.get("label") or "").strip() for item in process_signals[:3] if str(item.get("label") or "").strip()]
+        if top_processes:
+            cadence = "daily operating cadence" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operational workflow"
+            candidate_canon_blocks.append(
+                {
+                    "block_type": "process_sop_candidate",
+                    "knowledge_state": "candidate",
+                    "confidence": "medium",
+                    "summary": f"The current {cadence} appears to revolve around {', '.join(top_processes)}.",
+                    "evidence_basis": "Observed in standing orders and scheduled tasks across the runtime matrix.",
+                }
+            )
+
+        if trust_signals:
+            canonical_sources = [str(item.get("label") or "").strip() for item in trust_signals if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))]
+            derived_sources = [str(item.get("label") or "").strip() for item in trust_signals if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))]
+            if canonical_sources or derived_sources:
+                summary_parts: list[str] = []
+                if canonical_sources:
+                    summary_parts.append(f"prefer {', '.join(canonical_sources[:2])} for live operational state")
+                if derived_sources:
+                    summary_parts.append(f"treat {', '.join(derived_sources[:2])} as derived/operator-maintained views during conflicts")
+                candidate_canon_blocks.append(
+                    {
+                        "block_type": "source_of_truth_rule",
+                        "knowledge_state": "candidate",
+                        "confidence": "medium",
+                        "summary": f"Trust rule candidate: {'; '.join(summary_parts)}.",
+                        "evidence_basis": "Inferred from connected source classes and source-trust heuristics.",
+                    }
+                )
+
+        top_exceptions = [str(item.get("label") or "").strip() for item in exception_signals[:3] if str(item.get("label") or "").strip()]
+        if top_exceptions:
+            candidate_canon_blocks.append(
+                {
+                    "block_type": "known_exception",
+                    "knowledge_state": "candidate",
+                    "confidence": "low",
+                    "summary": f"Recurring operational exceptions likely include {', '.join(top_exceptions)}.",
+                    "evidence_basis": "Pattern counts derived from workflow, responsibility, and claim language.",
+                }
+            )
+
+        if claims_rollup:
+            top_claims = [str(category or "").strip().replace("_", " ") for category, _ in claims_rollup[:3] if str(category or "").strip()]
+            if top_claims:
+                candidate_canon_blocks.append(
+                    {
+                        "block_type": "working_heuristic",
+                        "knowledge_state": "candidate",
+                        "confidence": "low",
+                        "summary": f"Company memory is repeatedly surfacing heuristics around {', '.join(top_claims)}.",
+                        "evidence_basis": "Repeated claim categories observed in current knowledge rollups.",
+                    }
+                )
         snapshot_notes = [
             f"Recurring workflows observed: {len(workflow_signals)}.",
             f"Connected source streams contributing to logistics knowledge: {source_total}.",
@@ -1843,6 +1914,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             "process_signals": process_signals,
             "trust_signals": trust_signals,
             "exception_signals": exception_signals,
+            "candidate_canon_blocks": candidate_canon_blocks,
             "principles": [
                 "Recurring dispatch, incident, and reporting workflows should be captured as reusable SOPs instead of staying trapped inside runtime chatter.",
                 "Source freshness and authority matter: logistics actions should prefer the latest operational source of truth before acting.",

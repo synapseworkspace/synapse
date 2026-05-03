@@ -65,11 +65,12 @@ Phase 1 (foundation)
 4. `done` Initial target-page set for logistics:
    - operation overview, glossary, responsibility zones, readiness/docs, daily cycle, incidents, economics, systems, trust rules, pitfalls.
 
-Phase 2 (next)
-5. `planned` Business ontology extraction:
+Phase 2 (signal extraction)
+5. `in_progress` Business ontology extraction:
    - entities, process metadata, trust metadata, ownership, and business state from memory/runtime/KB.
-6. `planned` Memory-to-canon compiler:
+6. `in_progress` Memory-to-canon compiler:
    - repeated facts, repeated operator decisions, recurring exception patterns, contradiction resolution.
+   - current slice surfaces candidate canon blocks in `Company Operating Context`.
 7. `planned` Humanization layer:
    - translate internal technical labels into company-readable summaries and titles.
 8. `planned` Knowledge quality lifecycle:

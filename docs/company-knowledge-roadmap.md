@@ -129,7 +129,7 @@ Definition of done:
 
 ## Phase 3: Memory-to-Canon Compiler
 
-Status: `planned`
+Status: `in_progress`
 
 Goal:
 
@@ -154,6 +154,16 @@ Definition of done:
 
 - raw operational memory is no longer promoted directly into company wiki shape
 - canon pages are synthesized from repeated, stable, confidence-backed patterns
+
+Current progress:
+
+- candidate canon blocks now surface inside `Company Operating Context`
+- first pass includes:
+  - entity overview candidates
+  - process SOP candidates
+  - source-of-truth rule candidates
+  - known-exception candidates
+  - working heuristic candidates
 
 ## Phase 4: Humanization Layer
 

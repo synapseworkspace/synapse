@@ -41461,6 +41461,7 @@ def _build_company_operating_context_bootstrap_page(
     process_signals = [item for item in (context_extensions.get("process_signals") or []) if isinstance(item, dict)]
     trust_signals = [item for item in (context_extensions.get("trust_signals") or []) if isinstance(item, dict)]
     exception_signals = [item for item in (context_extensions.get("exception_signals") or []) if isinstance(item, dict)]
+    candidate_canon_blocks = [item for item in (context_extensions.get("candidate_canon_blocks") or []) if isinstance(item, dict)]
     principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
 
     lines = [
@@ -41567,6 +41568,24 @@ def _build_company_operating_context_bootstrap_page(
         )
         for item in exception_signals[:8]:
             lines.append(f"| {str(item.get('label') or 'exception').replace('|', '/')} | {int(item.get('count') or 0)} |")
+    if candidate_canon_blocks:
+        lines.extend(
+            [
+                "",
+                "## Candidate Canon Blocks",
+                "| Block Type | State | Confidence | Summary | Evidence Basis |",
+                "|---|---|---|---|---|",
+            ]
+        )
+        for item in candidate_canon_blocks[:8]:
+            lines.append(
+                "| "
+                + f"{str(item.get('block_type') or 'candidate').replace('|', '/')} | "
+                + f"{str(item.get('knowledge_state') or 'candidate').replace('|', '/')} | "
+                + f"{str(item.get('confidence') or 'unknown').replace('|', '/')} | "
+                + f"{str(item.get('summary') or '').replace('|', '/')} | "
+                + f"{str(item.get('evidence_basis') or '').replace('|', '/')} |"
+            )
     lines.extend(
         [
             "",

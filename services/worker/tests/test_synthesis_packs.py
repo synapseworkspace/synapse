@@ -71,6 +71,7 @@ class SynthesisPackTests(unittest.TestCase):
         process_signals = payload.get("process_signals") or []
         trust_signals = payload.get("trust_signals") or []
         exception_signals = payload.get("exception_signals") or []
+        candidate_canon_blocks = payload.get("candidate_canon_blocks") or []
         self.assertTrue(any("dispatch" in item.lower() or "incident" in item.lower() for item in principles))
         self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in workflow_signals))
         self.assertTrue(any("connected source streams" in item.lower() for item in snapshot_notes))
@@ -78,6 +79,9 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in process_signals))
         self.assertTrue(any("canonical operational record" in str(item.get("trust_note") or "").lower() for item in trust_signals))
         self.assertTrue(any("incident" in str(item.get("label") or "").lower() or "delivery" in str(item.get("label") or "").lower() for item in exception_signals))
+        self.assertTrue(any(str(item.get("knowledge_state") or "") == "candidate" for item in candidate_canon_blocks))
+        self.assertTrue(any("trust rule candidate" in str(item.get("summary") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("evidence_basis" in item for item in candidate_canon_blocks))
 
     def test_logistics_pack_does_not_leak_driver_economy_into_daily_report(self) -> None:
         pack = get_synthesis_pack("logistics_ops")
