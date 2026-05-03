@@ -4,11 +4,18 @@ import types
 import unittest
 from unittest.mock import patch
 
+from services.worker.scripts.run_shared_memory_maintenance import _advisory_lock_parts
 from services.worker.scripts.run_agent_worklog_scheduler import _dedupe, _discover_agent_projects
 from services.worker.scripts.run_worker_loop import build_jobs
 
 
 class AgentWorklogSchedulerTests(unittest.TestCase):
+    def test_shared_memory_lock_parts_are_stable(self) -> None:
+        self.assertEqual(_advisory_lock_parts("omega_demo", "logistics"), _advisory_lock_parts("omega_demo", "logistics"))
+
+    def test_shared_memory_lock_parts_change_with_scope(self) -> None:
+        self.assertNotEqual(_advisory_lock_parts("omega_demo", "logistics"), _advisory_lock_parts("omega_demo", "support"))
+
     def test_dedupe_normalizes_whitespace_and_order(self) -> None:
         values = [" omega_demo ", "beta", "omega_demo", "", "  ", "beta", "gamma"]
         self.assertEqual(_dedupe(values), ["omega_demo", "beta", "gamma"])

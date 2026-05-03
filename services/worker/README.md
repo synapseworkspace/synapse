@@ -190,6 +190,7 @@ Worker loop integration:
   - `SYNAPSE_WORKER_SHARED_MEMORY_PENDING_LIMIT`
   - `SYNAPSE_WORKER_SHARED_MEMORY_RETRY_LIMIT`
   - `SYNAPSE_WORKER_SHARED_MEMORY_LIFECYCLE_LIMIT`.
+- each run acquires a per-project Postgres advisory lock before processing shared-memory maintenance, so multiple self-host workers are less likely to double-process the same queue/lifecycle work.
 
 Synthesis regression evaluator:
 

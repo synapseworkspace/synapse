@@ -7,6 +7,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+import zlib
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--updated-by", default="shared_memory_maintenance", help="Actor name for maintenance operations.")
     parser.add_argument("--space-key", default=None, help="Optional space key scope.")
     parser.add_argument("--dry-run", action="store_true", help="Preview maintenance work without mutating state.")
+    parser.add_argument("--skip-locks", action="store_true", help="Disable advisory project locks around maintenance runs.")
     return parser.parse_args()
 
 
@@ -79,6 +81,51 @@ def _discover_projects() -> list[str]:
     return project_ids
 
 
+def _advisory_lock_parts(project_id: str, space_key: str | None) -> tuple[int, int]:
+    scope = f"shared_memory_maintenance:{str(project_id or '').strip()}:{str(space_key or '').strip().lower()}"
+    digest = zlib.crc32(scope.encode("utf-8")) & 0x7FFFFFFF
+    prefix = 0x534D454D  # "SMEM"
+    return prefix, digest
+
+
+def _with_project_lock(project_id: str, space_key: str | None):
+    try:
+        from app.db import get_conn
+    except ModuleNotFoundError as exc:  # pragma: no cover - runtime packaging guard
+        raise SystemExit(
+            "Missing runtime dependency. Install worker requirements (including psycopg) before running shared-memory maintenance."
+        ) from exc
+
+    class _LockCtx:
+        def __init__(self, project_id: str, space_key: str | None) -> None:
+            self.project_id = project_id
+            self.space_key = space_key
+            self.conn = None
+            self.acquired = False
+
+        def __enter__(self) -> tuple[bool, dict[str, Any]]:
+            self.conn = get_conn()
+            self.conn.__enter__()
+            part1, part2 = _advisory_lock_parts(self.project_id, self.space_key)
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT pg_try_advisory_lock(%s, %s)", (part1, part2))
+                row = cur.fetchone()
+            self.acquired = bool(row and row[0])
+            return self.acquired, {"lock_key": [part1, part2], "space_key": self.space_key}
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            try:
+                if self.conn is not None and self.acquired:
+                    part1, part2 = _advisory_lock_parts(self.project_id, self.space_key)
+                    with self.conn.cursor() as cur:
+                        cur.execute("SELECT pg_advisory_unlock(%s, %s)", (part1, part2))
+            finally:
+                if self.conn is not None:
+                    self.conn.__exit__(exc_type, exc, tb)
+
+    return _LockCtx(project_id, space_key)
+
+
 def _process_project(api_url: str, api_key: str | None, project_id: str, args: argparse.Namespace) -> dict[str, Any]:
     result: dict[str, Any] = {"project_id": project_id}
     common_payload = {
@@ -121,7 +168,23 @@ def main() -> None:
         "results": [],
     }
     for project_id in project_ids:
-        summary["results"].append(_process_project(str(args.api_url or "http://localhost:8080").strip() or "http://localhost:8080", args.api_key, project_id, args))
+        api_url = str(args.api_url or "http://localhost:8080").strip() or "http://localhost:8080"
+        if bool(args.skip_locks):
+            summary["results"].append(_process_project(api_url, args.api_key, project_id, args))
+            continue
+        with _with_project_lock(project_id, args.space_key) as (acquired, lock_meta):
+            if not acquired:
+                summary["results"].append(
+                    {
+                        "project_id": project_id,
+                        "status": "skipped_locked",
+                        "lock": {"acquired": False, **lock_meta},
+                    }
+                )
+                continue
+            project_result = _process_project(api_url, args.api_key, project_id, args)
+            project_result["lock"] = {"acquired": True, **lock_meta}
+            summary["results"].append(project_result)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

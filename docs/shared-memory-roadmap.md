@@ -159,9 +159,10 @@ Implemented:
 21. materialized private/team memory entries now support richer lifecycle states (`superseded`, `resolved`, `expired`, `archived`) plus lifecycle metadata (`superseded_by`, `resolved_at`, `expires_at`, `reason`), so working memory can age out or close cleanly instead of living forever as `active`
 22. shared-memory entries now have a lifecycle processor for due expirations, so long-lived private/team memory can automatically age from `active` to `expired` instead of relying entirely on manual cleanup
 23. worker loop now includes shared-memory maintenance, so pending fanout deliveries, due retries, and expiring lifecycle entries can be processed on a regular cadence in self-host deployments instead of depending on manual endpoint calls
+24. shared-memory maintenance now acquires per-project advisory locks before running, so multi-worker/self-host deployments are less likely to double-process the same queue/lifecycle workload concurrently
 
 Current limitation:
-- private/team memory now has materialized entry backing, lifecycle states, due-expiry processing, fanout retry/backoff, runtime ack freshness, queued delivery foundation, and scheduler integration, but still lacks stronger background execution guarantees such as distributed locking / lease-based processing if multiple workers run the same maintenance loop concurrently
+- private/team memory now has materialized entry backing, lifecycle states, due-expiry processing, fanout retry/backoff, runtime ack freshness, queued delivery foundation, scheduler integration, and advisory lock protection, but still lacks richer delivery guarantees such as per-delivery leases/heartbeats if maintenance work needs to scale far beyond a single self-host worker pool
 
 These endpoints are intentionally conservative:
 
