@@ -574,6 +574,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             since_hours=18,
             limit=9,
             include_reviewed=True,
+            review_policy_mode="reviewed_plus_published",
             max_workstreams=11,
             max_open_items=19,
             max_people_watch=7,
@@ -592,6 +593,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("since_hours"), 18)
         self.assertEqual(payload.get("limit"), 9)
         self.assertTrue(payload.get("include_reviewed"))
+        self.assertEqual(payload.get("review_policy_mode"), "reviewed_plus_published")
         self.assertEqual(payload.get("max_workstreams"), 11)
         self.assertEqual(payload.get("max_open_items"), 19)
         self.assertEqual(payload.get("max_people_watch"), 7)
@@ -601,16 +603,22 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
 
     def test_get_agent_shared_memory_invalidation_posts_expected_payload(self) -> None:
         self.client.get_agent_shared_memory_invalidation(
+            agent_id="logistics-assistant",
+            role="dispatcher",
             space_key="logistics",
             include_reviewed=True,
+            review_policy_mode="auto",
         )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/agents/shared-memory/invalidation")
         self.assertEqual(call["method"], "POST")
         payload = call["payload"]
         self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("agent_id"), "logistics-assistant")
+        self.assertEqual(payload.get("role"), "dispatcher")
         self.assertEqual(payload.get("space_key"), "logistics")
         self.assertTrue(payload.get("include_reviewed"))
+        self.assertEqual(payload.get("review_policy_mode"), "auto")
 
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(

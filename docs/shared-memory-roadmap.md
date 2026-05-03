@@ -138,6 +138,8 @@ Implemented:
 3. Python/TypeScript SDK helpers
 4. `POST /v1/agents/shared-memory/invalidation`
 5. best-effort `Wiki State Snapshot` refresh after published page create/update
+6. role-aware review scope resolution (`auto` -> trusted roles may read `reviewed`)
+7. change-feed delta classification + relevance scoring for agent-facing freshness checks
 
 These endpoints are intentionally conservative:
 

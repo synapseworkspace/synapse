@@ -1422,6 +1422,7 @@ class SynapseClient:
         since_hours: int = 24,
         limit: int = 20,
         include_reviewed: bool = False,
+        review_policy_mode: str = "auto",
         max_workstreams: int = 12,
         max_open_items: int = 25,
         max_people_watch: int = 15,
@@ -1438,6 +1439,7 @@ class SynapseClient:
             "since_hours": max(1, min(24 * 30, int(since_hours))),
             "limit": max(1, min(100, int(limit))),
             "include_reviewed": bool(include_reviewed),
+            "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
             "max_workstreams": max(1, min(50, int(max_workstreams))),
             "max_open_items": max(1, min(200, int(max_open_items))),
             "max_people_watch": max(1, min(100, int(max_people_watch))),
@@ -1455,13 +1457,19 @@ class SynapseClient:
     def get_agent_shared_memory_invalidation(
         self,
         *,
+        agent_id: str | None = None,
+        role: str | None = None,
         space_key: str | None = None,
         include_reviewed: bool = False,
+        review_policy_mode: str = "auto",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "project_id": self._config.project_id,
+            "agent_id": str(agent_id).strip() if agent_id is not None and str(agent_id).strip() else None,
+            "role": str(role).strip() if role is not None and str(role).strip() else None,
             "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
             "include_reviewed": bool(include_reviewed),
+            "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
         }
         return self._request_json(
             "/v1/agents/shared-memory/invalidation",

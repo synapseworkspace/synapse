@@ -1332,6 +1332,7 @@ export class SynapseClient {
     sinceHours?: number;
     limit?: number;
     includeReviewed?: boolean;
+    reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
     maxWorkstreams?: number;
     maxOpenItems?: number;
     maxPeopleWatch?: number;
@@ -1351,6 +1352,7 @@ export class SynapseClient {
         since_hours: normalizeInt(options.sinceHours ?? 24, 1, 24 * 30),
         limit: normalizeInt(options.limit ?? 20, 1, 100),
         include_reviewed: Boolean(options.includeReviewed ?? false),
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
         max_workstreams: normalizeInt(options.maxWorkstreams ?? 12, 1, 50),
         max_open_items: normalizeInt(options.maxOpenItems ?? 25, 1, 200),
         max_people_watch: normalizeInt(options.maxPeopleWatch ?? 15, 1, 100),
@@ -1363,16 +1365,22 @@ export class SynapseClient {
   }
 
   async getAgentSharedMemoryInvalidation(options: {
+    agentId?: string;
+    role?: string;
     spaceKey?: string;
     includeReviewed?: boolean;
+    reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
     idempotencyKey?: string;
   } = {}): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/invalidation", {
       method: "POST",
       payload: {
         project_id: this.projectId,
+        agent_id: asOptionalString(options.agentId) ?? undefined,
+        role: asOptionalString(options.role) ?? undefined,
         space_key: asOptionalString(options.spaceKey) ?? undefined,
-        include_reviewed: Boolean(options.includeReviewed ?? false)
+        include_reviewed: Boolean(options.includeReviewed ?? false),
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto"
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });

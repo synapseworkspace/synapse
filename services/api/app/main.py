@@ -1159,6 +1159,7 @@ class AgentSharedMemoryHydrationRequest(BaseModel):
     since_hours: int = Field(default=24, ge=1, le=24 * 30)
     limit: int = Field(default=20, ge=1, le=100)
     include_reviewed: bool = False
+    review_policy_mode: str = Field(default="auto", pattern="^(auto|published_only|reviewed_plus_published)$")
     max_workstreams: int = Field(default=12, ge=1, le=50)
     max_open_items: int = Field(default=25, ge=1, le=200)
     max_people_watch: int = Field(default=15, ge=1, le=100)
@@ -1169,8 +1170,11 @@ class AgentSharedMemoryHydrationRequest(BaseModel):
 
 class AgentSharedMemoryInvalidationRequest(BaseModel):
     project_id: str
+    agent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    role: str | None = Field(default=None, min_length=1, max_length=256)
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
     include_reviewed: bool = False
+    review_policy_mode: str = Field(default="auto", pattern="^(auto|published_only|reviewed_plus_published)$")
 
 
 class AgentDirectoryRegisterRequest(BaseModel):
@@ -10881,6 +10885,81 @@ def _parse_change_feed_since(*, since: str | None, since_hours: int) -> datetime
     return datetime.now(UTC) - timedelta(hours=max(1, min(24 * 30, int(since_hours))))
 
 
+def _shared_memory_tokens(*values: Any) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            iterable = value
+        else:
+            iterable = [value]
+        for item in iterable:
+            text = str(item or "").strip().lower()
+            if not text:
+                continue
+            normalized = re.sub(r"[^a-z0-9а-яё]+", " ", text, flags=re.IGNORECASE)
+            for token in normalized.split():
+                token = token.strip()
+                if len(token) >= 3:
+                    tokens.add(token)
+    return tokens
+
+
+def _normalize_shared_memory_delta_kind(*, page_type: str, slug: str, change_summary: str) -> str:
+    normalized_page_type = str(page_type or "").strip().lower()
+    normalized_slug = str(slug or "").strip().lower()
+    normalized_summary = str(change_summary or "").strip().lower()
+    if normalized_page_type == "state" or normalized_slug.endswith("/state") or normalized_slug == "state":
+        return "state_snapshot_change"
+    if normalized_page_type in {"policy", "access"}:
+        return "policy_change"
+    if normalized_page_type in {"process", "runbook", "operations"}:
+        return "process_change"
+    if normalized_page_type == "data_map":
+        return "source_map_change"
+    if normalized_page_type == "agent_profile":
+        return "agent_profile_change"
+    if normalized_page_type == "decision_log":
+        return "decision_change"
+    if normalized_page_type == "incident":
+        return "incident_change"
+    if normalized_page_type.startswith("experiment"):
+        return "experiment_change"
+    if "escalat" in normalized_summary or "handoff" in normalized_summary:
+        return "operational_rule_change"
+    return "knowledge_change"
+
+
+def _resolve_shared_memory_review_scope(
+    *,
+    include_reviewed: bool,
+    review_policy_mode: str,
+    resolved_role: str | None,
+) -> dict[str, Any]:
+    normalized_mode = str(review_policy_mode or "auto").strip().lower() or "auto"
+    normalized_role = str(resolved_role or "").strip().lower()
+    trusted_review_roles = {
+        "ops_admin",
+        "admin",
+        "owner",
+        "approver",
+        "reviewer",
+        "manager",
+        "dispatcher",
+        "lead",
+    }
+    if normalized_mode == "published_only":
+        return {"include_reviewed": False, "mode": "published_only", "reason": "explicit"}
+    if normalized_mode == "reviewed_plus_published":
+        return {"include_reviewed": True, "mode": "reviewed_plus_published", "reason": "explicit"}
+    if bool(include_reviewed):
+        return {"include_reviewed": True, "mode": "reviewed_plus_published", "reason": "request_flag"}
+    if normalized_role in trusted_review_roles:
+        return {"include_reviewed": True, "mode": "reviewed_plus_published", "reason": f"trusted_role:{normalized_role}"}
+    return {"include_reviewed": False, "mode": "published_only", "reason": "default"}
+
+
 def _normalize_shared_memory_event_type(*, version: int, status: str) -> str:
     normalized_status = str(status or "").strip().lower() or "published"
     if version <= 1:
@@ -10905,6 +10984,8 @@ def _build_wiki_change_feed(
     since_hours: int = 24,
     limit: int = 20,
     include_reviewed: bool = False,
+    resolved_role: str | None = None,
+    agent_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_project = str(project_id or "").strip()
     if not normalized_project:
@@ -10961,12 +11042,53 @@ def _build_wiki_change_feed(
         page_type = str(row[4] or "operations").strip().lower() or "operations"
         changed_at = row[9] if isinstance(row[9], datetime) else row[6]
         change_summary = str(row[11] or "").strip()
+        delta_kind = _normalize_shared_memory_delta_kind(
+            page_type=page_type,
+            slug=str(row[2] or ""),
+            change_summary=change_summary,
+        )
+        reasons: list[str] = []
+        relevance_score = 0.25
+        if agent_context:
+            role_tokens = _shared_memory_tokens(
+                resolved_role,
+                agent_context.get("team"),
+                agent_context.get("responsibilities"),
+                agent_context.get("tools"),
+                agent_context.get("data_sources"),
+            )
+            page_tokens = _shared_memory_tokens(
+                row[1],
+                row[2],
+                row[3],
+                change_summary,
+                page_type,
+                delta_kind,
+            )
+            overlap = sorted(role_tokens & page_tokens)
+            if overlap:
+                relevance_score += min(0.45, float(len(overlap)) * 0.12)
+                reasons.append(f"token_overlap:{', '.join(overlap[:4])}")
+            if str(agent_context.get("space_key") or "").strip().lower() and str(row[2] or "").strip().lower().startswith(
+                f"{str(agent_context.get('space_key') or '').strip().lower()}/"
+            ):
+                relevance_score += 0.2
+                reasons.append("same_space")
+            if delta_kind in {"policy_change", "process_change", "incident_change", "operational_rule_change"}:
+                relevance_score += 0.15
+                reasons.append(f"delta_kind:{delta_kind}")
+        relevance_score = round(max(0.0, min(1.0, relevance_score)), 4)
         rows.append(
             {
                 "event_type": event_type,
+                "delta_kind": delta_kind,
                 "changed_at": changed_at.astimezone(UTC).isoformat() if isinstance(changed_at, datetime) else None,
                 "changed_by": str(row[10] or "").strip() or None,
                 "change_summary": change_summary or None,
+                "relevance": {
+                    "score": relevance_score,
+                    "reasons": reasons[:6],
+                },
                 "page": {
                     "id": str(row[0]),
                     "title": str(row[1] or row[2] or ""),
@@ -11007,6 +11129,8 @@ def _build_shared_memory_invalidation_marker(
     project_id: str,
     space_key: str | None = None,
     include_reviewed: bool = False,
+    resolved_role: str | None = None,
+    agent_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_project = str(project_id or "").strip()
     if not normalized_project:
@@ -11047,6 +11171,31 @@ def _build_shared_memory_invalidation_marker(
     latest_change_at = row[1].astimezone(UTC).isoformat() if isinstance(row[1], datetime) else None
     max_version = int(row[2] or 0)
     snapshots_total = int(snapshot_row[0] or 0)
+    relevance_summary: dict[str, Any] | None = None
+    if agent_context is not None:
+        recent_feed = _build_wiki_change_feed(
+            conn,
+            project_id=normalized_project,
+            space_key=normalized_space or None,
+            since_hours=72,
+            limit=25,
+            include_reviewed=include_reviewed,
+            resolved_role=resolved_role,
+            agent_context=agent_context,
+        )
+        recent_items = [item for item in (recent_feed.get("items") or []) if isinstance(item, dict)]
+        relevant_items = [item for item in recent_items if float(((item.get("relevance") or {}) if isinstance(item.get("relevance"), dict) else {}).get("score") or 0.0) >= 0.45]
+        top_reasons: list[str] = []
+        for item in relevant_items[:5]:
+            relevance = item.get("relevance") if isinstance(item.get("relevance"), dict) else {}
+            for reason in relevance.get("reasons") or []:
+                reason_text = str(reason).strip()
+                if reason_text and reason_text not in top_reasons:
+                    top_reasons.append(reason_text)
+        relevance_summary = {
+            "relevant_items": len(relevant_items),
+            "top_reasons": top_reasons[:8],
+        }
     token = ":".join(
         [
             normalized_project,
@@ -11066,6 +11215,7 @@ def _build_shared_memory_invalidation_marker(
         "pages_total": pages_total,
         "max_version": max_version,
         "knowledge_snapshots_total": snapshots_total,
+        "relevance": relevance_summary,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -11142,6 +11292,47 @@ def _resolve_shared_memory_role(
     return value or None
 
 
+def _load_shared_memory_agent_context(
+    conn,
+    *,
+    project_id: str,
+    agent_id: str | None,
+    resolved_role: str | None,
+    space_key: str | None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "agent_id": str(agent_id or "").strip() or None,
+        "role": resolved_role,
+        "team": None,
+        "responsibilities": [],
+        "tools": [],
+        "data_sources": [],
+        "space_key": _normalize_space_key(space_key or "", default="") or None,
+    }
+    normalized_agent_id = str(agent_id or "").strip()
+    if not normalized_agent_id or not _agent_directory_table_exists(conn):
+        return context
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT team, responsibilities, tools, data_sources
+            FROM agent_directory_profiles
+            WHERE project_id = %s
+              AND lower(agent_id) = lower(%s)
+            LIMIT 1
+            """,
+            (project_id, normalized_agent_id),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return context
+    context["team"] = str(row[0] or "").strip() or None
+    context["responsibilities"] = [str(item).strip() for item in (row[1] if isinstance(row[1], list) else []) if str(item).strip()][:24]
+    context["tools"] = [str(item).strip() for item in (row[2] if isinstance(row[2], list) else []) if str(item).strip()][:24]
+    context["data_sources"] = [str(item).strip() for item in (row[3] if isinstance(row[3], list) else []) if str(item).strip()][:24]
+    return context
+
+
 def _build_agent_shared_memory_hydration(
     conn,
     *,
@@ -11159,11 +11350,25 @@ def _build_agent_shared_memory_hydration(
     max_metrics: int = 12,
     max_items_per_section: int = 5,
     freshness_days: int = 14,
+    review_policy_mode: str = "auto",
 ) -> dict[str, Any]:
     normalized_project = str(project_id or "").strip()
     if not normalized_project:
         raise HTTPException(status_code=422, detail={"code": "project_id_required"})
     resolved_role = _resolve_shared_memory_role(conn, project_id=normalized_project, agent_id=agent_id, role=role)
+    review_scope = _resolve_shared_memory_review_scope(
+        include_reviewed=include_reviewed,
+        review_policy_mode=review_policy_mode,
+        resolved_role=resolved_role,
+    )
+    effective_include_reviewed = bool(review_scope.get("include_reviewed"))
+    agent_context = _load_shared_memory_agent_context(
+        conn,
+        project_id=normalized_project,
+        agent_id=agent_id,
+        resolved_role=resolved_role,
+        space_key=space_key,
+    )
     state_snapshot = _build_wiki_state_snapshot(
         conn,
         project_id=normalized_project,
@@ -11187,7 +11392,9 @@ def _build_agent_shared_memory_hydration(
         since=since,
         since_hours=since_hours,
         limit=limit,
-        include_reviewed=include_reviewed,
+        include_reviewed=effective_include_reviewed,
+        resolved_role=resolved_role,
+        agent_context=agent_context,
     )
     changed_entities: list[str] = []
     changed_slugs: list[str] = []
@@ -11215,7 +11422,9 @@ def _build_agent_shared_memory_hydration(
                 conn,
                 project_id=normalized_project,
                 space_key=space_key,
-                include_reviewed=include_reviewed,
+                include_reviewed=effective_include_reviewed,
+                resolved_role=resolved_role,
+                agent_context=agent_context,
             ),
             "state_snapshot": state_snapshot,
             "onboarding_pack": onboarding_pack,
@@ -11223,7 +11432,8 @@ def _build_agent_shared_memory_hydration(
             "retrieval_hints": {
                 "changed_entity_keys": changed_entities,
                 "changed_page_slugs": changed_slugs,
-                "suggested_mode": "published_only" if not include_reviewed else "reviewed_plus_published",
+                "suggested_mode": str(review_scope.get("mode") or "published_only"),
+                "review_scope": review_scope,
             },
         },
     }
@@ -26548,6 +26758,7 @@ def hydrate_agent_shared_memory(payload: AgentSharedMemoryHydrationRequest) -> d
             max_metrics=int(payload.max_metrics),
             max_items_per_section=int(payload.max_items_per_section),
             freshness_days=int(payload.freshness_days),
+            review_policy_mode=str(payload.review_policy_mode or "auto"),
         )
 
 
@@ -26557,14 +26768,35 @@ def get_agent_shared_memory_invalidation(payload: AgentSharedMemoryInvalidationR
     if not normalized_project:
         raise HTTPException(status_code=422, detail={"code": "project_id_required"})
     with get_conn() as conn:
+        resolved_role = _resolve_shared_memory_role(
+            conn,
+            project_id=normalized_project,
+            agent_id=payload.agent_id,
+            role=payload.role,
+        )
+        review_scope = _resolve_shared_memory_review_scope(
+            include_reviewed=bool(payload.include_reviewed),
+            review_policy_mode=str(payload.review_policy_mode or "auto"),
+            resolved_role=resolved_role,
+        )
+        agent_context = _load_shared_memory_agent_context(
+            conn,
+            project_id=normalized_project,
+            agent_id=payload.agent_id,
+            resolved_role=resolved_role,
+            space_key=payload.space_key,
+        )
         return {
             "status": "ok",
             "invalidation": _build_shared_memory_invalidation_marker(
                 conn,
                 project_id=normalized_project,
                 space_key=payload.space_key,
-                include_reviewed=bool(payload.include_reviewed),
+                include_reviewed=bool(review_scope.get("include_reviewed")),
+                resolved_role=resolved_role,
+                agent_context=agent_context,
             ),
+            "review_scope": review_scope,
         }
 
 
