@@ -12187,6 +12187,83 @@ def _record_shared_memory_fanout_delivery(
     return int(row[0]) if row is not None else None
 
 
+def _acquire_shared_memory_fanout_delivery_lease(
+    conn,
+    *,
+    project_id: str,
+    delivery_id: int,
+    lease_owner: str,
+    lease_seconds: int = 300,
+) -> dict[str, Any] | None:
+    if not _shared_memory_fanout_deliveries_table_exists(conn):
+        return None
+    normalized_project = str(project_id or "").strip()
+    normalized_owner = str(lease_owner or "shared_memory_processor").strip()[:256] or "shared_memory_processor"
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    lease_token = str(uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE shared_memory_fanout_deliveries AS d
+            SET lease_token = %s,
+                lease_owner = %s,
+                lease_expires_at = NOW() + make_interval(secs => %s),
+                processing_started_at = COALESCE(d.processing_started_at, NOW())
+            FROM shared_memory_fanout_hooks AS h
+            WHERE d.id = %s
+              AND d.project_id = %s
+              AND d.hook_id = h.id
+              AND d.status = 'pending'
+              AND COALESCE(d.scheduled_for, d.created_at) <= NOW()
+              AND (d.lease_expires_at IS NULL OR d.lease_expires_at <= NOW())
+            RETURNING
+              d.id,
+              d.hook_id,
+              d.dispatch_mode,
+              d.space_key,
+              d.request_payload,
+              d.max_attempts,
+              h.endpoint_url,
+              h.headers,
+              h.timeout_seconds,
+              h.retry_backoff_seconds,
+              h.enabled,
+              h.name,
+              d.lease_token,
+              d.lease_owner,
+              d.lease_expires_at
+            """,
+            (
+                lease_token,
+                normalized_owner,
+                max(30, min(3600, int(lease_seconds))),
+                int(delivery_id),
+                normalized_project,
+            ),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "delivery_id": int(row[0]),
+        "hook_id": int(row[1]),
+        "dispatch_mode": str(row[2] or "invalidation").strip().lower() or "invalidation",
+        "space_key": str(row[3] or "").strip() or None,
+        "request_payload": row[4] if isinstance(row[4], dict) else {},
+        "max_attempts": max(1, int(row[5] or 3)),
+        "endpoint_url": str(row[6] or "").strip(),
+        "headers": _normalize_shared_memory_hook_headers(row[7]),
+        "timeout_seconds": max(1.0, min(60.0, float(row[8] or 5))),
+        "retry_backoff_seconds": max(30, min(86400, int(row[9] or 300))),
+        "enabled": bool(row[10]),
+        "hook_name": str(row[11] or "").strip() or None,
+        "lease_token": str(row[12] or "").strip() or lease_token,
+        "lease_owner": str(row[13] or "").strip() or normalized_owner,
+        "lease_expires_at": row[14].astimezone(UTC).isoformat() if isinstance(row[14], datetime) else None,
+    }
+
+
 def _complete_shared_memory_fanout_delivery(
     conn,
     *,
@@ -12211,6 +12288,9 @@ def _complete_shared_memory_fanout_delivery(
                 error_message = %s,
                 next_retry_at = %s,
                 last_retry_at = %s,
+                lease_token = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
                 processing_started_at = COALESCE(processing_started_at, NOW()),
                 completed_at = CASE WHEN %s IN ('delivered', 'failed', 'planned') THEN NOW() ELSE completed_at END
             WHERE id = %s
@@ -12321,6 +12401,8 @@ def _list_shared_memory_fanout_deliveries(
               d.next_retry_at,
               d.scheduled_for,
               d.processing_started_at,
+              d.lease_owner,
+              d.lease_expires_at,
               d.created_at,
               d.completed_at
             FROM shared_memory_fanout_deliveries d
@@ -12367,8 +12449,10 @@ def _list_shared_memory_fanout_deliveries(
                 "next_retry_at": row[15].astimezone(UTC).isoformat() if isinstance(row[15], datetime) else None,
                 "scheduled_for": row[16].astimezone(UTC).isoformat() if isinstance(row[16], datetime) else None,
                 "processing_started_at": row[17].astimezone(UTC).isoformat() if isinstance(row[17], datetime) else None,
-                "created_at": row[18].astimezone(UTC).isoformat() if isinstance(row[18], datetime) else None,
-                "completed_at": row[19].astimezone(UTC).isoformat() if isinstance(row[19], datetime) else None,
+                "lease_owner": str(row[18] or "").strip() or None,
+                "lease_expires_at": row[19].astimezone(UTC).isoformat() if isinstance(row[19], datetime) else None,
+                "created_at": row[20].astimezone(UTC).isoformat() if isinstance(row[20], datetime) else None,
+                "completed_at": row[21].astimezone(UTC).isoformat() if isinstance(row[21], datetime) else None,
             }
         )
     return {
@@ -12823,23 +12907,12 @@ def _process_pending_shared_memory_fanout_deliveries(
     with conn.cursor() as cur:
         sql = """
             SELECT
-              d.id,
-              d.hook_id,
-              d.dispatch_mode,
-              d.space_key,
-              d.request_payload,
-              d.max_attempts,
-              h.endpoint_url,
-              h.headers,
-              h.timeout_seconds,
-              h.retry_backoff_seconds,
-              h.enabled,
-              h.name
+              d.id
             FROM shared_memory_fanout_deliveries d
-            JOIN shared_memory_fanout_hooks h ON h.id = d.hook_id
             WHERE d.project_id = %s
               AND d.status = 'pending'
               AND COALESCE(d.scheduled_for, d.created_at) <= NOW()
+              AND (d.lease_expires_at IS NULL OR d.lease_expires_at <= NOW())
         """
         params: list[Any] = [normalized_project]
         if normalized_space:
@@ -12852,22 +12925,30 @@ def _process_pending_shared_memory_fanout_deliveries(
     results: list[dict[str, Any]] = []
     for row in rows:
         delivery_id = int(row[0])
-        hook_id = int(row[1])
-        dispatch_mode = str(row[2] or "invalidation").strip().lower() or "invalidation"
-        queued_space_key = str(row[3] or "").strip() or None
-        request_payload = row[4] if isinstance(row[4], dict) else {}
-        max_attempts = max(1, int(row[5] or 3))
-        endpoint_url = str(row[6] or "").strip()
+        lease = _acquire_shared_memory_fanout_delivery_lease(
+            conn,
+            project_id=normalized_project,
+            delivery_id=delivery_id,
+            lease_owner=str(updated_by or "shared_memory_pending_processor").strip() or "shared_memory_pending_processor",
+        )
+        if lease is None:
+            continue
+        hook_id = int(lease["hook_id"])
+        dispatch_mode = str(lease["dispatch_mode"] or "invalidation").strip().lower() or "invalidation"
+        queued_space_key = str(lease["space_key"] or "").strip() or None
+        request_payload = lease["request_payload"] if isinstance(lease.get("request_payload"), dict) else {}
+        max_attempts = max(1, int(lease["max_attempts"] or 3))
+        endpoint_url = str(lease["endpoint_url"] or "").strip()
         request_headers = {
             "Content-Type": "application/json",
             "X-Synapse-Project-Id": normalized_project,
             "X-Synapse-Fanout-Mode": dispatch_mode,
             "X-Synapse-Actor": str(updated_by or "system").strip()[:256] or "system",
         }
-        request_headers.update(_normalize_shared_memory_hook_headers(row[7]))
-        timeout_seconds = max(1.0, min(60.0, float(row[8] or 5)))
-        retry_backoff_seconds = max(30, min(86400, int(row[9] or 300)))
-        if not bool(row[10]):
+        request_headers.update(lease["headers"] if isinstance(lease.get("headers"), dict) else {})
+        timeout_seconds = max(1.0, min(60.0, float(lease["timeout_seconds"] or 5)))
+        retry_backoff_seconds = max(30, min(86400, int(lease["retry_backoff_seconds"] or 300)))
+        if not bool(lease["enabled"]):
             _complete_shared_memory_fanout_delivery(
                 conn,
                 delivery_id=delivery_id,
@@ -12882,7 +12963,7 @@ def _process_pending_shared_memory_fanout_deliveries(
                 {
                     "delivery_id": delivery_id,
                     "hook_id": hook_id,
-                    "hook_name": str(row[11] or "").strip() or None,
+                    "hook_name": str(lease["hook_name"] or "").strip() or None,
                     "dispatch_mode": dispatch_mode,
                     "delivery_status": "failed",
                     "error_message": "hook disabled before queued delivery processing",
@@ -12894,24 +12975,16 @@ def _process_pending_shared_memory_fanout_deliveries(
                 {
                     "delivery_id": delivery_id,
                     "hook_id": hook_id,
-                    "hook_name": str(row[11] or "").strip() or None,
+                    "hook_name": str(lease["hook_name"] or "").strip() or None,
                     "dispatch_mode": dispatch_mode,
                     "delivery_status": "pending",
                     "queued": True,
                     "space_key": queued_space_key,
+                    "lease_owner": lease.get("lease_owner"),
+                    "lease_expires_at": lease.get("lease_expires_at"),
                 }
             )
             continue
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE shared_memory_fanout_deliveries
-                SET processing_started_at = NOW()
-                WHERE id = %s
-                  AND project_id = %s
-                """,
-                (delivery_id, normalized_project),
-            )
         status, http_status, error_message, response_payload = _execute_shared_memory_fanout_delivery(
             endpoint_url=endpoint_url,
             request_payload=request_payload,
@@ -12941,13 +13014,14 @@ def _process_pending_shared_memory_fanout_deliveries(
             {
                 "delivery_id": delivery_id,
                 "hook_id": hook_id,
-                "hook_name": str(row[11] or "").strip() or None,
+                "hook_name": str(lease["hook_name"] or "").strip() or None,
                 "dispatch_mode": dispatch_mode,
                 "delivery_status": status,
                 "http_status": http_status,
                 "error_message": error_message,
                 "next_retry_at": next_retry_at.isoformat() if isinstance(next_retry_at, datetime) else None,
                 "space_key": queued_space_key,
+                "lease_owner": lease.get("lease_owner"),
             }
         )
     return {
@@ -14506,6 +14580,7 @@ def _build_shared_memory_health_metrics(
     fanout_unacked_recent = 0
     fanout_ack_lag_minutes: float | None = None
     fanout_pending_queue = 0
+    fanout_leased_inflight = 0
     materialized_entries_due_expire = 0
     materialized_entries_expiring_soon = 0
     if _shared_memory_fanout_deliveries_table_exists(conn):
@@ -14515,6 +14590,12 @@ def _build_shared_memory_health_metrics(
                   COUNT(*) FILTER (
                     WHERE status = 'pending'
                       AND COALESCE(scheduled_for, created_at) <= NOW()
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
+                  )::bigint,
+                  COUNT(*) FILTER (
+                    WHERE status = 'pending'
+                      AND lease_expires_at IS NOT NULL
+                      AND lease_expires_at > NOW()
                   )::bigint,
                   COUNT(*) FILTER (WHERE status = 'delivered' AND created_at >= NOW() - INTERVAL '24 hours')::bigint,
                   COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '24 hours')::bigint,
@@ -14532,11 +14613,12 @@ def _build_shared_memory_health_metrics(
                 sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
                 params.append(_normalize_space_key(space_key or "", default=""))
             cur.execute(sql, tuple(params))
-            failed_row = cur.fetchone() or (0, 0, 0, 0)
+            failed_row = cur.fetchone() or (0, 0, 0, 0, 0)
         fanout_pending_queue = int(failed_row[0] or 0)
-        fanout_delivered_recent = int(failed_row[1] or 0)
-        fanout_failed_recent = int(failed_row[2] or 0)
-        fanout_retries_due = int(failed_row[3] or 0)
+        fanout_leased_inflight = int(failed_row[1] or 0)
+        fanout_delivered_recent = int(failed_row[2] or 0)
+        fanout_failed_recent = int(failed_row[3] or 0)
+        fanout_retries_due = int(failed_row[4] or 0)
     if _shared_memory_runtime_acks_table_exists(conn):
         with conn.cursor() as cur:
             sql = """
@@ -14645,6 +14727,7 @@ def _build_shared_memory_health_metrics(
             "fanout_hooks_total": int(hooks_summary.get("hooks_total") or 0),
             "fanout_hooks_enabled": int(hooks_summary.get("enabled_hooks") or 0),
             "fanout_pending_queue": fanout_pending_queue,
+            "fanout_leased_inflight": fanout_leased_inflight,
             "fanout_delivered_recent": fanout_delivered_recent,
             "fanout_failed_recent": fanout_failed_recent,
             "fanout_retries_due": fanout_retries_due,

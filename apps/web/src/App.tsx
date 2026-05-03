@@ -1402,6 +1402,7 @@ type SharedMemoryHealthPayload = {
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
     fanout_pending_queue?: number;
+    fanout_leased_inflight?: number;
     fanout_delivered_recent?: number;
     fanout_failed_recent?: number;
     fanout_retries_due?: number;
@@ -1462,6 +1463,25 @@ type SharedMemoryPublishImpactPreviewPayload = {
     impact_score?: number;
     reasons?: string[];
   }>;
+};
+
+type SharedMemoryMaintenanceApiPayload = {
+  status?: string;
+  project_id?: string;
+  space_key?: string | null;
+  dry_run?: boolean;
+  generated_at?: string | null;
+  summary?: Record<string, number | string | null | undefined>;
+  results?: Array<Record<string, unknown>>;
+  entries?: Array<Record<string, unknown>>;
+};
+
+type SharedMemoryMaintenanceRunResult = {
+  actionKey: "pending" | "retries" | "lifecycle" | "all";
+  actionLabel: string;
+  dryRun: boolean;
+  generatedAt?: string | null;
+  details: string[];
 };
 
 type LegacyImportSource = {
@@ -2171,6 +2191,13 @@ function formatCadenceDays(value: number | null): string {
   return `${(value / 7).toFixed(1)} weeks`;
 }
 
+function formatUiDateTime(value: string | null | undefined): string {
+  if (!value) return "n/a";
+  const ts = new Date(value);
+  if (Number.isNaN(ts.getTime())) return value;
+  return ts.toLocaleString();
+}
+
 function normalizedChecklistPresetFromMetadata(metadataRaw: unknown): PublishChecklistPresetKey {
   if (!metadataRaw || typeof metadataRaw !== "object") return "none";
   const metadata = metadataRaw as Record<string, unknown>;
@@ -2553,6 +2580,9 @@ export default function App() {
   const [loadingSharedMemoryHealth, setLoadingSharedMemoryHealth] = useState(false);
   const [sharedMemoryPublishPreview, setSharedMemoryPublishPreview] = useState<SharedMemoryPublishImpactPreviewPayload | null>(null);
   const [loadingSharedMemoryPublishPreview, setLoadingSharedMemoryPublishPreview] = useState(false);
+  const [sharedMemoryMaintenanceDryRun, setSharedMemoryMaintenanceDryRun] = useState(true);
+  const [runningSharedMemoryMaintenanceAction, setRunningSharedMemoryMaintenanceAction] = useState<string | null>(null);
+  const [sharedMemoryMaintenanceLastRun, setSharedMemoryMaintenanceLastRun] = useState<SharedMemoryMaintenanceRunResult | null>(null);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [adoptionSyncPresetResult, setAdoptionSyncPresetResult] = useState<AdoptionSyncPresetPayload | null>(null);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
@@ -3352,6 +3382,9 @@ export default function App() {
     if (Number(metrics.fanout_pending_queue || 0) > 0) {
       items.push(`${Number(metrics.fanout_pending_queue || 0)} shared-memory fanout deliver${Number(metrics.fanout_pending_queue || 0) === 1 ? "y is" : "ies are"} queued and due for processing.`);
     }
+    if (Number(metrics.fanout_leased_inflight || 0) > 0) {
+      items.push(`${Number(metrics.fanout_leased_inflight || 0)} shared-memory fanout deliver${Number(metrics.fanout_leased_inflight || 0) === 1 ? "y is" : "ies are"} currently leased for in-flight processing.`);
+    }
     if (Number(metrics.fanout_retries_due || 0) > 0) {
       items.push(`${Number(metrics.fanout_retries_due || 0)} shared-memory fanout retr${Number(metrics.fanout_retries_due || 0) === 1 ? "y is" : "ies are"} due for retry now.`);
     }
@@ -3363,6 +3396,7 @@ export default function App() {
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);
+  const sharedMemoryMaintenanceBusy = Boolean(runningSharedMemoryMaintenanceAction);
 
   const scopedDrafts = useMemo(
     () =>
@@ -5032,6 +5066,136 @@ export default function App() {
     }
   }, [apiUrl, projectId, selectedPageDetail?.page?.entity_key, selectedPageDetail?.page?.page_type, selectedPageDetail?.page?.title, selectedPageSlug]);
 
+  const refreshSharedMemoryDiagnostics = useCallback(async () => {
+    await Promise.all([loadSharedMemoryImpact(), loadSharedMemoryHealth(), loadSharedMemoryPublishPreview()]);
+  }, [loadSharedMemoryHealth, loadSharedMemoryImpact, loadSharedMemoryPublishPreview]);
+
+  const runSharedMemoryMaintenanceAction = useCallback(
+    async (actionKey: "pending" | "retries" | "lifecycle" | "all") => {
+      const project = projectId.trim();
+      const actor = reviewer.trim() || "web_ui";
+      if (!project) {
+        notifications.show({
+          color: "red",
+          title: "Project ID required",
+          message: "Set project id before running shared-memory maintenance.",
+        });
+        return;
+      }
+      const actionPlan: Array<{
+        key: "pending" | "retries" | "lifecycle";
+        label: string;
+        endpoint: string;
+        limit: number;
+      }> =
+        actionKey === "all"
+          ? [
+              {
+                key: "pending",
+                label: "Queue",
+                endpoint: "/v1/agents/shared-memory/fanout-deliveries/process-pending",
+                limit: 25,
+              },
+              {
+                key: "retries",
+                label: "Retries",
+                endpoint: "/v1/agents/shared-memory/fanout-deliveries/process-due-retries",
+                limit: 25,
+              },
+              {
+                key: "lifecycle",
+                label: "Lifecycle",
+                endpoint: "/v1/agents/shared-memory/entries/process-lifecycle",
+                limit: 100,
+              },
+            ]
+          : [
+              {
+                key: actionKey,
+                label:
+                  actionKey === "pending"
+                    ? "Queue"
+                    : actionKey === "retries"
+                      ? "Retries"
+                      : "Lifecycle",
+                endpoint:
+                  actionKey === "pending"
+                    ? "/v1/agents/shared-memory/fanout-deliveries/process-pending"
+                    : actionKey === "retries"
+                      ? "/v1/agents/shared-memory/fanout-deliveries/process-due-retries"
+                      : "/v1/agents/shared-memory/entries/process-lifecycle",
+                limit: actionKey === "lifecycle" ? 100 : 25,
+              },
+            ];
+      setRunningSharedMemoryMaintenanceAction(actionKey);
+      try {
+        const payloads: Array<{ label: string; payload: SharedMemoryMaintenanceApiPayload }> = [];
+        for (const plan of actionPlan) {
+          const payload = await apiFetch<SharedMemoryMaintenanceApiPayload>(apiUrl, plan.endpoint, {
+            method: "POST",
+            idempotencyKey: randomKey(),
+            body: {
+              project_id: project,
+              space_key: observabilitySpaceKey,
+              updated_by: actor,
+              dry_run: sharedMemoryMaintenanceDryRun,
+              limit: plan.limit,
+            },
+          });
+          payloads.push({ label: plan.label, payload });
+        }
+        const details = payloads.map(({ label, payload }) => {
+          const summary = payload.summary || {};
+          if (label === "Queue") {
+            return `${label}: ${Number(summary.processed || 0)}/${Number(summary.pending_due || 0)} due queued deliver${
+              Number(summary.pending_due || 0) === 1 ? "y" : "ies"
+            } checked`;
+          }
+          if (label === "Retries") {
+            return `${label}: ${Number(summary.processed || 0)}/${Number(summary.due_retries || 0)} due retr${
+              Number(summary.due_retries || 0) === 1 ? "y" : "ies"
+            } checked`;
+          }
+          return `${label}: ${Number(summary.expired_now || 0)}/${Number(summary.entries_due || 0)} due entr${
+            Number(summary.entries_due || 0) === 1 ? "y" : "ies"
+          } expired`;
+        });
+        const generatedAt = payloads[payloads.length - 1]?.payload?.generated_at || new Date().toISOString();
+        setSharedMemoryMaintenanceLastRun({
+          actionKey,
+          actionLabel:
+            actionKey === "all"
+              ? "All maintenance"
+              : actionKey === "pending"
+                ? "Queue maintenance"
+                : actionKey === "retries"
+                  ? "Retry maintenance"
+                  : "Lifecycle maintenance",
+          dryRun: sharedMemoryMaintenanceDryRun,
+          generatedAt,
+          details,
+        });
+        notifications.show({
+          color: "teal",
+          title: sharedMemoryMaintenanceDryRun ? "Shared-memory preview complete" : "Shared-memory maintenance complete",
+          message: details.join(" • "),
+        });
+        if (!sharedMemoryMaintenanceDryRun) {
+          await refreshSharedMemoryDiagnostics();
+        }
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Shared-memory maintenance failed",
+          message: String(error),
+        });
+      } finally {
+        setRunningSharedMemoryMaintenanceAction(null);
+      }
+    },
+    [apiUrl, observabilitySpaceKey, projectId, refreshSharedMemoryDiagnostics, reviewer, sharedMemoryMaintenanceDryRun],
+  );
+
   const applyPolicyQuickLoopPreset = useCallback(
     async (dryRun: boolean) => {
       const project = projectId.trim();
@@ -6054,10 +6218,8 @@ export default function App() {
       return;
     }
     void loadAdoptionSynthesisGraph();
-    void loadSharedMemoryImpact();
-    void loadSharedMemoryHealth();
-    void loadSharedMemoryPublishPreview();
-  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, loadSharedMemoryHealth, loadSharedMemoryImpact, loadSharedMemoryPublishPreview, projectId]);
+    void refreshSharedMemoryDiagnostics();
+  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, projectId, refreshSharedMemoryDiagnostics]);
 
   useEffect(() => {
     void loadSelfhostConsistency();
@@ -10478,10 +10640,8 @@ export default function App() {
                                   variant="light"
                                   color="lime"
                                   loading={loadingSharedMemoryImpact || loadingSharedMemoryHealth}
-                                  onClick={() => {
-                                    void loadSharedMemoryImpact();
-                                    void loadSharedMemoryHealth();
-                                  }}
+                                  disabled={sharedMemoryMaintenanceBusy}
+                                  onClick={() => void refreshSharedMemoryDiagnostics()}
                                 >
                                   Refresh memory
                                 </Button>
@@ -10547,6 +10707,88 @@ export default function App() {
                                       No agents currently look strongly impacted by fresh changes in this space.
                                     </Text>
                                   )}
+                                  <Paper withBorder p="xs" radius="md">
+                                    <Stack gap={6}>
+                                      <Group justify="space-between" align="center" wrap="wrap">
+                                        <Stack gap={0}>
+                                          <Text size="xs" fw={700}>
+                                            Maintenance controls
+                                          </Text>
+                                          <Text size="xs" c="dimmed">
+                                            Run queue, retry, and lifecycle processors for {observabilitySpaceKey} without leaving Operations.
+                                          </Text>
+                                        </Stack>
+                                        <Checkbox
+                                          size="xs"
+                                          checked={sharedMemoryMaintenanceDryRun}
+                                          disabled={sharedMemoryMaintenanceBusy}
+                                          onChange={(event) => setSharedMemoryMaintenanceDryRun(event.currentTarget.checked)}
+                                          label="Dry run"
+                                        />
+                                      </Group>
+                                      <Group gap={6} wrap="wrap">
+                                        <Button
+                                          size="xs"
+                                          variant="light"
+                                          color="lime"
+                                          loading={runningSharedMemoryMaintenanceAction === "all"}
+                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "all"}
+                                          onClick={() => void runSharedMemoryMaintenanceAction("all")}
+                                        >
+                                          {sharedMemoryMaintenanceDryRun ? "Preview all" : "Run all"}
+                                        </Button>
+                                        <Button
+                                          size="xs"
+                                          variant="subtle"
+                                          color="lime"
+                                          loading={runningSharedMemoryMaintenanceAction === "pending"}
+                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "pending"}
+                                          onClick={() => void runSharedMemoryMaintenanceAction("pending")}
+                                        >
+                                          Queue
+                                        </Button>
+                                        <Button
+                                          size="xs"
+                                          variant="subtle"
+                                          color="orange"
+                                          loading={runningSharedMemoryMaintenanceAction === "retries"}
+                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "retries"}
+                                          onClick={() => void runSharedMemoryMaintenanceAction("retries")}
+                                        >
+                                          Retries
+                                        </Button>
+                                        <Button
+                                          size="xs"
+                                          variant="subtle"
+                                          color="blue"
+                                          loading={runningSharedMemoryMaintenanceAction === "lifecycle"}
+                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "lifecycle"}
+                                          onClick={() => void runSharedMemoryMaintenanceAction("lifecycle")}
+                                        >
+                                          Lifecycle
+                                        </Button>
+                                      </Group>
+                                      {sharedMemoryMaintenanceLastRun ? (
+                                        <Alert variant="light" color={sharedMemoryMaintenanceLastRun.dryRun ? "gray" : "teal"}>
+                                          <Stack gap={2}>
+                                            <Text size="xs" fw={700}>
+                                              {sharedMemoryMaintenanceLastRun.actionLabel} {sharedMemoryMaintenanceLastRun.dryRun ? "preview" : "run"} •{" "}
+                                              {formatUiDateTime(sharedMemoryMaintenanceLastRun.generatedAt)}
+                                            </Text>
+                                            {sharedMemoryMaintenanceLastRun.details.map((item, index) => (
+                                              <Text key={`shared-memory-maintenance-detail-${index}`} size="xs">
+                                                {item}
+                                              </Text>
+                                            ))}
+                                          </Stack>
+                                        </Alert>
+                                      ) : (
+                                        <Text size="xs" c="dimmed">
+                                          Start with a dry run if you want a low-risk preview of queue pressure, due retries, and expiring entries.
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                  </Paper>
                                   {selectedPageSlug ? (
                                     <Paper withBorder p="xs" radius="md">
                                       <Stack gap={4}>
@@ -10595,6 +10837,9 @@ export default function App() {
                                             </Text>
                                             <Text size="xs" c="dimmed">
                                               Pending queue: {Number(sharedMemoryHealth?.metrics?.fanout_pending_queue || 0)} due
+                                            </Text>
+                                            <Text size="xs" c="dimmed">
+                                              In-flight leases: {Number(sharedMemoryHealth?.metrics?.fanout_leased_inflight || 0)}
                                             </Text>
                                             <Text size="xs" c="dimmed">
                                               Runtime acks: {Number(sharedMemoryHealth?.metrics?.fanout_acks_recent || 0)} recent •{" "}

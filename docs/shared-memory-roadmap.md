@@ -160,9 +160,11 @@ Implemented:
 22. shared-memory entries now have a lifecycle processor for due expirations, so long-lived private/team memory can automatically age from `active` to `expired` instead of relying entirely on manual cleanup
 23. worker loop now includes shared-memory maintenance, so pending fanout deliveries, due retries, and expiring lifecycle entries can be processed on a regular cadence in self-host deployments instead of depending on manual endpoint calls
 24. shared-memory maintenance now acquires per-project advisory locks before running, so multi-worker/self-host deployments are less likely to double-process the same queue/lifecycle workload concurrently
+25. Operations now exposes shared-memory maintenance controls with dry-run and live execution for queue processing, due retries, and lifecycle expiry, so operators can recover or validate the maintenance loop without dropping to raw API calls
+26. queued fanout deliveries now acquire short-lived per-delivery leases before processing, so future parallel or manual queue processors are less likely to double-send the same pending runtime notification
 
 Current limitation:
-- private/team memory now has materialized entry backing, lifecycle states, due-expiry processing, fanout retry/backoff, runtime ack freshness, queued delivery foundation, scheduler integration, and advisory lock protection, but still lacks richer delivery guarantees such as per-delivery leases/heartbeats if maintenance work needs to scale far beyond a single self-host worker pool
+- private/team memory now has materialized entry backing, lifecycle states, due-expiry processing, fanout retry/backoff, runtime ack freshness, queued delivery foundation, scheduler integration, advisory lock protection, and short-lived per-delivery leases, but still lacks richer delivery guarantees such as explicit lease heartbeats or more advanced stuck-delivery reclamation if maintenance work needs to scale far beyond a single self-host worker pool
 
 These endpoints are intentionally conservative:
 
