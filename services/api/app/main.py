@@ -20,7 +20,7 @@ import time
 import unicodedata
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -24313,16 +24313,23 @@ def get_selfhost_consistency_gate(
     web_build: str | None = Query(default=None),
     ui_profile: str | None = Query(default=None),
     route_path: str | None = Query(default=None),
+    route_search: str | None = Query(default=None),
     ui_features: str | None = Query(default=None),
 ) -> dict[str, Any]:
     compat = get_meta_compatibility(web_build=web_build)
     normalized_profile = str(ui_profile or "").strip().lower()
     normalized_route = str(route_path or "").strip().lower()
+    normalized_route_search = str(route_search or "").strip()
     declared_features = {
         str(item or "").strip().lower()
         for item in re.split(r"[,\s]+", str(ui_features or ""))
         if str(item or "").strip()
     }
+    search_params = parse_qs(normalized_route_search[1:] if normalized_route_search.startswith("?") else normalized_route_search)
+    has_wiki_query_context = any(
+        key in search_params
+        for key in ("wiki_page", "wiki_space", "wiki_status", "core_tab")
+    )
     checks: list[dict[str, Any]] = []
 
     checks.append(
@@ -24376,9 +24383,15 @@ def get_selfhost_consistency_gate(
         }
     )
 
-    is_wiki_route = normalized_route in {"", "/wiki"} or normalized_route.startswith("/wiki/")
+    is_wiki_route = (
+        normalized_route in {"", "/wiki"}
+        or normalized_route.startswith("/wiki/")
+        or normalized_route.endswith("/wiki")
+        or "/wiki/" in normalized_route
+    )
     is_operations_route = normalized_route.endswith("/operations") or "/operations/" in normalized_route
-    route_ok = is_wiki_route or is_operations_route
+    is_workspace_query_entry = not is_operations_route and has_wiki_query_context
+    route_ok = is_wiki_route or is_operations_route or is_workspace_query_entry
     checks.append(
         {
             "key": "route_is_wiki",
@@ -24386,12 +24399,16 @@ def get_selfhost_consistency_gate(
             "message": (
                 "Route is wiki-first."
                 if is_wiki_route
+                else "You are viewing a query-based wiki workspace entrypoint."
+                if is_workspace_query_entry
                 else "You are viewing an operations route outside the default wiki entrypoint."
                 if is_operations_route
                 else "Route is outside the expected wiki/operations workspace entrypoints."
             ),
             "meta": {
                 "route_path": normalized_route or None,
+                "route_search": normalized_route_search or None,
+                "has_wiki_query_context": has_wiki_query_context,
                 "expected_prefixes": ["/wiki", "/operations"],
             },
         }

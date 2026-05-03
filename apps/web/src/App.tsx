@@ -5257,11 +5257,15 @@ export default function App() {
           : coreWorkspaceRoute === "operations"
             ? buildOperationsPath(wikiBasePath)
             : buildWikiPath(wikiBasePath, null);
+      const routeSearch =
+        typeof window !== "undefined" && typeof window.location.search === "string"
+          ? String(window.location.search || "").trim()
+          : "";
       const payload = await apiFetch<SelfhostConsistencyPayload>(
         apiUrl,
         `/v1/adoption/selfhost/consistency?web_build=${encodeURIComponent(WEB_BUILD)}&ui_profile=${encodeURIComponent(
           "core",
-        )}&route_path=${encodeURIComponent(routePath)}&ui_features=${encodeURIComponent(WEB_UI_FEATURES.join(","))}`,
+        )}&route_path=${encodeURIComponent(routePath)}&route_search=${encodeURIComponent(routeSearch)}&ui_features=${encodeURIComponent(WEB_UI_FEATURES.join(","))}`,
       );
       const clientChecks: Array<{
         key: string;
@@ -5932,6 +5936,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedPageSlug) return;
+    if (pageNodes.length === 0) return;
     if (!pageNodes.some((item) => item.slug === selectedPageSlug)) {
       setSelectedPageSlug(null);
     }
