@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Protocol
 
 
 NormalizeItemsFn = Callable[[Any], list[str]]
 ExtractRuntimeItemsFn = Callable[[list[Any], tuple[str, ...], int], list[str]]
 NormalizeStatementTextFn = Callable[[str], str]
+NormalizeSpaceKeyFn = Callable[[Any], str]
 
 
 class SynthesisPack(Protocol):
@@ -19,6 +21,171 @@ class SynthesisPack(Protocol):
         extract_runtime_items: ExtractRuntimeItemsFn,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]: ...
+
+    def infer_core_space_keys(
+        self,
+        *,
+        surfaces: list[Any] | None,
+        profiles: list[dict[str, Any]] | None,
+        normalize_space_key: NormalizeSpaceKeyFn,
+    ) -> list[str]: ...
+
+
+_RUNTIME_SURFACE_SPACE_STOPWORDS = {
+    "action",
+    "agent",
+    "ai",
+    "approval",
+    "assistant",
+    "authority",
+    "automation",
+    "binding",
+    "builtin",
+    "cargo",
+    "code",
+    "contract",
+    "control",
+    "cron",
+    "daily",
+    "data",
+    "day",
+    "decision",
+    "default",
+    "document",
+    "documents",
+    "driver",
+    "economy",
+    "entity",
+    "erp",
+    "exec",
+    "flow",
+    "for",
+    "graph",
+    "hint",
+    "incident",
+    "integration",
+    "kb",
+    "knowledge",
+    "latest",
+    "manifest",
+    "memory",
+    "model",
+    "monitor",
+    "notes",
+    "ops",
+    "order",
+    "orders",
+    "outbound",
+    "polling",
+    "postgres",
+    "process",
+    "program",
+    "readiness",
+    "registry",
+    "report",
+    "request",
+    "reschedule",
+    "route",
+    "runtime",
+    "scheduler",
+    "scenario",
+    "search",
+    "service",
+    "shift",
+    "sheet",
+    "source",
+    "standing",
+    "state",
+    "surface",
+    "sync",
+    "system",
+    "task",
+    "tool",
+    "tools",
+    "usage",
+    "v1",
+    "workflow",
+    "world",
+}
+
+_RUNTIME_SURFACE_SPACE_GENERIC = {"general", "operations", "runtime", "agents"}
+_RUNTIME_SURFACE_PREFERRED_SPACE_TOKENS = {
+    "billing",
+    "compliance",
+    "dispatch",
+    "finance",
+    "hr",
+    "legal",
+    "logistics",
+    "marketing",
+    "procurement",
+    "sales",
+    "security",
+    "support",
+    "warehouse",
+}
+
+
+def _extract_runtime_surface_space_candidates(*values: Any, normalize_space_key: NormalizeSpaceKeyFn) -> list[str]:
+    weighted: dict[str, int] = {}
+
+    def _bump(token: str, weight: int) -> None:
+        normalized = normalize_space_key(token)
+        if not normalized or normalized in _RUNTIME_SURFACE_SPACE_STOPWORDS:
+            return
+        if len(normalized) < 3:
+            return
+        weighted[normalized] = int(weighted.get(normalized, 0)) + int(weight)
+
+    def _scan(value: Any, *, preferred_weight: int = 3, general_weight: int = 1) -> None:
+        if isinstance(value, list):
+            for item in value:
+                _scan(item, preferred_weight=preferred_weight, general_weight=general_weight)
+            return
+        if isinstance(value, dict):
+            for field in (
+                "space_key",
+                "wiki_space_key",
+                "domain",
+                "team",
+                "task_code",
+                "builtin_task",
+                "standing_order_program",
+                "name",
+                "capability",
+                "process",
+                "source",
+            ):
+                if field in value:
+                    _scan(value.get(field), preferred_weight=preferred_weight, general_weight=general_weight)
+            for field in ("capabilities", "processes", "tools", "sources", "source_hints"):
+                if field in value:
+                    _scan(value.get(field), preferred_weight=preferred_weight, general_weight=general_weight)
+            return
+        text = str(value or "").strip().lower()
+        if not text:
+            return
+        explicit = normalize_space_key(text)
+        explicit_ok = explicit and "." not in text and ":" not in text and len([part for part in re.split(r"[^a-z0-9]+", text) if part]) <= 2
+        if explicit_ok and explicit not in _RUNTIME_SURFACE_SPACE_GENERIC and explicit not in _RUNTIME_SURFACE_SPACE_STOPWORDS:
+            _bump(explicit, preferred_weight + 1)
+        chunks = re.split(r"[^a-z0-9]+", text)
+        for idx, chunk in enumerate(chunks):
+            token = normalize_space_key(chunk)
+            if not token:
+                continue
+            if token in {"standing", "order", "scheduled", "builtin", "task"} and idx + 1 < len(chunks):
+                next_token = normalize_space_key(chunks[idx + 1])
+                if next_token:
+                    _bump(next_token, preferred_weight + 2)
+                continue
+            weight = preferred_weight if token in _RUNTIME_SURFACE_PREFERRED_SPACE_TOKENS else general_weight
+            _bump(token, weight)
+
+    for value in values:
+        _scan(value)
+    ranked = sorted(weighted.items(), key=lambda item: (-item[1], item[0]))
+    return [token for token, _ in ranked[:6]]
 
 
 def _build_generic_task_semantics(
@@ -101,6 +268,77 @@ class GenericOpsSynthesisPack:
             normalize_items=normalize_items,
             extract_runtime_items=extract_runtime_items,
         )
+
+    def infer_core_space_keys(
+        self,
+        *,
+        surfaces: list[Any] | None,
+        profiles: list[dict[str, Any]] | None,
+        normalize_space_key: NormalizeSpaceKeyFn,
+    ) -> list[str]:
+        explicit_spaces: list[str] = []
+        inferred_candidates: list[str] = []
+
+        def _append_explicit(value: Any) -> None:
+            normalized = normalize_space_key(value)
+            if not normalized or normalized in _RUNTIME_SURFACE_SPACE_GENERIC:
+                return
+            explicit_spaces.append(normalized)
+
+        for surface in surfaces or []:
+            if surface is None:
+                continue
+            runtime_overview = (
+                surface.runtime_overview
+                if hasattr(surface, "runtime_overview") and isinstance(surface.runtime_overview, dict)
+                else {}
+            )
+            metadata = surface.metadata if hasattr(surface, "metadata") and isinstance(surface.metadata, dict) else {}
+            _append_explicit(metadata.get("space_key"))
+            _append_explicit(metadata.get("wiki_space_key"))
+            _append_explicit(runtime_overview.get("domain"))
+            inferred_candidates.extend(
+                _extract_runtime_surface_space_candidates(
+                    runtime_overview.get("org_code"),
+                    runtime_overview.get("domain"),
+                    getattr(surface, "scheduled_tasks", None),
+                    normalize_space_key=normalize_space_key,
+                )
+            )
+        for profile in profiles or []:
+            if not isinstance(profile, dict):
+                continue
+            metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+            _append_explicit(metadata.get("space_key"))
+            _append_explicit(metadata.get("wiki_space_key"))
+            runtime_overview = metadata.get("runtime_overview") if isinstance(metadata.get("runtime_overview"), dict) else {}
+            _append_explicit(runtime_overview.get("domain"))
+            inferred_candidates.extend(
+                _extract_runtime_surface_space_candidates(
+                    metadata.get("scheduled_task_contracts"),
+                    runtime_overview.get("org_code"),
+                    runtime_overview.get("domain"),
+                    normalize_space_key=normalize_space_key,
+                )
+            )
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in explicit_spaces:
+            normalized = normalize_space_key(item)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        if deduped:
+            return deduped
+        for item in inferred_candidates:
+            normalized = normalize_space_key(item)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped[:1] or ["operations"]
 
 
 class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):

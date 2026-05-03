@@ -256,6 +256,25 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertNotIn("standing-order-logistics-incident-monitor", spaces)
         self.assertNotIn("documents_orders", spaces)
 
+    def test_generic_ops_pack_space_inference_still_avoids_task_tokens(self) -> None:
+        surface = AgentRuntimeSurfaceAgentIn(
+            agent_id="logistics-assistant",
+            scheduled_tasks=[
+                {
+                    "task_code": "standing_order.logistics.incident.monitor",
+                    "builtin_task": "logistics_incident_monitor",
+                }
+            ],
+        )
+        spaces = get_synthesis_pack("generic_ops").infer_core_space_keys(
+            surfaces=[surface],
+            profiles=[],
+            normalize_space_key=lambda value: _api_main._normalize_space_key(value, default=""),
+        )
+        self.assertEqual(spaces[0], "logistics")
+        self.assertNotIn("incident", spaces)
+        self.assertNotIn("monitor", spaces)
+
     def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
         scope = _bundle_promotion_scope_for_page_type("process")
         self.assertFalse(scope["include_data_sources_catalog"])
