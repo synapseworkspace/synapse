@@ -987,6 +987,7 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-05-03: Corrected the shared-memory product framing toward autonomous-first behavior: the Operations `Shared memory freshness` panel now treats manual queue/retry/lifecycle actions as hidden recovery tools instead of a primary operating workflow, and the roadmap/docs now explicitly state `auto by default, human on exception` so operators are positioned as correctors/arbiters rather than routine approval gates.
 - 2026-05-03: Added a lease layer on top of queued shared-memory fanout: pending deliveries now expose short-lived per-delivery leases, queue processing only picks unleased/expired work, health surfaces show in-flight leased deliveries, and the Operations shared-memory panel now distinguishes “due queue” from “currently leased for processing.”
 - 2026-05-03: Added operator controls for shared-memory maintenance in Operations: the `Shared memory freshness` panel now lets self-host operators dry-run or execute pending-queue processing, due retries, and lifecycle expiry directly from the UI, with a compact last-run summary so maintenance posture is visible without dropping to raw API endpoints.
 - 2026-05-03: Added retry policy/backoff to shared-memory push delivery: fanout hooks now carry retry settings, deliveries track `attempt_no`, `max_attempts`, and `next_retry_at`, `POST /v1/agents/shared-memory/fanout-deliveries/process-due-retries` can process due retries in dry-run or live mode, and shared-memory health/UI now surface retries due right now rather than only past failures.

@@ -2583,6 +2583,7 @@ export default function App() {
   const [sharedMemoryMaintenanceDryRun, setSharedMemoryMaintenanceDryRun] = useState(true);
   const [runningSharedMemoryMaintenanceAction, setRunningSharedMemoryMaintenanceAction] = useState<string | null>(null);
   const [sharedMemoryMaintenanceLastRun, setSharedMemoryMaintenanceLastRun] = useState<SharedMemoryMaintenanceRunResult | null>(null);
+  const [showSharedMemoryRecoveryTools, setShowSharedMemoryRecoveryTools] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [adoptionSyncPresetResult, setAdoptionSyncPresetResult] = useState<AdoptionSyncPresetPayload | null>(null);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
@@ -3374,19 +3375,19 @@ export default function App() {
       items.push(`${Number(metrics.materialized_entries_expiring_soon || 0)} active private/team memory entr${Number(metrics.materialized_entries_expiring_soon || 0) === 1 ? "y expires" : "ies expire"} within 24 hours.`);
     }
     if (Number(metrics.fanout_hooks_enabled || 0) === 0) {
-      items.push("No runtime fanout hooks are enabled yet, so shared memory still depends on polling/invalidation checks.");
+      items.push("No runtime fanout hooks are enabled yet, so this space is relying on pull-based hydration/invalidation instead of push fanout.");
     }
     if (Number(metrics.fanout_failed_recent || 0) > 0) {
       items.push(`${Number(metrics.fanout_failed_recent || 0)} shared-memory fanout deliver${Number(metrics.fanout_failed_recent || 0) === 1 ? "y has" : "ies have"} failed in the last 24h.`);
     }
     if (Number(metrics.fanout_pending_queue || 0) > 0) {
-      items.push(`${Number(metrics.fanout_pending_queue || 0)} shared-memory fanout deliver${Number(metrics.fanout_pending_queue || 0) === 1 ? "y is" : "ies are"} queued and due for processing.`);
+      items.push(`${Number(metrics.fanout_pending_queue || 0)} shared-memory fanout deliver${Number(metrics.fanout_pending_queue || 0) === 1 ? "y is" : "ies are"} queued and due for background processing.`);
     }
     if (Number(metrics.fanout_leased_inflight || 0) > 0) {
       items.push(`${Number(metrics.fanout_leased_inflight || 0)} shared-memory fanout deliver${Number(metrics.fanout_leased_inflight || 0) === 1 ? "y is" : "ies are"} currently leased for in-flight processing.`);
     }
     if (Number(metrics.fanout_retries_due || 0) > 0) {
-      items.push(`${Number(metrics.fanout_retries_due || 0)} shared-memory fanout retr${Number(metrics.fanout_retries_due || 0) === 1 ? "y is" : "ies are"} due for retry now.`);
+      items.push(`${Number(metrics.fanout_retries_due || 0)} shared-memory fanout retr${Number(metrics.fanout_retries_due || 0) === 1 ? "y is" : "ies are"} due for automatic retry now.`);
     }
     if (Number(metrics.fanout_hooks_enabled || 0) > 0 && Number(metrics.fanout_delivered_recent || 0) > 0 && Number(metrics.fanout_acks_recent || 0) === 0) {
       items.push("Runtime hooks are receiving shared-memory deliveries, but no runtime acknowledgements were observed in the last 24h.");
@@ -10631,20 +10632,25 @@ export default function App() {
                                     Shared memory freshness
                                   </Text>
                                   <Text size="xs" c="dimmed">
-                                    Fresh-change impact and snapshot lag for {observabilitySpaceKey}, so operators can see which agents are
-                                    most likely behind on recent published knowledge.
+                                    Autonomous freshness loop for {observabilitySpaceKey}. Agents should normally rehydrate and catch up without
+                                    human help; operators only step in when lag, failures, or stale entries persist.
                                   </Text>
                                 </Stack>
-                                <Button
-                                  size="xs"
-                                  variant="light"
-                                  color="lime"
-                                  loading={loadingSharedMemoryImpact || loadingSharedMemoryHealth}
-                                  disabled={sharedMemoryMaintenanceBusy}
-                                  onClick={() => void refreshSharedMemoryDiagnostics()}
-                                >
-                                  Refresh memory
-                                </Button>
+                                <Group gap={6} wrap="wrap">
+                                  <Badge size="xs" variant="light" color={sharedMemoryConcerns.length > 0 ? "orange" : "teal"}>
+                                    {sharedMemoryConcerns.length > 0 ? "exceptions surfaced" : "auto by default"}
+                                  </Badge>
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    color="lime"
+                                    loading={loadingSharedMemoryImpact || loadingSharedMemoryHealth}
+                                    disabled={sharedMemoryMaintenanceBusy}
+                                    onClick={() => void refreshSharedMemoryDiagnostics()}
+                                  >
+                                    Refresh view
+                                  </Button>
+                                </Group>
                               </Group>
                               {sharedMemoryImpact || sharedMemoryHealth ? (
                                 <>
@@ -10707,88 +10713,18 @@ export default function App() {
                                       No agents currently look strongly impacted by fresh changes in this space.
                                     </Text>
                                   )}
-                                  <Paper withBorder p="xs" radius="md">
-                                    <Stack gap={6}>
-                                      <Group justify="space-between" align="center" wrap="wrap">
-                                        <Stack gap={0}>
-                                          <Text size="xs" fw={700}>
-                                            Maintenance controls
-                                          </Text>
-                                          <Text size="xs" c="dimmed">
-                                            Run queue, retry, and lifecycle processors for {observabilitySpaceKey} without leaving Operations.
-                                          </Text>
-                                        </Stack>
-                                        <Checkbox
-                                          size="xs"
-                                          checked={sharedMemoryMaintenanceDryRun}
-                                          disabled={sharedMemoryMaintenanceBusy}
-                                          onChange={(event) => setSharedMemoryMaintenanceDryRun(event.currentTarget.checked)}
-                                          label="Dry run"
-                                        />
-                                      </Group>
-                                      <Group gap={6} wrap="wrap">
-                                        <Button
-                                          size="xs"
-                                          variant="light"
-                                          color="lime"
-                                          loading={runningSharedMemoryMaintenanceAction === "all"}
-                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "all"}
-                                          onClick={() => void runSharedMemoryMaintenanceAction("all")}
-                                        >
-                                          {sharedMemoryMaintenanceDryRun ? "Preview all" : "Run all"}
-                                        </Button>
-                                        <Button
-                                          size="xs"
-                                          variant="subtle"
-                                          color="lime"
-                                          loading={runningSharedMemoryMaintenanceAction === "pending"}
-                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "pending"}
-                                          onClick={() => void runSharedMemoryMaintenanceAction("pending")}
-                                        >
-                                          Queue
-                                        </Button>
-                                        <Button
-                                          size="xs"
-                                          variant="subtle"
-                                          color="orange"
-                                          loading={runningSharedMemoryMaintenanceAction === "retries"}
-                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "retries"}
-                                          onClick={() => void runSharedMemoryMaintenanceAction("retries")}
-                                        >
-                                          Retries
-                                        </Button>
-                                        <Button
-                                          size="xs"
-                                          variant="subtle"
-                                          color="blue"
-                                          loading={runningSharedMemoryMaintenanceAction === "lifecycle"}
-                                          disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "lifecycle"}
-                                          onClick={() => void runSharedMemoryMaintenanceAction("lifecycle")}
-                                        >
-                                          Lifecycle
-                                        </Button>
-                                      </Group>
-                                      {sharedMemoryMaintenanceLastRun ? (
-                                        <Alert variant="light" color={sharedMemoryMaintenanceLastRun.dryRun ? "gray" : "teal"}>
-                                          <Stack gap={2}>
-                                            <Text size="xs" fw={700}>
-                                              {sharedMemoryMaintenanceLastRun.actionLabel} {sharedMemoryMaintenanceLastRun.dryRun ? "preview" : "run"} •{" "}
-                                              {formatUiDateTime(sharedMemoryMaintenanceLastRun.generatedAt)}
-                                            </Text>
-                                            {sharedMemoryMaintenanceLastRun.details.map((item, index) => (
-                                              <Text key={`shared-memory-maintenance-detail-${index}`} size="xs">
-                                                {item}
-                                              </Text>
-                                            ))}
-                                          </Stack>
-                                        </Alert>
-                                      ) : (
-                                        <Text size="xs" c="dimmed">
-                                          Start with a dry run if you want a low-risk preview of queue pressure, due retries, and expiring entries.
-                                        </Text>
-                                      )}
+                                  <Alert variant="light" color={sharedMemoryConcerns.length > 0 ? "orange" : "teal"}>
+                                    <Stack gap={2}>
+                                      <Text size="xs" fw={700}>
+                                        {sharedMemoryConcerns.length > 0 ? "Autopilot exception cues" : "Autopilot posture looks healthy"}
+                                      </Text>
+                                      <Text size="xs">
+                                        {sharedMemoryConcerns.length > 0
+                                          ? "The system should still handle most of this in the background. Human action is mainly for persistent failures, stuck queue pressure, or deliberate recovery."
+                                          : "Background maintenance, hydration, invalidation, and retry loops should be carrying the routine work here. Human involvement should usually stay corrective, not gating."}
+                                      </Text>
                                     </Stack>
-                                  </Paper>
+                                  </Alert>
                                   {selectedPageSlug ? (
                                     <Paper withBorder p="xs" radius="md">
                                       <Stack gap={4}>
@@ -10852,6 +10788,9 @@ export default function App() {
                                                 .map((item) => `${item.role || "unassigned"} ${Number(item.count || 0)}`)
                                                 .join(" • ") || "n/a"}
                                             </Text>
+                                            <Text size="xs" c="dimmed">
+                                              Default path: let runtimes pick this up through automatic fanout or next-task hydration; step in manually only if the same change stays stale.
+                                            </Text>
                                           </>
                                         ) : (
                                           <Text size="xs" c="dimmed">
@@ -10861,6 +10800,110 @@ export default function App() {
                                       </Stack>
                                     </Paper>
                                   ) : null}
+                                  <Paper withBorder p="xs" radius="md">
+                                    <Stack gap={6}>
+                                      <Group justify="space-between" align="center" wrap="wrap">
+                                        <Stack gap={0}>
+                                          <Text size="xs" fw={700}>
+                                            Recovery tools
+                                          </Text>
+                                          <Text size="xs" c="dimmed">
+                                            Secondary path for exception handling. Background maintenance should normally clear queue, retries, and lifecycle aging without these controls.
+                                          </Text>
+                                        </Stack>
+                                        <Button
+                                          size="xs"
+                                          variant={showSharedMemoryRecoveryTools ? "light" : "subtle"}
+                                          color="gray"
+                                          leftSection={<IconCloudCog size={14} />}
+                                          onClick={() => setShowSharedMemoryRecoveryTools((current) => !current)}
+                                        >
+                                          {showSharedMemoryRecoveryTools ? "Hide recovery" : "Show recovery"}
+                                        </Button>
+                                      </Group>
+                                      {showSharedMemoryRecoveryTools ? (
+                                        <>
+                                          <Group justify="space-between" align="center" wrap="wrap">
+                                            <Checkbox
+                                              size="xs"
+                                              checked={sharedMemoryMaintenanceDryRun}
+                                              disabled={sharedMemoryMaintenanceBusy}
+                                              onChange={(event) => setSharedMemoryMaintenanceDryRun(event.currentTarget.checked)}
+                                              label="Dry run"
+                                            />
+                                            <Text size="xs" c="dimmed">
+                                              Use when queue pressure or lifecycle drift persists beyond the normal background loop.
+                                            </Text>
+                                          </Group>
+                                          <Group gap={6} wrap="wrap">
+                                            <Button
+                                              size="xs"
+                                              variant="light"
+                                              color="lime"
+                                              loading={runningSharedMemoryMaintenanceAction === "all"}
+                                              disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "all"}
+                                              onClick={() => void runSharedMemoryMaintenanceAction("all")}
+                                            >
+                                              {sharedMemoryMaintenanceDryRun ? "Preview all" : "Run all"}
+                                            </Button>
+                                            <Button
+                                              size="xs"
+                                              variant="subtle"
+                                              color="lime"
+                                              loading={runningSharedMemoryMaintenanceAction === "pending"}
+                                              disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "pending"}
+                                              onClick={() => void runSharedMemoryMaintenanceAction("pending")}
+                                            >
+                                              Queue
+                                            </Button>
+                                            <Button
+                                              size="xs"
+                                              variant="subtle"
+                                              color="orange"
+                                              loading={runningSharedMemoryMaintenanceAction === "retries"}
+                                              disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "retries"}
+                                              onClick={() => void runSharedMemoryMaintenanceAction("retries")}
+                                            >
+                                              Retries
+                                            </Button>
+                                            <Button
+                                              size="xs"
+                                              variant="subtle"
+                                              color="blue"
+                                              loading={runningSharedMemoryMaintenanceAction === "lifecycle"}
+                                              disabled={sharedMemoryMaintenanceBusy && runningSharedMemoryMaintenanceAction !== "lifecycle"}
+                                              onClick={() => void runSharedMemoryMaintenanceAction("lifecycle")}
+                                            >
+                                              Lifecycle
+                                            </Button>
+                                          </Group>
+                                          {sharedMemoryMaintenanceLastRun ? (
+                                            <Alert variant="light" color={sharedMemoryMaintenanceLastRun.dryRun ? "gray" : "teal"}>
+                                              <Stack gap={2}>
+                                                <Text size="xs" fw={700}>
+                                                  {sharedMemoryMaintenanceLastRun.actionLabel} {sharedMemoryMaintenanceLastRun.dryRun ? "preview" : "run"} •{" "}
+                                                  {formatUiDateTime(sharedMemoryMaintenanceLastRun.generatedAt)}
+                                                </Text>
+                                                {sharedMemoryMaintenanceLastRun.details.map((item, index) => (
+                                                  <Text key={`shared-memory-maintenance-detail-${index}`} size="xs">
+                                                    {item}
+                                                  </Text>
+                                                ))}
+                                              </Stack>
+                                            </Alert>
+                                          ) : (
+                                            <Text size="xs" c="dimmed">
+                                              Start with a dry run if you need to validate a fix or recover a space that looks genuinely stuck.
+                                            </Text>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <Text size="xs" c="dimmed">
+                                          Hidden by default because shared-memory maintenance should be an exception path, not the everyday operating model.
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                  </Paper>
                                   {sharedMemoryConcerns.length > 0 ? (
                                     <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
                                       <Stack gap={2}>

@@ -2,6 +2,12 @@
 
 Goal: move Synapse from “durable governed knowledge agents can pull” toward “shared operational memory agents can reliably hydrate before every task”.
 
+Core product principle:
+
+- `auto by default, human on exception`
+- agents and runtimes should normally absorb, refresh, retry, and age shared memory without a human in the loop
+- human operators should mainly correct, override, or recover when quality/risk/health signals show the autonomous loop is no longer behaving well
+
 ## Current reality
 
 Today Synapse is strongest at:
@@ -111,7 +117,7 @@ Why:
 - some agents need trusted-but-not-yet-published team knowledge
 - others should stay on conservative org-level memory only
 
-### Phase 5: Fanout and operator controls
+### Phase 5: Fanout, observability, and recovery
 
 Status: started
 
@@ -121,11 +127,13 @@ Deliverables:
 2. publish-time impact preview:
    - which agents / roles / spaces are affected
 3. optional push/fanout hooks to runtimes
+4. recovery controls as a secondary path, not as the default operating model
 
 Why:
 
 - closes the loop between wiki publishing and runtime impact
 - makes shared memory observable and safe
+- keeps humans in a corrective/governance role instead of turning them into a required approval hop for normal memory refresh
 
 ## First implementation slice in repo
 
@@ -160,7 +168,7 @@ Implemented:
 22. shared-memory entries now have a lifecycle processor for due expirations, so long-lived private/team memory can automatically age from `active` to `expired` instead of relying entirely on manual cleanup
 23. worker loop now includes shared-memory maintenance, so pending fanout deliveries, due retries, and expiring lifecycle entries can be processed on a regular cadence in self-host deployments instead of depending on manual endpoint calls
 24. shared-memory maintenance now acquires per-project advisory locks before running, so multi-worker/self-host deployments are less likely to double-process the same queue/lifecycle workload concurrently
-25. Operations now exposes shared-memory maintenance controls with dry-run and live execution for queue processing, due retries, and lifecycle expiry, so operators can recover or validate the maintenance loop without dropping to raw API calls
+25. Operations now exposes shared-memory maintenance controls with dry-run and live execution for queue processing, due retries, and lifecycle expiry, but these are intentionally framed as recovery tools rather than the primary operating path
 26. queued fanout deliveries now acquire short-lived per-delivery leases before processing, so future parallel or manual queue processors are less likely to double-send the same pending runtime notification
 
 Current limitation:
