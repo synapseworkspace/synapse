@@ -95,6 +95,10 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any(str(item.get("human_summary") or "").strip() for item in candidate_canon_blocks))
         self.assertTrue(any(str(item.get("page_markdown") or "").startswith("# ") for item in candidate_canon_blocks))
         self.assertTrue(any("why this matters" in str(item.get("page_markdown") or "").lower() for item in candidate_canon_blocks))
+        process_blocks = [item for item in candidate_canon_blocks if str(item.get("block_type") or "") == "process_sop_candidate"]
+        self.assertTrue(any("who owns this cycle" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(any("common failure modes" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("standing order." not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(
             any(
                 str(item.get("block_type") or "") == "contradiction_watch"

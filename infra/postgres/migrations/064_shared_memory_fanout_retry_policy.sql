@@ -3,6 +3,12 @@ ALTER TABLE shared_memory_fanout_hooks
   ADD COLUMN IF NOT EXISTS retry_backoff_seconds INTEGER NOT NULL DEFAULT 300;
 
 ALTER TABLE shared_memory_fanout_hooks
+  DROP CONSTRAINT IF EXISTS shared_memory_fanout_hooks_retry_max_attempts_check;
+
+ALTER TABLE shared_memory_fanout_hooks
+  DROP CONSTRAINT IF EXISTS shared_memory_fanout_hooks_retry_backoff_seconds_check;
+
+ALTER TABLE shared_memory_fanout_hooks
   ADD CONSTRAINT shared_memory_fanout_hooks_retry_max_attempts_check
   CHECK (retry_max_attempts BETWEEN 1 AND 10);
 
@@ -15,6 +21,12 @@ ALTER TABLE shared_memory_fanout_deliveries
   ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3,
   ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS last_retry_at TIMESTAMPTZ;
+
+ALTER TABLE shared_memory_fanout_deliveries
+  DROP CONSTRAINT IF EXISTS shared_memory_fanout_deliveries_attempt_no_check;
+
+ALTER TABLE shared_memory_fanout_deliveries
+  DROP CONSTRAINT IF EXISTS shared_memory_fanout_deliveries_max_attempts_check;
 
 ALTER TABLE shared_memory_fanout_deliveries
   ADD CONSTRAINT shared_memory_fanout_deliveries_attempt_no_check

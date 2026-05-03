@@ -754,8 +754,9 @@ def _company_block_why_it_matters(block_type: str, target_page_type: str | None)
 
 
 def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
+    block_type = str(block.get("block_type") or "").strip().lower()
     title = str(block.get("human_title") or "").strip() or _company_block_fallback_title(
-        str(block.get("block_type") or ""),
+        block_type,
         str(block.get("target_page_slug") or ""),
         str(block.get("target_page_type") or ""),
     )
@@ -786,20 +787,57 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
     ]
     if canonical_target:
         lines.append(f"- Intended canon page: `{canonical_target}`")
-    lines.extend(
-        [
-            "",
-            "## Current Working Rule",
-            f"- {human_summary}",
-            "",
-            "## Evidence We Are Using",
-            f"- {evidence_basis}",
-        ]
-    )
+    if block_type == "process_sop_candidate":
+        owner_hint = str(block.get("owner_hint") or "operations team").strip()
+        trigger_hint = str(block.get("trigger_hint") or "start of the operating cycle").strip()
+        inputs_hint = [str(item).strip() for item in (block.get("inputs_hint") or []) if str(item).strip()]
+        outputs_hint = [str(item).strip() for item in (block.get("outputs_hint") or []) if str(item).strip()]
+        failure_modes_hint = [str(item).strip() for item in (block.get("failure_modes_hint") or []) if str(item).strip()]
+        escalation_hint = str(block.get("escalation_hint") or "Escalate when the cycle leaves approved operating scope.").strip()
+        lines.extend(
+            [
+                "",
+                "## Goal",
+                f"- {human_summary}",
+                "",
+                "## Who Owns This Cycle",
+                f"- {owner_hint}",
+                "",
+                "## Trigger",
+                f"- {trigger_hint}",
+                "",
+                "## Inputs To Check",
+                *[f"- {item}" for item in (inputs_hint or ["current operational systems", "latest team context"])],
+                "",
+                "## Expected Outputs",
+                *[f"- {item}" for item in (outputs_hint or ["workflow completed and documented"])],
+                "",
+                "## Common Failure Modes",
+                *[f"- {item}" for item in (failure_modes_hint or ["missing evidence", "stale source context"])],
+                "",
+                "## Escalation",
+                f"- {escalation_hint}",
+                "",
+                "## Evidence We Are Using",
+                f"- {evidence_basis}",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "## Current Working Rule",
+                f"- {human_summary}",
+                "",
+                "## Evidence We Are Using",
+                f"- {evidence_basis}",
+            ]
+        )
     if contradiction_topic:
         lines.extend(["", "## Conflict To Resolve", f"- Topic: {contradiction_topic}"])
     if resolution_rule:
-        lines.extend(["", "## Preferred Resolution", f"- {resolution_rule}"])
+        heading = "## Canonical Ruling" if block_type in {"contradiction_watch", "source_of_truth_rule"} else "## Preferred Resolution"
+        lines.extend(["", heading, f"- {resolution_rule}"])
     lines.extend(["", "## Before Promotion To Canon", f"- {promotion_path}", ""])
     return "\n".join(lines)
 
@@ -1974,6 +2012,11 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             candidate_canon_blocks.append(block)
 
         top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
+        top_exceptions = [
+            label
+            for label, total in sorted(exception_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+            if int(total) > 0
+        ][:3]
         if top_entities:
             strongest_entity_count = max(int(item.get("count") or 0) for item in entity_signals[:3]) if entity_signals else 0
             _append_canon_block(
@@ -1993,6 +2036,11 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         if top_processes:
             cadence = "daily operating cadence" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operational workflow"
             strongest_process_count = max(int(item.get("count") or 0) for item in process_signals[:3]) if process_signals else 0
+            process_inputs = [str(item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("label") or "").strip()]
+            if not process_inputs:
+                process_inputs = ["current operational systems", "latest operator context"]
+            process_outputs = ["shift readiness confirmed", "exceptions escalated", "daily reporting updated"]
+            process_failure_modes = top_exceptions[:3] if top_exceptions else ["source mismatch", "missing readiness evidence"]
             _append_canon_block(
                 {
                     "block_type": "process_sop_candidate",
@@ -2003,6 +2051,12 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "confidence": "medium",
                     "summary": f"The current {cadence} appears to revolve around {', '.join(top_processes)}.",
                     "evidence_basis": "Observed in standing orders and scheduled tasks across the runtime matrix.",
+                    "owner_hint": "logistics operations / dispatch team",
+                    "trigger_hint": f"Start of the {cadence} and any new operator handoff that changes route, readiness, or incident posture.",
+                    "inputs_hint": process_inputs,
+                    "outputs_hint": process_outputs,
+                    "failure_modes_hint": process_failure_modes,
+                    "escalation_hint": "Escalate to the human operations lead whenever readiness is incomplete, source trust breaks down, or incidents affect customer/service commitments.",
                 }
             )
 

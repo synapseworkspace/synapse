@@ -195,6 +195,7 @@ Current progress:
 - persisted candidates carry page-ready wiki draft markdown so promotion can write business-readable canon pages, not just technical placeholders
 - promoted candidates now land as managed sections inside target canon pages, so repeated promotions enrich canonical pages instead of replacing them wholesale
 - contradiction candidates now support explicit review decisions and preferred-source notes, making conflict resolution part of persistent company memory instead of one-off operator comments
+- review actions now leave an audit trail, and process/SOP candidates render with more editorial business framing (owner / trigger / inputs / outputs / failure modes / escalation) instead of mostly scheduler-native phrasing
 
 ## Phase 5: Knowledge Quality Lifecycle
 

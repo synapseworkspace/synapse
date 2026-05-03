@@ -4808,6 +4808,16 @@ def _company_knowledge_candidates_table_exists(conn) -> bool:
     return bool(_COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS)
 
 
+def _company_knowledge_candidate_reviews_table_exists(conn) -> bool:
+    global _COMPANY_KNOWLEDGE_CANDIDATE_REVIEWS_TABLE_EXISTS
+    if _COMPANY_KNOWLEDGE_CANDIDATE_REVIEWS_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _COMPANY_KNOWLEDGE_CANDIDATE_REVIEWS_TABLE_EXISTS = _wiki_feature_table_exists(
+                cur, "public.company_knowledge_candidate_reviews"
+            )
+    return bool(_COMPANY_KNOWLEDGE_CANDIDATE_REVIEWS_TABLE_EXISTS)
+
+
 def _shared_memory_fanout_hooks_table_exists(conn) -> bool:
     global _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS
     if _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS is None:
@@ -8074,6 +8084,7 @@ _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_ENTRIES_TABLE_EXISTS: bool | None = None
 _COMPANY_KNOWLEDGE_CANDIDATES_TABLE_EXISTS: bool | None = None
+_COMPANY_KNOWLEDGE_CANDIDATE_REVIEWS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS: bool | None = None
@@ -12354,6 +12365,7 @@ def _list_company_knowledge_candidates(
         }
     filters = ["project_id = %s"]
     params: list[Any] = [normalized_project]
+    reviews_supported = _company_knowledge_candidate_reviews_table_exists(conn)
     if normalized_space:
         filters.append("space_key = %s")
         params.append(normalized_space)
@@ -12365,30 +12377,43 @@ def _list_company_knowledge_candidates(
         params.append(str(target_page_type).strip().lower())
     where_sql = " AND ".join(filters)
     with conn.cursor() as cur:
+        reviews_join_sql = ""
+        reviews_select_sql = "NULL::int AS review_count, NULL::timestamptz AS latest_review_at"
+        if reviews_supported:
+            reviews_join_sql = """
+            LEFT JOIN (
+              SELECT candidate_id, COUNT(*)::int AS review_count, MAX(created_at) AS latest_review_at
+              FROM company_knowledge_candidate_reviews
+              GROUP BY candidate_id
+            ) review_stats ON review_stats.candidate_id = c.id
+            """
+            reviews_select_sql = "COALESCE(review_stats.review_count, 0) AS review_count, review_stats.latest_review_at"
         cur.execute(
             f"""
             SELECT
-              id,
-              block_id,
-              block_type,
-              knowledge_state,
-              state_source,
-              confidence,
-              summary,
-              evidence_basis,
-              target_page_type,
-              target_page_slug,
-              promotion_path,
-              contradiction_topic,
-              note,
-              reviewed_by,
-              reviewed_at,
-              canonical_page_slug,
-              updated_at,
-              source_payload
-            FROM company_knowledge_candidates
-            WHERE {where_sql}
-            ORDER BY updated_at DESC, id DESC
+              c.id,
+              c.block_id,
+              c.block_type,
+              c.knowledge_state,
+              c.state_source,
+              c.confidence,
+              c.summary,
+              c.evidence_basis,
+              c.target_page_type,
+              c.target_page_slug,
+              c.promotion_path,
+              c.contradiction_topic,
+              c.note,
+              c.reviewed_by,
+              c.reviewed_at,
+              c.canonical_page_slug,
+              c.updated_at,
+              c.source_payload,
+              {reviews_select_sql}
+            FROM company_knowledge_candidates c
+            {reviews_join_sql}
+            WHERE {where_sql.replace("project_id", "c.project_id").replace("space_key", "c.space_key").replace("knowledge_state", "c.knowledge_state").replace("target_page_type", "c.target_page_type")}
+            ORDER BY c.updated_at DESC, c.id DESC
             LIMIT %s
             """,
             [*params, max(1, min(200, int(limit)))],
@@ -12432,6 +12457,8 @@ def _list_company_knowledge_candidates(
                 "why_it_matters": str(source_payload.get("why_it_matters") or "").strip() or None,
                 "page_markdown_preview": str(source_payload.get("page_markdown") or "").strip()[:800] or None,
                 "manual_review": source_payload.get("manual_review") if isinstance(source_payload.get("manual_review"), dict) else None,
+                "review_count": int(row[18] or 0),
+                "latest_review_at": row[19].astimezone(UTC).isoformat() if isinstance(row[19], datetime) else None,
             }
         )
     return {
@@ -12443,6 +12470,79 @@ def _list_company_knowledge_candidates(
             "state_counts": state_counts,
             "supported": True,
         },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _list_company_knowledge_candidate_reviews(
+    conn,
+    *,
+    project_id: str,
+    candidate_id: int,
+    limit: int = 20,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _company_knowledge_candidate_reviews_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "candidate_id": int(candidate_id),
+            "reviews": [],
+            "summary": {"reviews_total": 0, "supported": False},
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              id,
+              action_kind,
+              knowledge_state_before,
+              knowledge_state_after,
+              note,
+              contradiction_decision,
+              preferred_source_label,
+              resolution_note,
+              promote_to_wiki,
+              wiki_page_slug,
+              reviewed_by,
+              created_at,
+              metadata
+            FROM company_knowledge_candidate_reviews
+            WHERE project_id = %s
+              AND candidate_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (normalized_project, int(candidate_id), max(1, min(100, int(limit)))),
+        )
+        rows = cur.fetchall() or []
+    reviews = []
+    for row in rows:
+        metadata = row[12] if isinstance(row[12], dict) else {}
+        reviews.append(
+            {
+                "review_id": int(row[0]),
+                "action_kind": str(row[1] or ""),
+                "knowledge_state_before": str(row[2] or "") or None,
+                "knowledge_state_after": str(row[3] or "") or None,
+                "note": str(row[4] or "") or None,
+                "contradiction_decision": str(row[5] or "") or None,
+                "preferred_source_label": str(row[6] or "") or None,
+                "resolution_note": str(row[7] or "") or None,
+                "promote_to_wiki": bool(row[8]),
+                "wiki_page_slug": str(row[9] or "") or None,
+                "reviewed_by": str(row[10] or "") or None,
+                "created_at": row[11].astimezone(UTC).isoformat() if isinstance(row[11], datetime) else None,
+                "metadata": metadata,
+            }
+        )
+    return {
+        "project_id": normalized_project,
+        "candidate_id": int(candidate_id),
+        "reviews": reviews,
+        "summary": {"reviews_total": len(reviews), "supported": True},
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -12483,6 +12583,7 @@ def _promote_company_knowledge_candidate(
               space_key,
               block_id,
               block_type,
+              knowledge_state,
               confidence,
               summary,
               evidence_basis,
@@ -12508,15 +12609,16 @@ def _promote_company_knowledge_candidate(
             "space_key": str(row[2] or "") or None,
             "block_id": str(row[3] or ""),
             "block_type": str(row[4] or ""),
-            "confidence": str(row[5] or ""),
-            "summary": str(row[6] or ""),
-            "evidence_basis": str(row[7] or ""),
-            "target_page_type": str(row[8] or "") or None,
-            "target_page_slug": str(row[9] or "") or None,
-            "promotion_path": str(row[10] or "") or None,
-            "contradiction_topic": str(row[11] or "") or None,
+            "knowledge_state": str(row[5] or ""),
+            "confidence": str(row[6] or ""),
+            "summary": str(row[7] or ""),
+            "evidence_basis": str(row[8] or ""),
+            "target_page_type": str(row[9] or "") or None,
+            "target_page_slug": str(row[10] or "") or None,
+            "promotion_path": str(row[11] or "") or None,
+            "contradiction_topic": str(row[12] or "") or None,
         }
-        source_payload = row[12] if isinstance(row[12], dict) else {}
+        source_payload = row[13] if isinstance(row[13], dict) else {}
         if isinstance(source_payload, dict):
             candidate.update(
                 {
@@ -12633,6 +12735,48 @@ def _promote_company_knowledge_candidate(
             ),
         )
         updated_row = cur.fetchone()
+        if _company_knowledge_candidate_reviews_table_exists(conn):
+            cur.execute(
+                """
+                INSERT INTO company_knowledge_candidate_reviews (
+                  candidate_id,
+                  project_id,
+                  action_kind,
+                  knowledge_state_before,
+                  knowledge_state_after,
+                  note,
+                  contradiction_decision,
+                  preferred_source_label,
+                  resolution_note,
+                  promote_to_wiki,
+                  wiki_page_slug,
+                  reviewed_by,
+                  metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(candidate_id),
+                    normalized_project,
+                    "promote_to_wiki" if promote_to_wiki else "state_review",
+                    str(candidate.get("knowledge_state") or "").strip() or None,
+                    str(updated_row[1] or normalized_state),
+                    normalized_note,
+                    normalized_contradiction_decision,
+                    normalized_preferred_source,
+                    normalized_resolution_note,
+                    bool(promote_to_wiki),
+                    canonical_page_slug,
+                    normalized_actor,
+                    Jsonb(
+                        {
+                            "block_id": candidate.get("block_id"),
+                            "target_page_slug": candidate.get("target_page_slug"),
+                            "target_page_type": candidate.get("target_page_type"),
+                        }
+                    ),
+                ),
+            )
     return {
         "status": "ok",
         "project_id": normalized_project,
@@ -41177,6 +41321,21 @@ def list_company_knowledge_candidates(
             space_key=space_key,
             knowledge_state=knowledge_state,
             target_page_type=target_page_type,
+            limit=limit,
+        )
+
+
+@app.get("/v1/adoption/company-knowledge/candidates/{candidate_id}/reviews")
+def list_company_knowledge_candidate_reviews(
+    candidate_id: int,
+    project_id: str = Query(..., min_length=1),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        return _list_company_knowledge_candidate_reviews(
+            conn,
+            project_id=project_id,
+            candidate_id=candidate_id,
             limit=limit,
         )
 

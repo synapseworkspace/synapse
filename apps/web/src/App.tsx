@@ -1506,6 +1506,8 @@ type CompanyKnowledgeCandidateRecord = {
   human_summary?: string | null;
   why_it_matters?: string | null;
   page_markdown_preview?: string | null;
+  review_count?: number;
+  latest_review_at?: string | null;
   manual_review?: {
     decision?: string | null;
     preferred_source_label?: string | null;
@@ -3232,6 +3234,12 @@ export default function App() {
     }
     return visibleSpaces[0] || effectiveBusinessSpaceKey || "operations";
   }, [effectiveBusinessSpaceKey, selectedSpaceKey, spaceNodes]);
+  const companyKnowledgeSpaceKey = useMemo(() => {
+    if (coreWorkspaceRoute === "operations") {
+      return effectiveBusinessSpaceKey || "operations";
+    }
+    return observabilitySpaceKey;
+  }, [coreWorkspaceRoute, effectiveBusinessSpaceKey, observabilitySpaceKey]);
   const synthesisGraphCards = useMemo(() => {
     const tooling = adoptionSynthesisGraph?.tooling_summary || {};
     const sources = adoptionSynthesisGraph?.data_sources_summary || {};
@@ -5106,7 +5114,7 @@ export default function App() {
     try {
       const query = new URLSearchParams({
         project_id: project,
-        space_key: observabilitySpaceKey,
+        space_key: companyKnowledgeSpaceKey,
         limit: "12",
       });
       const payload = await apiFetch<CompanyKnowledgeCandidatesPayload>(
@@ -5119,7 +5127,7 @@ export default function App() {
     } finally {
       setLoadingCompanyKnowledgeCandidates(false);
     }
-  }, [apiUrl, observabilitySpaceKey, projectId]);
+  }, [apiUrl, companyKnowledgeSpaceKey, projectId]);
 
   const syncCompanyKnowledgeCandidates = useCallback(async () => {
     const project = projectId.trim();
@@ -5136,7 +5144,7 @@ export default function App() {
         body: {
           project_id: project,
           updated_by: actor,
-          space_key: observabilitySpaceKey,
+          space_key: companyKnowledgeSpaceKey,
           max_signals: 12,
         },
       });
@@ -5150,7 +5158,7 @@ export default function App() {
     } finally {
       setSyncingCompanyKnowledgeCandidates(false);
     }
-  }, [apiUrl, loadCompanyKnowledgeCandidates, observabilitySpaceKey, projectId, reviewer]);
+  }, [apiUrl, companyKnowledgeSpaceKey, loadCompanyKnowledgeCandidates, projectId, reviewer]);
 
   const promoteCompanyKnowledgeCandidate = useCallback(
     async (
@@ -10892,7 +10900,7 @@ export default function App() {
                                     Company knowledge candidates
                                   </Text>
                                   <Text size="xs" c="dimmed">
-                                    Persisted business-facing knowledge blocks for {observabilitySpaceKey}. This is the bridge from runtime memory
+                                    Persisted business-facing knowledge blocks for {companyKnowledgeSpaceKey}. This is the bridge from runtime memory
                                     into real org-wiki pages.
                                   </Text>
                                   <Text size="xs" c="dimmed">
@@ -11025,6 +11033,12 @@ export default function App() {
                                                   {candidate.manual_review.preferred_source_label
                                                     ? ` · preferred source: ${candidate.manual_review.preferred_source_label}`
                                                     : ""}
+                                                </Text>
+                                              ) : null}
+                                              {candidate.review_count ? (
+                                                <Text size="xs" c="dimmed">
+                                                  Review history: {candidate.review_count} decision(s)
+                                                  {candidate.latest_review_at ? ` · latest ${formatUiDateTime(candidate.latest_review_at)}` : ""}
                                                 </Text>
                                               ) : null}
                                               <Text size="xs" c="dimmed">

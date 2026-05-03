@@ -43,6 +43,7 @@ docker compose --env-file .env.selfhost -f infra/docker-compose.selfhost.yml up 
 ```
 
 The stack runs migrations automatically through `migrator` before API/worker/MCP start.
+The migrator now uses the shared `scripts/apply_migrations.sh` helper with a `schema_migration_runs` ledger, so re-runs on self-host should skip already-applied SQL files instead of replaying the whole chain every time.
 
 ## 4. Health Checks
 
