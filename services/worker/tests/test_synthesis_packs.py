@@ -105,6 +105,38 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertIn("revenue", str(refined["purpose"]).lower())
         self.assertTrue(any("handoff" in str(step).lower() or "stage" in str(step).lower() for step in refined["steps"]))
 
+    def test_compliance_pack_deepens_control_playbook(self) -> None:
+        pack = get_synthesis_pack("compliance_ops")
+        playbook = {
+            "title": "Control Evidence Review Playbook",
+            "purpose": "Document the process.",
+            "trigger": "Audit workflow fires.",
+            "action": "control_evidence_review",
+            "steps": ["Run task.", "Record result."],
+            "output": "Workflow done.",
+        }
+        refined = pack.refine_process_playbook(
+            playbook=playbook,
+            source_kind="scheduled_task",
+            normalize_statement_text=_normalize,
+        )
+        self.assertIn("compliance", str(refined["purpose"]).lower())
+        self.assertTrue(any("evidence" in str(step).lower() or "approval" in str(step).lower() for step in refined["steps"]))
+
+    def test_support_pack_tooling_extensions_are_domain_specific(self) -> None:
+        pack = get_synthesis_pack("support_ops")
+        payload = pack.build_tooling_map_extensions(matrix_rows=[])
+        bullets = payload.get("governance_bullets") or []
+        self.assertTrue(any("queue" in str(item).lower() or "customer" in str(item).lower() for item in bullets))
+        self.assertIn("support", str(payload.get("empty_hint") or "").lower())
+
+    def test_sales_pack_capability_extensions_are_domain_specific(self) -> None:
+        pack = get_synthesis_pack("sales_ops")
+        payload = pack.build_capability_profile_extensions(matrix_rows=[])
+        bullets = payload.get("signal_bullets") or []
+        self.assertTrue(any("qualification" in str(item).lower() or "handoff" in str(item).lower() for item in bullets))
+        self.assertIn("stage", str(payload.get("sparse_hint") or "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

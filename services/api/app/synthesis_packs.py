@@ -59,6 +59,18 @@ class SynthesisPack(Protocol):
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]: ...
 
+    def build_capability_profile_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]: ...
+
+    def build_tooling_map_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]: ...
+
     def default_space_for_starter_profile(self, profile: str) -> str: ...
 
     def wiki_space_template_catalog(self) -> list[dict[str, Any]]: ...
@@ -282,7 +294,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "key": "compliance_program",
         "label": "Compliance Program",
         "description": "Control catalogs, audit evidence, review workflows, and policy-heavy environments.",
-        "synthesis_pack": "generic_ops",
+        "synthesis_pack": "compliance_ops",
         "starter_profile": "compliance_ops",
         "role_template_key": "compliance_ops",
         "default_space_key": "compliance",
@@ -651,6 +663,36 @@ class GenericOpsSynthesisPack:
                 "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
                 "Agent actions should be constrained by tool guardrails and approval rules.",
             ],
+        }
+
+    def build_capability_profile_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "signal_bullets": [
+                "Runtime intents observed in sessions/tasks and converted into reusable actions.",
+                "Tool invocations and handoff contracts between agents.",
+                "Data-source access patterns, policy limits, and escalation pathways.",
+            ],
+            "sparse_hint": "Capability discovery is still sparse; add explicit profile metadata or debrief signals to enrich this agent page.",
+        }
+
+    def build_tooling_map_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "governance_bullets": [
+                "Any tool touching finance/compliance/customer identity should require approval or reviewer assignment.",
+                "Prefer policy/process backed actions over direct payload-driven decisions.",
+                "Use this map to document which tool drives which workflow and where human approval boundaries start.",
+            ],
+            "empty_hint": "Runtime tool discovery pending",
         }
 
     def default_space_for_starter_profile(self, profile: str) -> str:
@@ -1469,6 +1511,36 @@ class SupportOpsSynthesisPack(GenericOpsSynthesisPack):
             ],
         }
 
+    def build_capability_profile_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "signal_bullets": [
+                "Queue-routing, escalation, and customer communication patterns observed in recurring support workflows.",
+                "Tool usage and handoff paths between frontline support, specialists, and human approvers.",
+                "Data-source and SLA signals that decide when a case can stay autonomous vs must escalate.",
+            ],
+            "sparse_hint": "Support capability discovery is still sparse; sync queue ownership, escalation rules, and customer communication contracts to enrich this page.",
+        }
+
+    def build_tooling_map_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "governance_bullets": [
+                "Support tools should make queue ownership, SLA posture, and customer-visible next steps explicit.",
+                "Escalation and customer messaging tools should respect approval or override boundaries when risk is high.",
+                "Use this map to show which tool drives triage, escalation, and customer communication workflows.",
+            ],
+            "empty_hint": "Runtime support tool discovery pending",
+        }
+
 
 class SalesOpsSynthesisPack(GenericOpsSynthesisPack):
     key = "sales_ops"
@@ -1586,12 +1658,177 @@ class SalesOpsSynthesisPack(GenericOpsSynthesisPack):
             ],
         }
 
+    def build_capability_profile_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "signal_bullets": [
+                "Qualification, stage progression, and handoff patterns observed in recurring revenue workflows.",
+                "Tool usage across pipeline updates, handoff preparation, and downstream customer-success coordination.",
+                "Data-source and approval signals that control when stage movement or ownership transfer is allowed.",
+            ],
+            "sparse_hint": "Revenue capability discovery is still sparse; sync stage policy, handoff contracts, and qualification rules to deepen this page.",
+        }
+
+    def build_tooling_map_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "governance_bullets": [
+                "Revenue tools should preserve clear ownership, stage criteria, and handoff readiness before advancing work.",
+                "Qualification or pricing-sensitive actions should respect explicit approval or override boundaries.",
+                "Use this map to show which tool drives qualification, pipeline movement, and customer handoff workflows.",
+            ],
+            "empty_hint": "Runtime revenue tool discovery pending",
+        }
+
+
+class ComplianceOpsSynthesisPack(GenericOpsSynthesisPack):
+    key = "compliance_ops"
+
+    def derive_task_semantics(
+        self,
+        task_contract: dict[str, Any],
+        *,
+        normalize_items: NormalizeItemsFn,
+        extract_runtime_items: ExtractRuntimeItemsFn,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        semantics = _build_generic_task_semantics(
+            task_contract,
+            normalize_items=normalize_items,
+            extract_runtime_items=extract_runtime_items,
+        )
+        task_code = str(task_contract.get("task_code") or task_contract.get("name") or "").strip()
+        builtin_task = str(task_contract.get("builtin_task") or "").strip()
+        program = str(task_contract.get("standing_order_program") or "").strip()
+        tokens = normalize_statement_text(" ".join([task_code, builtin_task, program]))
+        if any(token in tokens for token in ("audit", "control", "evidence", "review", "policy", "compliance")):
+            semantics.update(
+                {
+                    "purpose": "Run a recurring compliance workflow that keeps control evidence, review posture, and policy execution explicit.",
+                    "trigger": f"Recurring compliance workflow runs on `{semantics['schedule_text']}` and reviews control or evidence state.",
+                    "steps": [
+                        "Load the latest control, review, or evidence state for the workflow window.",
+                        "Validate that required artifacts, approvals, and control checks are present and current.",
+                        "Escalate missing evidence, policy drift, or approval gaps before marking the workflow complete.",
+                        "Record the resulting compliance state and next review obligation for the next operator or audit cycle.",
+                    ],
+                    "outputs": "Compliance workflow updated with explicit evidence posture, approval status, and next review checkpoint.",
+                }
+            )
+        return semantics
+
+    def refine_process_playbook(
+        self,
+        *,
+        playbook: dict[str, Any],
+        source_kind: str,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_kind
+        refined = dict(playbook)
+        tokens = normalize_statement_text(
+            " ".join(
+                [
+                    str(refined.get("title") or ""),
+                    str(refined.get("trigger") or ""),
+                    str(refined.get("action") or ""),
+                    str(refined.get("output") or ""),
+                ]
+            )
+        )
+        if any(token in tokens for token in ("audit", "control", "evidence", "review", "policy", "compliance")):
+            refined.update(
+                {
+                    "purpose": "Convert recurring control, evidence, and policy-review work into reusable compliance operating procedures.",
+                    "steps": [
+                        "Capture the current control, evidence, or review state and identify the required artifact set.",
+                        "Validate that policy expectations, approvals, and control checkpoints are satisfied before closure.",
+                        "Escalate any missing evidence, policy drift, or unresolved review exception.",
+                        "Record the resulting control posture and next review obligation for the next operator or auditor.",
+                    ],
+                    "output": "Compliance state updated with explicit evidence posture, approval status, and next review checkpoint.",
+                    "verification": [
+                        "Confirm the required evidence set is present, current, and attributable.",
+                        "Verify that unresolved policy or approval gaps were escalated instead of silently accepted.",
+                    ],
+                }
+            )
+        return refined
+
+    def build_company_context_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+        source_counts: list[tuple[str, int]] | None,
+        claims_rollup: list[tuple[str, int]] | None,
+        normalize_statement_text: NormalizeStatementTextFn,
+    ) -> dict[str, Any]:
+        del source_counts, claims_rollup, normalize_statement_text
+        control_signals = 0
+        review_signals = 0
+        for item in matrix_rows or []:
+            if not isinstance(item, dict):
+                continue
+            control_signals += len([str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()])
+            review_signals += len([str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()])
+        return {
+            "snapshot_notes": [
+                f"Control-oriented recurring workflows observed: {control_signals}.",
+                f"Explicit approval/review boundaries observed: {review_signals}.",
+            ],
+            "workflow_signals": [],
+            "principles": [
+                "Control evidence and policy execution should remain attributable, reviewable, and easy to audit.",
+                "Compliance workflows should escalate missing approvals or evidence rather than silently marking success.",
+                "Shared operating context should make review cadence and control ownership explicit for the next operator or auditor.",
+            ],
+        }
+
+    def build_capability_profile_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "signal_bullets": [
+                "Control, evidence, and policy-review workflows observed in recurring compliance operations.",
+                "Tool usage across audit evidence collection, control execution, and approval routing.",
+                "Approval and data-source signals that define when compliance actions can proceed autonomously vs require review.",
+            ],
+            "sparse_hint": "Compliance capability discovery is still sparse; sync control ownership, approval rules, and evidence contracts to deepen this page.",
+        }
+
+    def build_tooling_map_extensions(
+        self,
+        *,
+        matrix_rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        del matrix_rows
+        return {
+            "governance_bullets": [
+                "Compliance tools should preserve attributable evidence, approval state, and control ownership.",
+                "Policy, review, or audit-sensitive actions should require explicit approval boundaries where appropriate.",
+                "Use this map to show which tool drives evidence collection, control execution, and review workflows.",
+            ],
+            "empty_hint": "Runtime compliance tool discovery pending",
+        }
+
 
 _PACKS: dict[str, SynthesisPack] = {
     "generic_ops": GenericOpsSynthesisPack(),
     "logistics_ops": LogisticsOpsSynthesisPack(),
     "support_ops": SupportOpsSynthesisPack(),
     "sales_ops": SalesOpsSynthesisPack(),
+    "compliance_ops": ComplianceOpsSynthesisPack(),
 }
 
 

@@ -2518,6 +2518,8 @@ def _synthesis_pack_for_space_key(space_key: str | None) -> Any:
         return get_synthesis_pack("support_ops")
     if normalized == "sales":
         return get_synthesis_pack("sales_ops")
+    if normalized == "compliance":
+        return get_synthesis_pack("compliance_ops")
     return get_synthesis_pack("generic_ops")
 
 
@@ -32989,6 +32991,7 @@ def _build_agent_capability_bootstrap_page(
     space_key: str,
     max_agents: int,
 ) -> list[dict[str, str]]:
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
     pages: list[dict[str, str]] = []
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
@@ -33079,12 +33082,22 @@ def _build_agent_capability_bootstrap_page(
             _render_agent_capability_matrix_markdown(matrix=matrix).strip(),
             "",
             "## Capability Signals",
-            "- Runtime intents observed in sessions/tasks and converted into reusable actions.",
-            "- Tool invocations and handoff contracts between agents.",
-            "- Data-source access patterns, policy limits, and escalation pathways.",
-            "",
         ]
     )
+    capability_extensions = synthesis_pack.build_capability_profile_extensions(matrix_rows=matrix)
+    capability_signal_bullets = [
+        str(value).strip()
+        for value in (capability_extensions.get("signal_bullets") or [])
+        if str(value).strip()
+    ]
+    if not capability_signal_bullets:
+        capability_signal_bullets = [
+            "Runtime intents observed in sessions/tasks and converted into reusable actions.",
+            "Tool invocations and handoff contracts between agents.",
+            "Data-source access patterns, policy limits, and escalation pathways.",
+        ]
+    lines.extend([f"- {bullet}" for bullet in capability_signal_bullets])
+    lines.append("")
     if capability_bundles:
         lines.extend(
             [
@@ -33249,7 +33262,10 @@ def _build_agent_capability_bootstrap_page(
                     f"- Bundle-backed insights: {'; '.join(bundle_insights[:2]) if bundle_insights else 'Knowledge bundle linked; enrichment pending.'}"
                 )
             if len(detail_lines) == 3:
-                detail_lines.append("- Capability discovery is still sparse; add explicit profile metadata or debrief signals to enrich this agent page.")
+                sparse_hint = str(capability_extensions.get("sparse_hint") or "").strip()
+                detail_lines.append(
+                    f"- {sparse_hint or 'Capability discovery is still sparse; add explicit profile metadata or debrief signals to enrich this agent page.'}"
+                )
             lines.extend(detail_lines)
     else:
         lines.extend(
@@ -33283,6 +33299,7 @@ def _build_tooling_map_bootstrap_page(
     space_key: str,
     max_agents: int,
 ) -> list[dict[str, str]]:
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
     matrix: list[dict[str, Any]] = []
     if _agent_directory_table_exists_from_cursor(cur):
         matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents)
@@ -33415,6 +33432,7 @@ def _build_tooling_map_bootstrap_page(
         "| Tool | Used By Agents | Capability / Scenario | Process / Sources | Guardrails |",
         "|---|---|---|---|---|",
     ]
+    tooling_extensions = synthesis_pack.build_tooling_map_extensions(matrix_rows=matrix)
     if tool_index:
         for _, bucket in sorted(
             tool_index.items(),
@@ -33432,17 +33450,27 @@ def _build_tooling_map_bootstrap_page(
                 f"| `{bucket['tool']}` | {agents} | {capability_or_scenario} | {process_or_sources} | {guardrails} |"
             )
     else:
-        lines.append("| n/a | n/a | Runtime tool discovery pending | n/a | Register tools via `/v1/agents/register` |")
+        empty_hint = str(tooling_extensions.get("empty_hint") or "").strip() or "Runtime tool discovery pending"
+        lines.append(f"| n/a | n/a | {empty_hint} | n/a | Register tools via `/v1/agents/register` |")
+    governance_bullets = [
+        str(value).strip()
+        for value in (tooling_extensions.get("governance_bullets") or [])
+        if str(value).strip()
+    ]
+    if not governance_bullets:
+        governance_bullets = [
+            "Any tool touching finance/compliance/customer identity should require approval or reviewer assignment.",
+            "Prefer policy/process backed actions over direct payload-driven decisions.",
+            "Use this map to document which tool drives which workflow and where human approval boundaries start.",
+        ]
     lines.extend(
         [
             "",
             "## Governance",
-            "- Any tool touching finance/compliance/customer identity should require approval or reviewer assignment.",
-            "- Prefer policy/process backed actions over direct payload-driven decisions.",
-            "- Use this map to document which tool drives which workflow and where human approval boundaries start.",
-            "",
         ]
     )
+    lines.extend([f"- {bullet}" for bullet in governance_bullets])
+    lines.append("")
     return [
         {
             "title": "Tooling Map",
