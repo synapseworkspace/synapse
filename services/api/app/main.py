@@ -41462,6 +41462,7 @@ def _build_company_operating_context_bootstrap_page(
     trust_signals = [item for item in (context_extensions.get("trust_signals") or []) if isinstance(item, dict)]
     exception_signals = [item for item in (context_extensions.get("exception_signals") or []) if isinstance(item, dict)]
     candidate_canon_blocks = [item for item in (context_extensions.get("candidate_canon_blocks") or []) if isinstance(item, dict)]
+    knowledge_lifecycle_summary = [item for item in (context_extensions.get("knowledge_lifecycle_summary") or []) if isinstance(item, dict)]
     principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
 
     lines = [
@@ -41568,6 +41569,17 @@ def _build_company_operating_context_bootstrap_page(
         )
         for item in exception_signals[:8]:
             lines.append(f"| {str(item.get('label') or 'exception').replace('|', '/')} | {int(item.get('count') or 0)} |")
+    if knowledge_lifecycle_summary:
+        lines.extend(
+            [
+                "",
+                "## Knowledge Lifecycle Summary",
+                "| State | Blocks |",
+                "|---|---:|",
+            ]
+        )
+        for item in knowledge_lifecycle_summary[:8]:
+            lines.append(f"| {str(item.get('state') or 'candidate').replace('|', '/')} | {int(item.get('count') or 0)} |")
     if candidate_canon_blocks:
         lines.extend(
             [

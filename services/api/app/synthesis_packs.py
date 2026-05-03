@@ -950,6 +950,7 @@ class GenericOpsSynthesisPack:
             "trust_signals": [],
             "exception_signals": [],
             "candidate_canon_blocks": [],
+            "knowledge_lifecycle_summary": [],
             "principles": [
                 "Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
                 "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
@@ -1833,13 +1834,21 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             if int(total) > 0
         ][:6]
         candidate_canon_blocks: list[dict[str, Any]] = []
+        knowledge_state_counts: dict[str, int] = {}
+
+        def _append_canon_block(block: dict[str, Any]) -> None:
+            state = str(block.get("knowledge_state") or "candidate").strip().lower() or "candidate"
+            block["knowledge_state"] = state
+            knowledge_state_counts[state] = int(knowledge_state_counts.get(state, 0)) + 1
+            candidate_canon_blocks.append(block)
 
         top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
         if top_entities:
-            candidate_canon_blocks.append(
+            strongest_entity_count = max(int(item.get("count") or 0) for item in entity_signals[:3]) if entity_signals else 0
+            _append_canon_block(
                 {
                     "block_type": "entity_overview",
-                    "knowledge_state": "candidate",
+                    "knowledge_state": "reviewed" if strongest_entity_count >= 3 else "candidate",
                     "confidence": "medium",
                     "summary": f"Current logistics memory centers on {', '.join(top_entities)} as the main business entities.",
                     "evidence_basis": "Repeated mentions across scheduled workflows, responsibilities, and claim rollups.",
@@ -1849,16 +1858,19 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         top_processes = [str(item.get("label") or "").strip() for item in process_signals[:3] if str(item.get("label") or "").strip()]
         if top_processes:
             cadence = "daily operating cadence" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operational workflow"
-            candidate_canon_blocks.append(
+            strongest_process_count = max(int(item.get("count") or 0) for item in process_signals[:3]) if process_signals else 0
+            _append_canon_block(
                 {
                     "block_type": "process_sop_candidate",
-                    "knowledge_state": "candidate",
+                    "knowledge_state": "reviewed" if strongest_process_count >= 2 else "candidate",
                     "confidence": "medium",
                     "summary": f"The current {cadence} appears to revolve around {', '.join(top_processes)}.",
                     "evidence_basis": "Observed in standing orders and scheduled tasks across the runtime matrix.",
                 }
             )
 
+        canonical_sources: list[str] = []
+        derived_sources: list[str] = []
         if trust_signals:
             canonical_sources = [str(item.get("label") or "").strip() for item in trust_signals if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))]
             derived_sources = [str(item.get("label") or "").strip() for item in trust_signals if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))]
@@ -1868,10 +1880,13 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     summary_parts.append(f"prefer {', '.join(canonical_sources[:2])} for live operational state")
                 if derived_sources:
                     summary_parts.append(f"treat {', '.join(derived_sources[:2])} as derived/operator-maintained views during conflicts")
-                candidate_canon_blocks.append(
+                source_truth_state = "reviewed"
+                if not canonical_sources and derived_sources:
+                    source_truth_state = "stale"
+                _append_canon_block(
                     {
                         "block_type": "source_of_truth_rule",
-                        "knowledge_state": "candidate",
+                        "knowledge_state": source_truth_state,
                         "confidence": "medium",
                         "summary": f"Trust rule candidate: {'; '.join(summary_parts)}.",
                         "evidence_basis": "Inferred from connected source classes and source-trust heuristics.",
@@ -1880,10 +1895,11 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
 
         top_exceptions = [str(item.get("label") or "").strip() for item in exception_signals[:3] if str(item.get("label") or "").strip()]
         if top_exceptions:
-            candidate_canon_blocks.append(
+            strongest_exception_count = max(int(item.get("count") or 0) for item in exception_signals[:3]) if exception_signals else 0
+            _append_canon_block(
                 {
                     "block_type": "known_exception",
-                    "knowledge_state": "candidate",
+                    "knowledge_state": "reviewed" if strongest_exception_count >= 2 else "candidate",
                     "confidence": "low",
                     "summary": f"Recurring operational exceptions likely include {', '.join(top_exceptions)}.",
                     "evidence_basis": "Pattern counts derived from workflow, responsibility, and claim language.",
@@ -1893,15 +1909,40 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         if claims_rollup:
             top_claims = [str(category or "").strip().replace("_", " ") for category, _ in claims_rollup[:3] if str(category or "").strip()]
             if top_claims:
-                candidate_canon_blocks.append(
+                strongest_claim_count = max(int(total or 0) for _, total in claims_rollup[:3]) if claims_rollup else 0
+                _append_canon_block(
                     {
                         "block_type": "working_heuristic",
-                        "knowledge_state": "candidate",
+                        "knowledge_state": "reviewed" if strongest_claim_count >= 3 else "candidate",
                         "confidence": "low",
                         "summary": f"Company memory is repeatedly surfacing heuristics around {', '.join(top_claims)}.",
                         "evidence_basis": "Repeated claim categories observed in current knowledge rollups.",
                     }
                 )
+        stale_conflict_total = int(exception_counts.get("Stale or conflicting source data") or 0)
+        if stale_conflict_total > 0:
+            contradiction_state = "contradicted" if canonical_sources and derived_sources else "stale"
+            contradiction_summary = (
+                "Current company knowledge shows source disagreement between canonical operational records and derived/operator-maintained views."
+                if contradiction_state == "contradicted"
+                else "Current company knowledge appears exposed to stale or weakly grounded source views that need refresh or validation."
+            )
+            _append_canon_block(
+                {
+                    "block_type": "contradiction_watch",
+                    "knowledge_state": contradiction_state,
+                    "confidence": "medium" if contradiction_state == "contradicted" else "low",
+                    "summary": contradiction_summary,
+                    "evidence_basis": "Exception patterns mention stale/conflicting data and source-trust signals show mixed evidence posture.",
+                }
+            )
+        knowledge_lifecycle_summary = [
+            {"state": state, "count": total}
+            for state, total in sorted(
+                knowledge_state_counts.items(),
+                key=lambda item: (-int(item[1]), ["candidate", "reviewed", "canonical", "stale", "contradicted", "superseded"].index(item[0]) if item[0] in ["candidate", "reviewed", "canonical", "stale", "contradicted", "superseded"] else 99),
+            )
+        ]
         snapshot_notes = [
             f"Recurring workflows observed: {len(workflow_signals)}.",
             f"Connected source streams contributing to logistics knowledge: {source_total}.",
@@ -1915,6 +1956,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             "trust_signals": trust_signals,
             "exception_signals": exception_signals,
             "candidate_canon_blocks": candidate_canon_blocks,
+            "knowledge_lifecycle_summary": knowledge_lifecycle_summary,
             "principles": [
                 "Recurring dispatch, incident, and reporting workflows should be captured as reusable SOPs instead of staying trapped inside runtime chatter.",
                 "Source freshness and authority matter: logistics actions should prefer the latest operational source of truth before acting.",

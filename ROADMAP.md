@@ -73,8 +73,9 @@ Phase 2 (signal extraction)
    - current slice surfaces candidate canon blocks in `Company Operating Context`.
 7. `planned` Humanization layer:
    - translate internal technical labels into company-readable summaries and titles.
-8. `planned` Knowledge quality lifecycle:
+8. `in_progress` Knowledge quality lifecycle:
    - candidate -> reviewed -> canonical -> stale -> contradicted -> superseded.
+   - current slice adds first lifecycle heuristics for company canon candidates.
 
 Definition of done for this track:
 - starter business profiles can generate a real company-facing knowledge core, not only agent/runtime scaffolding;
