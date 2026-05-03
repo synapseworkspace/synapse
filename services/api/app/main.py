@@ -2263,11 +2263,770 @@ def _build_agent_capability_diagnostics_rows(
     return rows
 
 
+def _process_field_origin(*, source_kind: str, field_name: str) -> str:
+    normalized_source = str(source_kind or "").strip().lower()
+    if normalized_source == "scheduled_task":
+        return "scheduled_task_contract"
+    if normalized_source == "profile_declared":
+        return "agent_profile"
+    if normalized_source == "reflection":
+        return "reflection"
+    if normalized_source == "bundle":
+        return "bundle"
+    if normalized_source == "claim":
+        return "claim"
+    return "unknown"
+
+
+def _process_field_confidence(*, origin: str) -> float:
+    mapping = {
+        "scheduled_task_contract": 0.95,
+        "agent_profile": 0.9,
+        "bundle": 0.88,
+        "reflection": 0.84,
+        "claim": 0.76,
+        "unknown": 0.4,
+    }
+    return float(mapping.get(str(origin or "").strip().lower(), 0.4))
+
+
+def _build_process_synthesized_field_entries(
+    *,
+    values: list[str] | set[str],
+    source_kind: str,
+    field_name: str,
+    max_items: int = 5,
+) -> list[dict[str, Any]]:
+    origin = _process_field_origin(source_kind=source_kind, field_name=field_name)
+    confidence = _process_field_confidence(origin=origin)
+    entries: list[dict[str, Any]] = []
+    for value in list(values)[:max_items]:
+        text = str(value).strip()
+        if not text:
+            continue
+        entries.append(
+            {
+                "value": text,
+                "origin": origin,
+                "confidence": confidence,
+            }
+        )
+    return entries
+
+
+def _build_process_playbook_relation_edges(rows: list[dict[str, Any]] | None, *, limit: int = 800) -> list[dict[str, Any]]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        playbook_ref = str(row.get("title") or "").strip()
+        if not playbook_ref:
+            continue
+        source_kind = str(row.get("source_kind") or "").strip()
+        field_groups = {
+            "agent": row.get("owners") or [],
+            "tool": row.get("tools") or [],
+            "artifact": row.get("artifacts") or [],
+            "decision": row.get("decision_refs") or [],
+            "input": row.get("inputs") or [],
+        }
+        for target_kind, values in field_groups.items():
+            field_name = {
+                "agent": "owners",
+                "tool": "tools",
+                "artifact": "artifacts",
+                "decision": "decision_refs",
+                "input": "inputs",
+            }[target_kind]
+            origin = _process_field_origin(source_kind=source_kind, field_name=field_name)
+            confidence = _process_field_confidence(origin=origin)
+            for value in values[:4]:
+                target = str(value).strip()
+                if not target:
+                    continue
+                marker = f"{playbook_ref.lower()}|{target_kind}|{target.lower()}"
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                edges.append(
+                    {
+                        "from_kind": "playbook",
+                        "from_ref": playbook_ref,
+                        "to_kind": target_kind,
+                        "to_ref": target,
+                        "origin": origin,
+                        "confidence": confidence,
+                    }
+                )
+                if len(edges) >= max(1, int(limit)):
+                    return edges
+    return edges
+
+
+def _build_process_playbook_quality_metrics(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    rows_with_owners = 0
+    rows_with_tools = 0
+    rows_with_artifacts = 0
+    rows_with_decisions = 0
+    rows_with_human_loop = 0
+    origin_counts: dict[str, int] = {}
+    for row in rows:
+        if row.get("owners"):
+            rows_with_owners += 1
+        if row.get("tools"):
+            rows_with_tools += 1
+        if row.get("artifacts"):
+            rows_with_artifacts += 1
+        if row.get("decision_refs"):
+            rows_with_decisions += 1
+        if str(row.get("human_loop") or "").strip():
+            rows_with_human_loop += 1
+        source_kind = str(row.get("source_kind") or "").strip()
+        for field_name in ("owners", "tools", "artifacts", "decision_refs", "inputs"):
+            origin = _process_field_origin(source_kind=source_kind, field_name=field_name)
+            origin_counts[origin] = int(origin_counts.get(origin) or 0) + 1
+    return {
+        "rows_total": len(rows),
+        "rows_with_owners": rows_with_owners,
+        "rows_with_tools": rows_with_tools,
+        "rows_with_artifacts": rows_with_artifacts,
+        "rows_with_decisions": rows_with_decisions,
+        "rows_with_human_loop": rows_with_human_loop,
+        "field_origin_counts": origin_counts,
+    }
+
+
+def _build_process_playbook_diagnostics_rows(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_signals: int,
+) -> list[dict[str, Any]]:
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
+
+    def _extract_process_triplet(claim_text: str, metadata: dict[str, Any]) -> dict[str, Any]:
+        operator_decision = metadata.get("operator_decision") if isinstance(metadata.get("operator_decision"), dict) else {}
+        metadata_triplet = metadata.get("process_triplet") if isinstance(metadata.get("process_triplet"), dict) else None
+        if metadata_triplet is None and isinstance(operator_decision.get("process_triplet"), dict):
+            metadata_triplet = operator_decision.get("process_triplet")
+        if isinstance(metadata_triplet, dict):
+            trigger = str(metadata_triplet.get("trigger") or "").strip()
+            action = str(metadata_triplet.get("action") or "").strip()
+            outcome = str(metadata_triplet.get("outcome") or "").strip()
+            confidence = metadata_triplet.get("confidence")
+            if trigger or action or outcome:
+                if not isinstance(confidence, (int, float)):
+                    confidence = float(metadata.get("llm_confidence") or metadata.get("confidence") or 0.85)
+                return {
+                    "trigger": trigger,
+                    "action": action,
+                    "outcome": outcome,
+                    "confidence": max(0.0, min(1.0, round(float(confidence), 3))),
+                }
+        normalized = _normalize_statement_text(claim_text)
+        trigger = ""
+        action = ""
+        outcome = ""
+        pattern_if_then = re.search(
+            r"\b(?:if|when|если|когда)\b\s+(?P<trigger>[^.]{3,240}?)\s*(?:,|then|то)\s+(?P<action>[^.]{3,280})",
+            normalized,
+        )
+        if pattern_if_then:
+            trigger = str(pattern_if_then.group("trigger") or "").strip(" ,.;:")
+            action = str(pattern_if_then.group("action") or "").strip(" ,.;:")
+        else:
+            pattern_steps = re.search(
+                r"\b(?:process|workflow|procedure|runbook|playbook|sop|процесс|процедура|регламент|инструкция)\b[:\s-]*(?P<action>[^.]{6,320})",
+                normalized,
+            )
+            if pattern_steps:
+                action = str(pattern_steps.group("action") or "").strip(" ,.;:")
+        pattern_outcome = re.search(
+            r"\b(?:result|outcome|verify|sla|resolution|итог|результат|проверить|проверка)\b[:\s-]*(?P<outcome>[^.]{3,220})",
+            normalized,
+        )
+        if pattern_outcome:
+            outcome = str(pattern_outcome.group("outcome") or "").strip(" ,.;:")
+        return {
+            "trigger": trigger,
+            "action": action,
+            "outcome": outcome,
+            "confidence": max(0.0, min(1.0, round(float(metadata.get("llm_confidence") or metadata.get("confidence") or 0.55), 3))),
+        }
+
+    def _extract_list_values(*values: Any, limit: int = 6) -> list[str]:
+        collected: list[str] = []
+        def _collect(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    _collect(item)
+                return
+            if isinstance(value, dict):
+                for field in ("name", "tool", "title", "id", "source", "source_system", "ticket_id", "case_id"):
+                    text = str(value.get(field) or "").strip()
+                    if text:
+                        collected.append(text[:180])
+                        return
+                return
+            text = str(value or "").strip()
+            if text:
+                collected.append(text[:180])
+        for value in values:
+            _collect(value)
+        deduped: list[str] = []
+        seen_vals: set[str] = set()
+        for item in collected:
+            marker = item.lower()
+            if marker in seen_vals:
+                continue
+            seen_vals.add(marker)
+            deduped.append(item)
+            if len(deduped) >= limit:
+                break
+        return deduped
+
+    def _purpose_for_category(category: str) -> str:
+        normalized = str(category or "").strip().lower()
+        if normalized == "policy":
+            return "Keep execution aligned with approved policy and route ambiguous changes to review."
+        if normalized in {"incident", "access"}:
+            return "Contain operational risk quickly and preserve a safe escalation path."
+        if normalized in {"runbook", "process"}:
+            return "Execute repeatable operating steps with clear escalation and verification."
+        return "Convert recurring operational signals into repeatable, auditable action."
+
+    def _process_title(trigger: str, action: str, category: str, owner_agents: list[str]) -> str:
+        if trigger:
+            seed = trigger
+        elif action:
+            seed = action
+        elif owner_agents:
+            seed = f"{owner_agents[0]} workflow"
+        else:
+            seed = f"{category} workflow"
+        normalized = re.sub(r"\s+", " ", str(seed or "").replace("_", " ")).strip(" .,:;-")
+        normalized = normalized[:80] if normalized else f"{category.title()} workflow"
+        if normalized.lower().endswith("playbook"):
+            return normalized
+        return f"{normalized[:1].upper()}{normalized[1:]} Playbook"
+
+    def _owner_agents_from_metadata(metadata: dict[str, Any], *, fallback: str | None = None) -> list[str]:
+        owners = _extract_list_values(
+            metadata.get("agent_id"),
+            metadata.get("runtime_agent_id"),
+            metadata.get("agent_ids"),
+            metadata.get("owner_agent"),
+            metadata.get("owner_agents"),
+            metadata.get("claim_entity_key"),
+            fallback,
+            limit=4,
+        )
+        cleaned = [item for item in owners if item.lower() not in {"process", "policy", "decision"}]
+        return cleaned[:4]
+
+    def _verification_steps(output: str, escalation: str, *, confidence: float) -> list[str]:
+        steps = []
+        if output:
+            steps.append(f"Check that outcome is explicit: {output}.")
+        else:
+            steps.append("Check that the action closed the loop and removed repeat escalation signals.")
+        if confidence < 0.75:
+            steps.append("Confirm the rule against a second source before broad reuse.")
+        steps.append(f"Watch for escalation condition: {escalation}")
+        return steps[:3]
+
+    def _human_loop_guidance(category: str, escalation: str, *, confidence: float, exceptions: list[str]) -> str:
+        normalized = str(category or "").strip().lower()
+        if normalized in {"policy", "access"}:
+            return "Human approval required before publishing or applying this rule broadly."
+        if confidence < 0.7:
+            return "Human confirmation recommended because evidence confidence is still low."
+        if exceptions:
+            return "Escalate to a human when an exception path or repeated failure appears."
+        return f"Autonomous execution is acceptable until this escalation boundary is hit: {escalation}"
+
+    rows: list[tuple[Any, ...]] = []
+    query_limit = max(20, min(800, int(max_signals) * 10))
+    reflection_signals = _load_recent_agent_reflection_signals(
+        cur,
+        project_id=project_id,
+        days=45,
+        max_agents=max(50, int(max_signals) * 6),
+    )
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3)) or []
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3)) or []
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(50, int(max_signals) * 3)) or []
+    bundle_rows = _load_evidence_bundles_for_bootstrap(
+        cur,
+        project_id=project_id,
+        bundle_types=["process", "policy", "decision"],
+        statuses=["ready", "candidate"],
+        limit=max(12, min(120, int(max_signals) * 4)),
+    )
+    if _wiki_feature_table_exists(cur, "public.claims"):
+        evidence_select_sql = "evidence" if _claims_have_evidence_column(cur.connection) else "'[]'::jsonb AS evidence"
+        cur.execute(
+            f"""
+            SELECT claim_text, category, metadata, {evidence_select_sql}
+            FROM claims
+            WHERE project_id = %s
+              AND status <> 'rejected'
+              AND (
+                lower(COALESCE(category, '')) IN ('process', 'policy', 'runbook', 'incident', 'access')
+                OR lower(COALESCE(claim_text, '')) SIMILAR TO '%%(process|runbook|playbook|procedure|if|when|then|escalat)%%'
+              )
+            ORDER BY updated_at DESC
+            LIMIT %s
+            """,
+            (project_id, query_limit),
+        )
+        rows = cur.fetchall() or []
+    playbooks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bundle in bundle_rows:
+        sample_claims = bundle.get("sample_claims") if isinstance(bundle.get("sample_claims"), list) else []
+        sample_entry = sample_claims[0] if sample_claims and isinstance(sample_claims[0], dict) else {}
+        claim_text = str(sample_entry.get("claim_text") or "").strip()
+        metadata = sample_entry.get("metadata") if isinstance(sample_entry.get("metadata"), dict) else {}
+        bundle_metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
+        merged_metadata = {
+            **bundle_metadata,
+            **metadata,
+            "source_system": bundle_metadata.get("source_systems") or metadata.get("source_system"),
+            "source": bundle.get("bundle_key"),
+            "confidence": bundle.get("quality_score"),
+        }
+        if not claim_text:
+            claim_text = (
+                f"{str(bundle.get('entity_key') or 'process')} {str(bundle.get('bundle_type') or 'process')} "
+                f"bundle with support {int(bundle.get('support_count') or 0)} and source diversity {int(bundle.get('source_diversity') or 0)}."
+            )
+        normalized = _normalize_statement_text(claim_text)[:200]
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        category = str(sample_entry.get("category") or bundle.get("bundle_type") or "process").strip() or "process"
+        process_triplet = _extract_process_triplet(claim_text, merged_metadata)
+        trigger = str(process_triplet.get("trigger") or "").strip() or str(bundle.get("entity_key") or claim_text[:100])
+        action = str(process_triplet.get("action") or "").strip() or _derive_action_candidate(claim_text, category)
+        output = str(process_triplet.get("outcome") or "").strip()
+        confidence = float(process_triplet.get("confidence") or bundle.get("quality_score") or 0.0)
+        escalation = _derive_escalation_rule(claim_text, confidence, category)
+        ticket_signal = _extract_ticket_outcome_signal(merged_metadata)
+        source_refs = _extract_list_values(
+            merged_metadata.get("source_system"),
+            merged_metadata.get("source"),
+            merged_metadata.get("namespace"),
+            (bundle_metadata.get("source_systems") if isinstance(bundle_metadata.get("source_systems"), list) else None),
+            limit=4,
+        )
+        tools_used = _extract_list_values(
+            merged_metadata.get("tool_name"),
+            merged_metadata.get("tool"),
+            merged_metadata.get("tool_names"),
+            limit=5,
+        )
+        inputs = _extract_list_values(source_refs, merged_metadata.get("entity_key"), merged_metadata.get("subject"), limit=4)
+        steps = [f"Confirm trigger: {trigger}.", f"Execute action: {action}."]
+        if output:
+            steps.append(f"Verify expected outcome: {output}.")
+        else:
+            steps.append("Verify outcome against SLA/policy expectations before closing the loop.")
+        exceptions: list[str] = []
+        if ticket_signal.get("negative"):
+            exceptions.append("If prior resolution outcome was negative, escalate immediately instead of retrying the same flow.")
+        if confidence < 0.7:
+            exceptions.append("If evidence confidence is low, require human confirmation before broad rollout.")
+        if category.lower() in {"policy", "access"}:
+            exceptions.append("Policy/access changes must not bypass approval guardrails.")
+        evidence_summary = _extract_list_values(
+            source_refs,
+            ticket_signal.get("ticket_ids"),
+            ticket_signal.get("outcome"),
+            f"bundle_support={int(bundle.get('support_count') or 0)}",
+            f"bundle_status={str(bundle.get('bundle_status') or 'candidate')}",
+            limit=6,
+        )
+        owner_agents = _owner_agents_from_metadata(
+            merged_metadata,
+            fallback=str(bundle.get("entity_key") or "") if str(bundle.get("bundle_type") or "") == "capability" else None,
+        )
+        verification = _verification_steps(output, escalation, confidence=confidence)
+        human_loop = _human_loop_guidance(category, escalation, confidence=confidence, exceptions=exceptions)
+        decision_refs = _extract_list_values(
+            merged_metadata.get("decision"),
+            merged_metadata.get("decisions"),
+            merged_metadata.get("operator_decision"),
+            limit=4,
+        )
+        artifacts = _extract_list_values(
+            source_refs,
+            ticket_signal.get("ticket_ids"),
+            merged_metadata.get("task_id"),
+            merged_metadata.get("session_id"),
+            limit=5,
+        )
+        refined = synthesis_pack.refine_process_playbook(
+            playbook={
+                "title": _process_title(trigger, action, category, owner_agents),
+                "purpose": _purpose_for_category(category),
+                "category": category,
+                "owners": owner_agents,
+                "trigger": trigger,
+                "action": action,
+                "inputs": inputs,
+                "steps": steps,
+                "exceptions": exceptions,
+                "output": output or str(ticket_signal.get("outcome") or "verified action outcome"),
+                "escalation": escalation,
+                "verification": verification,
+                "human_loop": human_loop,
+                "tools": tools_used,
+                "artifacts": artifacts,
+                "decision_refs": decision_refs,
+                "evidence": evidence_summary,
+            },
+            source_kind="bundle",
+            normalize_statement_text=_normalize_statement_text,
+        )
+        refined["source_kind"] = "bundle"
+        refined["confidence"] = max(0.0, min(1.0, round(confidence, 3)))
+        refined["provenance"] = {
+            "bundle_keys": [str(bundle.get("bundle_key") or "").strip()] if str(bundle.get("bundle_key") or "").strip() else [],
+            "agent_refs": owner_agents[:4],
+        }
+        playbooks.append(refined)
+        if len(playbooks) >= max(6, min(50, int(max_signals))):
+            break
+    for row in rows:
+        claim_text = str(row[0] or "").strip()
+        category = str(row[1] or "operations").strip() or "operations"
+        metadata = row[2] if isinstance(row[2], dict) else {}
+        evidence = row[3] if len(row) > 3 and isinstance(row[3], list) else []
+        if not claim_text or len(claim_text) < 20:
+            continue
+        normalized = _normalize_statement_text(claim_text)[:200]
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        process_triplet = _extract_process_triplet(claim_text, metadata)
+        trigger = str(process_triplet.get("trigger") or "").strip() or claim_text[:100]
+        action = str(process_triplet.get("action") or "").strip() or _derive_action_candidate(claim_text, category)
+        output = str(process_triplet.get("outcome") or "").strip()
+        confidence = float(process_triplet.get("confidence") or metadata.get("llm_confidence") or metadata.get("confidence") or 0.0)
+        escalation = _derive_escalation_rule(claim_text, confidence, category)
+        ticket_signal = _extract_ticket_outcome_signal(metadata)
+        source_refs = _extract_list_values(
+            metadata.get("source_system"),
+            metadata.get("source"),
+            metadata.get("namespace"),
+            *[item.get("source_system") if isinstance(item, dict) else None for item in evidence],
+            *[item.get("source_id") if isinstance(item, dict) else None for item in evidence],
+            limit=4,
+        )
+        tools_used = _extract_list_values(
+            metadata.get("tool_name"),
+            metadata.get("tool"),
+            metadata.get("tool_names"),
+            *[item.get("tool_name") if isinstance(item, dict) else None for item in evidence],
+            limit=5,
+        )
+        inputs = _extract_list_values(source_refs, metadata.get("entity_key"), metadata.get("subject"), limit=4)
+        ticket_ids = [str(item).strip() for item in (ticket_signal.get("ticket_ids") or []) if str(item).strip()]
+        steps = [f"Confirm trigger: {trigger}.", f"Execute action: {action}."]
+        if output:
+            steps.append(f"Verify expected outcome: {output}.")
+        else:
+            steps.append("Verify outcome against SLA/policy expectations before closing the loop.")
+        exceptions: list[str] = []
+        if ticket_signal.get("negative"):
+            exceptions.append("If prior resolution outcome was negative, escalate immediately instead of retrying the same flow.")
+        if confidence < 0.7:
+            exceptions.append("If evidence confidence is low, require human confirmation before broad rollout.")
+        if category.lower() in {"policy", "access"}:
+            exceptions.append("Policy/access changes must not bypass approval guardrails.")
+        evidence_summary = _extract_list_values(source_refs, ticket_ids, ticket_signal.get("outcome"), limit=6)
+        owner_agents = _owner_agents_from_metadata(metadata)
+        verification = _verification_steps(output, escalation, confidence=confidence)
+        human_loop = _human_loop_guidance(category, escalation, confidence=confidence, exceptions=exceptions)
+        decision_refs = _extract_list_values(metadata.get("decision"), metadata.get("decisions"), metadata.get("operator_decision"), ticket_ids, limit=4)
+        artifacts = _extract_list_values(source_refs, ticket_ids, metadata.get("task_id"), metadata.get("session_id"), limit=5)
+        refined = synthesis_pack.refine_process_playbook(
+            playbook={
+                "title": _process_title(trigger, action, category, owner_agents),
+                "purpose": _purpose_for_category(category),
+                "category": category,
+                "owners": owner_agents,
+                "trigger": trigger,
+                "action": action,
+                "inputs": inputs,
+                "steps": steps,
+                "exceptions": exceptions,
+                "output": output or str(ticket_signal.get("outcome") or "verified action outcome"),
+                "escalation": escalation,
+                "verification": verification,
+                "human_loop": human_loop,
+                "tools": tools_used,
+                "artifacts": artifacts,
+                "decision_refs": decision_refs,
+                "evidence": evidence_summary,
+            },
+            source_kind="claim",
+            normalize_statement_text=_normalize_statement_text,
+        )
+        refined["source_kind"] = "claim"
+        refined["confidence"] = max(0.0, min(1.0, round(confidence, 3)))
+        refined["provenance"] = {
+            "bundle_keys": [],
+            "agent_refs": owner_agents[:4],
+        }
+        playbooks.append(refined)
+        if len(playbooks) >= max(6, min(50, int(max_signals))):
+            break
+    for agent_id, signal in list(reflection_signals.items())[: max(4, min(24, int(max_signals) * 2))]:
+        durable_rules = [str(item).strip() for item in (signal.get("durable_rules") or []) if str(item).strip()]
+        actions_taken = [str(item).strip() for item in (signal.get("actions_taken") or []) if str(item).strip()]
+        escalations = [str(item).strip() for item in (signal.get("escalations") or []) if str(item).strip()]
+        sources_used = [str(item).strip() for item in (signal.get("sources") or []) if str(item).strip()]
+        tools_used = [str(item).strip() for item in (signal.get("tools") or []) if str(item).strip()]
+        decisions = [str(item).strip() for item in (signal.get("decisions") or []) if str(item).strip()]
+        if not durable_rules and not actions_taken:
+            continue
+        trigger = durable_rules[0] if durable_rules else f"Agent {agent_id} receives a workflow task"
+        action = actions_taken[0] if actions_taken else "apply the durable rule and document the result"
+        category = "process"
+        normalized = _normalize_statement_text(f"{agent_id}:{trigger}:{action}")[:200]
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        exceptions = []
+        if escalations:
+            exceptions.append(f"Escalate when {escalations[0]}")
+        refined = synthesis_pack.refine_process_playbook(
+            playbook={
+                "title": _process_title(trigger, action, category, [agent_id]),
+                "purpose": "Capture durable workflow behavior learned through repeated agent execution and reflection.",
+                "category": category,
+                "owners": [agent_id],
+                "trigger": trigger,
+                "action": action,
+                "inputs": _extract_list_values(sources_used[:3], f"agent:{agent_id}", limit=4),
+                "steps": [
+                    f"Detect trigger: {trigger}.",
+                    f"Apply learned workflow action: {action}.",
+                    "Record the result and update durable knowledge if the pattern repeats.",
+                ],
+                "exceptions": exceptions,
+                "output": decisions[0] if decisions else "Documented operational outcome",
+                "escalation": escalations[0] if escalations else "Escalate when repeated uncertainty or failure appears.",
+                "verification": _verification_steps(decisions[0] if decisions else "", escalations[0] if escalations else "review", confidence=0.8),
+                "human_loop": "Human review recommended before promoting a reflection-derived workflow into a broadly trusted SOP.",
+                "tools": tools_used[:5],
+                "artifacts": _extract_list_values(sources_used[:3], f"agent:{agent_id}", limit=5),
+                "decision_refs": decisions[:4],
+                "evidence": _extract_list_values(durable_rules[:2], actions_taken[:2], limit=6),
+            },
+            source_kind="reflection",
+            normalize_statement_text=_normalize_statement_text,
+        )
+        refined["source_kind"] = "reflection"
+        refined["confidence"] = 0.8
+        refined["provenance"] = {
+            "bundle_keys": [],
+            "agent_refs": [agent_id],
+        }
+        playbooks.append(refined)
+        if len(playbooks) >= max(6, min(50, int(max_signals))):
+            break
+    for item in matrix:
+        if not isinstance(item, dict):
+            continue
+        agent_id = str(item.get("agent_id") or "").strip()
+        scheduled_tasks = [str(v).strip() for v in (item.get("scheduled_tasks") or []) if str(v).strip()]
+        standing_orders = [str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()]
+        approval_rules = [str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()]
+        tools_used = [str(v).strip() for v in (item.get("tools") or []) if str(v).strip()]
+        source_inputs = [str(v).strip() for v in (item.get("source_bindings") or []) if str(v).strip()]
+        scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
+        escalation_rules = [str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()]
+        scheduled_task_contracts = [contract for contract in (item.get("scheduled_task_contracts") or []) if isinstance(contract, dict)]
+        if not standing_orders and not scheduled_tasks and not scheduled_task_contracts:
+            continue
+        title_seed = standing_orders[0] if standing_orders else (scheduled_tasks[0] if scheduled_tasks else f"{agent_id} workflow")
+        normalized = _normalize_statement_text(f"{agent_id}:{title_seed}")[:200]
+        if normalized not in seen:
+            seen.add(normalized)
+            trigger = f"Agent `{agent_id}` receives a recurring operational trigger"
+            action = standing_orders[0] if standing_orders else (scheduled_tasks[0] if scheduled_tasks else "execute declared workflow")
+            refined = synthesis_pack.refine_process_playbook(
+                playbook={
+                    "title": _process_title(trigger, action, "process", [agent_id] if agent_id else []),
+                    "purpose": "Document the recurring workflow declared in the agent profile/control plane.",
+                    "category": "process",
+                    "owners": [agent_id] if agent_id else [],
+                    "trigger": trigger,
+                    "action": action,
+                    "inputs": _extract_list_values(source_inputs[:4], scenarios[:2], limit=6),
+                    "steps": [
+                        f"Recognize recurring trigger for `{agent_id}`.",
+                        f"Execute declared workflow: {action}.",
+                        "Escalate or pause when approval/policy boundaries are crossed.",
+                    ],
+                    "exceptions": [f"Guardrail: {rule}" for rule in approval_rules[:2]],
+                    "output": "Recurring workflow result captured and handed to dependent agents/systems.",
+                    "escalation": escalation_rules[0] if escalation_rules else "Escalate when recurring workflow becomes risky or ambiguous.",
+                    "verification": _verification_steps("Recurring workflow result captured.", escalation_rules[0] if escalation_rules else "review", confidence=max(0.8, float(item.get("confidence") or 0.0))),
+                    "human_loop": "Human review recommended for broad workflow changes or approval-bound actions.",
+                    "tools": _extract_list_values(tools_used[:5], limit=6),
+                    "artifacts": _extract_list_values(source_inputs[:3], standing_orders[:2], scheduled_tasks[:2], scenarios[:2], f"agent:{agent_id}" if agent_id else None, limit=6),
+                    "decision_refs": [],
+                    "evidence": _extract_list_values(standing_orders[:2], scheduled_tasks[:2], scenarios[:2], limit=6),
+                },
+                source_kind="profile_declared",
+                normalize_statement_text=_normalize_statement_text,
+            )
+            refined["source_kind"] = "profile_declared"
+            refined["confidence"] = max(0.8, float(item.get("confidence") or 0.0))
+            refined["provenance"] = {
+                "bundle_keys": [],
+                "agent_refs": [agent_id] if agent_id else [],
+            }
+            playbooks.append(refined)
+            if len(playbooks) >= max(6, min(50, int(max_signals))):
+                break
+        for task in scheduled_task_contracts[:6]:
+            task_code = str(task.get("task_code") or task.get("name") or "").strip()
+            builtin_task = str(task.get("builtin_task") or "").strip()
+            title_seed = builtin_task or task_code
+            if not title_seed:
+                continue
+            normalized_task = _normalize_statement_text(f"{agent_id}:{title_seed}")[:200]
+            if normalized_task in seen:
+                continue
+            seen.add(normalized_task)
+            cron_expr = str(task.get("cron_expr") or "").strip()
+            interval_seconds = str(task.get("interval_seconds") or "").strip()
+            schedule_kind = str(task.get("schedule_kind") or "").strip() or "scheduled"
+            timezone_value = str(task.get("timezone") or "").strip()
+            authority = [str(v).strip() for v in (task.get("standing_order_authority") or []) if str(v).strip()]
+            approval_mode = str(task.get("standing_order_approval_mode") or "").strip()
+            escalation_metadata = task.get("standing_order_escalation") if isinstance(task.get("standing_order_escalation"), dict) else {}
+            escalation_mode = str(escalation_metadata.get("mode") or "").strip()
+            program = str(task.get("standing_order_program") or "").strip()
+            task_semantics = _build_task_contract_semantics(task, pack_key=getattr(synthesis_pack, "key", None))
+            trigger = str(task_semantics.get("trigger") or "").strip() or (
+                f"Scheduled task `{task_code or builtin_task}` runs on cron `{cron_expr}`"
+                if cron_expr
+                else (f"Scheduled task `{task_code or builtin_task}` runs every {interval_seconds}s" if interval_seconds else f"Scheduled task `{task_code or builtin_task}` executes in {schedule_kind} mode")
+            )
+            action = builtin_task or task_code
+            purpose = str(task_semantics.get("purpose") or "").strip() or "Document the concrete operational SOP declared in the control-plane schedule/standing-order contract."
+            inputs = _extract_list_values(task_semantics.get("inputs") or [], source_inputs[:4], builtin_task, task_code, limit=6)
+            steps = [str(item).strip() for item in (task_semantics.get("steps") or []) if str(item).strip()]
+            if not steps:
+                steps = [
+                    f"Wait for schedule trigger: {cron_expr or (f'every {interval_seconds}s' if interval_seconds else schedule_kind)}.",
+                    f"Run builtin workflow: {action}.",
+                    "Write back outcome and exceptions to the wiki/debrief loop.",
+                ]
+            if authority:
+                steps.append(f"Respect standing-order authority: {', '.join(authority[:3])}.")
+            exceptions = []
+            if approval_mode and approval_mode.lower() not in {"", "none"}:
+                exceptions.append(f"Approval mode: {approval_mode}.")
+            if approval_rules:
+                exceptions.extend([f"Guardrail: {rule}" for rule in approval_rules[:2]])
+            if timezone_value and steps:
+                steps[0] = f"{steps[0]} Timezone: `{timezone_value}`."
+            escalation = escalation_rules[0] if escalation_rules else "Escalate to reviewer when scheduled workflow produces a risky or uncertain output."
+            if escalation_mode:
+                escalation = f"{escalation} Control-plane escalation mode: `{escalation_mode}`."
+            refined = synthesis_pack.refine_process_playbook(
+                playbook={
+                    "title": _process_title(trigger, action, "process", [agent_id] if agent_id else []),
+                    "purpose": purpose,
+                    "category": "process",
+                    "owners": [agent_id] if agent_id else [],
+                    "trigger": trigger,
+                    "action": action,
+                    "inputs": inputs,
+                    "steps": steps,
+                    "exceptions": exceptions,
+                    "output": str(task_semantics.get("outputs") or f"Scheduled workflow `{action}` completed and recorded."),
+                    "escalation": escalation,
+                    "verification": [str(v).strip() for v in (task_semantics.get("verification") or []) if str(v).strip()]
+                    or _verification_steps(
+                        f"Scheduled workflow `{action}` completed and recorded.",
+                        escalation,
+                        confidence=max(0.8, float(item.get('confidence') or 0.0)),
+                    ),
+                    "human_loop": (f"Human approval boundary: {approval_mode}." if approval_mode else "Human review recommended when the recurring workflow output changes policy/process state."),
+                    "tools": _extract_list_values(tools_used[:5], builtin_task, limit=6),
+                    "artifacts": _extract_list_values(task_semantics.get("artifacts") or [], source_inputs[:3], task_code, builtin_task, limit=6),
+                    "decision_refs": _extract_list_values(program, *authority[:2], limit=4),
+                    "evidence": _extract_list_values(task_code, builtin_task, cron_expr, interval_seconds, program, limit=6),
+                },
+                source_kind="scheduled_task",
+                normalize_statement_text=_normalize_statement_text,
+            )
+            refined["source_kind"] = "scheduled_task"
+            refined["confidence"] = max(0.8, float(item.get("confidence") or 0.0))
+            refined["provenance"] = {
+                "bundle_keys": [],
+                "agent_refs": [agent_id] if agent_id else [],
+            }
+            playbooks.append(refined)
+            if len(playbooks) >= max(6, min(50, int(max_signals))):
+                break
+    normalized_rows: list[dict[str, Any]] = []
+    for item in playbooks[: max(6, min(50, int(max_signals)))]:
+        source_kind = str(item.get("source_kind") or "unknown").strip()
+        normalized_rows.append(
+            {
+                "title": str(item.get("title") or "").strip(),
+                "purpose": str(item.get("purpose") or "").strip(),
+                "category": str(item.get("category") or "").strip() or "process",
+                "owners": [str(v).strip() for v in (item.get("owners") or []) if str(v).strip()][:4],
+                "trigger": str(item.get("trigger") or "").strip(),
+                "action": str(item.get("action") or "").strip(),
+                "inputs": [str(v).strip() for v in (item.get("inputs") or []) if str(v).strip()][:6],
+                "steps": [str(v).strip() for v in (item.get("steps") or []) if str(v).strip()][:8],
+                "exceptions": [str(v).strip() for v in (item.get("exceptions") or []) if str(v).strip()][:6],
+                "output": str(item.get("output") or "").strip(),
+                "escalation": str(item.get("escalation") or "").strip(),
+                "verification": [str(v).strip() for v in (item.get("verification") or []) if str(v).strip()][:6],
+                "human_loop": str(item.get("human_loop") or "").strip(),
+                "tools": [str(v).strip() for v in (item.get("tools") or []) if str(v).strip()][:6],
+                "artifacts": [str(v).strip() for v in (item.get("artifacts") or []) if str(v).strip()][:6],
+                "decision_refs": [str(v).strip() for v in (item.get("decision_refs") or []) if str(v).strip()][:4],
+                "evidence": [str(v).strip() for v in (item.get("evidence") or []) if str(v).strip()][:6],
+                "source_kind": source_kind,
+                "confidence": float(item.get("confidence") or 0.0),
+                "synthesized_fields": {
+                    "owners": _build_process_synthesized_field_entries(values=item.get("owners") or [], source_kind=source_kind, field_name="owners"),
+                    "tools": _build_process_synthesized_field_entries(values=item.get("tools") or [], source_kind=source_kind, field_name="tools"),
+                    "artifacts": _build_process_synthesized_field_entries(values=item.get("artifacts") or [], source_kind=source_kind, field_name="artifacts"),
+                    "decision_refs": _build_process_synthesized_field_entries(values=item.get("decision_refs") or [], source_kind=source_kind, field_name="decision_refs"),
+                    "inputs": _build_process_synthesized_field_entries(values=item.get("inputs") or [], source_kind=source_kind, field_name="inputs"),
+                },
+                "provenance": item.get("provenance") if isinstance(item.get("provenance"), dict) else {},
+            }
+        )
+    return normalized_rows
+
+
 def _build_synthesis_relation_graph_snapshot(
     *,
     tool_rows: list[dict[str, Any]] | None,
     source_rows: list[dict[str, Any]] | None,
     agent_rows: list[dict[str, Any]] | None = None,
+    process_rows: list[dict[str, Any]] | None = None,
     limit: int = 1200,
 ) -> dict[str, Any]:
     tooling_edges = _build_tooling_relation_edges(tool_rows, limit=max(1, min(1200, int(limit))))
@@ -2275,7 +3034,9 @@ def _build_synthesis_relation_graph_snapshot(
     source_edges = _build_data_source_relation_edges(source_rows, limit=max(1, remaining))
     remaining = max(1, int(limit) - len(tooling_edges) - len(source_edges))
     agent_edges = _build_agent_capability_relation_edges(agent_rows, limit=max(1, remaining))
-    edges = [*tooling_edges, *source_edges, *agent_edges]
+    remaining = max(1, int(limit) - len(tooling_edges) - len(source_edges) - len(agent_edges))
+    process_edges = _build_process_playbook_relation_edges(process_rows, limit=max(1, remaining))
+    edges = [*tooling_edges, *source_edges, *agent_edges, *process_edges]
     node_map: dict[str, dict[str, str]] = {}
     edge_origin_counts: dict[str, int] = {}
     edge_kind_counts: dict[str, int] = {}
@@ -2321,6 +3082,7 @@ def _build_synthesis_relation_graph_snapshot(
             "tool_rows_total": len([row for row in (tool_rows or []) if isinstance(row, dict)]),
             "source_rows_total": len([row for row in (source_rows or []) if isinstance(row, dict)]),
             "agent_rows_total": len([row for row in (agent_rows or []) if isinstance(row, dict)]),
+            "process_rows_total": len([row for row in (process_rows or []) if isinstance(row, dict)]),
         },
         "nodes": sorted(node_map.values(), key=lambda item: (str(item.get("kind") or ""), str(item.get("ref") or "").lower())),
         "edges": edges,
@@ -35234,6 +35996,58 @@ def get_adoption_agent_capability_diagnostics(
     }
 
 
+@app.get("/v1/adoption/process-playbooks/diagnostics")
+def get_adoption_process_playbooks_diagnostics(
+    project_id: str = Query(..., min_length=1),
+    space_key: str = Query("operations", min_length=1),
+    limit: int = Query(24, ge=1, le=80),
+) -> dict[str, Any]:
+    normalized_space_key = _normalize_space_key(space_key)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            rows = _build_process_playbook_diagnostics_rows(
+                cur,
+                project_id=project_id,
+                space_key=normalized_space_key,
+                max_signals=limit,
+            )
+    edges = _build_process_playbook_relation_edges(rows, limit=max(60, min(800, limit * 12)))
+    diagnostics_rows = []
+    for row in rows[:limit]:
+        diagnostics_rows.append(
+            {
+                "title": row.get("title"),
+                "purpose": row.get("purpose"),
+                "category": row.get("category"),
+                "owners": row.get("owners"),
+                "trigger": row.get("trigger"),
+                "action": row.get("action"),
+                "inputs": row.get("inputs"),
+                "steps": row.get("steps"),
+                "exceptions": row.get("exceptions"),
+                "output": row.get("output"),
+                "escalation": row.get("escalation"),
+                "verification": row.get("verification"),
+                "human_loop": row.get("human_loop"),
+                "tools": row.get("tools"),
+                "artifacts": row.get("artifacts"),
+                "decision_refs": row.get("decision_refs"),
+                "evidence": row.get("evidence"),
+                "source_kind": row.get("source_kind"),
+                "confidence": row.get("confidence"),
+                "synthesized_fields": row.get("synthesized_fields"),
+                "provenance": row.get("provenance"),
+            }
+        )
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space_key,
+        "summary": _build_process_playbook_quality_metrics(rows),
+        "edges": edges,
+        "rows": diagnostics_rows,
+    }
+
+
 @app.get("/v1/adoption/synthesis-graph/diagnostics")
 def get_adoption_synthesis_graph_diagnostics(
     project_id: str = Query(..., min_length=1),
@@ -35266,10 +36080,17 @@ def get_adoption_synthesis_graph_diagnostics(
                 project_id=project_id,
                 max_agents=limit,
             )
+            process_rows = _build_process_playbook_diagnostics_rows(
+                cur,
+                project_id=project_id,
+                space_key=normalized_space_key,
+                max_signals=limit,
+            )
     graph = _build_synthesis_relation_graph_snapshot(
         tool_rows=tool_rows,
         source_rows=source_rows,
         agent_rows=agent_rows,
+        process_rows=process_rows,
         limit=max(120, min(2400, limit * 12)),
     )
     return {
@@ -35279,6 +36100,7 @@ def get_adoption_synthesis_graph_diagnostics(
         "nodes": graph.get("nodes") or [],
         "edges": graph.get("edges") or [],
         "agent_capability_summary": _build_agent_capability_quality_metrics(agent_rows),
+        "process_playbooks_summary": _build_process_playbook_quality_metrics(process_rows),
         "tooling_summary": _summarize_tooling_map_rows(tool_rows),
         "data_sources_summary": _build_data_source_quality_metrics(source_rows),
     }

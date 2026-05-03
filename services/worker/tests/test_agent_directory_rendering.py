@@ -23,6 +23,8 @@ try:
         _build_data_source_quality_metrics,
         _build_agent_capability_relation_edges,
         _build_agent_capability_quality_metrics,
+        _build_process_playbook_relation_edges,
+        _build_process_playbook_quality_metrics,
         _build_synthesis_relation_graph_snapshot,
         _summarize_tooling_map_rows,
         _build_process_playbooks_bootstrap_page,
@@ -85,6 +87,8 @@ except Exception:  # pragma: no cover
     _build_data_source_quality_metrics = None
     _build_agent_capability_relation_edges = None
     _build_agent_capability_quality_metrics = None
+    _build_process_playbook_relation_edges = None
+    _build_process_playbook_quality_metrics = None
     _build_synthesis_relation_graph_snapshot = None
     _summarize_tooling_map_rows = None
     _build_process_playbooks_bootstrap_page = None
@@ -142,6 +146,8 @@ except Exception:  # pragma: no cover
     or _build_data_source_quality_metrics is None
     or _build_agent_capability_relation_edges is None
     or _build_agent_capability_quality_metrics is None
+    or _build_process_playbook_relation_edges is None
+    or _build_process_playbook_quality_metrics is None
     or _build_synthesis_relation_graph_snapshot is None
     or _summarize_tooling_map_rows is None
     or _build_process_playbooks_bootstrap_page is None
@@ -2528,6 +2534,45 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("capability_contract", quality["field_origin_counts"])
         self.assertIn("tool_registry", quality["field_origin_counts"])
 
+    def test_process_playbook_diagnostics_edges_and_quality_metrics(self) -> None:
+        assert _build_process_playbook_relation_edges is not None
+        assert _build_process_playbook_quality_metrics is not None
+
+        rows = [
+            {
+                "title": "Incident Review Playbook",
+                "owners": ["support-bot"],
+                "tools": ["ticket lookup"],
+                "artifacts": ["zendesk api"],
+                "decision_refs": ["Escalation approved."],
+                "inputs": ["customer escalation"],
+                "source_kind": "scheduled_task",
+                "human_loop": "Human review recommended when approval boundary is crossed.",
+            },
+            {
+                "title": "Pipeline Review Playbook",
+                "owners": ["sales-bot"],
+                "tools": ["crm account lookup"],
+                "artifacts": ["salesforce api"],
+                "decision_refs": [],
+                "inputs": ["handoff readiness"],
+                "source_kind": "profile_declared",
+                "human_loop": "Human review recommended for broad workflow changes.",
+            },
+        ]
+        edges = _build_process_playbook_relation_edges(rows)
+        self.assertTrue(any(edge["from_ref"] == "Incident Review Playbook" and edge["to_kind"] == "tool" and edge["to_ref"] == "ticket lookup" for edge in edges))
+        self.assertTrue(any(edge["from_ref"] == "Pipeline Review Playbook" and edge["to_kind"] == "agent" and edge["to_ref"] == "sales-bot" for edge in edges))
+        quality = _build_process_playbook_quality_metrics(rows)
+        self.assertEqual(quality["rows_total"], 2)
+        self.assertEqual(quality["rows_with_owners"], 2)
+        self.assertEqual(quality["rows_with_tools"], 2)
+        self.assertEqual(quality["rows_with_artifacts"], 2)
+        self.assertEqual(quality["rows_with_decisions"], 1)
+        self.assertEqual(quality["rows_with_human_loop"], 2)
+        self.assertIn("scheduled_task_contract", quality["field_origin_counts"])
+        self.assertIn("agent_profile", quality["field_origin_counts"])
+
     def test_synthesis_relation_graph_snapshot_combines_tool_and_source_edges(self) -> None:
         assert _build_synthesis_relation_graph_snapshot is not None
 
@@ -2584,11 +2629,23 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
                     },
                 }
             ],
+            process_rows=[
+                {
+                    "title": "Incident Review Playbook",
+                    "owners": ["support-bot"],
+                    "tools": ["ticket_lookup"],
+                    "artifacts": ["zendesk api"],
+                    "decision_refs": ["Escalation approved."],
+                    "inputs": ["customer escalation"],
+                    "source_kind": "scheduled_task",
+                }
+            ],
         )
         summary = graph["summary"]
         self.assertGreaterEqual(int(summary["nodes_total"]), 5)
         self.assertGreaterEqual(int(summary["edges_total"]), 5)
         self.assertEqual(int(summary["agent_rows_total"]), 1)
+        self.assertEqual(int(summary["process_rows_total"]), 1)
         self.assertIn("tool", summary["node_kind_counts"])
         self.assertIn("source", summary["node_kind_counts"])
         self.assertIn("source_binding", summary["edge_origin_counts"])
@@ -2596,6 +2653,7 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertTrue(any(edge["from_kind"] == "tool" and edge["to_kind"] == "source" for edge in graph["edges"]))
         self.assertTrue(any(edge["from_kind"] == "source" and edge["to_kind"] == "agent" for edge in graph["edges"]))
         self.assertTrue(any(edge["from_kind"] == "agent" and edge["to_kind"] == "capability" for edge in graph["edges"]))
+        self.assertTrue(any(edge["from_kind"] == "playbook" and edge["to_kind"] == "tool" for edge in graph["edges"]))
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
