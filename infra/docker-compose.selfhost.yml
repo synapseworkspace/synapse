@@ -119,6 +119,7 @@ services:
       args:
         VITE_SYNAPSE_API_URL: ${SYNAPSE_WEB_API_URL:-http://localhost:8080}
         VITE_SYNAPSE_WEB_BUILD: ${SYNAPSE_WEB_BUILD:-}
+        VITE_SYNAPSE_UI_FEATURES: ${SYNAPSE_WEB_UI_FEATURES:-}
     restart: unless-stopped
     depends_on:
       api:

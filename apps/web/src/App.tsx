@@ -1787,7 +1787,11 @@ type CoreWorkspaceRoute = "wiki" | "operations";
 
 const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
 const WEB_BUILD = String(import.meta.env.VITE_SYNAPSE_WEB_BUILD || "0.1.0").trim() || "0.1.0";
-const WEB_UI_FEATURES = ["synthesis_observability_panel", "adoption_synthesis_graph", "typed_synthesis_diagnostics"];
+const DEFAULT_WEB_UI_FEATURES = ["synthesis_observability_panel", "adoption_synthesis_graph", "typed_synthesis_diagnostics"];
+const WEB_UI_FEATURES = String(import.meta.env.VITE_SYNAPSE_UI_FEATURES || DEFAULT_WEB_UI_FEATURES.join(","))
+  .split(",")
+  .map((item) => item.trim())
+  .filter((item) => item.length > 0);
 const REQUESTED_UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
   .trim()
   .toLowerCase();
