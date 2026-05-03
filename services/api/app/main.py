@@ -1256,6 +1256,7 @@ class SharedMemoryFanoutDispatchRequest(BaseModel):
     memory_tier_mode: str = Field(default="auto", pattern="^(auto|published_org|reviewed_team|draft_private)$")
     dispatch_mode: str = Field(default="invalidation", pattern="^(invalidation|impact|publish_preview)$")
     dry_run: bool = True
+    enqueue_only: bool = False
     page_slug: str | None = Field(default=None, min_length=1, max_length=512)
     page_title: str | None = Field(default=None, min_length=1, max_length=512)
     page_type: str | None = Field(default=None, min_length=1, max_length=128)
@@ -1271,6 +1272,14 @@ class SharedMemoryFanoutRetryRequest(BaseModel):
 
 
 class SharedMemoryFanoutDueRetryProcessRequest(BaseModel):
+    project_id: str
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+    dry_run: bool = True
+    limit: int = Field(default=20, ge=1, le=100)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class SharedMemoryFanoutPendingProcessRequest(BaseModel):
     project_id: str
     updated_by: str | None = Field(default=None, min_length=1, max_length=256)
     dry_run: bool = True
@@ -12065,6 +12074,7 @@ def _record_shared_memory_fanout_delivery(
     max_attempts: int = 3,
     next_retry_at: datetime | None = None,
     last_retry_at: datetime | None = None,
+    scheduled_for: datetime | None = None,
 ) -> int | None:
     if not _shared_memory_fanout_deliveries_table_exists(conn):
         return None
@@ -12088,10 +12098,11 @@ def _record_shared_memory_fanout_delivery(
               max_attempts,
               next_retry_at,
               last_retry_at,
+              scheduled_for,
               created_at,
               completed_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), CASE WHEN %s IN ('delivered', 'failed', 'planned') THEN NOW() ELSE NULL END)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), CASE WHEN %s IN ('delivered', 'failed', 'planned') THEN NOW() ELSE NULL END)
             RETURNING id
             """,
             (
@@ -12111,11 +12122,55 @@ def _record_shared_memory_fanout_delivery(
                 max(1, min(20, int(max_attempts))),
                 next_retry_at,
                 last_retry_at,
+                scheduled_for,
                 str(status or "planned").strip().lower() or "planned",
             ),
         )
         row = cur.fetchone()
     return int(row[0]) if row is not None else None
+
+
+def _complete_shared_memory_fanout_delivery(
+    conn,
+    *,
+    delivery_id: int,
+    project_id: str,
+    status: str,
+    response_payload: dict[str, Any] | None,
+    http_status: int | None = None,
+    error_message: str | None = None,
+    next_retry_at: datetime | None = None,
+    last_retry_at: datetime | None = None,
+) -> None:
+    if not _shared_memory_fanout_deliveries_table_exists(conn):
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE shared_memory_fanout_deliveries
+            SET status = %s,
+                response_payload = %s,
+                http_status = %s,
+                error_message = %s,
+                next_retry_at = %s,
+                last_retry_at = %s,
+                processing_started_at = COALESCE(processing_started_at, NOW()),
+                completed_at = CASE WHEN %s IN ('delivered', 'failed', 'planned') THEN NOW() ELSE completed_at END
+            WHERE id = %s
+              AND project_id = %s
+            """,
+            (
+                str(status or "pending").strip().lower() or "pending",
+                Jsonb(response_payload if isinstance(response_payload, dict) else {}),
+                int(http_status) if http_status is not None else None,
+                str(error_message or "").strip() or None,
+                next_retry_at,
+                last_retry_at,
+                str(status or "pending").strip().lower() or "pending",
+                int(delivery_id),
+                str(project_id or "").strip(),
+            ),
+        )
 
 
 def _compute_shared_memory_next_retry_at(
@@ -12207,6 +12262,8 @@ def _list_shared_memory_fanout_deliveries(
               d.attempt_no,
               d.max_attempts,
               d.next_retry_at,
+              d.scheduled_for,
+              d.processing_started_at,
               d.created_at,
               d.completed_at
             FROM shared_memory_fanout_deliveries d
@@ -12251,8 +12308,10 @@ def _list_shared_memory_fanout_deliveries(
                 "attempt_no": int(row[13] or 1),
                 "max_attempts": int(row[14] or 3),
                 "next_retry_at": row[15].astimezone(UTC).isoformat() if isinstance(row[15], datetime) else None,
-                "created_at": row[16].astimezone(UTC).isoformat() if isinstance(row[16], datetime) else None,
-                "completed_at": row[17].astimezone(UTC).isoformat() if isinstance(row[17], datetime) else None,
+                "scheduled_for": row[16].astimezone(UTC).isoformat() if isinstance(row[16], datetime) else None,
+                "processing_started_at": row[17].astimezone(UTC).isoformat() if isinstance(row[17], datetime) else None,
+                "created_at": row[18].astimezone(UTC).isoformat() if isinstance(row[18], datetime) else None,
+                "completed_at": row[19].astimezone(UTC).isoformat() if isinstance(row[19], datetime) else None,
             }
         )
     return {
@@ -12689,6 +12748,166 @@ def _process_due_shared_memory_fanout_retries(
     }
 
 
+def _process_pending_shared_memory_fanout_deliveries(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str | None,
+    dry_run: bool,
+    limit: int,
+    space_key: str | None,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_fanout_deliveries_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "shared_memory_fanout_deliveries_unavailable"})
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              d.id,
+              d.hook_id,
+              d.dispatch_mode,
+              d.space_key,
+              d.request_payload,
+              d.max_attempts,
+              h.endpoint_url,
+              h.headers,
+              h.timeout_seconds,
+              h.retry_backoff_seconds,
+              h.enabled,
+              h.name
+            FROM shared_memory_fanout_deliveries d
+            JOIN shared_memory_fanout_hooks h ON h.id = d.hook_id
+            WHERE d.project_id = %s
+              AND d.status = 'pending'
+              AND COALESCE(d.scheduled_for, d.created_at) <= NOW()
+        """
+        params: list[Any] = [normalized_project]
+        if normalized_space:
+            sql += " AND (d.space_key IS NULL OR lower(d.space_key) = %s)"
+            params.append(normalized_space)
+        sql += " ORDER BY COALESCE(d.scheduled_for, d.created_at) ASC, d.id ASC LIMIT %s"
+        params.append(max(1, min(100, int(limit))))
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        delivery_id = int(row[0])
+        hook_id = int(row[1])
+        dispatch_mode = str(row[2] or "invalidation").strip().lower() or "invalidation"
+        queued_space_key = str(row[3] or "").strip() or None
+        request_payload = row[4] if isinstance(row[4], dict) else {}
+        max_attempts = max(1, int(row[5] or 3))
+        endpoint_url = str(row[6] or "").strip()
+        request_headers = {
+            "Content-Type": "application/json",
+            "X-Synapse-Project-Id": normalized_project,
+            "X-Synapse-Fanout-Mode": dispatch_mode,
+            "X-Synapse-Actor": str(updated_by or "system").strip()[:256] or "system",
+        }
+        request_headers.update(_normalize_shared_memory_hook_headers(row[7]))
+        timeout_seconds = max(1.0, min(60.0, float(row[8] or 5)))
+        retry_backoff_seconds = max(30, min(86400, int(row[9] or 300)))
+        if not bool(row[10]):
+            _complete_shared_memory_fanout_delivery(
+                conn,
+                delivery_id=delivery_id,
+                project_id=normalized_project,
+                status="failed",
+                response_payload={},
+                error_message="hook disabled before queued delivery processing",
+                next_retry_at=None,
+                last_retry_at=datetime.now(UTC),
+            )
+            results.append(
+                {
+                    "delivery_id": delivery_id,
+                    "hook_id": hook_id,
+                    "hook_name": str(row[11] or "").strip() or None,
+                    "dispatch_mode": dispatch_mode,
+                    "delivery_status": "failed",
+                    "error_message": "hook disabled before queued delivery processing",
+                }
+            )
+            continue
+        if dry_run:
+            results.append(
+                {
+                    "delivery_id": delivery_id,
+                    "hook_id": hook_id,
+                    "hook_name": str(row[11] or "").strip() or None,
+                    "dispatch_mode": dispatch_mode,
+                    "delivery_status": "pending",
+                    "queued": True,
+                    "space_key": queued_space_key,
+                }
+            )
+            continue
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE shared_memory_fanout_deliveries
+                SET processing_started_at = NOW()
+                WHERE id = %s
+                  AND project_id = %s
+                """,
+                (delivery_id, normalized_project),
+            )
+        status, http_status, error_message, response_payload = _execute_shared_memory_fanout_delivery(
+            endpoint_url=endpoint_url,
+            request_payload=request_payload,
+            request_headers=request_headers,
+            timeout_seconds=timeout_seconds,
+            dry_run=False,
+        )
+        next_retry_at = _compute_shared_memory_next_retry_at(
+            status=status,
+            dry_run=False,
+            attempt_no=1,
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
+        _complete_shared_memory_fanout_delivery(
+            conn,
+            delivery_id=delivery_id,
+            project_id=normalized_project,
+            status=status,
+            response_payload=response_payload,
+            http_status=http_status,
+            error_message=error_message,
+            next_retry_at=next_retry_at,
+            last_retry_at=datetime.now(UTC) if status == "failed" else None,
+        )
+        results.append(
+            {
+                "delivery_id": delivery_id,
+                "hook_id": hook_id,
+                "hook_name": str(row[11] or "").strip() or None,
+                "dispatch_mode": dispatch_mode,
+                "delivery_status": status,
+                "http_status": http_status,
+                "error_message": error_message,
+                "next_retry_at": next_retry_at.isoformat() if isinstance(next_retry_at, datetime) else None,
+                "space_key": queued_space_key,
+            }
+        )
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "dry_run": bool(dry_run),
+        "summary": {
+            "pending_due": len(rows),
+            "processed": len(results),
+            "failed": sum(1 for item in results if str(item.get("delivery_status") or "") == "failed"),
+        },
+        "results": results,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _build_shared_memory_fanout_dispatch_payload(
     conn,
     *,
@@ -12799,6 +13018,7 @@ def _dispatch_shared_memory_fanout(
     memory_tier_mode: str,
     dispatch_mode: str,
     dry_run: bool,
+    enqueue_only: bool,
     page_slug: str | None,
     page_title: str | None,
     page_type: str | None,
@@ -12871,18 +13091,31 @@ def _dispatch_shared_memory_fanout(
             "X-Synapse-Actor": str(updated_by or "system").strip()[:256] or "system",
         }
         request_headers.update(_normalize_shared_memory_hook_headers(hook.get("headers")))
-        status, http_status, error_message, response_payload = _execute_shared_memory_fanout_delivery(
-            endpoint_url=endpoint_url,
-            request_payload=request_payload,
-            request_headers=request_headers,
-            timeout_seconds=max(1.0, min(60.0, float(hook.get("timeout_seconds") or 5))),
-            dry_run=bool(dry_run),
-        )
+        if dry_run:
+            status, http_status, error_message, response_payload = _execute_shared_memory_fanout_delivery(
+                endpoint_url=endpoint_url,
+                request_payload=request_payload,
+                request_headers=request_headers,
+                timeout_seconds=max(1.0, min(60.0, float(hook.get("timeout_seconds") or 5))),
+                dry_run=True,
+            )
+        elif enqueue_only:
+            status, http_status, error_message, response_payload = ("pending", None, None, {"queued": True})
+        else:
+            status, http_status, error_message, response_payload = _execute_shared_memory_fanout_delivery(
+                endpoint_url=endpoint_url,
+                request_payload=request_payload,
+                request_headers=request_headers,
+                timeout_seconds=max(1.0, min(60.0, float(hook.get("timeout_seconds") or 5))),
+                dry_run=False,
+            )
         delivery["status"] = status
         if http_status is not None:
             delivery["http_status"] = http_status
         if response_payload.get("response_preview") is not None:
             delivery["response_preview"] = response_payload.get("response_preview")
+        if bool(response_payload.get("queued")):
+            delivery["queued"] = True
         if error_message:
             delivery["error"] = error_message
         next_retry_at = _compute_shared_memory_next_retry_at(
@@ -12908,6 +13141,7 @@ def _dispatch_shared_memory_fanout(
             attempt_no=1,
             max_attempts=retry_max_attempts,
             next_retry_at=next_retry_at,
+            scheduled_for=None if dry_run else datetime.now(UTC),
         )
         if delivery_log_id is not None:
             delivery["delivery_id"] = delivery_log_id
@@ -12922,11 +13156,13 @@ def _dispatch_shared_memory_fanout(
         "space_key": normalized_space or None,
         "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
         "dry_run": bool(dry_run),
+        "enqueue_only": bool(enqueue_only),
         "generated_at": datetime.now(UTC).isoformat(),
         "payload": base_payload,
         "summary": {
             "hooks_scanned": len(hooks),
             "deliveries_planned": len(deliveries),
+            "queued": sum(1 for item in deliveries if bool(item.get("queued"))),
             "delivered": sum(1 for item in deliveries if str(item.get("status") or "") == "delivered"),
             "failed": sum(1 for item in deliveries if str(item.get("status") or "") == "failed"),
         },
@@ -14116,10 +14352,15 @@ def _build_shared_memory_health_metrics(
     fanout_refreshed_recent = 0
     fanout_unacked_recent = 0
     fanout_ack_lag_minutes: float | None = None
+    fanout_pending_queue = 0
     if _shared_memory_fanout_deliveries_table_exists(conn):
         with conn.cursor() as cur:
             sql = """
                 SELECT
+                  COUNT(*) FILTER (
+                    WHERE status = 'pending'
+                      AND COALESCE(scheduled_for, created_at) <= NOW()
+                  )::bigint,
                   COUNT(*) FILTER (WHERE status = 'delivered' AND created_at >= NOW() - INTERVAL '24 hours')::bigint,
                   COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '24 hours')::bigint,
                   COUNT(*) FILTER (
@@ -14136,10 +14377,11 @@ def _build_shared_memory_health_metrics(
                 sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
                 params.append(_normalize_space_key(space_key or "", default=""))
             cur.execute(sql, tuple(params))
-            failed_row = cur.fetchone() or (0, 0, 0)
-        fanout_delivered_recent = int(failed_row[0] or 0)
-        fanout_failed_recent = int(failed_row[1] or 0)
-        fanout_retries_due = int(failed_row[2] or 0)
+            failed_row = cur.fetchone() or (0, 0, 0, 0)
+        fanout_pending_queue = int(failed_row[0] or 0)
+        fanout_delivered_recent = int(failed_row[1] or 0)
+        fanout_failed_recent = int(failed_row[2] or 0)
+        fanout_retries_due = int(failed_row[3] or 0)
     if _shared_memory_runtime_acks_table_exists(conn):
         with conn.cursor() as cur:
             sql = """
@@ -14209,6 +14451,7 @@ def _build_shared_memory_health_metrics(
             "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
             "fanout_hooks_total": int(hooks_summary.get("hooks_total") or 0),
             "fanout_hooks_enabled": int(hooks_summary.get("enabled_hooks") or 0),
+            "fanout_pending_queue": fanout_pending_queue,
             "fanout_delivered_recent": fanout_delivered_recent,
             "fanout_failed_recent": fanout_failed_recent,
             "fanout_retries_due": fanout_retries_due,
@@ -29900,6 +30143,7 @@ def dispatch_agent_shared_memory_fanout(payload: SharedMemoryFanoutDispatchReque
             memory_tier_mode=str(payload.memory_tier_mode or "auto"),
             dispatch_mode=str(payload.dispatch_mode or "invalidation"),
             dry_run=bool(payload.dry_run),
+            enqueue_only=bool(payload.enqueue_only),
             page_slug=payload.page_slug,
             page_title=payload.page_title,
             page_type=payload.page_type,
@@ -30000,6 +30244,22 @@ def process_due_agent_shared_memory_fanout_retries(payload: SharedMemoryFanoutDu
         raise HTTPException(status_code=422, detail={"code": "project_id_required"})
     with get_conn() as conn:
         return _process_due_shared_memory_fanout_retries(
+            conn,
+            project_id=normalized_project,
+            updated_by=payload.updated_by,
+            dry_run=bool(payload.dry_run),
+            limit=int(payload.limit),
+            space_key=payload.space_key,
+        )
+
+
+@app.post("/v1/agents/shared-memory/fanout-deliveries/process-pending", response_model=None)
+def process_pending_agent_shared_memory_fanout_deliveries(payload: SharedMemoryFanoutPendingProcessRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _process_pending_shared_memory_fanout_deliveries(
             conn,
             project_id=normalized_project,
             updated_by=payload.updated_by,

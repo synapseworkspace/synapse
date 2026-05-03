@@ -1606,6 +1606,7 @@ export class SynapseClient {
     memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
     dispatchMode?: "invalidation" | "impact" | "publish_preview" | string;
     dryRun?: boolean;
+    enqueueOnly?: boolean;
     pageSlug?: string;
     pageTitle?: string;
     pageType?: string;
@@ -1627,6 +1628,7 @@ export class SynapseClient {
         memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto",
         dispatch_mode: String(options.dispatchMode ?? "invalidation").trim().toLowerCase() || "invalidation",
         dry_run: Boolean(options.dryRun ?? true),
+        enqueue_only: Boolean(options.enqueueOnly ?? false),
         page_slug: asOptionalString(options.pageSlug) ?? undefined,
         page_title: asOptionalString(options.pageTitle) ?? undefined,
         page_type: asOptionalString(options.pageType) ?? undefined,
@@ -1684,6 +1686,26 @@ export class SynapseClient {
     idempotencyKey?: string;
   } = {}): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-deliveries/process-due-retries", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: asOptionalString(options.updatedBy) ?? undefined,
+        dry_run: Boolean(options.dryRun ?? true),
+        limit: normalizeInt(options.limit ?? 20, 1, 100),
+        space_key: asOptionalString(options.spaceKey) ?? undefined
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async processPendingAgentSharedMemoryFanoutDeliveries(options: {
+    updatedBy?: string;
+    dryRun?: boolean;
+    limit?: number;
+    spaceKey?: string;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-deliveries/process-pending", {
       method: "POST",
       payload: {
         project_id: this.projectId,

@@ -155,9 +155,10 @@ Implemented:
 17. fanout deliveries now persist audit history plus retry support, so failed runtime pushes can be inspected and re-dispatched without reconstructing payloads by hand
 18. hook-level retry policy (`max attempts` + `backoff`) and due-retry processing now let shared-memory fanout move from ad-hoc retries toward a real delivery loop
 19. runtime fanout payloads now carry per-delivery correlation IDs, and runtimes can report `accepted/refreshed/ignored/failed` acknowledgements back through `POST /v1/agents/shared-memory/fanout-acks`, so health can distinguish “sent” from “actually applied”
+20. fanout dispatch now supports queued delivery (`enqueue_only=true`) plus a dedicated pending-delivery processor, so shared-memory push can move from inline-only execution toward a real delivery queue
 
 Current limitation:
-- private/team memory now has materialized entry backing, fanout retry/backoff, and runtime ack freshness, but still lacks richer write-back lifecycle semantics and stronger queued delivery guarantees beyond inline processing
+- private/team memory now has materialized entry backing, fanout retry/backoff, runtime ack freshness, and queued delivery foundation, but still lacks richer write-back lifecycle semantics and stronger background execution guarantees beyond manual/explicit queue processing
 
 These endpoints are intentionally conservative:
 

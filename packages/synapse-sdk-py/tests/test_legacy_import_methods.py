@@ -823,6 +823,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
             memory_tier_mode="draft_private",
             dispatch_mode="publish_preview",
             dry_run=False,
+            enqueue_only=True,
             page_slug="logistics/process-playbooks",
             page_title="Process Playbooks",
             page_type="process",
@@ -844,6 +845,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("memory_tier_mode"), "draft_private")
         self.assertEqual(payload.get("dispatch_mode"), "publish_preview")
         self.assertFalse(payload.get("dry_run"))
+        self.assertTrue(payload.get("enqueue_only"))
         self.assertEqual(payload.get("page_slug"), "logistics/process-playbooks")
         self.assertEqual(payload.get("page_title"), "Process Playbooks")
         self.assertEqual(payload.get("page_type"), "process")
@@ -897,6 +899,23 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("updated_by"), "ops_admin")
         self.assertFalse(payload.get("dry_run"))
         self.assertEqual(payload.get("limit"), 14)
+        self.assertEqual(payload.get("space_key"), "logistics")
+
+    def test_process_pending_agent_shared_memory_fanout_deliveries_posts_expected_payload(self) -> None:
+        self.client.process_pending_agent_shared_memory_fanout_deliveries(
+            updated_by="ops_admin",
+            dry_run=False,
+            limit=12,
+            space_key="logistics",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-deliveries/process-pending")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("limit"), 12)
         self.assertEqual(payload.get("space_key"), "logistics")
 
     def test_ack_agent_shared_memory_fanout_posts_expected_payload(self) -> None:

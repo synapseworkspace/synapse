@@ -1718,6 +1718,7 @@ class SynapseClient:
         memory_tier_mode: str = "auto",
         dispatch_mode: str = "invalidation",
         dry_run: bool = True,
+        enqueue_only: bool = False,
         page_slug: str | None = None,
         page_title: str | None = None,
         page_type: str | None = None,
@@ -1736,6 +1737,7 @@ class SynapseClient:
             "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
             "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
             "dry_run": bool(dry_run),
+            "enqueue_only": bool(enqueue_only),
             "page_slug": str(page_slug).strip() if page_slug is not None and str(page_slug).strip() else None,
             "page_title": str(page_title).strip() if page_title is not None and str(page_title).strip() else None,
             "page_type": str(page_type).strip() if page_type is not None and str(page_type).strip() else None,
@@ -1807,6 +1809,28 @@ class SynapseClient:
         }
         return self._request_json(
             "/v1/agents/shared-memory/fanout-deliveries/process-due-retries",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def process_pending_agent_shared_memory_fanout_deliveries(
+        self,
+        *,
+        updated_by: str | None = None,
+        dry_run: bool = True,
+        limit: int = 20,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None,
+            "dry_run": bool(dry_run),
+            "limit": max(1, min(100, int(limit))),
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-deliveries/process-pending",
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),

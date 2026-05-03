@@ -1398,6 +1398,7 @@ type SharedMemoryHealthPayload = {
     materialized_entries_visible?: number;
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
+    fanout_pending_queue?: number;
     fanout_delivered_recent?: number;
     fanout_failed_recent?: number;
     fanout_retries_due?: number;
@@ -3335,6 +3336,9 @@ export default function App() {
     }
     if (Number(metrics.fanout_failed_recent || 0) > 0) {
       items.push(`${Number(metrics.fanout_failed_recent || 0)} shared-memory fanout deliver${Number(metrics.fanout_failed_recent || 0) === 1 ? "y has" : "ies have"} failed in the last 24h.`);
+    }
+    if (Number(metrics.fanout_pending_queue || 0) > 0) {
+      items.push(`${Number(metrics.fanout_pending_queue || 0)} shared-memory fanout deliver${Number(metrics.fanout_pending_queue || 0) === 1 ? "y is" : "ies are"} queued and due for processing.`);
     }
     if (Number(metrics.fanout_retries_due || 0) > 0) {
       items.push(`${Number(metrics.fanout_retries_due || 0)} shared-memory fanout retr${Number(metrics.fanout_retries_due || 0) === 1 ? "y is" : "ies are"} due for retry now.`);
@@ -10576,6 +10580,9 @@ export default function App() {
                                             <Text size="xs" c="dimmed">
                                               Hooks enabled: {Number(sharedMemoryHealth?.metrics?.fanout_hooks_enabled || 0)} /{" "}
                                               {Number(sharedMemoryHealth?.metrics?.fanout_hooks_total || 0)}
+                                            </Text>
+                                            <Text size="xs" c="dimmed">
+                                              Pending queue: {Number(sharedMemoryHealth?.metrics?.fanout_pending_queue || 0)} due
                                             </Text>
                                             <Text size="xs" c="dimmed">
                                               Runtime acks: {Number(sharedMemoryHealth?.metrics?.fanout_acks_recent || 0)} recent •{" "}
