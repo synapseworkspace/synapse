@@ -18,6 +18,7 @@ try:
         _build_human_guided_synthesis_prompts,
         _build_adoption_signal_noise_audit,
         _build_adoption_signal_noise_stability_monitor,
+        AdoptionSyncPresetExecuteRequest,
         _bundle_promotion_scope_for_page_type,
         _draft_bundle_priority,
         _draft_passes_default_bundle_guard_for_approve,
@@ -60,6 +61,7 @@ except Exception:  # pragma: no cover
     _build_human_guided_synthesis_prompts = None
     _build_adoption_signal_noise_audit = None
     _build_adoption_signal_noise_stability_monitor = None
+    AdoptionSyncPresetExecuteRequest = None
     _bundle_promotion_scope_for_page_type = None
     _draft_bundle_priority = None
     _draft_passes_default_bundle_guard_for_approve = None
@@ -101,6 +103,7 @@ except Exception:  # pragma: no cover
     or _build_human_guided_synthesis_prompts is None
     or _build_adoption_signal_noise_audit is None
     or _build_adoption_signal_noise_stability_monitor is None
+    or AdoptionSyncPresetExecuteRequest is None
     or _bundle_promotion_scope_for_page_type is None
     or _draft_bundle_priority is None
     or _draft_passes_default_bundle_guard_for_approve is None
@@ -132,6 +135,10 @@ except Exception:  # pragma: no cover
     "api agent directory helpers unavailable",
 )
 class AgentDirectoryRenderingTests(unittest.TestCase):
+    def test_sync_preset_defaults_to_standard_starter_profile(self) -> None:
+        request = AdoptionSyncPresetExecuteRequest(project_id="omega_demo")
+        self.assertEqual(request.starter_profile, "standard")
+
     def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
         scope = _bundle_promotion_scope_for_page_type("process")
         self.assertFalse(scope["include_data_sources_catalog"])
@@ -1579,6 +1586,16 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
                     "limits": ["No reroute without valid access window"],
                     "approval_rules": ["Manual approval for VIP reroutes"],
                     "escalation_rules": ["Escalate route blockers to on-call ops"],
+                    "tool_contracts": [
+                        {
+                            "tool": "dispatch_console",
+                            "purpose": "Approve route changes and publish dispatch overrides",
+                            "scenarios": ["vip reroute approval"],
+                            "guardrails": ["Human approval for VIP dispatch changes"],
+                            "sources": ["dispatch_overrides_sheet"],
+                            "capabilities": ["Approve dispatch overrides"],
+                        }
+                    ],
                 }
             ]
             pages = _build_tooling_map_bootstrap_page(
@@ -1598,6 +1615,8 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Dispatch escalation policy", markdown)
         self.assertIn("orders_api", markdown)
         self.assertIn("Manual approval for VIP reroutes", markdown)
+        self.assertIn("Approve route changes and publish dispatch overrides", markdown)
+        self.assertIn("dispatch_overrides_sheet", markdown)
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None

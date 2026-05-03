@@ -239,6 +239,7 @@ Setup wizard v2 flow:
 
 Enterprise shortcut (single API call):
 - `POST /v1/adoption/sync-presets/execute` runs curated bootstrap profile, queues legacy-source sync, executes trusted draft bootstrap, seeds starter pages, and now previews/applies bundle-level core wiki promotion in the same flow.
+- `sync-presets/execute` now defaults `starter_profile=standard`, so domain projects get the neutral core wiki pack by default; support/sales/compliance starter packs are opt-in instead of being injected automatically.
 - `POST /v1/adoption/agent-wiki-bootstrap` now supports explicit `Preview -> Apply` flow, `bootstrap_publish_core=true` (publish core onboarding pages with warning blocks when coverage is partial), and returns a structured `quality_report`.
 - bootstrap pack can include: `Data Sources Catalog`, `Agent Capability Profile`, `Tooling Map`, `Process Playbooks`, `Company Operating Context`, `Operational Logic Map`, plus starter pages.
 - `GET /v1/adoption/wiki-quality/report` provides a hard OOTB quality gate (`core coverage`, `placeholder ratio`, `daily-summary draft ratio`) for release/onboarding checks.

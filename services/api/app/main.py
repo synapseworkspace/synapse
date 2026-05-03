@@ -995,7 +995,7 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     queue_enabled_sources: bool = True
     run_bootstrap_approve: bool = True
     include_starter_pages: bool = True
-    starter_profile: str = Field(default="support_ops", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
+    starter_profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     include_role_template: bool = False
     role_template_key: str | None = Field(default=None, pattern="^(support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
     role_template_space_key: str | None = Field(default=None, min_length=1, max_length=256)
@@ -3586,6 +3586,84 @@ def _build_agent_capability_matrix(
                 break
         return deduped
 
+    def _tool_registry_contracts(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        contracts: list[dict[str, Any]] = []
+        raw_registry = metadata.get("tool_registry")
+        items: list[Any] = []
+        if isinstance(raw_registry, list):
+            items = list(raw_registry)
+        elif isinstance(raw_registry, dict):
+            for key, value in raw_registry.items():
+                if isinstance(value, dict):
+                    items.append({"name": key, **value})
+                else:
+                    items.append({"name": key, "description": value})
+        for item in items[:40]:
+            if isinstance(item, dict):
+                name = str(item.get("name") or item.get("tool") or item.get("id") or "").strip()
+                purpose = str(item.get("purpose") or item.get("description") or item.get("title") or "").strip()
+                scenarios = _normalize_agent_directory_items(
+                    item.get("scenarios") if isinstance(item.get("scenarios"), list) else [item.get("scenario")],
+                    limit=4,
+                )
+                guardrails = _normalize_agent_directory_items(
+                    [
+                        *(item.get("guardrails") or []),
+                        *(item.get("approval_rules") or []),
+                        *(item.get("limits") or []),
+                    ],
+                    limit=5,
+                )
+                sources = _normalize_agent_directory_items(
+                    [
+                        *(item.get("data_sources") or []),
+                        *(item.get("source_bindings") or []),
+                    ],
+                    limit=4,
+                )
+                capabilities = _normalize_agent_directory_items(
+                    [
+                        *(item.get("capabilities") or []),
+                        *(item.get("responsibilities") or []),
+                    ],
+                    limit=4,
+                )
+                owner = str(item.get("owner") or item.get("agent_id") or "").strip()
+            else:
+                name = str(item or "").strip()
+                purpose = ""
+                scenarios = []
+                guardrails = []
+                sources = []
+                capabilities = []
+                owner = ""
+            if not name:
+                continue
+            contracts.append(
+                {
+                    "tool": name[:180],
+                    "purpose": purpose[:220],
+                    "scenarios": scenarios,
+                    "guardrails": guardrails,
+                    "sources": sources,
+                    "capabilities": capabilities,
+                    "owner": owner[:120] if owner else "",
+                }
+            )
+        return contracts
+
+    def _approval_contracts(metadata: dict[str, Any]) -> list[str]:
+        hints = _normalize_agent_directory_items(
+            [
+                *(metadata.get("approval_rules") or []),
+                *(metadata.get("human_in_loop_rules") or []),
+                *(metadata.get("guardrails") or []),
+                *(metadata.get("escalation_policies") or []),
+            ],
+            limit=8,
+        )
+        return hints
+
     reflection_signals = _load_recent_agent_reflection_signals(
         cur,
         project_id=project_id,
@@ -3645,6 +3723,7 @@ def _build_agent_capability_matrix(
         static_config = metadata.get("config") if isinstance(metadata.get("config"), dict) else {}
         static_config_keys = [str(key).strip() for key in list(static_config.keys())[:8] if str(key).strip()]
         registry_tools: list[str] = []
+        tool_contracts = _tool_registry_contracts(metadata)
         tool_registry = metadata.get("tool_registry")
         if isinstance(tool_registry, list):
             for item in tool_registry:
@@ -3665,12 +3744,7 @@ def _build_agent_capability_matrix(
             if isinstance(allowed_actions_raw, list)
             else []
         )
-        approval_rules_raw = metadata.get("approval_rules")
-        approval_rules = (
-            [str(item).strip() for item in approval_rules_raw if str(item).strip()]
-            if isinstance(approval_rules_raw, list)
-            else []
-        )
+        approval_rules = _approval_contracts(metadata)
         scheduled_tasks = _metadata_list(
             metadata,
             keys=["scheduled_tasks", "cron_tasks", "automations", "scheduled_jobs"],
@@ -3701,6 +3775,18 @@ def _build_agent_capability_matrix(
             tools = list(dict.fromkeys([*tools, *reflected_tools]))[:24]
         if reflected_sources:
             data_sources = list(dict.fromkeys([*data_sources, *reflected_sources]))[:24]
+        for contract in tool_contracts:
+            tool_name = str(contract.get("tool") or "").strip()
+            if tool_name:
+                tools = list(dict.fromkeys([*tools, tool_name]))[:24]
+            for source_name in contract.get("sources") or []:
+                source_text = str(source_name or "").strip()
+                if source_text:
+                    data_sources = list(dict.fromkeys([*data_sources, source_text]))[:24]
+            for capability_text in contract.get("capabilities") or []:
+                cap = str(capability_text or "").strip()
+                if cap:
+                    responsibilities = list(dict.fromkeys([*responsibilities, cap]))[:12]
         cur.execute(
             """
             SELECT
@@ -3788,6 +3874,10 @@ def _build_agent_capability_matrix(
                     ]
                 )
             )[:6]
+        if tool_contracts:
+            contract_scenarios = [str(item).strip() for contract in tool_contracts for item in (contract.get("scenarios") or []) if str(item).strip()]
+            if contract_scenarios:
+                scenario_examples = list(dict.fromkeys([*scenario_examples, *contract_scenarios]))[:8]
         matrix.append(
             {
                 "agent_id": agent_id,
@@ -3805,6 +3895,7 @@ def _build_agent_capability_matrix(
                 "allowed_actions": allowed_actions[:20],
                 "approval_rules": approval_rules[:20],
                 "registry_tools": registry_tools[:30],
+                "tool_contracts": tool_contracts[:20],
                 "scheduled_tasks": scheduled_tasks,
                 "standing_orders": standing_orders,
                 "source_bindings": source_bindings,
@@ -32224,6 +32315,7 @@ def _build_agent_capability_bootstrap_page(
             integrations = [str(v).strip() for v in (item.get("integrations") or []) if str(v).strip()]
             model_routing = [str(v).strip() for v in (item.get("model_routing") or []) if str(v).strip()]
             registry_tools = [str(v).strip() for v in (item.get("registry_tools") or []) if str(v).strip()]
+            tool_contracts = [contract for contract in (item.get("tool_contracts") or []) if isinstance(contract, dict)]
             prompt_signal = str(item.get("prompt_signal") or "").strip()
             observed_strengths = [str(v).strip() for v in (item.get("observed_strengths") or []) if str(v).strip()]
             observed_decisions = [str(v).strip() for v in (item.get("observed_decisions") or []) if str(v).strip()]
@@ -32285,6 +32377,25 @@ def _build_agent_capability_bootstrap_page(
                 detail_lines.append(f"- Model routing / failover: {'; '.join(model_routing[:3])}")
             if integrations:
                 detail_lines.append(f"- Integrations: {', '.join(integrations[:5])}")
+            if tool_contracts:
+                contract_bits: list[str] = []
+                for contract in tool_contracts[:3]:
+                    tool_name = str(contract.get("tool") or "").strip()
+                    if not tool_name:
+                        continue
+                    purpose = str(contract.get("purpose") or "").strip()
+                    scenarios = [str(v).strip() for v in (contract.get("scenarios") or []) if str(v).strip()]
+                    guardrails = [str(v).strip() for v in (contract.get("guardrails") or []) if str(v).strip()]
+                    snippet = tool_name
+                    if purpose:
+                        snippet = f"{snippet}: {purpose[:90]}"
+                    if scenarios:
+                        snippet = f"{snippet} [{scenarios[0][:60]}]"
+                    if guardrails:
+                        snippet = f"{snippet} (guardrail: {guardrails[0][:60]})"
+                    contract_bits.append(snippet)
+                if contract_bits:
+                    detail_lines.append(f"- Registered tool contracts: {'; '.join(contract_bits[:3])}")
             if prompt_signal:
                 detail_lines.append(f"- Prompt context: {prompt_signal[:200]}")
             if scenarios:
@@ -32359,6 +32470,7 @@ def _build_tooling_map_bootstrap_page(
         tools = [str(tool).strip() for tool in (item.get("tools") or []) if str(tool).strip()]
         registry_tools = [str(tool).strip() for tool in (item.get("registry_tools") or []) if str(tool).strip()]
         all_tools = list(dict.fromkeys([*tools, *registry_tools]))[:24]
+        tool_contracts = [contract for contract in (item.get("tool_contracts") or []) if isinstance(contract, dict)]
         scenarios = [str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()]
         capabilities = [str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()]
         processes = [
@@ -32388,6 +32500,7 @@ def _build_tooling_map_bootstrap_page(
                     "processes": set(),
                     "sources": set(),
                     "guardrails": set(),
+                    "purposes": set(),
                 }
                 tool_index[key] = bucket
             bucket["agents"].add(agent_id)
@@ -32401,6 +32514,44 @@ def _build_tooling_map_bootstrap_page(
                 bucket["sources"].add(source)
             for rule in guardrails[:3]:
                 bucket["guardrails"].add(rule)
+        for contract in tool_contracts:
+            tool_name = str(contract.get("tool") or "").strip()
+            if not tool_name:
+                continue
+            key = tool_name.lower()
+            bucket = tool_index.get(key)
+            if bucket is None:
+                bucket = {
+                    "tool": tool_name,
+                    "agents": set(),
+                    "scenarios": set(),
+                    "capabilities": set(),
+                    "processes": set(),
+                    "sources": set(),
+                    "guardrails": set(),
+                    "purposes": set(),
+                }
+                tool_index[key] = bucket
+            bucket["agents"].add(agent_id)
+            purpose = str(contract.get("purpose") or "").strip()
+            if purpose:
+                bucket["purposes"].add(purpose[:140])
+            for value in contract.get("scenarios") or []:
+                text = str(value or "").strip()
+                if text:
+                    bucket["scenarios"].add(text[:120])
+            for value in contract.get("capabilities") or []:
+                text = str(value or "").strip()
+                if text:
+                    bucket["capabilities"].add(text[:120])
+            for value in contract.get("sources") or []:
+                text = str(value or "").strip()
+                if text:
+                    bucket["sources"].add(text[:120])
+            for value in contract.get("guardrails") or []:
+                text = str(value or "").strip()
+                if text:
+                    bucket["guardrails"].add(text[:120])
 
     lines = [
         "# Tooling Map",
@@ -32416,7 +32567,7 @@ def _build_tooling_map_bootstrap_page(
         )[:200]:
             agents = ", ".join(sorted(bucket["agents"])[:4]) if bucket["agents"] else "n/a"
             capability_or_scenario = "; ".join(
-                [*sorted(bucket["capabilities"])[:1], *sorted(bucket["scenarios"])[:1]]
+                [*sorted(bucket["capabilities"])[:1], *sorted(bucket["purposes"])[:1], *sorted(bucket["scenarios"])[:1]]
             ) or "n/a"
             process_or_sources = "; ".join(
                 [*sorted(bucket["processes"])[:1], *sorted(bucket["sources"])[:1]]
