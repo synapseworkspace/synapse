@@ -2207,6 +2207,7 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("erp_routes_slice", erp_row["provenance"]["tool_contracts"])
         self.assertIn("driver_economics", econ_row["provenance"]["capability_contracts"])
         self.assertIn("driver_economy_daily_latest", econ_row["provenance"]["source_bindings"])
+        self.assertEqual(econ_row["process_source_origin"], "source_binding")
         self.assertEqual(econ_row["provenance"]["process_source_origin"], "source_binding")
         summary = _summarize_tooling_map_rows(rows)
         self.assertEqual(summary["rows_total"], 2)
@@ -2249,6 +2250,46 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("driver_economics", refined[0]["capabilities"])
         self.assertIn("driver_economics_for_day", refined[0]["tools"])
         self.assertIn("standing_order.logistics.driver_economy_sheet", refined[0]["processes"])
+
+    def test_tooling_map_rows_derive_source_from_structured_contracts_instead_of_broad_fallback(self) -> None:
+        assert _build_tooling_map_rows_from_matrix is not None
+
+        rows = _build_tooling_map_rows_from_matrix(
+            [
+                {
+                    "agent_id": "logistics-assistant",
+                    "tools": ["driver_economics_for_day"],
+                    "registry_tools": [],
+                    "scenario_examples": ["dispatch route review"],
+                    "responsibilities": ["driver_vehicle", "driver_economics"],
+                    "standing_orders": ["standing_order.logistics.driver_economy_sheet"],
+                    "observed_actions": ["refresh driver economics report"],
+                    "data_sources": ["driver_cargo_state_latest"],
+                    "source_bindings": ["driver_shift_daily_latest"],
+                    "limits": [],
+                    "approval_rules": [],
+                    "escalation_rules": [],
+                    "tool_contracts": [
+                        {
+                            "tool": "driver_economics_for_day",
+                            "purpose": "Считает экономику по водителям за день.",
+                            "capabilities": ["driver_economics"],
+                        }
+                    ],
+                    "capability_contracts": [
+                        {
+                            "name": "driver_economics",
+                            "tools": ["driver economics for day"],
+                        }
+                    ],
+                    "source_binding_contracts": [],
+                }
+            ]
+        )
+        row = rows[0]
+        self.assertIn("driver economics", row["sources"])
+        self.assertNotIn("driver cargo state", row["sources"])
+        self.assertEqual(row["process_source_origin"], "tool_contract")
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None

@@ -1673,6 +1673,7 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                 for contract in matched_capability_contracts
                 if str(contract.get("name") or "").strip()
             }
+            has_structured_contract_match = bool(matched_tool_contracts or matched_capability_contracts or matched_source_binding_contracts)
             for contract in matched_tool_contracts:
                 bucket["structured"] = True
                 tool_name = str(contract.get("tool") or contract.get("name") or "").strip()
@@ -1734,28 +1735,42 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                     bucket["capabilities"].add(_normalize_operating_label(capability, kind="capability")[:120])
                 for process in [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]:
                     bucket["processes"].add(_normalize_operating_label(process, kind="process")[:120])
-            for scenario in _related_operating_labels(tool, scenarios, kind="generic", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                if scenario:
-                    bucket["scenarios"].add(scenario[:120])
-                    bucket["provenance"]["fallback_used"] = True
-                    bucket["provenance"]["fallback_fields"].add("scenario")
-            for capability in _related_operating_labels(tool, capabilities, kind="capability", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                if capability:
-                    bucket["capabilities"].add(capability[:120])
-                    bucket["provenance"]["fallback_used"] = True
-                    bucket["provenance"]["fallback_fields"].add("capability")
-            if not bucket["processes"]:
-                for process in _related_operating_labels(tool, processes, kind="process", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                    if process:
-                        bucket["processes"].add(process[:120])
+            if not has_structured_contract_match:
+                for scenario in _related_operating_labels(tool, scenarios, kind="generic", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                    if scenario:
+                        bucket["scenarios"].add(scenario[:120])
                         bucket["provenance"]["fallback_used"] = True
-                        bucket["provenance"]["fallback_fields"].add("process")
-            if not bucket["sources"]:
-                for source in _related_operating_labels(tool, sources, kind="source", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
-                    if source:
-                        bucket["sources"].add(source[:120])
+                        bucket["provenance"]["fallback_fields"].add("scenario")
+                for capability in _related_operating_labels(tool, capabilities, kind="capability", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                    if capability:
+                        bucket["capabilities"].add(capability[:120])
                         bucket["provenance"]["fallback_used"] = True
-                        bucket["provenance"]["fallback_fields"].add("source")
+                        bucket["provenance"]["fallback_fields"].add("capability")
+                if not bucket["processes"]:
+                    for process in _related_operating_labels(tool, processes, kind="process", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                        if process:
+                            bucket["processes"].add(process[:120])
+                            bucket["provenance"]["fallback_used"] = True
+                            bucket["provenance"]["fallback_fields"].add("process")
+                if not bucket["sources"]:
+                    for source in _related_operating_labels(tool, sources, kind="source", max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
+                        if source:
+                            bucket["sources"].add(source[:120])
+                            bucket["provenance"]["fallback_used"] = True
+                            bucket["provenance"]["fallback_fields"].add("source")
+            elif not bucket["sources"]:
+                derived_source = ""
+                if bucket["capabilities"]:
+                    derived_source = sorted(bucket["capabilities"])[0]
+                elif bucket["purposes"]:
+                    derived_source = _normalize_operating_label(sorted(bucket["purposes"])[0], kind="source")[:120]
+                else:
+                    derived_source = _normalize_operating_label(tool, kind="source")[:120]
+                if derived_source:
+                    bucket["sources"].add(derived_source)
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("source")
+                    bucket["provenance"]["source_bindings"].add(f"derived:{derived_source}")
             if not bucket["guardrails"]:
                 for rule in _choose_related_guardrails(tool, guardrails, max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
                     if rule:
@@ -1773,8 +1788,10 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
         if bucket["processes"] or bucket["sources"]:
             if provenance["tool_contracts"]:
                 process_source_origin = "tool_contract"
-            elif provenance["source_bindings"]:
+            elif any(not str(item).startswith("derived:") for item in provenance["source_bindings"]):
                 process_source_origin = "source_binding"
+            elif any(str(item).startswith("derived:") for item in provenance["source_bindings"]):
+                process_source_origin = "derived"
             elif provenance["capability_contracts"]:
                 process_source_origin = "capability_contract"
             elif provenance["fallback_used"]:
@@ -1790,6 +1807,7 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                 "sources": sorted(bucket["sources"])[:3],
                 "guardrails": sorted(bucket["guardrails"])[:3],
                 "structured": bool(bucket.get("structured")),
+                "process_source_origin": process_source_origin,
                 "provenance": {
                     "tool_contracts": sorted(provenance["tool_contracts"])[:4],
                     "capability_contracts": sorted(provenance["capability_contracts"])[:4],
