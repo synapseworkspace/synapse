@@ -5,6 +5,7 @@ import unittest
 
 try:
     import services.api.app.main as _api_main
+    from services.api.app.synthesis_packs import get_synthesis_pack
     from services.api.app.main import (
         AgentReflectionSubmitRequest,
         AgentRuntimeSurfaceAgentIn,
@@ -55,6 +56,7 @@ try:
     )
 except Exception:  # pragma: no cover
     _api_main = None
+    get_synthesis_pack = None
     AgentReflectionSubmitRequest = None
     AgentRuntimeSurfaceAgentIn = None
     _bootstrap_page_importance = None
@@ -146,6 +148,7 @@ except Exception:  # pragma: no cover
     or _render_agent_handoff_markdown is None
     or _render_agent_scorecards_markdown is None
     or _render_agent_scheduled_task_runbook_markdown is None
+    or get_synthesis_pack is None
     or _build_runtime_agent_capability_matrix is None
     or _collect_agent_source_usage is None
     or _runtime_agent_filter_sql is None
@@ -1475,6 +1478,23 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Collect the latest driver economy metrics", markdown)
         self.assertIn("Updated driver economy report/sheet ready for operations or finance review.", markdown)
         self.assertNotIn("runtime task context + bound sources", markdown)
+
+    def test_generic_ops_pack_stays_neutral_for_driver_economy_task(self) -> None:
+        assert _api_main is not None
+        semantics = get_synthesis_pack("generic_ops").derive_task_semantics(
+            {
+                "task_code": "standing_order.logistics.driver_economy_sheet",
+                "builtin_task": "driver_economy_report_to_sheet",
+                "schedule_kind": "cron",
+                "cron_expr": "0 12 * * *",
+                "source_hints": ["driver_economy_daily_latest"],
+            },
+            normalize_items=lambda value: _normalize_agent_directory_items(value, limit=6),
+            extract_runtime_items=_api_main._runtime_surface_extract_items,
+            normalize_statement_text=_api_main._normalize_statement_text,
+        )
+        self.assertIn("Execute a recurring operational workflow", semantics["purpose"])
+        self.assertNotIn("driver economy reporting workflow", semantics["purpose"])
 
     def test_data_sources_catalog_pages_include_capability_and_process_impact(self) -> None:
         assert _api_main is not None
