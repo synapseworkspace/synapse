@@ -1507,8 +1507,18 @@ def _operating_label_tokens(text: Any, *, kind: str = "generic") -> set[str]:
         "confirmation",
         "policy",
     }
+    aliases = {
+        "documents": "document",
+        "orders": "order",
+        "routes": "route",
+        "tasks": "task",
+        "vehicles": "vehicle",
+        "economics": "economy",
+        "notes": "note",
+        "adjustments": "adjustment",
+    }
     return {
-        token
+        aliases.get(token, token)
         for token in normalized.split()
         if token and len(token) >= 2 and token not in stopwords
     }
@@ -1532,11 +1542,22 @@ def _tool_alias_match_score(tool: str, candidate: Any) -> int:
         if normalized_tool in normalized_candidate or normalized_candidate in normalized_tool:
             return 65
         return 0
-    if overlap == min(len(tool_tokens), len(candidate_tokens)):
+    min_size = min(len(tool_tokens), len(candidate_tokens))
+    max_size = max(len(tool_tokens), len(candidate_tokens))
+    coverage = float(overlap) / float(max(1, min_size))
+    spread = float(overlap) / float(max(1, max_size))
+    if overlap == min_size:
         return 90
-    if overlap >= 2:
+    if overlap >= 2 and coverage >= 0.66:
+        return 82
+    if overlap >= 2 and spread >= 0.5:
         return 70 + overlap
-    return 45
+    if overlap == 1 and len(tool_tokens) == 1 and len(candidate_tokens) == 1:
+        only_tool = next(iter(tool_tokens))
+        only_candidate = next(iter(candidate_tokens))
+        if len(only_tool) >= 5 and only_tool == only_candidate:
+            return 60
+    return 0
 
 
 def _best_contract_matches(

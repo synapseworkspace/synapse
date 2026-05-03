@@ -2135,6 +2135,15 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Approve route changes and publish dispatch overrides", markdown)
         self.assertIn("dispatch_overrides_sheet", markdown)
 
+    def test_tool_alias_match_score_requires_more_than_shared_domain_token(self) -> None:
+        assert _api_main is not None
+        weak = _api_main._tool_alias_match_score("driver_adjustments_for_period", "documents_orders_for_driver_day")
+        strong = _api_main._tool_alias_match_score("erp_routes_slice", "erp routes slice")
+        normalized = _api_main._tool_alias_match_score("driver_economics_for_day", "driver_economy_daily_latest")
+        self.assertEqual(weak, 0)
+        self.assertGreaterEqual(strong, 80)
+        self.assertGreaterEqual(normalized, 80)
+
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
         assert _api_main is not None
