@@ -66,6 +66,10 @@ class SynthesisPack(Protocol):
         space_slug: SpaceSlugFn,
     ) -> list[dict[str, str]]: ...
 
+    def business_profiles_catalog(self) -> list[dict[str, Any]]: ...
+
+    def resolve_business_profile(self, key: str | None) -> dict[str, Any] | None: ...
+
 
 _RUNTIME_SURFACE_SPACE_STOPWORDS = {
     "action",
@@ -205,6 +209,81 @@ _WIKI_SPACE_TEMPLATE_CATALOG = [
         "default_space_key": "operations",
         "description": "Opinionated bootstrap for agent-driven organizations: profiles, tools, tasks, HITL, and integrations.",
         "policy": {"write_mode": "owners_only", "comment_mode": "open", "review_assignment_required": True},
+    },
+]
+
+_BUSINESS_PROFILES_CATALOG = [
+    {
+        "key": "generic_service_ops",
+        "label": "Generic Service Ops",
+        "description": "Neutral default for service organizations that want a clean wiki-first operating baseline.",
+        "synthesis_pack": "generic_ops",
+        "starter_profile": "standard",
+        "role_template_key": None,
+        "default_space_key": "operations",
+        "bundle_promotion_space_key": "operations",
+        "recommended_noise_preset": "enterprise_wiki_bootstrap",
+        "focus": ["agent profile", "data map", "operational runbook", "decisions log"],
+    },
+    {
+        "key": "logistics_operator",
+        "label": "Logistics Operator",
+        "description": "Dispatch, routing, warehouse, incident, and recurring transport workflow heavy deployments.",
+        "synthesis_pack": "logistics_ops",
+        "starter_profile": "logistics_ops",
+        "role_template_key": "logistics_ops",
+        "default_space_key": "logistics",
+        "bundle_promotion_space_key": "logistics",
+        "recommended_noise_preset": "enterprise_wiki_bootstrap",
+        "focus": ["process playbooks", "data sources catalog", "incident runbooks", "scheduled task SOPs"],
+    },
+    {
+        "key": "support_center",
+        "label": "Support Center",
+        "description": "Triage, escalation, customer communication, and incident response heavy support organizations.",
+        "synthesis_pack": "generic_ops",
+        "starter_profile": "support_ops",
+        "role_template_key": "support_ops",
+        "default_space_key": "support",
+        "bundle_promotion_space_key": "support",
+        "recommended_noise_preset": "enterprise_wiki_bootstrap",
+        "focus": ["ticket triage", "escalation rules", "customer communication", "decision log"],
+    },
+    {
+        "key": "sales_revenue_ops",
+        "label": "Sales / Revenue Ops",
+        "description": "Qualification, stage management, and sales-to-success handoff driven teams.",
+        "synthesis_pack": "generic_ops",
+        "starter_profile": "sales_ops",
+        "role_template_key": "sales_ops",
+        "default_space_key": "sales",
+        "bundle_promotion_space_key": "sales",
+        "recommended_noise_preset": "enterprise_wiki_bootstrap",
+        "focus": ["deal stage playbooks", "handoff contracts", "tooling map", "company operating context"],
+    },
+    {
+        "key": "compliance_program",
+        "label": "Compliance Program",
+        "description": "Control catalogs, audit evidence, review workflows, and policy-heavy environments.",
+        "synthesis_pack": "generic_ops",
+        "starter_profile": "compliance_ops",
+        "role_template_key": "compliance_ops",
+        "default_space_key": "compliance",
+        "bundle_promotion_space_key": "compliance",
+        "recommended_noise_preset": "enterprise_wiki_bootstrap",
+        "focus": ["control maps", "audit evidence", "policy pages", "decisions log"],
+    },
+    {
+        "key": "ai_employee_org",
+        "label": "AI Employee Org",
+        "description": "Agent-driven org with strong control-plane metadata, scheduled tasks, approvals, and integrations.",
+        "synthesis_pack": "generic_ops",
+        "starter_profile": "ai_employee_org",
+        "role_template_key": "ai_employee_org",
+        "default_space_key": "operations",
+        "bundle_promotion_space_key": "operations",
+        "recommended_noise_preset": "enterprise_wiki_bootstrap",
+        "focus": ["tool catalog", "scheduled tasks", "HITL rules", "integrations map", "agent directory"],
     },
 ]
 
@@ -892,6 +971,18 @@ class GenericOpsSynthesisPack:
                 "markdown": "# Audit Evidence Checklist\n\n## Evidence Readiness\n- Owner, retention, and validation cadence.\n",
             },
         ]
+
+    def business_profiles_catalog(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in _BUSINESS_PROFILES_CATALOG]
+
+    def resolve_business_profile(self, key: str | None) -> dict[str, Any] | None:
+        normalized = str(key or "").strip().lower()
+        if not normalized:
+            return None
+        for item in _BUSINESS_PROFILES_CATALOG:
+            if str(item.get("key") or "").strip().lower() == normalized:
+                return dict(item)
+        return None
 
 
 class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):

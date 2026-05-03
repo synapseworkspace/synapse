@@ -971,6 +971,7 @@ class AdoptionFirstRunBootstrapRequest(BaseModel):
     project_id: str
     created_by: str = Field(default="bootstrap_wizard", min_length=1, max_length=256)
     profile: str = Field(default="standard", pattern="^(standard|support_ops|logistics_ops|sales_ops|compliance_ops|ai_employee_org)$")
+    business_profile_key: str | None = Field(default=None, min_length=1, max_length=128)
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
     publish: bool = True
     include_state_snapshot: bool = True
@@ -989,6 +990,7 @@ class AdoptionSyncPresetExecuteRequest(BaseModel):
     updated_by: str = Field(default="ops_admin", min_length=1, max_length=256)
     reviewed_by: str | None = Field(default=None, min_length=1, max_length=256)
     preset_key: str = Field(default="enterprise_curated_safe", pattern="^(enterprise_curated_safe)$")
+    business_profile_key: str | None = Field(default=None, min_length=1, max_length=128)
     dry_run: bool = True
     confirm_project_id: str | None = None
     source_system: str = Field(default="legacy_import", min_length=1, max_length=128)
@@ -31720,6 +31722,14 @@ def _get_wiki_space_template(template_key: str) -> dict[str, Any] | None:
     return None
 
 
+def _adoption_business_profiles_catalog() -> list[dict[str, Any]]:
+    return get_synthesis_pack("generic_ops").business_profiles_catalog()
+
+
+def _resolve_adoption_business_profile(key: str | None) -> dict[str, Any] | None:
+    return get_synthesis_pack("generic_ops").resolve_business_profile(key)
+
+
 def _build_role_template_pages(template_key: str, *, space_key: str | None = None) -> list[dict[str, str]]:
     return get_synthesis_pack("generic_ops").build_role_template_pages(
         template_key,
@@ -37577,12 +37587,37 @@ def execute_adoption_sync_preset(
 
     updated_by = str(payload.updated_by or "").strip() or "ops_admin"
     reviewed_by = str(payload.reviewed_by or "").strip() or updated_by
+    resolved_business_profile = _resolve_adoption_business_profile(payload.business_profile_key)
+    effective_starter_profile = str(
+        (resolved_business_profile or {}).get("starter_profile") or payload.starter_profile
+    ).strip() or "standard"
+    effective_role_template_key = (
+        str((resolved_business_profile or {}).get("role_template_key") or "").strip() or payload.role_template_key
+    )
+    effective_role_template_space_key = (
+        str(payload.role_template_space_key or (resolved_business_profile or {}).get("default_space_key") or "").strip()
+        or None
+    )
+    effective_bundle_space_key = str(
+        payload.bundle_promotion_space_key
+        or (resolved_business_profile or {}).get("bundle_promotion_space_key")
+        or "operations"
+    ).strip() or "operations"
+    effective_include_role_template = bool(payload.include_role_template or bool((resolved_business_profile or {}).get("role_template_key")))
     warnings: list[dict[str, Any]] = []
     response: dict[str, Any] = {
         "status": "ok",
         "preset_key": payload.preset_key,
         "project_id": project_id,
         "dry_run": bool(payload.dry_run),
+        "business_profile": resolved_business_profile,
+        "resolved_defaults": {
+            "starter_profile": effective_starter_profile,
+            "include_role_template": effective_include_role_template,
+            "role_template_key": effective_role_template_key,
+            "role_template_space_key": effective_role_template_space_key,
+            "bundle_promotion_space_key": effective_bundle_space_key,
+        },
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
@@ -37739,19 +37774,19 @@ def execute_adoption_sync_preset(
                     AdoptionFirstRunBootstrapRequest(
                         project_id=project_id,
                         created_by=updated_by,
-                        profile=payload.starter_profile,
+                        profile=effective_starter_profile,
                         publish=True,
                         include_state_snapshot=True,
                     )
                 )
 
-            if payload.include_role_template and payload.role_template_key and not payload.dry_run:
+            if effective_include_role_template and effective_role_template_key and not payload.dry_run:
                 response["role_template"] = apply_adoption_wiki_space_template(
                     AdoptionWikiSpaceTemplateApplyRequest(
                         project_id=project_id,
                         updated_by=updated_by,
-                        template_key=payload.role_template_key,
-                        space_key=payload.role_template_space_key,
+                        template_key=effective_role_template_key,
+                        space_key=effective_role_template_space_key,
                         publish=True,
                     )
                 )
@@ -37764,7 +37799,7 @@ def execute_adoption_sync_preset(
                         confirm_project_id=project_id if not payload.dry_run else None,
                         publish=bool(payload.bundle_promotion_publish),
                         bootstrap_publish_core=bool(payload.bundle_promotion_bootstrap_publish_core),
-                        space_key=str(payload.bundle_promotion_space_key or "operations"),
+                        space_key=effective_bundle_space_key,
                     ),
                     idempotency_key=None,
                 )
@@ -38161,9 +38196,18 @@ def run_adoption_bundle_promotion(
 
 @app.post("/v1/adoption/first-run/bootstrap")
 def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) -> dict[str, Any]:
+    resolved_business_profile = _resolve_adoption_business_profile(payload.business_profile_key)
+    effective_profile = str(
+        (resolved_business_profile or {}).get("starter_profile") or payload.profile
+    ).strip() or "standard"
+    effective_space_key = str(
+        payload.space_key
+        or (resolved_business_profile or {}).get("default_space_key")
+        or ""
+    ).strip() or None
     pages = _build_first_run_starter_pages(
-        payload.profile,
-        space_key=payload.space_key,
+        effective_profile,
+        space_key=effective_space_key,
         include_decisions_log=True,
     )
     requested_status = "published" if payload.publish else "reviewed"
@@ -38172,11 +38216,11 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
             conn,
             project_id=payload.project_id,
             created_by=payload.created_by,
-            profile=payload.profile,
+            profile=effective_profile,
             pages=pages,
             requested_status=requested_status,
             policy_space_fallback_enabled=True,
-            policy_space_fallback_candidates=[payload.space_key or "", "logistics", "general"],
+            policy_space_fallback_candidates=[effective_space_key or "", "logistics", "general"],
         )
         state_sync_payload: dict[str, Any] | None = None
         if bool(payload.include_state_snapshot):
@@ -38184,7 +38228,7 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
                 conn,
                 project_id=payload.project_id,
                 updated_by=payload.created_by,
-                space_key=payload.space_key,
+                space_key=effective_space_key,
                 status=requested_status,
             )
     if int((page_result.get("summary") or {}).get("created") or 0) <= 0 and int(
@@ -38203,12 +38247,30 @@ def run_adoption_first_run_bootstrap(payload: AdoptionFirstRunBootstrapRequest) 
     return {
         "status": "ok",
         "project_id": payload.project_id,
-        "profile": payload.profile,
-        "space_key": _normalize_space_key(payload.space_key or "", default=""),
+        "profile": effective_profile,
+        "business_profile": resolved_business_profile,
+        "resolved_defaults": {
+            "starter_profile": effective_profile,
+            "space_key": _normalize_space_key(effective_space_key or "", default=""),
+        },
+        "space_key": _normalize_space_key(effective_space_key or "", default=""),
         "include_state_snapshot": bool(payload.include_state_snapshot),
         "requested_status": requested_status,
         **page_result,
         "state_snapshot": state_sync_payload if bool(payload.include_state_snapshot) else None,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/v1/adoption/business-profiles")
+def list_adoption_business_profiles() -> dict[str, Any]:
+    profiles = _adoption_business_profiles_catalog()
+    return {
+        "profiles": profiles,
+        "summary": {
+            "total": len(profiles),
+            "packs": sorted({str(item.get("synthesis_pack") or "generic_ops") for item in profiles}),
+        },
         "generated_at": datetime.now(UTC).isoformat(),
     }
 

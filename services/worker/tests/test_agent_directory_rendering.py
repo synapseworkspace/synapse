@@ -37,6 +37,8 @@ try:
         _compute_agent_capability_confidence,
         _derive_runtime_agent_responsibilities,
         _derive_runtime_agent_role,
+        _adoption_business_profiles_catalog,
+        _resolve_adoption_business_profile,
         _infer_runtime_surface_core_space_keys,
         _draft_matches_bulk_filter,
         _evaluate_agent_capability_bootstrap_contract,
@@ -87,6 +89,8 @@ except Exception:  # pragma: no cover
     _compute_agent_capability_confidence = None
     _derive_runtime_agent_responsibilities = None
     _derive_runtime_agent_role = None
+    _adoption_business_profiles_catalog = None
+    _resolve_adoption_business_profile = None
     _infer_runtime_surface_core_space_keys = None
     _draft_matches_bulk_filter = None
     _evaluate_agent_capability_bootstrap_contract = None
@@ -135,6 +139,8 @@ except Exception:  # pragma: no cover
     or _compute_agent_capability_confidence is None
     or _derive_runtime_agent_responsibilities is None
     or _derive_runtime_agent_role is None
+    or _adoption_business_profiles_catalog is None
+    or _resolve_adoption_business_profile is None
     or _infer_runtime_surface_core_space_keys is None
     or _draft_matches_bulk_filter is None
     or _evaluate_agent_capability_bootstrap_contract is None
@@ -159,6 +165,19 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
     def test_sync_preset_defaults_to_standard_starter_profile(self) -> None:
         request = AdoptionSyncPresetExecuteRequest(project_id="omega_demo")
         self.assertEqual(request.starter_profile, "standard")
+
+    def test_business_profiles_catalog_exposes_logistics_operator(self) -> None:
+        profiles = _adoption_business_profiles_catalog()
+        logistics = next(item for item in profiles if str(item.get("key") or "") == "logistics_operator")
+        self.assertEqual(logistics["starter_profile"], "logistics_ops")
+        self.assertEqual(logistics["role_template_key"], "logistics_ops")
+        self.assertEqual(logistics["bundle_promotion_space_key"], "logistics")
+
+    def test_resolve_business_profile_returns_ai_employee_org(self) -> None:
+        profile = _resolve_adoption_business_profile("ai_employee_org")
+        assert profile is not None
+        self.assertEqual(profile["starter_profile"], "ai_employee_org")
+        self.assertEqual(profile["default_space_key"], "operations")
 
     def test_runtime_surface_profile_builder_extracts_control_plane_contracts(self) -> None:
         surface = AgentRuntimeSurfaceAgentIn(
