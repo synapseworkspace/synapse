@@ -20361,20 +20361,28 @@ def get_selfhost_consistency_gate(
         }
     )
 
-    route_ok = normalized_route in {"", "/wiki"} or normalized_route.startswith("/wiki/")
+    is_wiki_route = normalized_route in {"", "/wiki"} or normalized_route.startswith("/wiki/")
+    is_operations_route = normalized_route.endswith("/operations") or "/operations/" in normalized_route
+    route_ok = is_wiki_route or is_operations_route
     checks.append(
         {
             "key": "route_is_wiki",
             "status": "ok" if route_ok else "warning",
-            "message": "Route is wiki-first." if route_ok else "Route is not /wiki; users may land outside core workspace.",
+            "message": (
+                "Route is wiki-first."
+                if is_wiki_route
+                else "You are viewing an operations route outside the default wiki entrypoint."
+                if is_operations_route
+                else "Route is outside the expected wiki/operations workspace entrypoints."
+            ),
             "meta": {
                 "route_path": normalized_route or None,
-                "expected_prefix": "/wiki",
+                "expected_prefixes": ["/wiki", "/operations"],
             },
         }
     )
 
-    operations_feature_required = normalized_route.startswith("/wiki/operations")
+    operations_feature_required = is_operations_route
     has_synthesis_observability = "synthesis_observability_panel" in declared_features
     checks.append(
         {
