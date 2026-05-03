@@ -1651,6 +1651,101 @@ class SynapseClient:
             params=params,
         )
 
+    def upsert_agent_shared_memory_fanout_hook(
+        self,
+        *,
+        updated_by: str,
+        name: str,
+        endpoint_url: str,
+        enabled: bool = True,
+        hook_id: int | None = None,
+        space_key: str | None = None,
+        delivery_mode: str = "invalidation",
+        headers: dict[str, str] | None = None,
+        timeout_seconds: int = 5,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip(),
+            "hook_id": int(hook_id) if hook_id is not None else None,
+            "name": str(name).strip(),
+            "endpoint_url": str(endpoint_url).strip(),
+            "enabled": bool(enabled),
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "delivery_mode": str(delivery_mode or "invalidation").strip().lower() or "invalidation",
+            "headers": headers if isinstance(headers, dict) else {},
+            "timeout_seconds": max(1, min(60, int(timeout_seconds))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-hooks",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def list_agent_shared_memory_fanout_hooks(
+        self,
+        *,
+        space_key: str | None = None,
+        enabled_only: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "enabled_only": bool(enabled_only),
+            "limit": max(1, min(200, int(limit))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-hooks",
+            method="GET",
+            params=params,
+        )
+
+    def dispatch_agent_shared_memory_fanout(
+        self,
+        *,
+        updated_by: str | None = None,
+        agent_id: str | None = None,
+        role: str | None = None,
+        space_key: str | None = None,
+        include_reviewed: bool = False,
+        review_policy_mode: str = "auto",
+        memory_tier_mode: str = "auto",
+        dispatch_mode: str = "invalidation",
+        dry_run: bool = True,
+        page_slug: str | None = None,
+        page_title: str | None = None,
+        page_type: str | None = None,
+        entity_key: str | None = None,
+        change_summary: str | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None,
+            "agent_id": str(agent_id).strip() if agent_id is not None and str(agent_id).strip() else None,
+            "role": str(role).strip() if role is not None and str(role).strip() else None,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "include_reviewed": bool(include_reviewed),
+            "review_policy_mode": str(review_policy_mode or "auto").strip().lower() or "auto",
+            "memory_tier_mode": str(memory_tier_mode or "auto").strip().lower() or "auto",
+            "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
+            "dry_run": bool(dry_run),
+            "page_slug": str(page_slug).strip() if page_slug is not None and str(page_slug).strip() else None,
+            "page_title": str(page_title).strip() if page_title is not None and str(page_title).strip() else None,
+            "page_type": str(page_type).strip() if page_type is not None and str(page_type).strip() else None,
+            "entity_key": str(entity_key).strip() if entity_key is not None and str(entity_key).strip() else None,
+            "change_summary": str(change_summary).strip() if change_summary is not None and str(change_summary).strip() else None,
+            "limit": max(1, min(100, int(limit))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-dispatch",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",

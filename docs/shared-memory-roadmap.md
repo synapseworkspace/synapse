@@ -151,9 +151,10 @@ Implemented:
 13. `draft_private` now reads real draft-backed deltas from `wiki_draft_changes` for trusted roles, instead of staying a pure degraded no-op
 14. shared-memory changes now carry typed `delta_objects` plus compact `fanout_plan` summaries for publish preview / operator routing
 15. long-lived `shared_memory_entries` now back private/team memory with materialized entries that runtimes can write and later hydrate alongside wiki deltas
+16. optional `shared_memory_fanout_hooks` now let operators configure push-style invalidation / impact / publish-preview delivery to external runtimes, with dry-run dispatch before going live
 
 Current limitation:
-- private/team memory now has materialized entry backing, but still lacks push/fanout hooks and a richer write-back lifecycle beyond the first entry APIs
+- private/team memory now has materialized entry backing and optional fanout hooks, but still lacks a richer write-back lifecycle and stronger delivery guarantees / retries
 
 These endpoints are intentionally conservative:
 

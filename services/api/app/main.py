@@ -1229,6 +1229,38 @@ class SharedMemoryEntryUpsertRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class SharedMemoryFanoutHookUpsertRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    hook_id: int | None = Field(default=None, ge=1)
+    name: str = Field(min_length=1, max_length=256)
+    endpoint_url: str = Field(min_length=1, max_length=2048)
+    enabled: bool = True
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    delivery_mode: str = Field(default="invalidation", pattern="^(invalidation|impact|publish_preview)$")
+    headers: dict[str, str] | None = None
+    timeout_seconds: int = Field(default=5, ge=1, le=60)
+
+
+class SharedMemoryFanoutDispatchRequest(BaseModel):
+    project_id: str
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+    agent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    role: str | None = Field(default=None, min_length=1, max_length=256)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    include_reviewed: bool = False
+    review_policy_mode: str = Field(default="auto", pattern="^(auto|published_only|reviewed_plus_published)$")
+    memory_tier_mode: str = Field(default="auto", pattern="^(auto|published_org|reviewed_team|draft_private)$")
+    dispatch_mode: str = Field(default="invalidation", pattern="^(invalidation|impact|publish_preview)$")
+    dry_run: bool = True
+    page_slug: str | None = Field(default=None, min_length=1, max_length=512)
+    page_title: str | None = Field(default=None, min_length=1, max_length=512)
+    page_type: str | None = Field(default=None, min_length=1, max_length=128)
+    entity_key: str | None = Field(default=None, min_length=1, max_length=512)
+    change_summary: str | None = Field(default=None, min_length=1, max_length=2000)
+    limit: int = Field(default=25, ge=1, le=100)
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -4693,6 +4725,14 @@ def _shared_memory_entries_table_exists(conn) -> bool:
     return bool(_SHARED_MEMORY_ENTRIES_TABLE_EXISTS)
 
 
+def _shared_memory_fanout_hooks_table_exists(conn) -> bool:
+    global _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS
+    if _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.shared_memory_fanout_hooks")
+    return bool(_SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS)
+
+
 def _render_agent_folder_markdown(
     *,
     profile: dict[str, Any],
@@ -7934,6 +7974,7 @@ _WIKI_RETRIEVAL_FEEDBACK_TABLE_EXISTS: bool | None = None
 _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_ENTRIES_TABLE_EXISTS: bool | None = None
+_SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS: bool | None = None
 _PUBLIC_TABLE_EXISTS_CACHE: dict[str, bool] = {}
 _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
@@ -11749,6 +11790,404 @@ def _list_shared_memory_entries(
     }
 
 
+def _normalize_shared_memory_hook_headers(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        header_key = str(key or "").strip()
+        if not header_key:
+            continue
+        header_value = str(value or "").strip()
+        if not header_value:
+            continue
+        out[header_key[:128]] = header_value[:1024]
+        if len(out) >= 20:
+            break
+    return out
+
+
+def _upsert_shared_memory_fanout_hook(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str,
+    hook_id: int | None,
+    name: str,
+    endpoint_url: str,
+    enabled: bool,
+    space_key: str | None,
+    delivery_mode: str,
+    headers: dict[str, str] | None,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    if not _shared_memory_fanout_hooks_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "shared_memory_fanout_hooks_unavailable"})
+    normalized_project = str(project_id or "").strip()
+    normalized_actor = str(updated_by or "").strip()
+    if not normalized_project or not normalized_actor:
+        raise HTTPException(status_code=422, detail={"code": "project_id_and_updated_by_required"})
+    normalized_headers = _normalize_shared_memory_hook_headers(headers)
+    normalized_space = _normalize_space_key(space_key or "", default="") or None
+    normalized_mode = str(delivery_mode or "invalidation").strip().lower() or "invalidation"
+    normalized_name = str(name or "").strip()
+    normalized_url = str(endpoint_url or "").strip()
+    with conn.cursor() as cur:
+        if hook_id is None:
+            cur.execute(
+                """
+                INSERT INTO shared_memory_fanout_hooks (
+                  project_id,
+                  name,
+                  endpoint_url,
+                  enabled,
+                  space_key,
+                  delivery_mode,
+                  headers,
+                  timeout_seconds,
+                  updated_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at, updated_at
+                """,
+                (
+                    normalized_project,
+                    normalized_name,
+                    normalized_url,
+                    bool(enabled),
+                    normalized_space,
+                    normalized_mode,
+                    Jsonb(normalized_headers),
+                    max(1, min(60, int(timeout_seconds))),
+                    normalized_actor,
+                ),
+            )
+            row = cur.fetchone()
+            created = True
+        else:
+            cur.execute(
+                """
+                UPDATE shared_memory_fanout_hooks
+                SET name = %s,
+                    endpoint_url = %s,
+                    enabled = %s,
+                    space_key = %s,
+                    delivery_mode = %s,
+                    headers = %s,
+                    timeout_seconds = %s,
+                    updated_by = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND project_id = %s
+                RETURNING id, created_at, updated_at
+                """,
+                (
+                    normalized_name,
+                    normalized_url,
+                    bool(enabled),
+                    normalized_space,
+                    normalized_mode,
+                    Jsonb(normalized_headers),
+                    max(1, min(60, int(timeout_seconds))),
+                    normalized_actor,
+                    int(hook_id),
+                    normalized_project,
+                ),
+            )
+            row = cur.fetchone()
+            created = False
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "shared_memory_fanout_hook_not_found", "hook_id": hook_id})
+    return {
+        "status": "created" if created else "updated",
+        "project_id": normalized_project,
+        "hook": {
+            "id": int(row[0]),
+            "name": normalized_name,
+            "endpoint_url": normalized_url,
+            "enabled": bool(enabled),
+            "space_key": normalized_space,
+            "delivery_mode": normalized_mode,
+            "headers": normalized_headers,
+            "timeout_seconds": max(1, min(60, int(timeout_seconds))),
+            "updated_by": normalized_actor,
+            "created_at": row[1].astimezone(UTC).isoformat() if isinstance(row[1], datetime) else None,
+            "updated_at": row[2].astimezone(UTC).isoformat() if isinstance(row[2], datetime) else None,
+        },
+    }
+
+
+def _list_shared_memory_fanout_hooks(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    enabled_only: bool = False,
+    limit: int = 50,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_fanout_hooks_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "space_key": normalized_space or None,
+            "hooks": [],
+            "summary": {"hooks_total": 0, "enabled_hooks": 0, "supported": False},
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+    with conn.cursor() as cur:
+        sql = """
+            SELECT id, name, endpoint_url, enabled, space_key, delivery_mode, headers, timeout_seconds, updated_by, created_at, updated_at
+            FROM shared_memory_fanout_hooks
+            WHERE project_id = %s
+        """
+        params: list[Any] = [normalized_project]
+        if enabled_only:
+            sql += " AND enabled = TRUE"
+        if normalized_space:
+            sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
+            params.append(normalized_space)
+        sql += " ORDER BY enabled DESC, updated_at DESC, id DESC LIMIT %s"
+        params.append(max(1, min(200, int(limit))))
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    hooks = []
+    enabled_hooks = 0
+    for row in rows:
+        if bool(row[3]):
+            enabled_hooks += 1
+        hooks.append(
+            {
+                "id": int(row[0]),
+                "name": str(row[1] or "").strip(),
+                "endpoint_url": str(row[2] or "").strip(),
+                "enabled": bool(row[3]),
+                "space_key": str(row[4] or "").strip() or None,
+                "delivery_mode": str(row[5] or "").strip() or "invalidation",
+                "headers": _normalize_shared_memory_hook_headers(row[6]),
+                "timeout_seconds": int(row[7] or 5),
+                "updated_by": str(row[8] or "").strip() or None,
+                "created_at": row[9].astimezone(UTC).isoformat() if isinstance(row[9], datetime) else None,
+                "updated_at": row[10].astimezone(UTC).isoformat() if isinstance(row[10], datetime) else None,
+            }
+        )
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "hooks": hooks,
+        "summary": {"hooks_total": len(hooks), "enabled_hooks": enabled_hooks, "supported": True},
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _build_shared_memory_fanout_dispatch_payload(
+    conn,
+    *,
+    project_id: str,
+    agent_id: str | None,
+    role: str | None,
+    space_key: str | None,
+    include_reviewed: bool,
+    review_policy_mode: str,
+    memory_tier_mode: str,
+    dispatch_mode: str,
+    page_slug: str | None,
+    page_title: str | None,
+    page_type: str | None,
+    entity_key: str | None,
+    change_summary: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    normalized_mode = str(dispatch_mode or "invalidation").strip().lower() or "invalidation"
+    normalized_project = str(project_id or "").strip()
+    if normalized_mode == "publish_preview":
+        preview = _build_shared_memory_publish_impact_preview(
+            conn,
+            project_id=normalized_project,
+            agent_id=agent_id,
+            role=role,
+            space_key=space_key,
+            page_slug=page_slug,
+            page_title=page_title,
+            page_type=page_type,
+            entity_key=entity_key,
+            change_summary=change_summary,
+            include_reviewed=include_reviewed,
+            review_policy_mode=review_policy_mode,
+            memory_tier_mode=memory_tier_mode,
+            limit=limit,
+        )
+        return {
+            "mode": "publish_preview",
+            "project_id": normalized_project,
+            "space_key": _normalize_space_key(space_key or "", default="") or None,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "preview": preview,
+        }
+    if normalized_mode == "impact":
+        impact = _build_shared_memory_impact(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            since_hours=72,
+            limit=max(10, min(100, int(limit))),
+            include_reviewed=include_reviewed,
+            review_policy_mode=review_policy_mode,
+            memory_tier_mode=memory_tier_mode,
+        )
+        return {
+            "mode": "impact",
+            "project_id": normalized_project,
+            "space_key": _normalize_space_key(space_key or "", default="") or None,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "impact": impact,
+        }
+    resolved_role = _resolve_shared_memory_role(conn, project_id=normalized_project, agent_id=agent_id, role=role)
+    tier_scope = _resolve_shared_memory_tier_scope(
+        include_reviewed=include_reviewed,
+        review_policy_mode=review_policy_mode,
+        memory_tier_mode=memory_tier_mode,
+        resolved_role=resolved_role,
+        draft_private_supported=_shared_memory_private_tier_materialized(conn),
+    )
+    agent_context = _load_shared_memory_agent_context(
+        conn,
+        project_id=normalized_project,
+        agent_id=agent_id,
+        resolved_role=resolved_role,
+        space_key=space_key,
+    )
+    invalidation = _build_shared_memory_invalidation_marker(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        include_reviewed=bool(tier_scope.get("include_reviewed")),
+        status_scope=list(tier_scope.get("status_scope") or []),
+        tier_scope=tier_scope,
+        resolved_role=resolved_role,
+        agent_context=agent_context,
+    )
+    return {
+        "mode": "invalidation",
+        "project_id": normalized_project,
+        "space_key": _normalize_space_key(space_key or "", default="") or None,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "invalidation": invalidation,
+        "tier_scope": tier_scope,
+    }
+
+
+def _dispatch_shared_memory_fanout(
+    conn,
+    *,
+    project_id: str,
+    updated_by: str | None,
+    agent_id: str | None,
+    role: str | None,
+    space_key: str | None,
+    include_reviewed: bool,
+    review_policy_mode: str,
+    memory_tier_mode: str,
+    dispatch_mode: str,
+    dry_run: bool,
+    page_slug: str | None,
+    page_title: str | None,
+    page_type: str | None,
+    entity_key: str | None,
+    change_summary: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    payload = _build_shared_memory_fanout_dispatch_payload(
+        conn,
+        project_id=normalized_project,
+        agent_id=agent_id,
+        role=role,
+        space_key=space_key,
+        include_reviewed=include_reviewed,
+        review_policy_mode=review_policy_mode,
+        memory_tier_mode=memory_tier_mode,
+        dispatch_mode=dispatch_mode,
+        page_slug=page_slug,
+        page_title=page_title,
+        page_type=page_type,
+        entity_key=entity_key,
+        change_summary=change_summary,
+        limit=limit,
+    )
+    hooks_payload = _list_shared_memory_fanout_hooks(
+        conn,
+        project_id=normalized_project,
+        space_key=normalized_space or None,
+        enabled_only=True,
+        limit=100,
+    )
+    hooks = [item for item in (hooks_payload.get("hooks") or []) if isinstance(item, dict)]
+    deliveries: list[dict[str, Any]] = []
+    for hook in hooks:
+        if str(hook.get("delivery_mode") or "").strip().lower() != str(dispatch_mode or "invalidation").strip().lower():
+            continue
+        endpoint_url = str(hook.get("endpoint_url") or "").strip()
+        if not endpoint_url:
+            continue
+        delivery = {
+            "hook_id": hook.get("id"),
+            "name": hook.get("name"),
+            "endpoint_url": endpoint_url,
+            "delivery_mode": hook.get("delivery_mode"),
+            "dry_run": bool(dry_run),
+            "status": "planned" if dry_run else "pending",
+        }
+        if not dry_run:
+            try:
+                request_headers = {
+                    "Content-Type": "application/json",
+                    "X-Synapse-Project-Id": normalized_project,
+                    "X-Synapse-Fanout-Mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
+                    "X-Synapse-Actor": str(updated_by or "system").strip()[:256] or "system",
+                }
+                request_headers.update(_normalize_shared_memory_hook_headers(hook.get("headers")))
+                raw_payload = json.dumps(payload).encode("utf-8")
+                request = Request(endpoint_url, data=raw_payload, headers=request_headers, method="POST")
+                with urlopen(request, timeout=max(1.0, min(60.0, float(hook.get("timeout_seconds") or 5)))) as response:
+                    body = response.read(512).decode("utf-8", errors="replace")
+                    delivery["status"] = "delivered"
+                    delivery["http_status"] = int(getattr(response, "status", 200) or 200)
+                    delivery["response_preview"] = body[:240] or None
+            except HTTPError as exc:
+                delivery["status"] = "failed"
+                delivery["http_status"] = int(exc.code)
+                delivery["error"] = str(exc)
+            except URLError as exc:
+                delivery["status"] = "failed"
+                delivery["error"] = str(exc.reason or exc)
+            except Exception as exc:
+                delivery["status"] = "failed"
+                delivery["error"] = str(exc)
+        deliveries.append(delivery)
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
+        "dry_run": bool(dry_run),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "payload": payload,
+        "summary": {
+            "hooks_scanned": len(hooks),
+            "deliveries_planned": len(deliveries),
+            "delivered": sum(1 for item in deliveries if str(item.get("status") or "") == "delivered"),
+            "failed": sum(1 for item in deliveries if str(item.get("status") or "") == "failed"),
+        },
+        "deliveries": deliveries,
+    }
+
+
 def _derive_shared_memory_delta_objects(
     *,
     delta_kind: str,
@@ -12916,6 +13355,14 @@ def _build_shared_memory_health_metrics(
             lag_minutes = None
     roster = _load_shared_memory_agent_roster(conn, project_id=normalized_project, space_key=space_key, limit=500)
     active_agents = [item for item in roster if str(item.get("status") or "").strip().lower() == "active"]
+    hooks_summary = _list_shared_memory_fanout_hooks(
+        conn,
+        project_id=normalized_project,
+        space_key=space_key,
+        enabled_only=False,
+        limit=100,
+    ).get("summary")
+    hooks_summary = hooks_summary if isinstance(hooks_summary, dict) else {}
     return {
         "project_id": normalized_project,
         "space_key": _normalize_space_key(space_key or "", default="") or None,
@@ -12935,6 +13382,8 @@ def _build_shared_memory_health_metrics(
             "latest_materialized_entry_at": invalidation.get("latest_materialized_entry_at"),
             "snapshot_lag_minutes": round(lag_minutes, 2) if lag_minutes is not None else None,
             "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
+            "fanout_hooks_total": int(hooks_summary.get("hooks_total") or 0),
+            "fanout_hooks_enabled": int(hooks_summary.get("enabled_hooks") or 0),
         },
     }
 
@@ -28555,6 +29004,74 @@ def list_agent_shared_memory_entries(
             visibility_tier=visibility_tier,
             include_archived=include_archived,
             limit=limit,
+        )
+
+
+@app.post("/v1/agents/shared-memory/fanout-hooks", response_model=None)
+def upsert_agent_shared_memory_fanout_hook(payload: SharedMemoryFanoutHookUpsertRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _upsert_shared_memory_fanout_hook(
+            conn,
+            project_id=normalized_project,
+            updated_by=payload.updated_by,
+            hook_id=payload.hook_id,
+            name=payload.name,
+            endpoint_url=payload.endpoint_url,
+            enabled=bool(payload.enabled),
+            space_key=payload.space_key,
+            delivery_mode=payload.delivery_mode,
+            headers=payload.headers,
+            timeout_seconds=int(payload.timeout_seconds),
+        )
+
+
+@app.get("/v1/agents/shared-memory/fanout-hooks")
+def list_agent_shared_memory_fanout_hooks(
+    project_id: str,
+    space_key: str | None = Query(default=None),
+    enabled_only: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _list_shared_memory_fanout_hooks(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            enabled_only=enabled_only,
+            limit=limit,
+        )
+
+
+@app.post("/v1/agents/shared-memory/fanout-dispatch", response_model=None)
+def dispatch_agent_shared_memory_fanout(payload: SharedMemoryFanoutDispatchRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _dispatch_shared_memory_fanout(
+            conn,
+            project_id=normalized_project,
+            updated_by=payload.updated_by,
+            agent_id=payload.agent_id,
+            role=payload.role,
+            space_key=payload.space_key,
+            include_reviewed=bool(payload.include_reviewed),
+            review_policy_mode=str(payload.review_policy_mode or "auto"),
+            memory_tier_mode=str(payload.memory_tier_mode or "auto"),
+            dispatch_mode=str(payload.dispatch_mode or "invalidation"),
+            dry_run=bool(payload.dry_run),
+            page_slug=payload.page_slug,
+            page_title=payload.page_title,
+            page_type=payload.page_type,
+            entity_key=payload.entity_key,
+            change_summary=payload.change_summary,
+            limit=int(payload.limit),
         )
 
 

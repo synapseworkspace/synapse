@@ -1396,6 +1396,8 @@ type SharedMemoryHealthPayload = {
     scoped_pages?: number;
     draft_items_visible?: number;
     materialized_entries_visible?: number;
+    fanout_hooks_total?: number;
+    fanout_hooks_enabled?: number;
     state_snapshot_slug?: string | null;
     state_snapshot_updated_at?: string | null;
     latest_change_at?: string | null;
@@ -3320,6 +3322,9 @@ export default function App() {
     }
     if (Number(metrics.materialized_entries_visible || 0) > 0) {
       items.push(`${Number(metrics.materialized_entries_visible || 0)} long-lived private/team memory entr${Number(metrics.materialized_entries_visible || 0) === 1 ? "y is" : "ies are"} active in this scope.`);
+    }
+    if (Number(metrics.fanout_hooks_enabled || 0) === 0) {
+      items.push("No runtime fanout hooks are enabled yet, so shared memory still depends on polling/invalidation checks.");
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);
@@ -10548,6 +10553,10 @@ export default function App() {
                                             <Text size="xs" c="dimmed">
                                               Fanout: {Number(sharedMemoryPublishPreview.fanout_plan?.summary?.refresh_now_agents || 0)} refresh now •{" "}
                                               {Number(sharedMemoryPublishPreview.fanout_plan?.summary?.queue_next_task_agents || 0)} next-task refresh
+                                            </Text>
+                                            <Text size="xs" c="dimmed">
+                                              Hooks enabled: {Number(sharedMemoryHealth?.metrics?.fanout_hooks_enabled || 0)} /{" "}
+                                              {Number(sharedMemoryHealth?.metrics?.fanout_hooks_total || 0)}
                                             </Text>
                                             <Text size="xs" c="dimmed">
                                               Top roles:{" "}

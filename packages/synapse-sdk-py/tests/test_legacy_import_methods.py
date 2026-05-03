@@ -768,6 +768,87 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertTrue(params.get("include_archived"))
         self.assertEqual(params.get("limit"), 17)
 
+    def test_upsert_agent_shared_memory_fanout_hook_posts_expected_payload(self) -> None:
+        self.client.upsert_agent_shared_memory_fanout_hook(
+            updated_by="ops_admin",
+            hook_id=9,
+            name="Dispatch runtime hook",
+            endpoint_url="https://runtime.example.com/shared-memory",
+            enabled=True,
+            space_key="logistics",
+            delivery_mode="impact",
+            headers={"Authorization": "Bearer test"},
+            timeout_seconds=9,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-hooks")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("hook_id"), 9)
+        self.assertEqual(payload.get("name"), "Dispatch runtime hook")
+        self.assertEqual(payload.get("endpoint_url"), "https://runtime.example.com/shared-memory")
+        self.assertTrue(payload.get("enabled"))
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("delivery_mode"), "impact")
+        self.assertEqual(payload.get("headers"), {"Authorization": "Bearer test"})
+        self.assertEqual(payload.get("timeout_seconds"), 9)
+
+    def test_list_agent_shared_memory_fanout_hooks_scopes_project(self) -> None:
+        self.client.list_agent_shared_memory_fanout_hooks(
+            space_key="logistics",
+            enabled_only=True,
+            limit=13,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-hooks")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "logistics")
+        self.assertTrue(params.get("enabled_only"))
+        self.assertEqual(params.get("limit"), 13)
+
+    def test_dispatch_agent_shared_memory_fanout_posts_expected_payload(self) -> None:
+        self.client.dispatch_agent_shared_memory_fanout(
+            updated_by="ops_admin",
+            agent_id="logistics-assistant",
+            role="dispatcher",
+            space_key="logistics",
+            include_reviewed=True,
+            review_policy_mode="auto",
+            memory_tier_mode="draft_private",
+            dispatch_mode="publish_preview",
+            dry_run=False,
+            page_slug="logistics/process-playbooks",
+            page_title="Process Playbooks",
+            page_type="process",
+            entity_key="dispatch.handoff",
+            change_summary="Updated dispatch handoff escalation.",
+            limit=6,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-dispatch")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertEqual(payload.get("agent_id"), "logistics-assistant")
+        self.assertEqual(payload.get("role"), "dispatcher")
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertTrue(payload.get("include_reviewed"))
+        self.assertEqual(payload.get("review_policy_mode"), "auto")
+        self.assertEqual(payload.get("memory_tier_mode"), "draft_private")
+        self.assertEqual(payload.get("dispatch_mode"), "publish_preview")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("page_slug"), "logistics/process-playbooks")
+        self.assertEqual(payload.get("page_title"), "Process Playbooks")
+        self.assertEqual(payload.get("page_type"), "process")
+        self.assertEqual(payload.get("entity_key"), "dispatch.handoff")
+        self.assertEqual(payload.get("change_summary"), "Updated dispatch handoff escalation.")
+        self.assertEqual(payload.get("limit"), 6)
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",

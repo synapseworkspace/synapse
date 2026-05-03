@@ -1546,6 +1546,94 @@ export class SynapseClient {
     });
   }
 
+  async upsertAgentSharedMemoryFanoutHook(options: {
+    updatedBy: string;
+    name: string;
+    endpointUrl: string;
+    enabled?: boolean;
+    hookId?: number;
+    spaceKey?: string;
+    deliveryMode?: "invalidation" | "impact" | "publish_preview" | string;
+    headers?: Record<string, string>;
+    timeoutSeconds?: number;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-hooks", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: String(options.updatedBy || "").trim(),
+        hook_id: options.hookId == null ? undefined : normalizeInt(options.hookId, 1, Number.MAX_SAFE_INTEGER),
+        name: String(options.name || "").trim(),
+        endpoint_url: String(options.endpointUrl || "").trim(),
+        enabled: Boolean(options.enabled ?? true),
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        delivery_mode: String(options.deliveryMode ?? "invalidation").trim().toLowerCase() || "invalidation",
+        headers: options.headers ?? {},
+        timeout_seconds: normalizeInt(options.timeoutSeconds ?? 5, 1, 60)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async listAgentSharedMemoryFanoutHooks(options: {
+    spaceKey?: string;
+    enabledOnly?: boolean;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-hooks", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        enabled_only: Boolean(options.enabledOnly ?? false),
+        limit: normalizeInt(options.limit ?? 50, 1, 200)
+      }
+    });
+  }
+
+  async dispatchAgentSharedMemoryFanout(options: {
+    updatedBy?: string;
+    agentId?: string;
+    role?: string;
+    spaceKey?: string;
+    includeReviewed?: boolean;
+    reviewPolicyMode?: "auto" | "published_only" | "reviewed_plus_published" | string;
+    memoryTierMode?: "auto" | "published_org" | "reviewed_team" | "draft_private" | string;
+    dispatchMode?: "invalidation" | "impact" | "publish_preview" | string;
+    dryRun?: boolean;
+    pageSlug?: string;
+    pageTitle?: string;
+    pageType?: string;
+    entityKey?: string;
+    changeSummary?: string;
+    limit?: number;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-dispatch", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: asOptionalString(options.updatedBy) ?? undefined,
+        agent_id: asOptionalString(options.agentId) ?? undefined,
+        role: asOptionalString(options.role) ?? undefined,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        include_reviewed: Boolean(options.includeReviewed ?? false),
+        review_policy_mode: String(options.reviewPolicyMode ?? "auto").trim().toLowerCase() || "auto",
+        memory_tier_mode: String(options.memoryTierMode ?? "auto").trim().toLowerCase() || "auto",
+        dispatch_mode: String(options.dispatchMode ?? "invalidation").trim().toLowerCase() || "invalidation",
+        dry_run: Boolean(options.dryRun ?? true),
+        page_slug: asOptionalString(options.pageSlug) ?? undefined,
+        page_title: asOptionalString(options.pageTitle) ?? undefined,
+        page_type: asOptionalString(options.pageType) ?? undefined,
+        entity_key: asOptionalString(options.entityKey) ?? undefined,
+        change_summary: asOptionalString(options.changeSummary) ?? undefined,
+        limit: normalizeInt(options.limit ?? 25, 1, 100)
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
   async getAdoptionPipelineVisibility(options: {
     days?: number;
     sourceSystems?: string[];
