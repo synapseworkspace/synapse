@@ -1952,16 +1952,330 @@ def _build_data_source_quality_metrics(rows: list[dict[str, Any]] | None) -> dic
     }
 
 
+def _agent_field_origin(
+    *,
+    field_name: str,
+    provenance: dict[str, Any],
+) -> str:
+    if field_name in {"team", "role", "status", "runtime_mode", "running_instances", "confidence"}:
+        return "runtime_profile"
+    if field_name == "capabilities":
+        if provenance.get("capability_contracts"):
+            return "capability_contract"
+        return "runtime_profile"
+    if field_name == "sources":
+        if provenance.get("source_binding_contracts"):
+            return "source_binding"
+        return "runtime_profile"
+    if field_name == "tools":
+        if provenance.get("registry_tools"):
+            return "tool_registry"
+        return "runtime_profile"
+    if field_name in {"actions", "scenarios"}:
+        if provenance.get("capability_contracts"):
+            return "capability_contract"
+        return "runtime_profile"
+    if field_name in {"scheduled_tasks", "standing_orders", "approval_rules"}:
+        return "runtime_profile"
+    if field_name == "decisions":
+        if provenance.get("reflections"):
+            return "reflection"
+        return "runtime_profile"
+    return "unknown"
+
+
+def _agent_field_confidence(*, origin: str) -> float:
+    mapping = {
+        "runtime_profile": 0.94,
+        "tool_registry": 0.93,
+        "source_binding": 0.93,
+        "capability_contract": 0.9,
+        "reflection": 0.84,
+        "unknown": 0.4,
+    }
+    return float(mapping.get(str(origin or "").strip().lower(), 0.4))
+
+
+def _build_agent_synthesized_field_entries(
+    *,
+    values: list[str] | set[str],
+    field_name: str,
+    provenance: dict[str, Any],
+    max_items: int = 5,
+) -> list[dict[str, Any]]:
+    origin = _agent_field_origin(field_name=field_name, provenance=provenance)
+    confidence = _agent_field_confidence(origin=origin)
+    entries: list[dict[str, Any]] = []
+    for value in list(values)[:max_items]:
+        text = str(value).strip()
+        if not text:
+            continue
+        entries.append(
+            {
+                "value": text,
+                "origin": origin,
+                "confidence": confidence,
+            }
+        )
+    return entries
+
+
+def _build_agent_capability_relation_edges(rows: list[dict[str, Any]] | None, *, limit: int = 600) -> list[dict[str, Any]]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        agent_id = str(row.get("agent_id") or "").strip()
+        if not agent_id:
+            continue
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        field_groups = {
+            "capability": row.get("capabilities") or [],
+            "tool": row.get("tools") or [],
+            "source": row.get("sources") or [],
+            "action": row.get("actions") or [],
+            "scenario": row.get("scenarios") or [],
+            "task": row.get("scheduled_tasks") or [],
+            "standing_order": row.get("standing_orders") or [],
+            "decision": row.get("decisions") or [],
+        }
+        for target_kind, values in field_groups.items():
+            field_name = {
+                "capability": "capabilities",
+                "tool": "tools",
+                "source": "sources",
+                "action": "actions",
+                "scenario": "scenarios",
+                "task": "scheduled_tasks",
+                "standing_order": "standing_orders",
+                "decision": "decisions",
+            }[target_kind]
+            origin = _agent_field_origin(field_name=field_name, provenance=provenance)
+            confidence = _agent_field_confidence(origin=origin)
+            for value in values[:4]:
+                target = str(value).strip()
+                if not target:
+                    continue
+                marker = f"{agent_id.lower()}|{target_kind}|{target.lower()}"
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                edges.append(
+                    {
+                        "from_kind": "agent",
+                        "from_ref": agent_id,
+                        "to_kind": target_kind,
+                        "to_ref": target,
+                        "origin": origin,
+                        "confidence": confidence,
+                    }
+                )
+                if len(edges) >= max(1, int(limit)):
+                    return edges
+    return edges
+
+
+def _build_agent_capability_quality_metrics(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    rows_with_tools = 0
+    rows_with_sources = 0
+    rows_with_running_instances = 0
+    rows_with_reflection = 0
+    contract_backed_rows = 0
+    origin_counts: dict[str, int] = {}
+    for row in rows:
+        if row.get("tools"):
+            rows_with_tools += 1
+        if row.get("sources"):
+            rows_with_sources += 1
+        if int(row.get("running_instances") or 0) > 0:
+            rows_with_running_instances += 1
+        if row.get("decisions"):
+            rows_with_reflection += 1
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        if provenance.get("capability_contracts") or provenance.get("source_binding_contracts") or provenance.get("registry_tools"):
+            contract_backed_rows += 1
+        for field_name in ("capabilities", "tools", "sources", "actions", "scheduled_tasks", "standing_orders", "decisions"):
+            origin = _agent_field_origin(field_name=field_name, provenance=provenance)
+            origin_counts[origin] = int(origin_counts.get(origin) or 0) + 1
+    return {
+        "rows_total": len(rows),
+        "rows_with_tools": rows_with_tools,
+        "rows_with_sources": rows_with_sources,
+        "rows_with_running_instances": rows_with_running_instances,
+        "rows_with_reflection": rows_with_reflection,
+        "contract_backed_rows": contract_backed_rows,
+        "field_origin_counts": origin_counts,
+    }
+
+
+def _build_agent_capability_diagnostics_rows(
+    cur: Any,
+    *,
+    project_id: str,
+    max_agents: int,
+) -> list[dict[str, Any]]:
+    matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents) or []
+        if not matrix:
+            matrix = _build_agent_directory_profile_fallback_matrix(cur, project_id=project_id, max_agents=max_agents) or []
+    if not matrix:
+        matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max_agents) or []
+
+    rows: list[dict[str, Any]] = []
+    for item in matrix:
+        if not isinstance(item, dict):
+            continue
+        agent_id = str(item.get("agent_id") or "").strip()
+        if not agent_id:
+            continue
+        capability_names = {
+            _normalize_operating_label(str(contract.get("name") or ""), kind="capability")
+            for contract in (item.get("capability_contracts") or [])
+            if isinstance(contract, dict) and str(contract.get("name") or "").strip()
+        }
+        if not capability_names:
+            capability_names = {
+                _normalize_operating_label(str(value or ""), kind="capability")
+                for value in [*(item.get("responsibilities") or []), *(item.get("scenario_examples") or [])]
+                if str(value or "").strip()
+            }
+        tools = {
+            _normalize_operating_label(str(value or ""), kind="tool")
+            for value in [*(item.get("tools") or []), *(item.get("registry_tools") or [])]
+            if str(value or "").strip()
+        }
+        sources = {
+            _normalize_operating_label(str(value or ""), kind="source")
+            for value in [*(item.get("data_sources") or []), *(item.get("source_bindings") or [])]
+            if str(value or "").strip()
+        }
+        actions = {
+            _normalize_operating_label(str(value or ""), kind="process")
+            for value in [*(item.get("typical_actions") or []), *(item.get("allowed_actions") or [])]
+            if str(value or "").strip()
+        }
+        scenarios = {
+            str(value).strip()
+            for value in (item.get("scenario_examples") or [])
+            if str(value).strip()
+        }
+        scheduled_tasks = {
+            _normalize_operating_label(str(value or ""), kind="process")
+            for value in (item.get("scheduled_tasks") or [])
+            if str(value or "").strip()
+        }
+        standing_orders = {
+            _normalize_operating_label(str(value or ""), kind="process")
+            for value in (item.get("standing_orders") or [])
+            if str(value or "").strip()
+        }
+        decisions = {
+            str(value).strip()
+            for value in (item.get("observed_decisions") or [])
+            if str(value).strip()
+        }
+        provenance = {
+            "capability_contracts": sorted(
+                {
+                    _normalize_operating_label(str(contract.get("name") or ""), kind="capability")
+                    for contract in (item.get("capability_contracts") or [])
+                    if isinstance(contract, dict) and str(contract.get("name") or "").strip()
+                }
+            )[:8],
+            "source_binding_contracts": sorted(
+                {
+                    str(contract.get("source") or "").strip()
+                    for contract in (item.get("source_binding_contracts") or [])
+                    if isinstance(contract, dict) and str(contract.get("source") or "").strip()
+                }
+            )[:8],
+            "registry_tools": sorted(
+                {
+                    _normalize_operating_label(str(value or ""), kind="tool")
+                    for value in (item.get("registry_tools") or [])
+                    if str(value or "").strip()
+                }
+            )[:12],
+            "reflections": bool(int(item.get("reflection_count") or 0) > 0 or decisions),
+        }
+        rows.append(
+            {
+                "agent_id": agent_id,
+                "display_name": str(item.get("display_name") or agent_id or "Agent").strip() or "Agent",
+                "team": str(item.get("team") or "Unassigned").strip() or "Unassigned",
+                "role": str(item.get("role") or "Agent").strip() or "Agent",
+                "status": str(item.get("status") or "active").strip() or "active",
+                "runtime_mode": str(item.get("runtime_mode") or "").strip() or None,
+                "running_instances": int(item.get("running_instances") or 0),
+                "confidence": float(item.get("confidence") or 0.0),
+                "capabilities": sorted(capability_names)[:8],
+                "tools": sorted(tools)[:12],
+                "sources": sorted(sources)[:12],
+                "actions": sorted(actions)[:8],
+                "scenarios": sorted(scenarios)[:6],
+                "scheduled_tasks": sorted(scheduled_tasks)[:8],
+                "standing_orders": sorted(standing_orders)[:8],
+                "approval_rules": [str(value).strip() for value in (item.get("approval_rules") or []) if str(value).strip()][:8],
+                "decisions": sorted(decisions)[:6],
+                "latest_reflection_summary": str(item.get("latest_reflection_summary") or "").strip() or None,
+                "synthesized_fields": {
+                    "capabilities": _build_agent_synthesized_field_entries(
+                        values=sorted(capability_names)[:8],
+                        field_name="capabilities",
+                        provenance=provenance,
+                    ),
+                    "tools": _build_agent_synthesized_field_entries(
+                        values=sorted(tools)[:12],
+                        field_name="tools",
+                        provenance=provenance,
+                    ),
+                    "sources": _build_agent_synthesized_field_entries(
+                        values=sorted(sources)[:12],
+                        field_name="sources",
+                        provenance=provenance,
+                    ),
+                    "actions": _build_agent_synthesized_field_entries(
+                        values=sorted(actions)[:8],
+                        field_name="actions",
+                        provenance=provenance,
+                    ),
+                    "scheduled_tasks": _build_agent_synthesized_field_entries(
+                        values=sorted(scheduled_tasks)[:8],
+                        field_name="scheduled_tasks",
+                        provenance=provenance,
+                    ),
+                    "standing_orders": _build_agent_synthesized_field_entries(
+                        values=sorted(standing_orders)[:8],
+                        field_name="standing_orders",
+                        provenance=provenance,
+                    ),
+                    "decisions": _build_agent_synthesized_field_entries(
+                        values=sorted(decisions)[:6],
+                        field_name="decisions",
+                        provenance=provenance,
+                    ),
+                },
+                "provenance": provenance,
+            }
+        )
+    return rows
+
+
 def _build_synthesis_relation_graph_snapshot(
     *,
     tool_rows: list[dict[str, Any]] | None,
     source_rows: list[dict[str, Any]] | None,
+    agent_rows: list[dict[str, Any]] | None = None,
     limit: int = 1200,
 ) -> dict[str, Any]:
     tooling_edges = _build_tooling_relation_edges(tool_rows, limit=max(1, min(1200, int(limit))))
     remaining = max(1, int(limit) - len(tooling_edges))
     source_edges = _build_data_source_relation_edges(source_rows, limit=max(1, remaining))
-    edges = [*tooling_edges, *source_edges]
+    remaining = max(1, int(limit) - len(tooling_edges) - len(source_edges))
+    agent_edges = _build_agent_capability_relation_edges(agent_rows, limit=max(1, remaining))
+    edges = [*tooling_edges, *source_edges, *agent_edges]
     node_map: dict[str, dict[str, str]] = {}
     edge_origin_counts: dict[str, int] = {}
     edge_kind_counts: dict[str, int] = {}
@@ -2006,6 +2320,7 @@ def _build_synthesis_relation_graph_snapshot(
             "edge_origin_counts": edge_origin_counts,
             "tool_rows_total": len([row for row in (tool_rows or []) if isinstance(row, dict)]),
             "source_rows_total": len([row for row in (source_rows or []) if isinstance(row, dict)]),
+            "agent_rows_total": len([row for row in (agent_rows or []) if isinstance(row, dict)]),
         },
         "nodes": sorted(node_map.values(), key=lambda item: (str(item.get("kind") or ""), str(item.get("ref") or "").lower())),
         "edges": edges,
@@ -34872,6 +35187,53 @@ def get_adoption_data_sources_diagnostics(
     }
 
 
+@app.get("/v1/adoption/agent-capability/diagnostics")
+def get_adoption_agent_capability_diagnostics(
+    project_id: str = Query(..., min_length=1),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            rows = _build_agent_capability_diagnostics_rows(
+                cur,
+                project_id=project_id,
+                max_agents=limit,
+            )
+    edges = _build_agent_capability_relation_edges(rows, limit=max(60, min(800, limit * 10)))
+    diagnostics_rows = []
+    for row in rows[:limit]:
+        diagnostics_rows.append(
+            {
+                "agent_id": row.get("agent_id"),
+                "display_name": row.get("display_name"),
+                "team": row.get("team"),
+                "role": row.get("role"),
+                "status": row.get("status"),
+                "runtime_mode": row.get("runtime_mode"),
+                "running_instances": row.get("running_instances"),
+                "confidence": row.get("confidence"),
+                "capabilities": row.get("capabilities"),
+                "tools": row.get("tools"),
+                "sources": row.get("sources"),
+                "actions": row.get("actions"),
+                "scenarios": row.get("scenarios"),
+                "scheduled_tasks": row.get("scheduled_tasks"),
+                "standing_orders": row.get("standing_orders"),
+                "approval_rules": row.get("approval_rules"),
+                "decisions": row.get("decisions"),
+                "latest_reflection_summary": row.get("latest_reflection_summary"),
+                "synthesized_fields": row.get("synthesized_fields"),
+                "provenance": row.get("provenance"),
+            }
+        )
+    return {
+        "project_id": project_id,
+        "summary": _build_agent_capability_quality_metrics(rows),
+        "edges": edges,
+        "rows": diagnostics_rows,
+    }
+
+
 @app.get("/v1/adoption/synthesis-graph/diagnostics")
 def get_adoption_synthesis_graph_diagnostics(
     project_id: str = Query(..., min_length=1),
@@ -34899,9 +35261,15 @@ def get_adoption_synthesis_graph_diagnostics(
                 space_key=normalized_space_key,
                 max_sources=limit,
             )
+            agent_rows = _build_agent_capability_diagnostics_rows(
+                cur,
+                project_id=project_id,
+                max_agents=limit,
+            )
     graph = _build_synthesis_relation_graph_snapshot(
         tool_rows=tool_rows,
         source_rows=source_rows,
+        agent_rows=agent_rows,
         limit=max(120, min(2400, limit * 12)),
     )
     return {
@@ -34910,6 +35278,7 @@ def get_adoption_synthesis_graph_diagnostics(
         "summary": graph.get("summary") or {},
         "nodes": graph.get("nodes") or [],
         "edges": graph.get("edges") or [],
+        "agent_capability_summary": _build_agent_capability_quality_metrics(agent_rows),
         "tooling_summary": _summarize_tooling_map_rows(tool_rows),
         "data_sources_summary": _build_data_source_quality_metrics(source_rows),
     }
