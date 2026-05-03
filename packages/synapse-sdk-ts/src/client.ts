@@ -1880,6 +1880,9 @@ export class SynapseClient {
       updatedBy: string;
       ensureScaffold?: boolean;
       includeDailyReportStub?: boolean;
+      refreshBootstrapPages?: boolean;
+      refreshSpaceKeys?: string[];
+      bootstrapPublishCore?: boolean;
       idempotencyKey?: string;
     }
   ): Promise<Record<string, unknown>> {
@@ -1910,7 +1913,10 @@ export class SynapseClient {
           metadata: agent.metadata ?? {}
         })),
         ensure_scaffold: options.ensureScaffold ?? true,
-        include_daily_report_stub: options.includeDailyReportStub ?? true
+        include_daily_report_stub: options.includeDailyReportStub ?? true,
+        refresh_bootstrap_pages: options.refreshBootstrapPages ?? true,
+        refresh_space_keys: options.refreshSpaceKeys ?? [],
+        bootstrap_publish_core: options.bootstrapPublishCore ?? true
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });

@@ -1187,6 +1187,9 @@ class AgentRuntimeSurfaceSyncRequest(BaseModel):
     agents: list[AgentRuntimeSurfaceAgentIn] = Field(default_factory=list, max_length=2000)
     ensure_scaffold: bool = True
     include_daily_report_stub: bool = True
+    refresh_bootstrap_pages: bool = True
+    refresh_space_keys: list[str] = Field(default_factory=list, max_length=32)
+    bootstrap_publish_core: bool = True
 
 
 class AgentReflectionInsightIn(BaseModel):
@@ -2354,15 +2357,90 @@ def _render_agent_overview_markdown(*, profile: dict[str, Any], include_daily_re
 
 def _render_agent_runbooks_markdown(*, profile: dict[str, Any]) -> str:
     display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
-    return (
-        f"# {display_name} Runbooks\n\n"
-        "## Primary Flows\n"
-        "- Document trigger -> action -> outcome runbooks here.\n\n"
-        "## Escalations\n"
-        "- Define when this agent escalates and to whom.\n\n"
-        "## Exceptions\n"
-        "- Capture customer or process-specific exceptions.\n"
+    metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+    scheduled_task_contracts = [task for task in (metadata.get("scheduled_task_contracts") or []) if isinstance(task, dict)]
+    standing_orders = _normalize_agent_directory_items(
+        [
+            *(metadata.get("standing_orders") or []),
+            *(metadata.get("processes") or []),
+            *(profile.get("responsibilities") or []),
+        ],
+        limit=12,
     )
+    approval_rules = _normalize_agent_directory_items(
+        [
+            *(metadata.get("approval_rules") or []),
+            *(profile.get("limits") or []),
+        ],
+        limit=10,
+    )
+    source_bindings = _normalize_agent_directory_items(
+        [
+            *(metadata.get("source_bindings") or []),
+            *(metadata.get("known_data_sources") or []),
+            *(profile.get("data_sources") or []),
+        ],
+        limit=12,
+    )
+    tools = _normalize_agent_directory_items(
+        [
+            *(profile.get("tools") or []),
+            *[
+                str(item.get("tool") or item.get("name") or "").strip()
+                for item in (metadata.get("tool_registry") or [])
+                if isinstance(item, dict)
+            ],
+        ],
+        limit=16,
+    )
+    lines: list[str] = [
+        f"# {display_name} Runbooks",
+        "",
+        "## Primary Flows",
+    ]
+    if scheduled_task_contracts:
+        for task in scheduled_task_contracts[:8]:
+            label = str(task.get("task_code") or task.get("builtin_task") or task.get("name") or "scheduled_task").strip()
+            builtin_task = str(task.get("builtin_task") or "").strip()
+            schedule_kind = str(task.get("schedule_kind") or "").strip()
+            cron_expr = str(task.get("cron_expr") or "").strip()
+            interval_seconds = str(task.get("interval_seconds") or "").strip()
+            authority = _normalize_agent_directory_items(task.get("standing_order_authority") or [], limit=4)
+            escalation = task.get("standing_order_escalation") if isinstance(task.get("standing_order_escalation"), dict) else {}
+            schedule_label = cron_expr or (f"every {interval_seconds}s" if interval_seconds else schedule_kind or "scheduled")
+            detail_parts = [f"triggered on `{schedule_label}`"]
+            if builtin_task:
+                detail_parts.append(f"builtin `{builtin_task}`")
+            if authority:
+                detail_parts.append(f"authority {', '.join(authority)}")
+            escalation_mode = str(escalation.get("mode") or "").strip()
+            if escalation_mode:
+                detail_parts.append(f"escalation `{escalation_mode}`")
+            lines.append(f"- `{label}`: {'; '.join(detail_parts)}")
+    elif standing_orders:
+        lines.extend([f"- {item}" for item in standing_orders[:6]])
+    else:
+        lines.append("- Document trigger -> action -> outcome runbooks here.")
+    lines.extend(["", "## Escalations"])
+    if approval_rules:
+        lines.extend([f"- {item}" for item in approval_rules[:6]])
+    else:
+        lines.append("- Define when this agent escalates and to whom.")
+    lines.extend(["", "## Systems & Data"])
+    if source_bindings:
+        lines.extend([f"- Source: {item}" for item in source_bindings[:6]])
+    if tools:
+        lines.extend([f"- Tool: {item}" for item in tools[:6]])
+    if not source_bindings and not tools:
+        lines.append("- Capture the source bindings, tools, and output systems this agent relies on.")
+    lines.extend(["", "## Exceptions"])
+    if scheduled_task_contracts:
+        lines.append("- If the scheduled or standing-order flow leaves approved authority, pause automation and escalate.")
+        lines.append("- If source freshness is degraded, run in reviewed/manual mode before publishing changes.")
+    else:
+        lines.append("- Capture customer or process-specific exceptions.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _render_agent_daily_reports_markdown(*, profile: dict[str, Any]) -> str:
@@ -2787,6 +2865,46 @@ def _sync_agent_directory_pages(
         change_summary="Synced AI orgchart index",
     )
     return page_results
+
+
+def _list_project_core_space_keys(cur: Any, *, project_id: str) -> list[str]:
+    if not _wiki_feature_table_exists(cur, "public.wiki_pages"):
+        return ["operations"]
+    cur.execute(
+        """
+        SELECT DISTINCT split_part(slug, '/', 1) AS space_key
+        FROM wiki_pages
+        WHERE project_id = %s
+          AND position('/' in slug) > 0
+          AND (
+            slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+            OR slug LIKE %s
+          )
+        ORDER BY space_key ASC
+        """,
+        (
+            project_id,
+            "%/agent-capability-profile",
+            "%/tooling-map",
+            "%/data-sources-catalog",
+            "%/process-playbooks",
+            "%/company-operating-context",
+            "%/operational-logic-map",
+        ),
+    )
+    spaces = [_normalize_space_key(str(row[0] or ""), default="") for row in (cur.fetchall() or []) if str(row[0] or "").strip()]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in spaces or ["operations"]:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped or ["operations"]
 
 
 def _serialize_agent_profile_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -4187,6 +4305,7 @@ def _build_agent_capability_matrix(
             keys=["scheduled_tasks", "cron_tasks", "automations", "scheduled_jobs"],
             limit=6,
         )
+        scheduled_task_contracts = [item for item in (metadata.get("scheduled_task_contracts") or []) if isinstance(item, dict)][:20]
         standing_orders = _metadata_list(
             metadata,
             keys=["standing_orders", "playbooks", "runbooks", "processes"],
@@ -4340,6 +4459,7 @@ def _build_agent_capability_matrix(
                 "registry_tools": registry_tools[:30],
                 "tool_contracts": tool_contracts[:20],
                 "scheduled_tasks": scheduled_tasks,
+                "scheduled_task_contracts": scheduled_task_contracts,
                 "standing_orders": standing_orders,
                 "source_bindings": source_bindings,
                 "integrations": integrations,
@@ -32135,6 +32255,84 @@ def _build_data_sources_catalog_pages(
     space_key: str,
     max_sources: int,
 ) -> list[dict[str, str]]:
+    def _looks_like_knowledge_plane_source(source_type: str, source_ref: str, config: dict[str, Any]) -> bool:
+        haystack = " ".join(
+            [
+                str(source_type or ""),
+                str(source_ref or ""),
+                str(config.get("sql_profile") or ""),
+                str(config.get("sql_profile_table") or ""),
+                str(config.get("sql_profile_resolved_table") or ""),
+                str(config.get("sql_table") or ""),
+            ]
+        ).lower()
+        return any(token in haystack for token in ("memory", "ops_kb", "knowledge", "policy", "wiki", "runbook"))
+
+    def _infer_runtime_usage_from_matrix(
+        *,
+        matrix_rows: list[dict[str, Any]],
+        source_ref: str,
+        source_type: str,
+        config: dict[str, Any],
+    ) -> dict[str, set[str]]:
+        inferred = {
+            "agents": set(),
+            "scenarios": set(),
+            "capabilities": set(),
+            "actions": set(),
+            "processes": set(),
+            "tools": set(),
+        }
+        usage_tokens = {
+            _normalize_statement_text(str(source_ref or "")),
+            _normalize_statement_text(str(source_type or "")),
+            _normalize_statement_text(str(config.get("sql_profile") or "")),
+            _normalize_statement_text(str(config.get("sql_profile_table") or "")),
+            _normalize_statement_text(str(config.get("sql_profile_resolved_table") or "")),
+            _normalize_statement_text(str(config.get("sql_table") or "")),
+        }
+        usage_tokens = {token for token in usage_tokens if token}
+        for item in matrix_rows:
+            agent_id = str(item.get("agent_id") or "").strip()
+            if not agent_id:
+                continue
+            item_sources = {
+                _normalize_statement_text(str(value or ""))
+                for value in [
+                    *(item.get("data_sources") or []),
+                    *(item.get("source_bindings") or []),
+                ]
+                if str(value or "").strip()
+            }
+            contract_sources = {
+                _normalize_statement_text(str(value or ""))
+                for contract in (item.get("tool_contracts") or [])
+                if isinstance(contract, dict)
+                for value in (contract.get("sources") or [])
+                if str(value or "").strip()
+            }
+            if usage_tokens.intersection(item_sources.union(contract_sources)):
+                inferred["agents"].add(agent_id)
+                inferred["scenarios"].update(set(item.get("scenario_examples") or []))
+                inferred["capabilities"].update(set(item.get("responsibilities") or []))
+                inferred["actions"].update(set(item.get("allowed_actions") or []))
+                inferred["actions"].update(set(item.get("observed_actions") or []))
+                inferred["processes"].update(set(item.get("standing_orders") or []))
+                inferred["processes"].update(set(item.get("scheduled_tasks") or []))
+                inferred["tools"].update(set(item.get("tools") or []))
+                continue
+            if _looks_like_knowledge_plane_source(source_type, source_ref, config):
+                runtime_active = bool(item.get("running_instances")) or str(item.get("status") or "").strip().lower() == "active"
+                if runtime_active:
+                    inferred["agents"].add(agent_id)
+                    inferred["capabilities"].update(set(item.get("responsibilities") or []))
+                    inferred["processes"].update(set(item.get("standing_orders") or []))
+                    inferred["processes"].update(set(item.get("scheduled_tasks") or []))
+                    inferred["actions"].update(set(item.get("allowed_actions") or []))
+                    inferred["tools"].update(set(item.get("tools") or []))
+                    inferred["scenarios"].update(set(item.get("scenario_examples") or []))
+        return inferred
+
     def _collect_bundle_source_tokens(bundle: dict[str, Any]) -> set[str]:
         metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
         tokens: set[str] = set()
@@ -32196,6 +32394,7 @@ def _build_data_sources_catalog_pages(
     )
     source_rows = cur.fetchall() or []
     usage_map = _collect_agent_source_usage(cur, project_id=project_id)
+    runtime_matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(10, min(200, int(max_sources) * 6))) if _agent_directory_table_exists_from_cursor(cur) else []
     source_bundles = _load_evidence_bundles_for_bootstrap(
         cur,
         project_id=project_id,
@@ -32271,6 +32470,22 @@ def _build_data_sources_catalog_pages(
             process_hints.update(set(usage_bucket.get("processes") or set()))
             action_hints.update(set(usage_bucket.get("actions") or set()))
             tool_hints.update(set(usage_bucket.get("tools") or set()))
+        usage_inferred = False
+        if not used_by:
+            inferred_usage = _infer_runtime_usage_from_matrix(
+                matrix_rows=runtime_matrix,
+                source_ref=source_ref,
+                source_type=source_type,
+                config=config,
+            )
+            if inferred_usage["agents"]:
+                usage_inferred = True
+                used_by.update(inferred_usage["agents"])
+                scenario_hints.update(inferred_usage["scenarios"])
+                capability_hints.update(inferred_usage["capabilities"])
+                process_hints.update(inferred_usage["processes"])
+                action_hints.update(inferred_usage["actions"])
+                tool_hints.update(inferred_usage["tools"])
         used_by_agents = ", ".join(sorted(used_by)[:4]) if used_by else "none"
         source_scenarios = "; ".join(sorted(scenario_hints)[:3]) if scenario_hints else "n/a"
         capability_summary = "; ".join(sorted(capability_hints)[:2]) if capability_hints else "n/a"
@@ -32371,7 +32586,11 @@ def _build_data_sources_catalog_pages(
                         *([f"- `{field}`" for field in schema_sample] if schema_sample else ["- n/a"]),
                         "",
                         "## Agent Usage",
-                        (f"- Used by: {used_by_agents}" if used_by else "- No explicit usage mapped yet."),
+                        (
+                            f"- Used by: {used_by_agents} (inferred from runtime/control-plane contracts)"
+                            if usage_inferred and used_by
+                            else (f"- Used by: {used_by_agents}" if used_by else "- No explicit usage mapped yet.")
+                        ),
                         f"- Scenarios: {source_scenarios}",
                         *([f"- Capabilities: {capability_summary}"] if capability_summary != "n/a" else []),
                         *([f"- Actions: {action_summary}"] if action_summary != "n/a" else []),
@@ -32392,7 +32611,11 @@ def _build_data_sources_catalog_pages(
                         f"- Stale risk: {stale_risk}",
                         f"- Ownership posture: {ownership_posture}",
                         f"- Human review boundary: {human_review_boundary}",
-                        f"- Dependent agents: {used_by_agents}",
+                        (
+                            f"- Dependent agents: {used_by_agents} (inferred from runtime/control-plane contracts)"
+                            if usage_inferred and used_by
+                            else f"- Dependent agents: {used_by_agents}"
+                        ),
                         "",
                         "## Operational Notes",
                         "- Verify ownership and freshness before allowing auto-publish for policy/process pages.",
@@ -33505,6 +33728,7 @@ def _build_process_playbooks_bootstrap_page(
         agent_id = str(item.get("agent_id") or "").strip()
         standing_orders = [str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()]
         scheduled_tasks = [str(v).strip() for v in (item.get("scheduled_tasks") or []) if str(v).strip()]
+        scheduled_task_contracts = [task for task in (item.get("scheduled_task_contracts") or []) if isinstance(task, dict)]
         observed_actions = [str(v).strip() for v in (item.get("observed_actions") or []) if str(v).strip()]
         approval_rules = [str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()]
         escalation_rules = [str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()]
@@ -33567,6 +33791,88 @@ def _build_process_playbooks_bootstrap_page(
         )
         if len(playbooks) >= max(6, min(50, int(max_signals))):
             break
+        for task in scheduled_task_contracts[:6]:
+            task_code = str(task.get("task_code") or task.get("name") or "").strip()
+            builtin_task = str(task.get("builtin_task") or "").strip()
+            title_seed = builtin_task or task_code
+            if not title_seed:
+                continue
+            normalized_task = _normalize_statement_text(f"{agent_id}:{title_seed}")[:200]
+            if normalized_task in seen:
+                continue
+            seen.add(normalized_task)
+            cron_expr = str(task.get("cron_expr") or "").strip()
+            interval_seconds = str(task.get("interval_seconds") or "").strip()
+            schedule_kind = str(task.get("schedule_kind") or "").strip() or "scheduled"
+            timezone_value = str(task.get("timezone") or "").strip()
+            authority = [str(v).strip() for v in (task.get("standing_order_authority") or []) if str(v).strip()]
+            approval_mode = str(task.get("standing_order_approval_mode") or "").strip()
+            escalation_metadata = task.get("standing_order_escalation") if isinstance(task.get("standing_order_escalation"), dict) else {}
+            escalation_mode = str(escalation_metadata.get("mode") or "").strip()
+            program = str(task.get("standing_order_program") or "").strip()
+            trigger = (
+                f"Scheduled task `{task_code or builtin_task}` runs on cron `{cron_expr}`"
+                if cron_expr
+                else (
+                    f"Scheduled task `{task_code or builtin_task}` runs every {interval_seconds}s"
+                    if interval_seconds
+                    else f"Scheduled task `{task_code or builtin_task}` executes in {schedule_kind} mode"
+                )
+            )
+            action = builtin_task or task_code
+            purpose_parts = [part for part in [program, builtin_task, task_code] if part]
+            purpose = "Document the concrete operational SOP declared in the control-plane schedule/standing-order contract."
+            if purpose_parts:
+                purpose = f"Execute and verify `{purpose_parts[0]}` as a concrete recurring operational workflow."
+            inputs = _extract_list_values(source_inputs[:4], builtin_task, task_code, limit=5)
+            steps = [
+                f"Wait for schedule trigger: {cron_expr or (f'every {interval_seconds}s' if interval_seconds else schedule_kind)}.",
+                f"Run builtin workflow: {action}.",
+                "Write back outcome and exceptions to the wiki/debrief loop.",
+            ]
+            if authority:
+                steps.append(f"Respect standing-order authority: {', '.join(authority[:3])}.")
+            exceptions = []
+            if approval_mode and approval_mode.lower() not in {"", "none"}:
+                exceptions.append(f"Approval mode: {approval_mode}.")
+            if approval_rules:
+                exceptions.extend([f"Guardrail: {rule}" for rule in approval_rules[:2]])
+            if timezone_value:
+                steps[0] = f"Wait for schedule trigger in timezone `{timezone_value}`: {cron_expr or (f'every {interval_seconds}s' if interval_seconds else schedule_kind)}."
+            escalation = escalation_rules[0] if escalation_rules else "Escalate to reviewer when scheduled workflow produces a risky or uncertain output."
+            if escalation_mode:
+                escalation = f"{escalation} Control-plane escalation mode: `{escalation_mode}`."
+            playbooks.append(
+                {
+                    "title": _process_title(trigger, action, "process", [agent_id] if agent_id else []),
+                    "purpose": purpose,
+                    "category": "process",
+                    "owners": [agent_id] if agent_id else [],
+                    "trigger": trigger,
+                    "action": action,
+                    "inputs": inputs,
+                    "steps": steps,
+                    "exceptions": exceptions,
+                    "output": f"Scheduled workflow `{action}` completed and recorded.",
+                    "escalation": escalation,
+                    "verification": _verification_steps(
+                        f"Scheduled workflow `{action}` completed and recorded.",
+                        escalation,
+                        confidence=max(0.8, float(item.get('confidence') or 0.0)),
+                    ),
+                    "human_loop": (
+                        f"Human approval boundary: {approval_mode}."
+                        if approval_mode
+                        else "Human review recommended when the recurring workflow output changes policy/process state."
+                    ),
+                    "tools": _extract_list_values(tools_used[:5], builtin_task, limit=6),
+                    "artifacts": _extract_list_values(source_inputs[:3], task_code, builtin_task, limit=5),
+                    "decision_refs": _extract_list_values(program, *authority[:2], limit=4),
+                    "evidence": _extract_list_values(task_code, builtin_task, cron_expr, interval_seconds, program, limit=6),
+                }
+            )
+            if len(playbooks) >= max(6, min(50, int(max_signals))):
+                break
 
     lines = [
         "# Process Playbooks",
@@ -46503,6 +46809,7 @@ def sync_agent_runtime_surface(
                 actor = str(payload.updated_by or "synapse_agent").strip() or "synapse_agent"
                 profiles: list[dict[str, Any]] = []
                 page_sync_rows: list[dict[str, Any]] = []
+                compiler_refresh: list[dict[str, Any]] = []
                 for surface in payload.agents or []:
                     profile_payload = _build_agent_profile_from_runtime_surface(surface, actor=actor)
                     profile = _upsert_agent_directory_profile_record(
@@ -46535,12 +46842,37 @@ def sync_agent_runtime_surface(
                             ),
                         }
                     )
+                if bool(payload.refresh_bootstrap_pages):
+                    requested_spaces = [
+                        _normalize_space_key(item, default="")
+                        for item in (payload.refresh_space_keys or [])
+                        if _normalize_space_key(item, default="")
+                    ]
+                    target_spaces = requested_spaces or _list_project_core_space_keys(cur, project_id=payload.project_id)
+                    seen_spaces: set[str] = set()
+                    for space_key in target_spaces:
+                        normalized_space = _normalize_space_key(space_key, default="")
+                        if not normalized_space or normalized_space in seen_spaces:
+                            continue
+                        seen_spaces.add(normalized_space)
+                        compiler_refresh.append(
+                            _run_inline_bundle_promotion(
+                                conn,
+                                project_id=payload.project_id,
+                                updated_by=actor,
+                                space_key=normalized_space,
+                                requested_status="published",
+                                bootstrap_publish_core=bool(payload.bootstrap_publish_core),
+                                page_type_scope=None,
+                            )
+                        )
                 response = {
                     "status": "ok",
                     "project_id": payload.project_id,
                     "profiles_total": len(profiles),
                     "profiles": profiles,
                     "page_sync": page_sync_rows,
+                    "compiler_refresh": compiler_refresh,
                     "generated_at": datetime.now(UTC).isoformat(),
                 }
                 mark_request_completed(

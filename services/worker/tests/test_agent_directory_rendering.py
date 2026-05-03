@@ -45,6 +45,7 @@ try:
         _render_agent_daily_worklog_entry,
         _render_agent_handoff_markdown,
         _render_agent_overview_markdown,
+        _render_agent_runbooks_markdown,
         _render_agent_scorecards_markdown,
         _runtime_agent_filter_sql,
         _runtime_agent_id_sql_expr,
@@ -90,6 +91,7 @@ except Exception:  # pragma: no cover
     _render_agent_daily_worklog_entry = None
     _render_agent_handoff_markdown = None
     _render_agent_overview_markdown = None
+    _render_agent_runbooks_markdown = None
     _render_agent_scorecards_markdown = None
     _runtime_agent_filter_sql = None
     _runtime_agent_id_sql_expr = None
@@ -130,6 +132,7 @@ except Exception:  # pragma: no cover
     or _render_agent_capability_matrix_markdown is None
     or _normalize_agent_publish_policy is None
     or _render_agent_overview_markdown is None
+    or _render_agent_runbooks_markdown is None
     or _render_agent_daily_worklog_entry is None
     or _render_agent_daily_reports_page is None
     or _render_agent_handoff_markdown is None
@@ -1367,6 +1370,32 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Warehouse intake reconciliation", bucket["processes"])
         self.assertIn("reconcile_inventory", bucket["actions"])
 
+    def test_render_agent_runbooks_uses_scheduled_task_contracts(self) -> None:
+        profile = {
+            "agent_id": "logistics-assistant",
+            "display_name": "Logistics Assistant",
+            "tools": ["kb_search"],
+            "data_sources": ["driver_economy_daily_latest"],
+            "limits": ["No direct execution outside approved standing orders."],
+            "metadata": {
+                "scheduled_task_contracts": [
+                    {
+                        "task_code": "standing_order.logistics.driver_economy_sheet",
+                        "builtin_task": "driver_economy_report_to_sheet",
+                        "cron_expr": "0 12 * * *",
+                        "standing_order_authority": ["logist"],
+                    }
+                ],
+                "source_bindings": ["driver_economy_daily_latest"],
+                "approval_rules": ["Escalate if report affects payroll review."],
+            },
+        }
+        markdown = _render_agent_runbooks_markdown(profile=profile)
+        self.assertIn("driver_economy_report_to_sheet", markdown)
+        self.assertIn("0 12 * * *", markdown)
+        self.assertIn("Escalate if report affects payroll review.", markdown)
+        self.assertIn("Source: driver_economy_daily_latest", markdown)
+
     def test_data_sources_catalog_pages_include_capability_and_process_impact(self) -> None:
         assert _api_main is not None
 
@@ -1533,6 +1562,81 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("## Reliability & Risk", detail_markdown)
         self.assertIn("Stale risk:", detail_markdown)
         self.assertIn("Downstream decisions:", detail_markdown)
+
+    def test_data_sources_catalog_pages_infer_runtime_usage_for_knowledge_plane_sources(self) -> None:
+        assert _api_main is not None
+
+        class _InferredUsageCursor:
+            def __init__(self) -> None:
+                self.mode = "none"
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "FROM legacy_import_sources" in text:
+                    self.mode = "sources"
+                else:
+                    self.mode = "none"
+
+            def fetchall(self):
+                if self.mode == "sources":
+                    return [
+                        (
+                            "postgres_sql",
+                            "profile:memory_items",
+                            {
+                                "sql_profile": "memory_items",
+                                "sql_profile_table": "public.memory_items",
+                            },
+                            "legacy_sync_scheduler",
+                            datetime(2026, 5, 3, 10, 0, tzinfo=UTC),
+                            datetime(2026, 5, 3, 10, 0, tzinfo=UTC),
+                        )
+                    ]
+                return []
+
+        cursor = _InferredUsageCursor()
+        original_table_exists = _api_main._legacy_import_sources_table_exists_from_cursor
+        original_collect_usage = _api_main._collect_agent_source_usage
+        original_agent_directory_exists = _api_main._agent_directory_table_exists_from_cursor
+        original_build_matrix = _api_main._build_agent_capability_matrix
+        try:
+            _api_main._legacy_import_sources_table_exists_from_cursor = lambda cur: True
+            _api_main._collect_agent_source_usage = lambda cur, project_id: {}
+            _api_main._agent_directory_table_exists_from_cursor = lambda cur: True
+            _api_main._build_agent_capability_matrix = lambda cur, project_id, max_agents: [
+                {
+                    "agent_id": "logistics-assistant",
+                    "status": "active",
+                    "running_instances": 6,
+                    "responsibilities": ["driver_economics"],
+                    "standing_orders": ["Daily driver economy sheet"],
+                    "scheduled_tasks": ["standing_order.logistics.driver_economy_sheet"],
+                    "scenario_examples": ["driver economy daily review"],
+                    "allowed_actions": ["publish_driver_economy_report"],
+                    "tools": ["driver_economy_report_to_sheet"],
+                    "data_sources": [],
+                    "source_bindings": [],
+                    "tool_contracts": [],
+                }
+            ]
+            pages = _build_data_sources_catalog_pages(
+                cursor,
+                project_id="omega_demo",
+                space_key="logistics",
+                max_sources=10,
+            )
+        finally:
+            _api_main._legacy_import_sources_table_exists_from_cursor = original_table_exists
+            _api_main._collect_agent_source_usage = original_collect_usage
+            _api_main._agent_directory_table_exists_from_cursor = original_agent_directory_exists
+            _api_main._build_agent_capability_matrix = original_build_matrix
+
+        catalog_markdown = str(pages[0].get("markdown") or "")
+        detail_markdown = str(pages[1].get("markdown") or "")
+        self.assertIn("logistics-assistant", catalog_markdown)
+        self.assertIn("driver_economics", detail_markdown)
+        self.assertIn("Daily driver economy sheet", detail_markdown)
+        self.assertIn("inferred from runtime/control-plane contracts", detail_markdown)
 
     def test_agent_capability_bootstrap_page_renders_grounded_operating_scope(self) -> None:
         assert _api_main is not None

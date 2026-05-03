@@ -1995,6 +1995,9 @@ class SynapseClient:
         updated_by: str,
         ensure_scaffold: bool = True,
         include_daily_report_stub: bool = True,
+        refresh_bootstrap_pages: bool = True,
+        refresh_space_keys: list[str] | None = None,
+        bootstrap_publish_core: bool = True,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         normalized_updated_by = str(updated_by or "").strip()
@@ -2056,6 +2059,9 @@ class SynapseClient:
             "agents": payload_agents,
             "ensure_scaffold": bool(ensure_scaffold),
             "include_daily_report_stub": bool(include_daily_report_stub),
+            "refresh_bootstrap_pages": bool(refresh_bootstrap_pages),
+            "refresh_space_keys": [str(item).strip() for item in (refresh_space_keys or []) if str(item).strip()],
+            "bootstrap_publish_core": bool(bootstrap_publish_core),
         }
         return self._request_json(
             "/v1/agents/runtime-surface/sync",

@@ -130,6 +130,7 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
                 )
             ],
             updated_by="ops_admin",
+            refresh_space_keys=["logistics"],
         )
         call = self.client.calls[-1]
         self.assertEqual(call["path"], "/v1/agents/runtime-surface/sync")
@@ -138,6 +139,9 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("project_id"), "omega_demo")
         self.assertEqual(payload.get("updated_by"), "ops_admin")
         self.assertTrue(payload.get("ensure_scaffold"))
+        self.assertTrue(payload.get("refresh_bootstrap_pages"))
+        self.assertEqual(payload.get("refresh_space_keys"), ["logistics"])
+        self.assertTrue(payload.get("bootstrap_publish_core"))
         self.assertEqual(len(payload.get("agents") or []), 1)
         first = payload["agents"][0]
         self.assertEqual(first.get("agent_id"), "logistics-assistant")
