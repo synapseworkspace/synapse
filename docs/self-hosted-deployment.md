@@ -74,6 +74,12 @@ Expected behavior:
 - `/synapse/...` path works without rebuilding frontend assets.
 - Reviewer/notifications controls are in `Settings` drawer (not in the core first viewport).
 
+Reverse-proxy contract for base-path deployments:
+- `/synapse/build.json` must be served as a real JSON file from the Synapse `web` origin.
+- `/synapse/assets/*` must be served directly from the same Synapse `web` origin and must not be rewritten to another static site or stale bundle.
+- SPA fallback (`/synapse/wiki`, `/synapse/operations`, nested review URLs) may resolve to `index.html`, but `build.json` and `/assets/*` must remain file-backed paths.
+- `index.html` / SPA fallback responses should be non-cacheable, while hashed `/assets/*` responses should remain long-cache immutable.
+
 ## 6. Core Loop Smoke Test
 
 From repository root:

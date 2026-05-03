@@ -79,6 +79,28 @@ Recovery:
 2. Restart API/web after env updates.
 3. Validate with direct curl to API endpoint from same machine.
 
+## 4a) Public `/synapse` Route Serves Stale Or Wrong Web Bundle
+
+Symptoms:
+- `/synapse/operations` loads, but new UI features never appear.
+- `Self-host consistency warning` mentions missing UI feature manifest.
+- public `/synapse/build.json` returns HTML or a different build than the internal web origin.
+
+Checks:
+1. Compare internal vs public build manifest:
+   - `curl http://127.0.0.1:4173/build.json`
+   - `curl https://<public-host>/synapse/build.json`
+2. Inspect public HTML head for:
+   - `meta name="synapse-web-build"`
+   - `meta name="synapse-ui-features"`
+3. Verify the published entry asset from `build.json` is fetchable:
+   - `curl -I https://<public-host>/synapse/assets/<entry_asset>`
+
+Recovery:
+1. Ensure reverse proxy passes `/synapse/build.json` through as a real file, not SPA fallback HTML.
+2. Ensure `/synapse/assets/*` points to the same Synapse web origin as `/synapse/operations`.
+3. Purge CDN / edge cache after web redeploy if public HTML or assets lag behind the internal web origin.
+
 ## 5) Migration Failures
 
 Symptoms:

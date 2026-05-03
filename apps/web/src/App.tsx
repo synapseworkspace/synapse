@@ -1106,6 +1106,13 @@ type SelfhostConsistencyPayload = {
     key: string;
     status: string;
     message?: string;
+    meta?: Record<string, unknown>;
+  }>;
+  client_checks?: Array<{
+    key: string;
+    status: string;
+    message?: string;
+    meta?: Record<string, unknown>;
   }>;
   warnings_total?: number;
 };
@@ -4778,7 +4785,128 @@ export default function App() {
           "core",
         )}&route_path=${encodeURIComponent(routePath)}&ui_features=${encodeURIComponent(WEB_UI_FEATURES.join(","))}`,
       );
-      setSelfhostConsistency(payload);
+      const clientChecks: Array<{
+        key: string;
+        status: string;
+        message?: string;
+        meta?: Record<string, unknown>;
+      }> = [];
+      const publicBase = (wikiBasePath || "/").replace(/\/+$/, "") || "/";
+      const publicRoot = publicBase === "/" ? "" : publicBase;
+      const metaBuild =
+        typeof document !== "undefined"
+          ? String(document.querySelector('meta[name="synapse-web-build"]')?.getAttribute("content") || "").trim()
+          : "";
+      const metaFeatures =
+        typeof document !== "undefined"
+          ? String(document.querySelector('meta[name="synapse-ui-features"]')?.getAttribute("content") || "").trim()
+          : "";
+      clientChecks.push({
+        key: "html_meta_build_marker",
+        status: metaBuild ? "ok" : "warning",
+        message: metaBuild ? "HTML build marker is present." : "HTML build marker is missing from the public page head.",
+        meta: { meta_build: metaBuild || null },
+      });
+      clientChecks.push({
+        key: "html_meta_feature_manifest",
+        status: metaFeatures ? "ok" : "warning",
+        message: metaFeatures ? "HTML feature manifest is present." : "HTML feature manifest is missing from the public page head.",
+        meta: { meta_features: metaFeatures || null },
+      });
+      try {
+        const buildResponse = await fetch(`${publicRoot}/build.json`, {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        const contentType = String(buildResponse.headers.get("content-type") || "").toLowerCase();
+        if (!buildResponse.ok || !contentType.includes("application/json")) {
+          clientChecks.push({
+            key: "public_build_manifest_fetch",
+            status: "warning",
+            message: "Public build.json is not being served as JSON from the deployed base path.",
+            meta: {
+              status_code: buildResponse.status,
+              content_type: contentType || null,
+              url: `${publicRoot}/build.json`,
+            },
+          });
+        } else {
+          const buildManifest = (await buildResponse.json()) as {
+            web_build?: string;
+            ui_features?: string;
+            entry_asset?: string;
+          };
+          const manifestBuild = String(buildManifest.web_build || "").trim();
+          const manifestFeatures = String(buildManifest.ui_features || "").trim();
+          const entryAsset = String(buildManifest.entry_asset || "").trim();
+          clientChecks.push({
+            key: "public_build_manifest_fetch",
+            status: "ok",
+            message: "Public build.json is reachable and returns JSON.",
+            meta: {
+              url: `${publicRoot}/build.json`,
+              web_build: manifestBuild || null,
+              ui_features: manifestFeatures || null,
+              entry_asset: entryAsset || null,
+            },
+          });
+          clientChecks.push({
+            key: "public_build_matches_html_meta",
+            status: !metaBuild || !manifestBuild || metaBuild === manifestBuild ? "ok" : "warning",
+            message:
+              !metaBuild || !manifestBuild || metaBuild === manifestBuild
+                ? "Public HTML build marker matches build.json."
+                : "Public HTML build marker does not match build.json.",
+            meta: {
+              html_meta_build: metaBuild || null,
+              manifest_build: manifestBuild || null,
+            },
+          });
+          if (entryAsset) {
+            const assetUrl = `${publicRoot}/assets/${entryAsset}`;
+            const assetResponse = await fetch(assetUrl, {
+              cache: "no-store",
+              credentials: "same-origin",
+              method: "HEAD",
+            }).catch(async () =>
+              fetch(assetUrl, {
+                cache: "no-store",
+                credentials: "same-origin",
+              }),
+            );
+            clientChecks.push({
+              key: "public_entry_asset_fetch",
+              status: assetResponse.ok ? "ok" : "warning",
+              message: assetResponse.ok
+                ? "Published entry asset is fetchable under the deployed public base path."
+                : "Published entry asset is not fetchable under the deployed public base path.",
+              meta: {
+                url: assetUrl,
+                status_code: assetResponse.status,
+              },
+            });
+          }
+        }
+      } catch (error) {
+        clientChecks.push({
+          key: "public_build_manifest_fetch",
+          status: "warning",
+          message: "Failed to fetch public build.json from the deployed base path.",
+          meta: {
+            url: `${publicRoot}/build.json`,
+            error: String(error),
+          },
+        });
+      }
+      const combinedWarnings =
+        (payload.checks || []).filter((item) => item.status !== "ok").length +
+        clientChecks.filter((item) => item.status !== "ok").length;
+      setSelfhostConsistency({
+        ...payload,
+        client_checks: clientChecks,
+        warnings_total: combinedWarnings,
+        status: combinedWarnings > 0 ? "warning" : "ok",
+      });
     } catch {
       setSelfhostConsistency(null);
     } finally {
@@ -8555,10 +8683,12 @@ export default function App() {
             mx="md"
             mt="sm"
           >
-            {(selfhostConsistency.checks || [])
-              .filter((item) => item.status !== "ok")
+            {[
+              ...((selfhostConsistency.checks || []).filter((item) => item.status !== "ok") || []),
+              ...((selfhostConsistency.client_checks || []).filter((item) => item.status !== "ok") || []),
+            ]
               .map((item) => item.message || item.key)
-              .slice(0, 2)
+              .slice(0, 3)
               .join(" ")}
           </Alert>
         ) : null}
