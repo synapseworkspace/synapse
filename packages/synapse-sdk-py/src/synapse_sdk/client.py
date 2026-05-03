@@ -1746,6 +1746,46 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def list_agent_shared_memory_fanout_deliveries(
+        self,
+        *,
+        space_key: str | None = None,
+        hook_id: int | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "hook_id": int(hook_id) if hook_id is not None else None,
+            "status": str(status).strip().lower() if status is not None and str(status).strip() else None,
+            "limit": max(1, min(200, int(limit))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-deliveries",
+            method="GET",
+            params=params,
+        )
+
+    def retry_agent_shared_memory_fanout_delivery(
+        self,
+        *,
+        delivery_id: int,
+        updated_by: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None,
+            "dry_run": bool(dry_run),
+        }
+        return self._request_json(
+            f"/v1/agents/shared-memory/fanout-deliveries/{int(delivery_id)}/retry",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",

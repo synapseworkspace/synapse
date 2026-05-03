@@ -1261,6 +1261,12 @@ class SharedMemoryFanoutDispatchRequest(BaseModel):
     limit: int = Field(default=25, ge=1, le=100)
 
 
+class SharedMemoryFanoutRetryRequest(BaseModel):
+    project_id: str
+    updated_by: str | None = Field(default=None, min_length=1, max_length=256)
+    dry_run: bool = False
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -4733,6 +4739,14 @@ def _shared_memory_fanout_hooks_table_exists(conn) -> bool:
     return bool(_SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS)
 
 
+def _shared_memory_fanout_deliveries_table_exists(conn) -> bool:
+    global _SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS
+    if _SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.shared_memory_fanout_deliveries")
+    return bool(_SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS)
+
+
 def _render_agent_folder_markdown(
     *,
     profile: dict[str, Any],
@@ -7975,6 +7989,7 @@ _AGENT_DIRECTORY_TABLE_EXISTS: bool | None = None
 _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_ENTRIES_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS: bool | None = None
+_SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS: bool | None = None
 _PUBLIC_TABLE_EXISTS_CACHE: dict[str, bool] = {}
 _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
@@ -11982,6 +11997,269 @@ def _list_shared_memory_fanout_hooks(
     }
 
 
+def _record_shared_memory_fanout_delivery(
+    conn,
+    *,
+    project_id: str,
+    hook_id: int,
+    dispatch_mode: str,
+    status: str,
+    dry_run: bool,
+    space_key: str | None,
+    requested_by: str | None,
+    request_payload: dict[str, Any] | None,
+    response_payload: dict[str, Any] | None,
+    http_status: int | None = None,
+    error_message: str | None = None,
+    retry_of: int | None = None,
+) -> int | None:
+    if not _shared_memory_fanout_deliveries_table_exists(conn):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO shared_memory_fanout_deliveries (
+              project_id,
+              hook_id,
+              dispatch_mode,
+              status,
+              dry_run,
+              space_key,
+              requested_by,
+              retry_of,
+              request_payload,
+              response_payload,
+              http_status,
+              error_message,
+              created_at,
+              completed_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), CASE WHEN %s IN ('delivered', 'failed', 'planned') THEN NOW() ELSE NULL END)
+            RETURNING id
+            """,
+            (
+                str(project_id or "").strip(),
+                int(hook_id),
+                str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
+                str(status or "planned").strip().lower() or "planned",
+                bool(dry_run),
+                _normalize_space_key(space_key or "", default="") or None,
+                str(requested_by or "").strip() or None,
+                int(retry_of) if retry_of is not None else None,
+                Jsonb(request_payload if isinstance(request_payload, dict) else {}),
+                Jsonb(response_payload if isinstance(response_payload, dict) else {}),
+                int(http_status) if http_status is not None else None,
+                str(error_message or "").strip() or None,
+                str(status or "planned").strip().lower() or "planned",
+            ),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row is not None else None
+
+
+def _list_shared_memory_fanout_deliveries(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    hook_id: int | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_fanout_deliveries_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "space_key": normalized_space or None,
+            "deliveries": [],
+            "summary": {"deliveries_total": 0, "failed_total": 0, "supported": False},
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              d.id,
+              d.hook_id,
+              h.name,
+              d.dispatch_mode,
+              d.status,
+              d.dry_run,
+              d.space_key,
+              d.requested_by,
+              d.retry_of,
+              d.request_payload,
+              d.response_payload,
+              d.http_status,
+              d.error_message,
+              d.created_at,
+              d.completed_at
+            FROM shared_memory_fanout_deliveries d
+            JOIN shared_memory_fanout_hooks h ON h.id = d.hook_id
+            WHERE d.project_id = %s
+        """
+        params: list[Any] = [normalized_project]
+        if normalized_space:
+            sql += " AND (d.space_key IS NULL OR lower(d.space_key) = %s)"
+            params.append(normalized_space)
+        if hook_id is not None:
+            sql += " AND d.hook_id = %s"
+            params.append(int(hook_id))
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status:
+            sql += " AND d.status = %s"
+            params.append(normalized_status)
+        sql += " ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
+        params.append(max(1, min(200, int(limit))))
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    deliveries = []
+    failed_total = 0
+    for row in rows:
+        if str(row[4] or "").strip().lower() == "failed":
+            failed_total += 1
+        deliveries.append(
+            {
+                "id": int(row[0]),
+                "hook_id": int(row[1]),
+                "hook_name": str(row[2] or "").strip(),
+                "dispatch_mode": str(row[3] or "").strip() or "invalidation",
+                "status": str(row[4] or "").strip() or "planned",
+                "dry_run": bool(row[5]),
+                "space_key": str(row[6] or "").strip() or None,
+                "requested_by": str(row[7] or "").strip() or None,
+                "retry_of": int(row[8]) if row[8] is not None else None,
+                "request_payload": row[9] if isinstance(row[9], dict) else {},
+                "response_payload": row[10] if isinstance(row[10], dict) else {},
+                "http_status": int(row[11]) if row[11] is not None else None,
+                "error_message": str(row[12] or "").strip() or None,
+                "created_at": row[13].astimezone(UTC).isoformat() if isinstance(row[13], datetime) else None,
+                "completed_at": row[14].astimezone(UTC).isoformat() if isinstance(row[14], datetime) else None,
+            }
+        )
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "deliveries": deliveries,
+        "summary": {
+            "deliveries_total": len(deliveries),
+            "failed_total": failed_total,
+            "supported": True,
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _retry_shared_memory_fanout_delivery(
+    conn,
+    *,
+    project_id: str,
+    delivery_id: int,
+    updated_by: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_fanout_deliveries_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "shared_memory_fanout_deliveries_unavailable"})
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              d.hook_id,
+              d.dispatch_mode,
+              d.space_key,
+              d.request_payload,
+              h.endpoint_url,
+              h.headers,
+              h.timeout_seconds,
+              h.enabled,
+              h.name
+            FROM shared_memory_fanout_deliveries d
+            JOIN shared_memory_fanout_hooks h ON h.id = d.hook_id
+            WHERE d.id = %s
+              AND d.project_id = %s
+            LIMIT 1
+            """,
+            (int(delivery_id), normalized_project),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "shared_memory_fanout_delivery_not_found", "delivery_id": delivery_id})
+    hook_id = int(row[0])
+    dispatch_mode = str(row[1] or "invalidation").strip().lower() or "invalidation"
+    space_key = str(row[2] or "").strip() or None
+    request_payload = row[3] if isinstance(row[3], dict) else {}
+    endpoint_url = str(row[4] or "").strip()
+    request_headers = {
+        "Content-Type": "application/json",
+        "X-Synapse-Project-Id": normalized_project,
+        "X-Synapse-Fanout-Mode": dispatch_mode,
+        "X-Synapse-Actor": str(updated_by or "system").strip()[:256] or "system",
+    }
+    request_headers.update(_normalize_shared_memory_hook_headers(row[5]))
+    timeout_seconds = max(1.0, min(60.0, float(row[6] or 5)))
+    if not bool(row[7]):
+        raise HTTPException(status_code=409, detail={"code": "shared_memory_fanout_hook_disabled", "hook_id": hook_id})
+    response_payload: dict[str, Any] = {}
+    status = "planned" if dry_run else "pending"
+    http_status: int | None = None
+    error_message: str | None = None
+    if not dry_run:
+        try:
+            request = Request(endpoint_url, data=json.dumps(request_payload).encode("utf-8"), headers=request_headers, method="POST")
+            with urlopen(request, timeout=timeout_seconds) as response:
+                body = response.read(512).decode("utf-8", errors="replace")
+                http_status = int(getattr(response, "status", 200) or 200)
+                response_payload = {"response_preview": body[:240] or None}
+                status = "delivered"
+        except HTTPError as exc:
+            http_status = int(exc.code)
+            error_message = str(exc)
+            status = "failed"
+        except URLError as exc:
+            error_message = str(exc.reason or exc)
+            status = "failed"
+        except Exception as exc:
+            error_message = str(exc)
+            status = "failed"
+    delivery_log_id = _record_shared_memory_fanout_delivery(
+        conn,
+        project_id=normalized_project,
+        hook_id=hook_id,
+        dispatch_mode=dispatch_mode,
+        status=status,
+        dry_run=dry_run,
+        space_key=space_key,
+        requested_by=updated_by,
+        request_payload=request_payload,
+        response_payload=response_payload,
+        http_status=http_status,
+        error_message=error_message,
+        retry_of=int(delivery_id),
+    )
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "delivery_id": delivery_log_id,
+        "retry_of": int(delivery_id),
+        "hook": {
+            "id": hook_id,
+            "name": str(row[8] or "").strip() or None,
+            "endpoint_url": endpoint_url,
+            "dispatch_mode": dispatch_mode,
+        },
+        "dry_run": bool(dry_run),
+        "delivery_status": status,
+        "http_status": http_status,
+        "error_message": error_message,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _build_shared_memory_fanout_dispatch_payload(
     conn,
     *,
@@ -12143,6 +12421,9 @@ def _dispatch_shared_memory_fanout(
             "dry_run": bool(dry_run),
             "status": "planned" if dry_run else "pending",
         }
+        response_payload: dict[str, Any] = {}
+        http_status: int | None = None
+        error_message: str | None = None
         if not dry_run:
             try:
                 request_headers = {
@@ -12157,18 +12438,40 @@ def _dispatch_shared_memory_fanout(
                 with urlopen(request, timeout=max(1.0, min(60.0, float(hook.get("timeout_seconds") or 5)))) as response:
                     body = response.read(512).decode("utf-8", errors="replace")
                     delivery["status"] = "delivered"
-                    delivery["http_status"] = int(getattr(response, "status", 200) or 200)
-                    delivery["response_preview"] = body[:240] or None
+                    http_status = int(getattr(response, "status", 200) or 200)
+                    response_payload = {"response_preview": body[:240] or None}
+                    delivery["http_status"] = http_status
+                    delivery["response_preview"] = response_payload.get("response_preview")
             except HTTPError as exc:
                 delivery["status"] = "failed"
-                delivery["http_status"] = int(exc.code)
-                delivery["error"] = str(exc)
+                http_status = int(exc.code)
+                error_message = str(exc)
+                delivery["http_status"] = http_status
+                delivery["error"] = error_message
             except URLError as exc:
                 delivery["status"] = "failed"
-                delivery["error"] = str(exc.reason or exc)
+                error_message = str(exc.reason or exc)
+                delivery["error"] = error_message
             except Exception as exc:
                 delivery["status"] = "failed"
-                delivery["error"] = str(exc)
+                error_message = str(exc)
+                delivery["error"] = error_message
+        delivery_log_id = _record_shared_memory_fanout_delivery(
+            conn,
+            project_id=normalized_project,
+            hook_id=int(hook.get("id") or 0),
+            dispatch_mode=str(hook.get("delivery_mode") or "invalidation"),
+            status=str(delivery.get("status") or "planned"),
+            dry_run=bool(dry_run),
+            space_key=normalized_space or None,
+            requested_by=updated_by,
+            request_payload=payload,
+            response_payload=response_payload,
+            http_status=http_status,
+            error_message=error_message,
+        )
+        if delivery_log_id is not None:
+            delivery["delivery_id"] = delivery_log_id
         deliveries.append(delivery)
     return {
         "status": "ok",
@@ -13363,6 +13666,23 @@ def _build_shared_memory_health_metrics(
         limit=100,
     ).get("summary")
     hooks_summary = hooks_summary if isinstance(hooks_summary, dict) else {}
+    fanout_failed_recent = 0
+    if _shared_memory_fanout_deliveries_table_exists(conn):
+        with conn.cursor() as cur:
+            sql = """
+                SELECT COUNT(*)::bigint
+                FROM shared_memory_fanout_deliveries
+                WHERE project_id = %s
+                  AND status = 'failed'
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+            """
+            params: list[Any] = [normalized_project]
+            if _normalize_space_key(space_key or "", default=""):
+                sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
+                params.append(_normalize_space_key(space_key or "", default=""))
+            cur.execute(sql, tuple(params))
+            failed_row = cur.fetchone() or (0,)
+        fanout_failed_recent = int(failed_row[0] or 0)
     return {
         "project_id": normalized_project,
         "space_key": _normalize_space_key(space_key or "", default="") or None,
@@ -13384,6 +13704,7 @@ def _build_shared_memory_health_metrics(
             "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
             "fanout_hooks_total": int(hooks_summary.get("hooks_total") or 0),
             "fanout_hooks_enabled": int(hooks_summary.get("enabled_hooks") or 0),
+            "fanout_failed_recent": fanout_failed_recent,
         },
     }
 
@@ -29072,6 +29393,43 @@ def dispatch_agent_shared_memory_fanout(payload: SharedMemoryFanoutDispatchReque
             entity_key=payload.entity_key,
             change_summary=payload.change_summary,
             limit=int(payload.limit),
+        )
+
+
+@app.get("/v1/agents/shared-memory/fanout-deliveries")
+def list_agent_shared_memory_fanout_deliveries(
+    project_id: str,
+    space_key: str | None = Query(default=None),
+    hook_id: int | None = Query(default=None, ge=1),
+    status: str | None = Query(default=None, pattern="^(planned|pending|delivered|failed)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _list_shared_memory_fanout_deliveries(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            hook_id=hook_id,
+            status=status,
+            limit=limit,
+        )
+
+
+@app.post("/v1/agents/shared-memory/fanout-deliveries/{delivery_id}/retry", response_model=None)
+def retry_agent_shared_memory_fanout_delivery(delivery_id: int, payload: SharedMemoryFanoutRetryRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _retry_shared_memory_fanout_delivery(
+            conn,
+            project_id=normalized_project,
+            delivery_id=int(delivery_id),
+            updated_by=payload.updated_by,
+            dry_run=bool(payload.dry_run),
         )
 
 

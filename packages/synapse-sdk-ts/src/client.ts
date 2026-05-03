@@ -1634,6 +1634,44 @@ export class SynapseClient {
     });
   }
 
+  async listAgentSharedMemoryFanoutDeliveries(options: {
+    spaceKey?: string;
+    hookId?: number;
+    status?: "planned" | "pending" | "delivered" | "failed" | string;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-deliveries", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        hook_id: options.hookId == null ? undefined : normalizeInt(options.hookId, 1, Number.MAX_SAFE_INTEGER),
+        status: asOptionalString(options.status)?.toLowerCase() ?? undefined,
+        limit: normalizeInt(options.limit ?? 50, 1, 200)
+      }
+    });
+  }
+
+  async retryAgentSharedMemoryFanoutDelivery(options: {
+    deliveryId: number;
+    updatedBy?: string;
+    dryRun?: boolean;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>(
+      `/v1/agents/shared-memory/fanout-deliveries/${normalizeInt(options.deliveryId, 1, Number.MAX_SAFE_INTEGER)}/retry`,
+      {
+        method: "POST",
+        payload: {
+          project_id: this.projectId,
+          updated_by: asOptionalString(options.updatedBy) ?? undefined,
+          dry_run: Boolean(options.dryRun ?? false)
+        },
+        idempotencyKey: options.idempotencyKey ?? makeUuid()
+      }
+    );
+  }
+
   async getAdoptionPipelineVisibility(options: {
     days?: number;
     sourceSystems?: string[];

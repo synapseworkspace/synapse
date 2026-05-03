@@ -849,6 +849,37 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("change_summary"), "Updated dispatch handoff escalation.")
         self.assertEqual(payload.get("limit"), 6)
 
+    def test_list_agent_shared_memory_fanout_deliveries_scopes_project(self) -> None:
+        self.client.list_agent_shared_memory_fanout_deliveries(
+            space_key="logistics",
+            hook_id=4,
+            status="failed",
+            limit=11,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-deliveries")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "logistics")
+        self.assertEqual(params.get("hook_id"), 4)
+        self.assertEqual(params.get("status"), "failed")
+        self.assertEqual(params.get("limit"), 11)
+
+    def test_retry_agent_shared_memory_fanout_delivery_posts_expected_payload(self) -> None:
+        self.client.retry_agent_shared_memory_fanout_delivery(
+            delivery_id=18,
+            updated_by="ops_admin",
+            dry_run=True,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-deliveries/18/retry")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertTrue(payload.get("dry_run"))
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",

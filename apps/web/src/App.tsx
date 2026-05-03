@@ -1398,6 +1398,7 @@ type SharedMemoryHealthPayload = {
     materialized_entries_visible?: number;
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
+    fanout_failed_recent?: number;
     state_snapshot_slug?: string | null;
     state_snapshot_updated_at?: string | null;
     latest_change_at?: string | null;
@@ -3325,6 +3326,9 @@ export default function App() {
     }
     if (Number(metrics.fanout_hooks_enabled || 0) === 0) {
       items.push("No runtime fanout hooks are enabled yet, so shared memory still depends on polling/invalidation checks.");
+    }
+    if (Number(metrics.fanout_failed_recent || 0) > 0) {
+      items.push(`${Number(metrics.fanout_failed_recent || 0)} shared-memory fanout deliver${Number(metrics.fanout_failed_recent || 0) === 1 ? "y has" : "ies have"} failed in the last 24h.`);
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);
