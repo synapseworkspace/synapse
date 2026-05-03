@@ -2993,6 +2993,7 @@ _RUNTIME_SURFACE_SPACE_STOPWORDS = {
     "erp",
     "exec",
     "flow",
+    "for",
     "graph",
     "hint",
     "incident",
@@ -3131,52 +3132,62 @@ def _infer_runtime_surface_core_space_keys(
     surfaces: list[Any] | None = None,
     profiles: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    candidates: list[str] = []
+    explicit_spaces: list[str] = []
+    inferred_candidates: list[str] = []
+
+    def _append_explicit(value: Any) -> None:
+        normalized = _normalize_space_key(value, default="")
+        if not normalized or normalized in _RUNTIME_SURFACE_SPACE_GENERIC:
+            return
+        explicit_spaces.append(normalized)
+
     for surface in surfaces or []:
         if surface is None:
             continue
         runtime_overview = surface.runtime_overview if hasattr(surface, "runtime_overview") and isinstance(surface.runtime_overview, dict) else {}
         metadata = surface.metadata if hasattr(surface, "metadata") and isinstance(surface.metadata, dict) else {}
-        candidates.extend(
+        _append_explicit(metadata.get("space_key"))
+        _append_explicit(metadata.get("wiki_space_key"))
+        _append_explicit(runtime_overview.get("domain"))
+        inferred_candidates.extend(
             _extract_runtime_surface_space_candidates(
-                getattr(surface, "team", None),
-                getattr(surface, "role", None),
                 runtime_overview.get("org_code"),
                 runtime_overview.get("domain"),
-                metadata.get("space_key"),
-                metadata.get("wiki_space_key"),
-                metadata.get("domain"),
                 getattr(surface, "scheduled_tasks", None),
-                getattr(surface, "standing_orders", None),
-                getattr(surface, "capability_registry", None),
-                getattr(surface, "source_hints", None),
             )
         )
     for profile in profiles or []:
         if not isinstance(profile, dict):
             continue
         metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
-        candidates.extend(
+        _append_explicit(metadata.get("space_key"))
+        _append_explicit(metadata.get("wiki_space_key"))
+        runtime_overview = metadata.get("runtime_overview") if isinstance(metadata.get("runtime_overview"), dict) else {}
+        _append_explicit(runtime_overview.get("domain"))
+        inferred_candidates.extend(
             _extract_runtime_surface_space_candidates(
-                profile.get("team"),
-                profile.get("role"),
-                metadata.get("space_key"),
-                metadata.get("wiki_space_key"),
                 metadata.get("scheduled_task_contracts"),
-                metadata.get("standing_orders"),
-                metadata.get("capability_contracts"),
-                metadata.get("source_binding_contracts"),
+                runtime_overview.get("org_code"),
+                runtime_overview.get("domain"),
             )
         )
     deduped: list[str] = []
     seen: set[str] = set()
-    for item in candidates:
+    for item in explicit_spaces:
         normalized = _normalize_space_key(item, default="")
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
         deduped.append(normalized)
-    return deduped or ["operations"]
+    if deduped:
+        return deduped
+    for item in inferred_candidates:
+        normalized = _normalize_space_key(item, default="")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped[:1] or ["operations"]
 
 
 def _serialize_agent_profile_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -35918,6 +35929,7 @@ def _build_bundle_promotion_pages(
     space_key: str,
     include_data_sources_catalog: bool,
     include_agent_capability_profile: bool,
+    include_tooling_map: bool,
     include_process_playbooks: bool,
     include_decisions_log: bool,
     include_company_operating_context: bool,
@@ -35939,6 +35951,15 @@ def _build_bundle_promotion_pages(
     if include_agent_capability_profile:
         pages.extend(
             _build_agent_capability_bootstrap_page(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_agents=max_agents,
+            )
+        )
+    if include_tooling_map:
+        pages.extend(
+            _build_tooling_map_bootstrap_page(
                 cur,
                 project_id=project_id,
                 space_key=space_key,
@@ -36395,6 +36416,7 @@ def _bundle_promotion_scope_for_page_type(page_type: str | None) -> dict[str, bo
     scope = {
         "include_data_sources_catalog": False,
         "include_agent_capability_profile": False,
+        "include_tooling_map": False,
         "include_process_playbooks": False,
         "include_decisions_log": False,
         "include_company_operating_context": False,
@@ -36402,16 +36424,20 @@ def _bundle_promotion_scope_for_page_type(page_type: str | None) -> dict[str, bo
     }
     if normalized == "agent_profile":
         scope["include_agent_capability_profile"] = True
+        scope["include_tooling_map"] = True
         scope["include_company_operating_context"] = True
     elif normalized == "data_map":
         scope["include_data_sources_catalog"] = True
+        scope["include_tooling_map"] = True
         scope["include_company_operating_context"] = True
     elif normalized in {"process", "runbook", "policy"}:
+        scope["include_tooling_map"] = True
         scope["include_process_playbooks"] = True
         scope["include_operational_logic_map"] = True
         scope["include_decisions_log"] = True
         scope["include_company_operating_context"] = True
     elif normalized == "decision_log":
+        scope["include_tooling_map"] = True
         scope["include_decisions_log"] = True
         scope["include_process_playbooks"] = True
         scope["include_operational_logic_map"] = True
@@ -36442,6 +36468,7 @@ def _run_inline_bundle_promotion(
             space_key=_normalize_space_key(space_key or "", default="operations"),
             include_data_sources_catalog=bool(scope.get("include_data_sources_catalog")),
             include_agent_capability_profile=bool(scope.get("include_agent_capability_profile")),
+            include_tooling_map=bool(scope.get("include_tooling_map")),
             include_process_playbooks=bool(scope.get("include_process_playbooks")),
             include_decisions_log=bool(scope.get("include_decisions_log")),
             include_company_operating_context=bool(scope.get("include_company_operating_context")),

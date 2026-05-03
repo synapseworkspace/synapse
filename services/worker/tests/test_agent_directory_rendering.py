@@ -248,11 +248,13 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         spaces = _infer_runtime_surface_core_space_keys(surfaces=[surface], profiles=[])
         self.assertEqual(spaces[0], "logistics")
         self.assertNotIn("standing-order-logistics-incident-monitor", spaces)
+        self.assertNotIn("documents_orders", spaces)
 
     def test_bundle_promotion_scope_prefers_process_family_for_process_pages(self) -> None:
         scope = _bundle_promotion_scope_for_page_type("process")
         self.assertFalse(scope["include_data_sources_catalog"])
         self.assertFalse(scope["include_agent_capability_profile"])
+        self.assertTrue(scope["include_tooling_map"])
         self.assertTrue(scope["include_process_playbooks"])
         self.assertTrue(scope["include_decisions_log"])
         self.assertTrue(scope["include_company_operating_context"])
