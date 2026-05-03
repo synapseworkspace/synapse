@@ -1600,6 +1600,30 @@ def _best_contract_matches(
     return [contract for _, contract in ranked[:max_items]]
 
 
+def _derive_structured_tool_source_hint(
+    *,
+    tool: str,
+    guardrails: set[str] | list[str],
+    purposes: set[str] | list[str],
+    capabilities: set[str] | list[str],
+) -> str:
+    system_candidates: list[str] = []
+    for raw in [*list(guardrails or []), *list(purposes or [])]:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if re.search(r"\b(api|engine|queryspec|ingest|projection|frontend|virtual|sheets?)\b", text, flags=re.IGNORECASE):
+            system_candidates.append(text)
+        elif re.fullmatch(r"[A-Za-z0-9_./:-]+", text) and ("_" in text or "api" in text.lower()):
+            system_candidates.append(text)
+    if system_candidates:
+        return _normalize_operating_label(system_candidates[0], kind="source")[:120]
+    capability_values = [str(value).strip() for value in capabilities if str(value).strip()]
+    if capability_values:
+        return _normalize_operating_label(capability_values[0], kind="source")[:120]
+    return _normalize_operating_label(tool, kind="source")[:120]
+
+
 def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     tool_index: dict[str, dict[str, Any]] = {}
     for item in matrix or []:
@@ -1758,37 +1782,34 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                             bucket["sources"].add(source[:120])
                             bucket["provenance"]["fallback_used"] = True
                             bucket["provenance"]["fallback_fields"].add("source")
-            elif not bucket["sources"]:
-                derived_source = ""
-                if bucket["capabilities"]:
-                    derived_source = sorted(bucket["capabilities"])[0]
-                elif bucket["purposes"]:
-                    derived_source = _normalize_operating_label(sorted(bucket["purposes"])[0], kind="source")[:120]
-                else:
-                    derived_source = _normalize_operating_label(tool, kind="source")[:120]
-                if derived_source:
-                    bucket["sources"].add(derived_source)
-                    bucket["provenance"]["fallback_used"] = True
-                    bucket["provenance"]["fallback_fields"].add("source")
-                    bucket["provenance"]["source_bindings"].add(f"derived:{derived_source}")
-            if has_structured_contract_match and not bucket["processes"]:
-                derived_process = ""
-                if bucket["capabilities"]:
-                    derived_process = sorted(bucket["capabilities"])[0]
-                elif bucket["purposes"]:
-                    derived_process = _normalize_operating_label(sorted(bucket["purposes"])[0], kind="process")[:120]
-                else:
-                    derived_process = _normalize_operating_label(tool, kind="process")[:120]
-                if derived_process:
-                    bucket["processes"].add(derived_process)
-                    bucket["provenance"]["fallback_used"] = True
-                    bucket["provenance"]["fallback_fields"].add("process")
             if has_structured_contract_match and not bucket["capabilities"]:
                 derived_capability = _normalize_operating_label(tool, kind="capability")[:120]
                 if derived_capability:
                     bucket["capabilities"].add(derived_capability)
                     bucket["provenance"]["fallback_used"] = True
                     bucket["provenance"]["fallback_fields"].add("capability")
+            if has_structured_contract_match and not bucket["processes"]:
+                derived_process = ""
+                if bucket["capabilities"]:
+                    derived_process = sorted(bucket["capabilities"])[0]
+                else:
+                    derived_process = _normalize_operating_label(tool, kind="process")[:120]
+                if derived_process:
+                    bucket["processes"].add(derived_process)
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("process")
+            if has_structured_contract_match and not bucket["sources"]:
+                derived_source = _derive_structured_tool_source_hint(
+                    tool=tool,
+                    guardrails=bucket["guardrails"],
+                    purposes=bucket["purposes"],
+                    capabilities=bucket["capabilities"],
+                )
+                if derived_source:
+                    bucket["sources"].add(derived_source)
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("source")
+                    bucket["provenance"]["source_bindings"].add(f"derived:{derived_source}")
             if not bucket["guardrails"]:
                 for rule in _choose_related_guardrails(tool, guardrails, max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
                     if rule:

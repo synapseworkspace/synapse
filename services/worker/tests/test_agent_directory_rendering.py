@@ -2293,6 +2293,40 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("driver economics", row["processes"])
         self.assertIn("driver economics", row["capabilities"])
 
+    def test_tooling_map_rows_prefer_system_hint_over_long_purpose_for_source(self) -> None:
+        assert _build_tooling_map_rows_from_matrix is not None
+
+        rows = _build_tooling_map_rows_from_matrix(
+            [
+                {
+                    "agent_id": "logistics-assistant",
+                    "tools": ["erp_routes_slice"],
+                    "registry_tools": [],
+                    "scenario_examples": [],
+                    "responsibilities": [],
+                    "standing_orders": [],
+                    "observed_actions": [],
+                    "data_sources": [],
+                    "source_bindings": [],
+                    "limits": ["erp_frontend_api", "medium"],
+                    "approval_rules": [],
+                    "escalation_rules": [],
+                    "tool_contracts": [
+                        {
+                            "tool": "erp_routes_slice",
+                            "purpose": "Срез маршрутов ERP за день: смены, нагрузка, техзадачи/заказы, статусы.",
+                        }
+                    ],
+                    "capability_contracts": [],
+                    "source_binding_contracts": [],
+                }
+            ]
+        )
+        row = rows[0]
+        self.assertIn("erp routes slice", row["capabilities"])
+        self.assertIn("erp routes slice", row["processes"])
+        self.assertIn("erp frontend api", row["sources"])
+
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
         assert _api_main is not None
