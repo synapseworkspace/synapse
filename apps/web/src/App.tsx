@@ -4831,11 +4831,43 @@ export default function App() {
             },
           });
         } else {
-          const buildManifest = (await buildResponse.json()) as {
+          let buildManifest: {
             web_build?: string;
             ui_features?: string;
             entry_asset?: string;
-          };
+          } | null = null;
+          try {
+            buildManifest = (await buildResponse.json()) as {
+              web_build?: string;
+              ui_features?: string;
+              entry_asset?: string;
+            };
+          } catch (error) {
+            clientChecks.push({
+              key: "public_build_manifest_parse",
+              status: "warning",
+              message: "Public build.json is reachable but is not valid JSON.",
+              meta: {
+                url: `${publicRoot}/build.json`,
+                error: String(error),
+              },
+            });
+          }
+          if (!buildManifest) {
+            setSelfhostConsistency({
+              ...payload,
+              client_checks: clientChecks,
+              warnings_total:
+                (payload.checks || []).filter((item) => item.status !== "ok").length +
+                clientChecks.filter((item) => item.status !== "ok").length,
+              status:
+                (payload.checks || []).some((item) => item.status !== "ok") ||
+                clientChecks.some((item) => item.status !== "ok")
+                  ? "warning"
+                  : "ok",
+            });
+            return;
+          }
           const manifestBuild = String(buildManifest.web_build || "").trim();
           const manifestFeatures = String(buildManifest.ui_features || "").trim();
           const entryAsset = String(buildManifest.entry_asset || "").trim();

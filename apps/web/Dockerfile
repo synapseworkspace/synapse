@@ -20,7 +20,11 @@ RUN BUILD_LABEL="${VITE_SYNAPSE_WEB_BUILD:-$(date -u +%Y%m%d%H%M%S)}" \
     && export VITE_SYNAPSE_UI_FEATURES="${FEATURE_LABEL}" \
     && npm run build \
     && ENTRY_ASSET="$(basename "$(ls /app/apps/web/dist/assets/index-*.js | head -n 1)")" \
-    && printf '{\"web_build\":\"%s\",\"generated_at\":\"%s\",\"ui_features\":\"%s\",\"entry_asset\":\"%s\"}\n' "${BUILD_LABEL}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${FEATURE_LABEL}" "${ENTRY_ASSET}" > /app/apps/web/dist/build.json
+    && BUILD_LABEL_JSON="${BUILD_LABEL}" \
+       GENERATED_AT_JSON="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       FEATURE_LABEL_JSON="${FEATURE_LABEL}" \
+       ENTRY_ASSET_JSON="${ENTRY_ASSET}" \
+       node -e 'const fs=require("fs"); const payload={web_build:process.env.BUILD_LABEL_JSON, generated_at:process.env.GENERATED_AT_JSON, ui_features:process.env.FEATURE_LABEL_JSON, entry_asset:process.env.ENTRY_ASSET_JSON}; fs.writeFileSync("/app/apps/web/dist/build.json", JSON.stringify(payload));'
 
 FROM nginx:1.27-alpine
 
