@@ -17,6 +17,8 @@ try:
         _build_agent_capability_bootstrap_page,
         _build_tooling_map_bootstrap_page,
         _build_tooling_map_rows_from_matrix,
+        _build_tooling_relation_edges,
+        _build_tooling_quality_metrics,
         _summarize_tooling_map_rows,
         _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
@@ -72,6 +74,8 @@ except Exception:  # pragma: no cover
     _build_agent_capability_bootstrap_page = None
     _build_tooling_map_bootstrap_page = None
     _build_tooling_map_rows_from_matrix = None
+    _build_tooling_relation_edges = None
+    _build_tooling_quality_metrics = None
     _summarize_tooling_map_rows = None
     _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
@@ -122,6 +126,8 @@ except Exception:  # pragma: no cover
     or _build_agent_capability_bootstrap_page is None
     or _build_tooling_map_bootstrap_page is None
     or _build_tooling_map_rows_from_matrix is None
+    or _build_tooling_relation_edges is None
+    or _build_tooling_quality_metrics is None
     or _summarize_tooling_map_rows is None
     or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
@@ -2155,6 +2161,8 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
 
     def test_tooling_map_rows_include_provenance_and_summary(self) -> None:
         assert _build_tooling_map_rows_from_matrix is not None
+        assert _build_tooling_relation_edges is not None
+        assert _build_tooling_quality_metrics is not None
         assert _summarize_tooling_map_rows is not None
 
         rows = _build_tooling_map_rows_from_matrix(
@@ -2209,9 +2217,16 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("driver_economy_daily_latest", econ_row["provenance"]["source_bindings"])
         self.assertEqual(econ_row["process_source_origin"], "source_binding")
         self.assertEqual(econ_row["provenance"]["process_source_origin"], "source_binding")
+        self.assertEqual(econ_row["synthesized_fields"]["sources"][0]["origin"], "source_binding")
+        self.assertGreaterEqual(float(econ_row["synthesized_fields"]["sources"][0]["confidence"]), 0.9)
         summary = _summarize_tooling_map_rows(rows)
         self.assertEqual(summary["rows_total"], 2)
         self.assertGreaterEqual(summary["rows_with_process_or_source"], 2)
+        self.assertIn("source_binding", summary["field_origin_counts"])
+        quality = _build_tooling_quality_metrics(rows)
+        self.assertIn("field_origin_counts", quality)
+        edges = _build_tooling_relation_edges(rows)
+        self.assertTrue(any(edge["to_kind"] == "source" and edge["to_ref"] == "driver_economy_daily_latest" for edge in edges))
 
     def test_refine_source_binding_contracts_uses_explicit_contract_context(self) -> None:
         assert _refine_source_binding_contracts is not None
@@ -2326,6 +2341,74 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("erp routes slice", row["capabilities"])
         self.assertIn("erp routes slice", row["processes"])
         self.assertIn("erp frontend api", row["sources"])
+
+    def test_support_pack_tooling_rows_keep_generic_support_shape(self) -> None:
+        assert _build_tooling_map_rows_from_matrix is not None
+        rows = _build_tooling_map_rows_from_matrix(
+            [
+                {
+                    "agent_id": "support-bot",
+                    "tools": ["ticket_lookup"],
+                    "registry_tools": [],
+                    "scenario_examples": ["customer escalation review"],
+                    "responsibilities": ["ticket triage"],
+                    "standing_orders": ["standing_order.support.incident_review"],
+                    "observed_actions": [],
+                    "data_sources": ["zendesk_api"],
+                    "source_bindings": [],
+                    "limits": ["customer identity requires approval"],
+                    "approval_rules": [],
+                    "escalation_rules": [],
+                    "tool_contracts": [
+                        {
+                            "tool": "ticket_lookup",
+                            "purpose": "Fetch ticket history for escalation review.",
+                            "capabilities": ["ticket_triage"],
+                            "sources": ["zendesk_api"],
+                        }
+                    ],
+                    "capability_contracts": [],
+                    "source_binding_contracts": [],
+                }
+            ]
+        )
+        row = rows[0]
+        self.assertIn("ticket triage", row["capabilities"])
+        self.assertIn("zendesk api", row["sources"])
+
+    def test_sales_pack_tooling_rows_keep_generic_sales_shape(self) -> None:
+        assert _build_tooling_map_rows_from_matrix is not None
+        rows = _build_tooling_map_rows_from_matrix(
+            [
+                {
+                    "agent_id": "sales-bot",
+                    "tools": ["crm_account_lookup"],
+                    "registry_tools": [],
+                    "scenario_examples": ["handoff readiness review"],
+                    "responsibilities": ["deal qualification"],
+                    "standing_orders": ["standing_order.sales.pipeline_review"],
+                    "observed_actions": [],
+                    "data_sources": ["salesforce_api"],
+                    "source_bindings": [],
+                    "limits": ["pricing edits require approval"],
+                    "approval_rules": [],
+                    "escalation_rules": [],
+                    "tool_contracts": [
+                        {
+                            "tool": "crm_account_lookup",
+                            "purpose": "Fetch CRM account context for qualification and handoff.",
+                            "capabilities": ["deal_qualification"],
+                            "sources": ["salesforce_api"],
+                        }
+                    ],
+                    "capability_contracts": [],
+                    "source_binding_contracts": [],
+                }
+            ]
+        )
+        row = rows[0]
+        self.assertIn("deal qualification", row["capabilities"])
+        self.assertIn("salesforce api", row["sources"])
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None

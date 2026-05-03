@@ -1624,6 +1624,165 @@ def _derive_structured_tool_source_hint(
     return _normalize_operating_label(tool, kind="source")[:120]
 
 
+def _tooling_field_origin(
+    *,
+    field_name: str,
+    provenance: dict[str, Any],
+) -> str:
+    fallback_fields = {
+        str(item).strip().lower()
+        for item in (provenance.get("fallback_fields") or [])
+        if str(item).strip()
+    }
+    if field_name == "guardrails":
+        if provenance.get("tool_contracts"):
+            return "tool_contract"
+        if field_name in fallback_fields:
+            return "fallback"
+        return "unknown"
+    if field_name == "capabilities":
+        if provenance.get("capability_contracts"):
+            return "capability_contract"
+        if provenance.get("tool_contracts"):
+            return "tool_contract"
+        if field_name in fallback_fields:
+            if provenance.get("tool_contracts") or provenance.get("capability_contracts") or provenance.get("source_bindings"):
+                return "derived"
+            return "fallback"
+        return "unknown"
+    if field_name in {"processes", "sources"}:
+        if field_name == "sources":
+            source_bindings = [str(item).strip() for item in (provenance.get("source_bindings") or []) if str(item).strip()]
+            if any(not item.startswith("derived:") for item in source_bindings):
+                return "source_binding"
+            if any(item.startswith("derived:") for item in source_bindings):
+                return "derived"
+        if provenance.get("tool_contracts"):
+            if field_name in fallback_fields:
+                return "derived"
+            return "tool_contract"
+        if provenance.get("capability_contracts"):
+            if field_name in fallback_fields:
+                return "derived"
+            return "capability_contract"
+        if field_name in fallback_fields:
+            return "fallback"
+        return "unknown"
+    if field_name in {"purposes", "scenarios"}:
+        if provenance.get("tool_contracts"):
+            return "tool_contract"
+        if provenance.get("capability_contracts"):
+            return "capability_contract"
+        if field_name in fallback_fields:
+            return "fallback"
+        return "unknown"
+    return "unknown"
+
+
+def _tooling_field_confidence(*, origin: str) -> float:
+    mapping = {
+        "tool_contract": 0.96,
+        "source_binding": 0.93,
+        "capability_contract": 0.9,
+        "derived": 0.72,
+        "fallback": 0.55,
+        "unknown": 0.4,
+    }
+    return float(mapping.get(str(origin or "").strip().lower(), 0.4))
+
+
+def _build_synthesized_field_entries(
+    *,
+    values: list[str] | set[str],
+    field_name: str,
+    provenance: dict[str, Any],
+    max_items: int = 4,
+) -> list[dict[str, Any]]:
+    origin = _tooling_field_origin(field_name=field_name, provenance=provenance)
+    confidence = _tooling_field_confidence(origin=origin)
+    entries: list[dict[str, Any]] = []
+    for value in list(values)[:max_items]:
+        text = str(value).strip()
+        if not text:
+            continue
+        entries.append(
+            {
+                "value": text,
+                "origin": origin,
+                "confidence": confidence,
+            }
+        )
+    return entries
+
+
+def _build_tooling_relation_edges(rows: list[dict[str, Any]] | None, *, limit: int = 600) -> list[dict[str, Any]]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        tool = str(row.get("tool") or "").strip()
+        if not tool:
+            continue
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        field_groups = {
+            "capability": row.get("capabilities") or [],
+            "process": row.get("processes") or [],
+            "source": row.get("sources") or [],
+            "guardrail": row.get("guardrails") or [],
+        }
+        for target_kind, values in field_groups.items():
+            origin = _tooling_field_origin(
+                field_name=f"{target_kind}s" if target_kind != "process" else "processes",
+                provenance=provenance,
+            )
+            confidence = _tooling_field_confidence(origin=origin)
+            for value in values[:4]:
+                target = str(value).strip()
+                if not target:
+                    continue
+                marker = f"{tool.lower()}|{target_kind}|{target.lower()}"
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                edges.append(
+                    {
+                        "from_kind": "tool",
+                        "from_ref": tool,
+                        "to_kind": target_kind,
+                        "to_ref": target,
+                        "origin": origin,
+                        "confidence": confidence,
+                    }
+                )
+                if len(edges) >= max(1, int(limit)):
+                    return edges
+    return edges
+
+
+def _build_tooling_quality_metrics(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    process_equals_capability = 0
+    overlong_sources = 0
+    origin_counts: dict[str, int] = {}
+    for row in rows:
+        capabilities = [str(v).strip().lower() for v in (row.get("capabilities") or []) if str(v).strip()]
+        processes = [str(v).strip().lower() for v in (row.get("processes") or []) if str(v).strip()]
+        sources = [str(v).strip() for v in (row.get("sources") or []) if str(v).strip()]
+        if capabilities and processes and capabilities[0] == processes[0]:
+            process_equals_capability += 1
+        if any(len(source) > 48 for source in sources):
+            overlong_sources += 1
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        for field_name in ("capabilities", "processes", "sources", "guardrails"):
+            origin = _tooling_field_origin(field_name=field_name, provenance=provenance)
+            origin_counts[origin] = int(origin_counts.get(origin) or 0) + 1
+    return {
+        "process_equals_capability_rows": process_equals_capability,
+        "overlong_source_rows": overlong_sources,
+        "field_origin_counts": origin_counts,
+    }
+
+
 def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     tool_index: dict[str, dict[str, Any]] = {}
     for item in matrix or []:
@@ -1835,6 +1994,38 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                 process_source_origin = "capability_contract"
             elif provenance["fallback_used"]:
                 process_source_origin = "fallback"
+        synthesized_fields = {
+            "capabilities": _build_synthesized_field_entries(
+                values=sorted(bucket["capabilities"])[:4],
+                field_name="capabilities",
+                provenance=provenance,
+            ),
+            "purposes": _build_synthesized_field_entries(
+                values=sorted(bucket["purposes"])[:3],
+                field_name="purposes",
+                provenance=provenance,
+            ),
+            "scenarios": _build_synthesized_field_entries(
+                values=sorted(bucket["scenarios"])[:3],
+                field_name="scenarios",
+                provenance=provenance,
+            ),
+            "processes": _build_synthesized_field_entries(
+                values=sorted(bucket["processes"])[:3],
+                field_name="processes",
+                provenance=provenance,
+            ),
+            "sources": _build_synthesized_field_entries(
+                values=sorted(bucket["sources"])[:3],
+                field_name="sources",
+                provenance=provenance,
+            ),
+            "guardrails": _build_synthesized_field_entries(
+                values=sorted(bucket["guardrails"])[:3],
+                field_name="guardrails",
+                provenance=provenance,
+            ),
+        }
         rows.append(
             {
                 "tool": str(bucket.get("tool") or ""),
@@ -1847,6 +2038,7 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                 "guardrails": sorted(bucket["guardrails"])[:3],
                 "structured": bool(bucket.get("structured")),
                 "process_source_origin": process_source_origin,
+                "synthesized_fields": synthesized_fields,
                 "provenance": {
                     "tool_contracts": sorted(provenance["tool_contracts"])[:4],
                     "capability_contracts": sorted(provenance["capability_contracts"])[:4],
@@ -1883,12 +2075,14 @@ def _summarize_tooling_map_rows(rows: list[dict[str, Any]] | None) -> dict[str, 
             or (provenance.get("source_bindings") or [])
         ):
             fallback_only += 1
+    quality_metrics = _build_tooling_quality_metrics(rows)
     return {
         "rows_total": total,
         "rows_with_process_or_source": with_process_or_source,
         "rows_missing_process_or_source": missing_process_or_source,
         "structured_rows": structured_rows,
         "fallback_only_rows": fallback_only,
+        **quality_metrics,
     }
 
 
@@ -34028,6 +34222,7 @@ def get_adoption_tooling_map_diagnostics(
             if not matrix:
                 matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(20, min(200, limit * 2)))
     rows = _build_tooling_map_rows_from_matrix(matrix)
+    edges = _build_tooling_relation_edges(rows, limit=max(60, min(800, limit * 8)))
     diagnostics_rows = []
     for row in rows[:limit]:
         diagnostics_rows.append(
@@ -34042,6 +34237,7 @@ def get_adoption_tooling_map_diagnostics(
                 "guardrails": row.get("guardrails"),
                 "structured": row.get("structured"),
                 "process_source_origin": row.get("process_source_origin"),
+                "synthesized_fields": row.get("synthesized_fields"),
                 "provenance": row.get("provenance"),
             }
         )
@@ -34049,6 +34245,7 @@ def get_adoption_tooling_map_diagnostics(
         "project_id": project_id,
         "space_key": _normalize_space_key(space_key),
         "summary": _summarize_tooling_map_rows(rows),
+        "edges": edges,
         "rows": diagnostics_rows,
     }
 
