@@ -12,8 +12,10 @@ ARG VITE_SYNAPSE_API_URL=http://localhost:8080
 ARG VITE_SYNAPSE_WEB_BUILD=
 ENV VITE_SYNAPSE_API_URL=${VITE_SYNAPSE_API_URL}
 ENV VITE_SYNAPSE_WEB_BUILD=${VITE_SYNAPSE_WEB_BUILD}
-RUN npm run build
-RUN printf '{\"web_build\":\"%s\",\"generated_at\":\"%s\"}\n' "${VITE_SYNAPSE_WEB_BUILD:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /app/apps/web/dist/build.json
+RUN BUILD_LABEL="${VITE_SYNAPSE_WEB_BUILD:-$(date -u +%Y%m%d%H%M%S)}" \
+    && export VITE_SYNAPSE_WEB_BUILD="${BUILD_LABEL}" \
+    && npm run build \
+    && printf '{\"web_build\":\"%s\",\"generated_at\":\"%s\"}\n' "${BUILD_LABEL}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > /app/apps/web/dist/build.json
 
 FROM nginx:1.27-alpine
 
