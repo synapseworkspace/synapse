@@ -1771,6 +1771,24 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                     bucket["provenance"]["fallback_used"] = True
                     bucket["provenance"]["fallback_fields"].add("source")
                     bucket["provenance"]["source_bindings"].add(f"derived:{derived_source}")
+            if has_structured_contract_match and not bucket["processes"]:
+                derived_process = ""
+                if bucket["capabilities"]:
+                    derived_process = sorted(bucket["capabilities"])[0]
+                elif bucket["purposes"]:
+                    derived_process = _normalize_operating_label(sorted(bucket["purposes"])[0], kind="process")[:120]
+                else:
+                    derived_process = _normalize_operating_label(tool, kind="process")[:120]
+                if derived_process:
+                    bucket["processes"].add(derived_process)
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("process")
+            if has_structured_contract_match and not bucket["capabilities"]:
+                derived_capability = _normalize_operating_label(tool, kind="capability")[:120]
+                if derived_capability:
+                    bucket["capabilities"].add(derived_capability)
+                    bucket["provenance"]["fallback_used"] = True
+                    bucket["provenance"]["fallback_fields"].add("capability")
             if not bucket["guardrails"]:
                 for rule in _choose_related_guardrails(tool, guardrails, max_items=1, allow_fallback_when_single=len(all_tools) <= 1):
                     if rule:
@@ -34002,6 +34020,7 @@ def get_adoption_tooling_map_diagnostics(
                 "sources": row.get("sources"),
                 "guardrails": row.get("guardrails"),
                 "structured": row.get("structured"),
+                "process_source_origin": row.get("process_source_origin"),
                 "provenance": row.get("provenance"),
             }
         )

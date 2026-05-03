@@ -2290,6 +2290,8 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("driver economics", row["sources"])
         self.assertNotIn("driver cargo state", row["sources"])
         self.assertEqual(row["process_source_origin"], "tool_contract")
+        self.assertIn("driver economics", row["processes"])
+        self.assertIn("driver economics", row["capabilities"])
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
