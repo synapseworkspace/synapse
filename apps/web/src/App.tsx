@@ -1506,6 +1506,13 @@ type CompanyKnowledgeCandidateRecord = {
   human_summary?: string | null;
   why_it_matters?: string | null;
   page_markdown_preview?: string | null;
+  manual_review?: {
+    decision?: string | null;
+    preferred_source_label?: string | null;
+    resolution_note?: string | null;
+    updated_by?: string | null;
+    updated_at?: string | null;
+  } | null;
 };
 
 type CompanyKnowledgeCandidatesPayload = {
@@ -5152,10 +5159,16 @@ export default function App() {
         knowledgeState,
         promoteToWiki,
         wikiStatus,
+        contradictionDecision,
+        preferredSourceLabel,
+        resolutionNote,
       }: {
-        knowledgeState: "reviewed" | "canonical";
+        knowledgeState: "reviewed" | "canonical" | "contradicted";
         promoteToWiki: boolean;
         wikiStatus: "reviewed" | "published";
+        contradictionDecision?: "prefer_canonical" | "prefer_derived" | "document_override" | "needs_follow_up";
+        preferredSourceLabel?: string;
+        resolutionNote?: string;
       },
     ) => {
       const project = projectId.trim();
@@ -5169,7 +5182,7 @@ export default function App() {
         });
         return;
       }
-      const actionKey = `${candidateId}:${knowledgeState}:${promoteToWiki ? "wiki" : "state"}`;
+      const actionKey = `${candidateId}:${knowledgeState}:${promoteToWiki ? "wiki" : "state"}:${contradictionDecision || "default"}`;
       setRunningCompanyKnowledgeActionKey(actionKey);
       try {
         const payload = await apiFetch<{
@@ -5187,6 +5200,9 @@ export default function App() {
               knowledge_state: knowledgeState,
               promote_to_wiki: promoteToWiki,
               wiki_status: wikiStatus,
+              contradiction_decision: contradictionDecision,
+              preferred_source_label: preferredSourceLabel,
+              resolution_note: resolutionNote,
               note: promoteToWiki
                 ? `Promoted from Operations UI by ${actor}.`
                 : `Lifecycle state updated from Operations UI by ${actor}.`,
@@ -11003,6 +11019,14 @@ export default function App() {
                                                   Contradiction topic: {candidate.contradiction_topic}
                                                 </Text>
                                               ) : null}
+                                              {candidate.manual_review ? (
+                                                <Text size="xs" c="dimmed">
+                                                  Review decision: {candidate.manual_review.decision || "not recorded"}
+                                                  {candidate.manual_review.preferred_source_label
+                                                    ? ` · preferred source: ${candidate.manual_review.preferred_source_label}`
+                                                    : ""}
+                                                </Text>
+                                              ) : null}
                                               <Text size="xs" c="dimmed">
                                                 Promotion path: {candidate.promotion_path || "pending explicit owner review"}
                                               </Text>
@@ -11050,6 +11074,63 @@ export default function App() {
                                                 >
                                                   Promote to wiki
                                                 </Button>
+                                                {candidate.contradiction_topic ? (
+                                                  <>
+                                                    <Button
+                                                      size="xs"
+                                                      variant="subtle"
+                                                      color="orange"
+                                                      loading={
+                                                        runningCompanyKnowledgeActionKey ===
+                                                        `${candidateId}:reviewed:state:prefer_canonical`
+                                                      }
+                                                      disabled={Boolean(
+                                                        runningCompanyKnowledgeActionKey &&
+                                                          runningCompanyKnowledgeActionKey !==
+                                                            `${candidateId}:reviewed:state:prefer_canonical`,
+                                                      )}
+                                                      onClick={() =>
+                                                        void promoteCompanyKnowledgeCandidate(candidate, {
+                                                          knowledgeState: "reviewed",
+                                                          promoteToWiki: false,
+                                                          wikiStatus: "reviewed",
+                                                          contradictionDecision: "prefer_canonical",
+                                                          preferredSourceLabel: "canonical operational source",
+                                                          resolutionNote:
+                                                            "Working resolution: prefer the canonical operational source for live state until the mismatch is retired.",
+                                                        })
+                                                      }
+                                                    >
+                                                      Prefer canonical source
+                                                    </Button>
+                                                    <Button
+                                                      size="xs"
+                                                      variant="subtle"
+                                                      color="yellow"
+                                                      loading={
+                                                        runningCompanyKnowledgeActionKey ===
+                                                        `${candidateId}:reviewed:state:needs_follow_up`
+                                                      }
+                                                      disabled={Boolean(
+                                                        runningCompanyKnowledgeActionKey &&
+                                                          runningCompanyKnowledgeActionKey !==
+                                                            `${candidateId}:reviewed:state:needs_follow_up`,
+                                                      )}
+                                                      onClick={() =>
+                                                        void promoteCompanyKnowledgeCandidate(candidate, {
+                                                          knowledgeState: "contradicted",
+                                                          promoteToWiki: false,
+                                                          wikiStatus: "reviewed",
+                                                          contradictionDecision: "needs_follow_up",
+                                                          resolutionNote:
+                                                            "Conflict still needs more evidence before this rule should be promoted into canon.",
+                                                        })
+                                                      }
+                                                    >
+                                                      Keep open for follow-up
+                                                    </Button>
+                                                  </>
+                                                ) : null}
                                               </Group>
                                             </Stack>
                                           </Paper>

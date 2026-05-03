@@ -1326,6 +1326,12 @@ class CompanyKnowledgeCandidatePromoteRequest(BaseModel):
     updated_by: str = Field(min_length=1, max_length=256)
     knowledge_state: str = Field(default="reviewed", pattern="^(candidate|reviewed|canonical|stale|contradicted|superseded)$")
     note: str | None = Field(default=None, max_length=2000)
+    contradiction_decision: str | None = Field(
+        default=None,
+        pattern="^(prefer_canonical|prefer_derived|document_override|needs_follow_up)$",
+    )
+    preferred_source_label: str | None = Field(default=None, max_length=256)
+    resolution_note: str | None = Field(default=None, max_length=2000)
     promote_to_wiki: bool = False
     wiki_status: str = Field(default="reviewed", pattern="^(draft|reviewed|published)$")
 
@@ -12042,6 +12048,18 @@ def _build_company_knowledge_candidate_markdown(candidate: dict[str, Any]) -> st
     resolution_rule = str(candidate.get("resolution_rule") or "").strip()
     if resolution_rule:
         lines.extend(["", "## Resolution Rule", f"- {resolution_rule}"])
+    manual_review = candidate.get("manual_review") if isinstance(candidate.get("manual_review"), dict) else {}
+    if manual_review:
+        lines.extend(["", "## Review Decision"])
+        decision = str(manual_review.get("decision") or "").strip()
+        preferred_source = str(manual_review.get("preferred_source_label") or "").strip()
+        resolution_note = str(manual_review.get("resolution_note") or "").strip()
+        if decision:
+            lines.append(f"- Decision: {decision}")
+        if preferred_source:
+            lines.append(f"- Preferred source: {preferred_source}")
+        if resolution_note:
+            lines.append(f"- Review note: {resolution_note}")
     lines.extend(
         [
             "",
@@ -12306,6 +12324,7 @@ def _list_company_knowledge_candidates(
                 "human_summary": str(source_payload.get("human_summary") or "").strip() or None,
                 "why_it_matters": str(source_payload.get("why_it_matters") or "").strip() or None,
                 "page_markdown_preview": str(source_payload.get("page_markdown") or "").strip()[:800] or None,
+                "manual_review": source_payload.get("manual_review") if isinstance(source_payload.get("manual_review"), dict) else None,
             }
         )
     return {
@@ -12329,6 +12348,9 @@ def _promote_company_knowledge_candidate(
     updated_by: str,
     knowledge_state: str,
     note: str | None,
+    contradiction_decision: str | None,
+    preferred_source_label: str | None,
+    resolution_note: str | None,
     promote_to_wiki: bool,
     wiki_status: str,
 ) -> dict[str, Any]:
@@ -12336,6 +12358,9 @@ def _promote_company_knowledge_candidate(
     normalized_actor = str(updated_by or "").strip()
     normalized_state = str(knowledge_state or "reviewed").strip().lower() or "reviewed"
     normalized_note = str(note or "").strip() or None
+    normalized_contradiction_decision = str(contradiction_decision or "").strip().lower() or None
+    normalized_preferred_source = str(preferred_source_label or "").strip() or None
+    normalized_resolution_note = str(resolution_note or "").strip() or None
     normalized_wiki_status = str(wiki_status or "reviewed").strip().lower() or "reviewed"
     if not normalized_project or not normalized_actor:
         raise HTTPException(status_code=422, detail={"code": "project_id_and_updated_by_required"})
@@ -12393,8 +12418,40 @@ def _promote_company_knowledge_candidate(
                     "human_summary": source_payload.get("human_summary"),
                     "why_it_matters": source_payload.get("why_it_matters"),
                     "page_markdown": source_payload.get("page_markdown"),
+                    "manual_review": source_payload.get("manual_review") if isinstance(source_payload.get("manual_review"), dict) else None,
                 }
             )
+        manual_review = candidate.get("manual_review") if isinstance(candidate.get("manual_review"), dict) else {}
+        if normalized_contradiction_decision or normalized_preferred_source or normalized_resolution_note:
+            manual_review = {
+                **manual_review,
+                **({"decision": normalized_contradiction_decision} if normalized_contradiction_decision else {}),
+                **({"preferred_source_label": normalized_preferred_source} if normalized_preferred_source else {}),
+                **({"resolution_note": normalized_resolution_note} if normalized_resolution_note else {}),
+                "updated_by": normalized_actor,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            candidate["manual_review"] = manual_review
+            if normalized_contradiction_decision == "prefer_canonical":
+                preferred = normalized_preferred_source or "the canonical operational source"
+                candidate["resolution_rule"] = f"Prefer {preferred} for live state; use derived/operator-maintained views only as secondary context."
+            elif normalized_contradiction_decision == "prefer_derived":
+                preferred = normalized_preferred_source or "the derived operational view"
+                candidate["resolution_rule"] = f"Use {preferred} as the current working source, but keep a validation step against canonical systems until the mismatch is retired."
+            elif normalized_contradiction_decision == "document_override":
+                candidate["resolution_rule"] = normalized_resolution_note or candidate.get("resolution_rule") or "Use the documented operator override until the source mismatch is resolved."
+            elif normalized_contradiction_decision == "needs_follow_up":
+                candidate["resolution_rule"] = normalized_resolution_note or "Do not promote this contradiction to canon yet; collect more evidence and confirm source ownership."
+            candidate["page_markdown"] = _build_company_knowledge_candidate_markdown(candidate)
+        next_source_payload = {
+            **(source_payload if isinstance(source_payload, dict) else {}),
+            **({"resolution_rule": candidate.get("resolution_rule")} if candidate.get("resolution_rule") else {}),
+            **({"human_title": candidate.get("human_title")} if candidate.get("human_title") else {}),
+            **({"human_summary": candidate.get("human_summary")} if candidate.get("human_summary") else {}),
+            **({"why_it_matters": candidate.get("why_it_matters")} if candidate.get("why_it_matters") else {}),
+            **({"page_markdown": candidate.get("page_markdown")} if candidate.get("page_markdown") else {}),
+            **({"manual_review": manual_review} if manual_review else {}),
+        }
         canonical_page_slug = None
         if promote_to_wiki and candidate.get("target_page_slug") and candidate.get("target_page_type"):
             existing_page = _resolve_wiki_page_row_by_slug_or_alias(
@@ -12447,6 +12504,7 @@ def _promote_company_knowledge_candidate(
             SET knowledge_state = %s,
                 state_source = 'manual',
                 note = %s,
+                source_payload = %s,
                 reviewed_by = %s,
                 reviewed_at = NOW(),
                 canonical_page_slug = COALESCE(%s, canonical_page_slug),
@@ -12459,6 +12517,7 @@ def _promote_company_knowledge_candidate(
             (
                 normalized_state,
                 normalized_note,
+                Jsonb(next_source_payload),
                 normalized_actor,
                 canonical_page_slug,
                 normalized_actor,
@@ -41025,6 +41084,9 @@ def promote_company_knowledge_candidate(candidate_id: int, payload: CompanyKnowl
             updated_by=payload.updated_by,
             knowledge_state=payload.knowledge_state,
             note=payload.note,
+            contradiction_decision=payload.contradiction_decision,
+            preferred_source_label=payload.preferred_source_label,
+            resolution_note=payload.resolution_note,
             promote_to_wiki=payload.promote_to_wiki,
             wiki_status=payload.wiki_status,
         )

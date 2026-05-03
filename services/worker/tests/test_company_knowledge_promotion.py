@@ -4,10 +4,12 @@ import unittest
 
 try:
     from services.api.app.main import (
+        _build_company_knowledge_candidate_markdown,
         _merge_company_knowledge_candidate_into_markdown,
         _render_company_knowledge_candidate_section,
     )
 except Exception:  # pragma: no cover - optional API deps in minimal envs
+    _build_company_knowledge_candidate_markdown = None
     _merge_company_knowledge_candidate_into_markdown = None
     _render_company_knowledge_candidate_section = None
 
@@ -61,6 +63,28 @@ class CompanyKnowledgePromotionTests(unittest.TestCase):
         self.assertNotIn("Old rule.", merged)
         self.assertEqual(merged.count("<!-- synapse:company-knowledge-start logistics:source_of_truth_rule -->"), 1)
         self.assertIn("Prefer ERP for live route state.", merged)
+
+    def test_candidate_markdown_includes_manual_review_resolution(self) -> None:
+        markdown = _build_company_knowledge_candidate_markdown(
+            {
+                "human_title": "Which systems to trust for live logistics state",
+                "human_summary": "Use ERP as the live source of truth for route state.",
+                "knowledge_state": "reviewed",
+                "confidence": "medium",
+                "block_id": "logistics:source_of_truth_rule",
+                "evidence_basis": "Repeated trust signals.",
+                "resolution_rule": "Prefer ERP for live state.",
+                "manual_review": {
+                    "decision": "prefer_canonical",
+                    "preferred_source_label": "ERP",
+                    "resolution_note": "Keep sheets as secondary context only.",
+                },
+            }
+        )
+        self.assertIn("## Review Decision", markdown)
+        self.assertIn("Decision: prefer_canonical", markdown)
+        self.assertIn("Preferred source: ERP", markdown)
+        self.assertIn("Review note: Keep sheets as secondary context only.", markdown)
 
 
 if __name__ == "__main__":

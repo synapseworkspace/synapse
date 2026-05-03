@@ -75,6 +75,7 @@ Phase 2 (signal extraction)
    - persisted `company knowledge candidates` storage + `sync/list/promote` APIs now anchor compiler output as first-class records.
    - Operations UI now exposes a compact company-knowledge candidate panel with sync, lifecycle visibility, and promote actions.
    - canonical target pages now accept managed candidate sections, so promoted company knowledge can accumulate without whole-page overwrite.
+   - contradiction candidates now support explicit review decisions (`prefer_canonical`, `needs_follow_up`, etc.) that persist into candidate state and promoted canon text.
 7. `in_progress` Humanization layer:
    - translate internal technical labels into company-readable summaries and titles.
    - current slice now emits humanized candidate titles/summaries plus page-ready wiki drafts for company-knowledge promotion.
