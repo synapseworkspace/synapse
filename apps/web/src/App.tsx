@@ -1787,6 +1787,7 @@ type CoreWorkspaceRoute = "wiki" | "operations";
 
 const DEFAULT_API_URL = String(import.meta.env.VITE_SYNAPSE_API_URL || "http://localhost:8080").trim() || "http://localhost:8080";
 const WEB_BUILD = String(import.meta.env.VITE_SYNAPSE_WEB_BUILD || "0.1.0").trim() || "0.1.0";
+const WEB_UI_FEATURES = ["synthesis_observability_panel", "adoption_synthesis_graph", "typed_synthesis_diagnostics"];
 const REQUESTED_UI_PROFILE = String(import.meta.env.VITE_SYNAPSE_UI_PROFILE || "")
   .trim()
   .toLowerCase();
@@ -4761,11 +4762,12 @@ export default function App() {
   const loadSelfhostConsistency = useCallback(async () => {
     setLoadingSelfhostConsistency(true);
     try {
+      const routePath = coreWorkspaceRoute === "operations" ? "/wiki/operations" : "/wiki";
       const payload = await apiFetch<SelfhostConsistencyPayload>(
         apiUrl,
         `/v1/adoption/selfhost/consistency?web_build=${encodeURIComponent(WEB_BUILD)}&ui_profile=${encodeURIComponent(
           "core",
-        )}&route_path=${encodeURIComponent("/wiki")}`,
+        )}&route_path=${encodeURIComponent(routePath)}&ui_features=${encodeURIComponent(WEB_UI_FEATURES.join(","))}`,
       );
       setSelfhostConsistency(payload);
     } catch {
@@ -4773,7 +4775,7 @@ export default function App() {
     } finally {
       setLoadingSelfhostConsistency(false);
     }
-  }, [apiUrl]);
+  }, [apiUrl, coreWorkspaceRoute]);
 
   const runLegacySourceSync = useCallback(
     async (sourceId: string) => {
@@ -8555,7 +8557,11 @@ export default function App() {
           <Text size="xs" c="dimmed" px="md" mt={6}>
             Checking UI/API consistency…
           </Text>
-        ) : null}
+        ) : (
+          <Text size="xs" c="dimmed" px="md" mt={6}>
+            Web build {WEB_BUILD} • route {coreWorkspaceRoute === "operations" ? "/wiki/operations" : "/wiki"}
+          </Text>
+        )}
         {spaceRecoveryNotice ? (
           <Alert
             variant="light"

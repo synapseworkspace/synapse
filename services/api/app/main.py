@@ -20298,10 +20298,16 @@ def get_selfhost_consistency_gate(
     web_build: str | None = Query(default=None),
     ui_profile: str | None = Query(default=None),
     route_path: str | None = Query(default=None),
+    ui_features: str | None = Query(default=None),
 ) -> dict[str, Any]:
     compat = get_meta_compatibility(web_build=web_build)
     normalized_profile = str(ui_profile or "").strip().lower()
     normalized_route = str(route_path or "").strip().lower()
+    declared_features = {
+        str(item or "").strip().lower()
+        for item in re.split(r"[,\s]+", str(ui_features or ""))
+        if str(item or "").strip()
+    }
     checks: list[dict[str, Any]] = []
 
     checks.append(
@@ -20344,6 +20350,29 @@ def get_selfhost_consistency_gate(
             "meta": {
                 "route_path": normalized_route or None,
                 "expected_prefix": "/wiki",
+            },
+        }
+    )
+
+    operations_feature_required = normalized_route.startswith("/wiki/operations")
+    has_synthesis_observability = "synthesis_observability_panel" in declared_features
+    checks.append(
+        {
+            "key": "operations_synthesis_observability",
+            "status": (
+                "ok"
+                if (not operations_feature_required or has_synthesis_observability)
+                else "warning"
+            ),
+            "message": (
+                "Operations route declares synthesis observability support."
+                if (not operations_feature_required or has_synthesis_observability)
+                else "Operations route is missing synthesis observability support; rebuild or redeploy the web bundle."
+            ),
+            "meta": {
+                "route_path": normalized_route or None,
+                "ui_features": sorted(declared_features),
+                "required_feature": "synthesis_observability_panel" if operations_feature_required else None,
             },
         }
     )

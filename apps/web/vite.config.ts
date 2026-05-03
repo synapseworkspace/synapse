@@ -1,6 +1,14 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const buildLabel =
+  process.env.VITE_SYNAPSE_WEB_BUILD ||
+  process.env.SYNAPSE_WEB_BUILD ||
+  process.env.SOURCE_VERSION ||
+  new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
+
+process.env.VITE_SYNAPSE_WEB_BUILD = buildLabel;
+
 export default defineConfig({
   base: "./",
   plugins: [react()],

@@ -118,6 +118,7 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         VITE_SYNAPSE_API_URL: ${SYNAPSE_WEB_API_URL:-http://localhost:8080}
+        VITE_SYNAPSE_WEB_BUILD: ${SYNAPSE_WEB_BUILD:-}
     restart: unless-stopped
     depends_on:
       api:
