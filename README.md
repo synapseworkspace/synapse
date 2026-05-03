@@ -270,6 +270,7 @@ Enterprise shortcut (single API call):
 - `GET /v1/adoption/synthesis-graph/diagnostics` now combines those diagnostics surfaces into one graph snapshot: unified nodes/edges across tools, sources, agents, playbooks, capabilities, processes, tools, decisions, plus roll-up summaries for `tooling-map`, `data-sources`, `agent-capability`, and `process-playbooks`. This is the first general-purpose adoption graph view rather than a page-family-specific debug endpoint.
 - The web `Operations` workspace now surfaces that graph through a compact `Synthesis observability` panel, so operators can monitor row coverage, fallback pressure, and relation quality across tools, sources, agents, and playbooks without leaving the main adoption workflow.
 - Self-host consistency checks are now route- and feature-aware for the web bundle: the UI reports its active route, declared feature set, and web build stamp, while `GET /v1/adoption/selfhost/consistency` can explicitly warn when an `Operations` deployment is missing the `Synthesis observability` panel because the frontend bundle was not rebuilt/redeployed.
+- The self-host web image now also disables caching for `index.html` while keeping hashed assets immutable, so rebuilding/redeploying the `web` service reliably surfaces new UI features like `Synthesis observability` instead of reusing a stale SPA entrypoint.
 
 Knowledge Compiler diagnostics flow:
 

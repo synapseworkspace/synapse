@@ -4762,7 +4762,12 @@ export default function App() {
   const loadSelfhostConsistency = useCallback(async () => {
     setLoadingSelfhostConsistency(true);
     try {
-      const routePath = coreWorkspaceRoute === "operations" ? "/wiki/operations" : "/wiki";
+      const routePath =
+        typeof window !== "undefined" && String(window.location.pathname || "").trim()
+          ? String(window.location.pathname || "").trim()
+          : coreWorkspaceRoute === "operations"
+            ? buildOperationsPath(wikiBasePath)
+            : buildWikiPath(wikiBasePath, null);
       const payload = await apiFetch<SelfhostConsistencyPayload>(
         apiUrl,
         `/v1/adoption/selfhost/consistency?web_build=${encodeURIComponent(WEB_BUILD)}&ui_profile=${encodeURIComponent(
@@ -4775,7 +4780,7 @@ export default function App() {
     } finally {
       setLoadingSelfhostConsistency(false);
     }
-  }, [apiUrl, coreWorkspaceRoute]);
+  }, [apiUrl, coreWorkspaceRoute, wikiBasePath]);
 
   const runLegacySourceSync = useCallback(
     async (sourceId: string) => {
