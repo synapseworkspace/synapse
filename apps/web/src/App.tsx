@@ -1399,6 +1399,7 @@ type SharedMemoryHealthPayload = {
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
     fanout_failed_recent?: number;
+    fanout_retries_due?: number;
     state_snapshot_slug?: string | null;
     state_snapshot_updated_at?: string | null;
     latest_change_at?: string | null;
@@ -3329,6 +3330,9 @@ export default function App() {
     }
     if (Number(metrics.fanout_failed_recent || 0) > 0) {
       items.push(`${Number(metrics.fanout_failed_recent || 0)} shared-memory fanout deliver${Number(metrics.fanout_failed_recent || 0) === 1 ? "y has" : "ies have"} failed in the last 24h.`);
+    }
+    if (Number(metrics.fanout_retries_due || 0) > 0) {
+      items.push(`${Number(metrics.fanout_retries_due || 0)} shared-memory fanout retr${Number(metrics.fanout_retries_due || 0) === 1 ? "y is" : "ies are"} due for retry now.`);
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);

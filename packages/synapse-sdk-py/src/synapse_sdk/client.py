@@ -1663,6 +1663,8 @@ class SynapseClient:
         delivery_mode: str = "invalidation",
         headers: dict[str, str] | None = None,
         timeout_seconds: int = 5,
+        retry_max_attempts: int = 3,
+        retry_backoff_seconds: int = 300,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "project_id": self._config.project_id,
@@ -1675,6 +1677,8 @@ class SynapseClient:
             "delivery_mode": str(delivery_mode or "invalidation").strip().lower() or "invalidation",
             "headers": headers if isinstance(headers, dict) else {},
             "timeout_seconds": max(1, min(60, int(timeout_seconds))),
+            "retry_max_attempts": max(1, min(10, int(retry_max_attempts))),
+            "retry_backoff_seconds": max(30, min(86400, int(retry_backoff_seconds))),
         }
         return self._request_json(
             "/v1/agents/shared-memory/fanout-hooks",
@@ -1781,6 +1785,28 @@ class SynapseClient:
         }
         return self._request_json(
             f"/v1/agents/shared-memory/fanout-deliveries/{int(delivery_id)}/retry",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def process_due_agent_shared_memory_fanout_retries(
+        self,
+        *,
+        updated_by: str | None = None,
+        dry_run: bool = True,
+        limit: int = 20,
+        space_key: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "updated_by": str(updated_by).strip() if updated_by is not None and str(updated_by).strip() else None,
+            "dry_run": bool(dry_run),
+            "limit": max(1, min(100, int(limit))),
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-deliveries/process-due-retries",
             method="POST",
             payload=payload,
             idempotency_key=str(uuid4()),

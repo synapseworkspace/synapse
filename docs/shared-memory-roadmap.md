@@ -153,9 +153,10 @@ Implemented:
 15. long-lived `shared_memory_entries` now back private/team memory with materialized entries that runtimes can write and later hydrate alongside wiki deltas
 16. optional `shared_memory_fanout_hooks` now let operators configure push-style invalidation / impact / publish-preview delivery to external runtimes, with dry-run dispatch before going live
 17. fanout deliveries now persist audit history plus retry support, so failed runtime pushes can be inspected and re-dispatched without reconstructing payloads by hand
+18. hook-level retry policy (`max attempts` + `backoff`) and due-retry processing now let shared-memory fanout move from ad-hoc retries toward a real delivery loop
 
 Current limitation:
-- private/team memory now has materialized entry backing plus fanout audit/retry, but still lacks richer write-back lifecycle semantics and stronger delivery guarantees such as queueing/backoff/ack freshness
+- private/team memory now has materialized entry backing plus hook retry/backoff, but still lacks richer write-back lifecycle semantics and stronger delivery guarantees such as queued execution and runtime ack freshness
 
 These endpoints are intentionally conservative:
 

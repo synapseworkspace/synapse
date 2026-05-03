@@ -1556,6 +1556,8 @@ export class SynapseClient {
     deliveryMode?: "invalidation" | "impact" | "publish_preview" | string;
     headers?: Record<string, string>;
     timeoutSeconds?: number;
+    retryMaxAttempts?: number;
+    retryBackoffSeconds?: number;
     idempotencyKey?: string;
   }): Promise<Record<string, unknown>> {
     return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-hooks", {
@@ -1570,7 +1572,9 @@ export class SynapseClient {
         space_key: asOptionalString(options.spaceKey) ?? undefined,
         delivery_mode: String(options.deliveryMode ?? "invalidation").trim().toLowerCase() || "invalidation",
         headers: options.headers ?? {},
-        timeout_seconds: normalizeInt(options.timeoutSeconds ?? 5, 1, 60)
+        timeout_seconds: normalizeInt(options.timeoutSeconds ?? 5, 1, 60),
+        retry_max_attempts: normalizeInt(options.retryMaxAttempts ?? 3, 1, 10),
+        retry_backoff_seconds: normalizeInt(options.retryBackoffSeconds ?? 300, 30, 86400)
       },
       idempotencyKey: options.idempotencyKey ?? makeUuid()
     });
@@ -1670,6 +1674,26 @@ export class SynapseClient {
         idempotencyKey: options.idempotencyKey ?? makeUuid()
       }
     );
+  }
+
+  async processDueAgentSharedMemoryFanoutRetries(options: {
+    updatedBy?: string;
+    dryRun?: boolean;
+    limit?: number;
+    spaceKey?: string;
+    idempotencyKey?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-deliveries/process-due-retries", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        updated_by: asOptionalString(options.updatedBy) ?? undefined,
+        dry_run: Boolean(options.dryRun ?? true),
+        limit: normalizeInt(options.limit ?? 20, 1, 100),
+        space_key: asOptionalString(options.spaceKey) ?? undefined
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
   }
 
   async getAdoptionPipelineVisibility(options: {

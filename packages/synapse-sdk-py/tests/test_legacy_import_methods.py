@@ -794,6 +794,8 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("delivery_mode"), "impact")
         self.assertEqual(payload.get("headers"), {"Authorization": "Bearer test"})
         self.assertEqual(payload.get("timeout_seconds"), 9)
+        self.assertEqual(payload.get("retry_max_attempts"), 3)
+        self.assertEqual(payload.get("retry_backoff_seconds"), 300)
 
     def test_list_agent_shared_memory_fanout_hooks_scopes_project(self) -> None:
         self.client.list_agent_shared_memory_fanout_hooks(
@@ -879,6 +881,23 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("project_id"), "omega_demo")
         self.assertEqual(payload.get("updated_by"), "ops_admin")
         self.assertTrue(payload.get("dry_run"))
+
+    def test_process_due_agent_shared_memory_fanout_retries_posts_expected_payload(self) -> None:
+        self.client.process_due_agent_shared_memory_fanout_retries(
+            updated_by="ops_admin",
+            dry_run=False,
+            limit=14,
+            space_key="logistics",
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-deliveries/process-due-retries")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("updated_by"), "ops_admin")
+        self.assertFalse(payload.get("dry_run"))
+        self.assertEqual(payload.get("limit"), 14)
+        self.assertEqual(payload.get("space_key"), "logistics")
 
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
