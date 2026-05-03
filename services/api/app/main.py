@@ -11941,6 +11941,78 @@ def _company_knowledge_candidate_title(*, target_page_slug: str | None, target_p
     return " ".join(word.capitalize() for word in words) or "Company Knowledge"
 
 
+def _load_wiki_page_markdown(cur: Any, *, page_id: UUID, version: int) -> str:
+    cur.execute(
+        """
+        SELECT markdown
+        FROM wiki_page_versions
+        WHERE page_id = %s
+          AND version = %s
+        LIMIT 1
+        """,
+        (page_id, int(version)),
+    )
+    row = cur.fetchone()
+    return str(row[0] or "") if row is not None else ""
+
+
+def _company_knowledge_section_markers(block_id: str) -> tuple[str, str]:
+    normalized = str(block_id or "").strip() or "company-knowledge-candidate"
+    return (
+        f"<!-- synapse:company-knowledge-start {normalized} -->",
+        f"<!-- synapse:company-knowledge-end {normalized} -->",
+    )
+
+
+def _strip_leading_h1(markdown: str) -> str:
+    lines = str(markdown or "").splitlines()
+    while lines and not str(lines[0]).strip():
+        lines = lines[1:]
+    if lines and str(lines[0]).lstrip().startswith("# "):
+        lines = lines[1:]
+    while lines and not str(lines[0]).strip():
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _render_company_knowledge_candidate_section(candidate: dict[str, Any]) -> str:
+    start_marker, end_marker = _company_knowledge_section_markers(str(candidate.get("block_id") or ""))
+    title = str(candidate.get("human_title") or "").strip() or _company_knowledge_candidate_title(
+        target_page_slug=str(candidate.get("target_page_slug") or ""),
+        target_page_type=str(candidate.get("target_page_type") or ""),
+        block_type=str(candidate.get("block_type") or ""),
+    )
+    page_markdown = str(candidate.get("page_markdown") or "").strip() or _build_company_knowledge_candidate_markdown(candidate)
+    body = _strip_leading_h1(page_markdown)
+    if not body:
+        body = "## Summary\n- Pending company knowledge summary.\n"
+    section_lines = [
+        start_marker,
+        f"## {title}",
+        "",
+        body,
+        end_marker,
+    ]
+    return "\n".join(section_lines).strip() + "\n"
+
+
+def _merge_company_knowledge_candidate_into_markdown(existing_markdown: str, candidate: dict[str, Any]) -> str:
+    section_markdown = _render_company_knowledge_candidate_section(candidate)
+    current = str(existing_markdown or "").strip()
+    if not current:
+        return str(candidate.get("page_markdown") or "").strip() or _build_company_knowledge_candidate_markdown(candidate)
+    start_marker, end_marker = _company_knowledge_section_markers(str(candidate.get("block_id") or ""))
+    pattern = re.compile(
+        rf"{re.escape(start_marker)}.*?{re.escape(end_marker)}\s*",
+        re.DOTALL,
+    )
+    if pattern.search(current):
+        merged = pattern.sub(section_markdown, current)
+        return merged.strip() + "\n"
+    spacer = "\n\n" if not current.endswith("\n") else "\n"
+    return f"{current}{spacer}{section_markdown}".strip() + "\n"
+
+
 def _build_company_knowledge_candidate_markdown(candidate: dict[str, Any]) -> str:
     prebuilt_markdown = str(candidate.get("page_markdown") or "").strip()
     if prebuilt_markdown:
@@ -12325,20 +12397,46 @@ def _promote_company_knowledge_candidate(
             )
         canonical_page_slug = None
         if promote_to_wiki and candidate.get("target_page_slug") and candidate.get("target_page_type"):
+            existing_page = _resolve_wiki_page_row_by_slug_or_alias(
+                cur,
+                project_id=normalized_project,
+                slug_or_alias=str(candidate.get("target_page_slug") or ""),
+                for_update=True,
+            )
             wiki_title = str(candidate.get("human_title") or "").strip() or _company_knowledge_candidate_title(
                 target_page_slug=str(candidate.get("target_page_slug") or ""),
                 target_page_type=str(candidate.get("target_page_type") or ""),
                 block_type=str(candidate.get("block_type") or ""),
             )
+            page_type = str(candidate.get("target_page_type") or "operations")
+            entity_key = str(candidate.get("block_id") or "")
+            merged_markdown = _build_company_knowledge_candidate_markdown({**candidate, "knowledge_state": normalized_state})
+            if existing_page is not None:
+                page_id = existing_page[0]
+                existing_title = str(existing_page[1] or "").strip()
+                existing_slug = str(existing_page[2] or "").strip()
+                existing_entity_key = str(existing_page[3] or "").strip()
+                existing_page_type = str(existing_page[4] or "").strip()
+                existing_version = int(existing_page[6] or 0)
+                existing_markdown = _load_wiki_page_markdown(cur, page_id=page_id, version=existing_version)
+                merged_markdown = _merge_company_knowledge_candidate_into_markdown(existing_markdown, {**candidate, "knowledge_state": normalized_state})
+                if existing_title:
+                    wiki_title = existing_title
+                if existing_page_type:
+                    page_type = existing_page_type
+                if existing_entity_key:
+                    entity_key = existing_entity_key
+                if existing_slug:
+                    candidate["target_page_slug"] = existing_slug
             wiki_page_result = _upsert_wiki_page_system(
                 cur,
                 project_id=normalized_project,
                 actor=normalized_actor,
                 slug=str(candidate.get("target_page_slug") or ""),
                 title=wiki_title,
-                page_type=str(candidate.get("target_page_type") or "operations"),
-                entity_key=str(candidate.get("block_id") or ""),
-                markdown=_build_company_knowledge_candidate_markdown({**candidate, "knowledge_state": normalized_state}),
+                page_type=page_type,
+                entity_key=entity_key,
+                markdown=merged_markdown,
                 status=normalized_wiki_status,
                 change_summary=f"Company knowledge promotion by {normalized_actor}",
             )

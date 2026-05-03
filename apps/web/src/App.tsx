@@ -10879,6 +10879,10 @@ export default function App() {
                                     Persisted business-facing knowledge blocks for {observabilitySpaceKey}. This is the bridge from runtime memory
                                     into real org-wiki pages.
                                   </Text>
+                                  <Text size="xs" c="dimmed">
+                                    Promotions update managed canon sections by candidate block, so target wiki pages can accumulate stable knowledge
+                                    without full-page overwrite.
+                                  </Text>
                                 </Stack>
                                 <Group gap={6} wrap="wrap">
                                   <Button
@@ -11006,6 +11010,11 @@ export default function App() {
                                                 <Text size="xs" c="dimmed" style={{ whiteSpace: "pre-line" }}>
                                                   Draft preview: {candidate.page_markdown_preview.slice(0, 220)}
                                                   {candidate.page_markdown_preview.length > 220 ? "..." : ""}
+                                                </Text>
+                                              ) : null}
+                                              {candidate.canonical_page_slug ? (
+                                                <Text size="xs" c="dimmed">
+                                                  Canon page: {candidate.canonical_page_slug}
                                                 </Text>
                                               ) : null}
                                               <Group gap={6} wrap="wrap">

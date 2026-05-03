@@ -193,6 +193,7 @@ Current progress:
 
 - candidate canon blocks now emit humanized titles and summaries instead of only compiler-native labels
 - persisted candidates carry page-ready wiki draft markdown so promotion can write business-readable canon pages, not just technical placeholders
+- promoted candidates now land as managed sections inside target canon pages, so repeated promotions enrich canonical pages instead of replacing them wholesale
 
 ## Phase 5: Knowledge Quality Lifecycle
 
