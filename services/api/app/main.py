@@ -32523,7 +32523,25 @@ def _build_data_sources_catalog_pages(
     )
     source_rows = cur.fetchall() or []
     usage_map = _collect_agent_source_usage(cur, project_id=project_id)
-    runtime_matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(10, min(200, int(max_sources) * 6))) if _agent_directory_table_exists_from_cursor(cur) else []
+    runtime_matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        runtime_matrix = _build_agent_capability_matrix(
+            cur,
+            project_id=project_id,
+            max_agents=max(10, min(200, int(max_sources) * 6)),
+        ) or []
+        if not runtime_matrix:
+            runtime_matrix = _build_agent_directory_profile_fallback_matrix(
+                cur,
+                project_id=project_id,
+                max_agents=max(10, min(200, int(max_sources) * 6)),
+            ) or []
+    if not runtime_matrix:
+        runtime_matrix = _build_runtime_agent_capability_matrix(
+            cur,
+            project_id=project_id,
+            max_agents=max(10, min(200, int(max_sources) * 6)),
+        ) or []
     source_bundles = _load_evidence_bundles_for_bootstrap(
         cur,
         project_id=project_id,
