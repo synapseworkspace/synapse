@@ -1276,6 +1276,63 @@ type AdoptionBusinessProfilesPayload = {
   };
 };
 
+type AdoptionDiagnosticsSummary = {
+  rows_total?: number;
+  rows_with_process_or_source?: number;
+  rows_missing_process_or_source?: number;
+  rows_with_agents?: number;
+  rows_with_capability_or_process?: number;
+  rows_with_tools?: number;
+  rows_with_sources?: number;
+  rows_with_running_instances?: number;
+  rows_with_owners?: number;
+  rows_with_artifacts?: number;
+  rows_with_human_loop?: number;
+  explicit_binding_rows?: number;
+  inferred_usage_rows?: number;
+  fallback_only_rows?: number;
+  process_equals_capability_rows?: number;
+  overlong_source_rows?: number;
+  overlong_impact_rows?: number;
+  contract_backed_rows?: number;
+  field_origin_counts?: Record<string, number>;
+};
+
+type AdoptionSynthesisGraphPayload = {
+  project_id: string;
+  space_key: string;
+  summary?: {
+    nodes_total?: number;
+    edges_total?: number;
+    node_kind_counts?: Record<string, number>;
+    edge_kind_counts?: Record<string, number>;
+    edge_origin_counts?: Record<string, number>;
+    tool_rows_total?: number;
+    source_rows_total?: number;
+    agent_rows_total?: number;
+    process_rows_total?: number;
+  };
+  nodes?: Array<{
+    kind?: string;
+    ref?: string;
+    label?: string;
+    origin?: string;
+    confidence?: number;
+  }>;
+  edges?: Array<{
+    from_kind?: string;
+    from_ref?: string;
+    to_kind?: string;
+    to_ref?: string;
+    origin?: string;
+    confidence?: number;
+  }>;
+  tooling_summary?: AdoptionDiagnosticsSummary;
+  data_sources_summary?: AdoptionDiagnosticsSummary;
+  agent_capability_summary?: AdoptionDiagnosticsSummary;
+  process_playbooks_summary?: AdoptionDiagnosticsSummary;
+};
+
 type LegacyImportSource = {
   id: string;
   project_id: string;
@@ -2352,6 +2409,8 @@ export default function App() {
   const [applyingPolicyQuickLoop, setApplyingPolicyQuickLoop] = useState(false);
   const [enterpriseReadiness, setEnterpriseReadiness] = useState<EnterpriseReadinessPayload | null>(null);
   const [loadingEnterpriseReadiness, setLoadingEnterpriseReadiness] = useState(false);
+  const [adoptionSynthesisGraph, setAdoptionSynthesisGraph] = useState<AdoptionSynthesisGraphPayload | null>(null);
+  const [loadingAdoptionSynthesisGraph, setLoadingAdoptionSynthesisGraph] = useState(false);
   const [runningSyncPreset, setRunningSyncPreset] = useState(false);
   const [adoptionSyncPresetResult, setAdoptionSyncPresetResult] = useState<AdoptionSyncPresetPayload | null>(null);
   const [runningAgentWikiBootstrap, setRunningAgentWikiBootstrap] = useState(false);
@@ -2937,6 +2996,136 @@ export default function App() {
     () => String(selectedAdoptionBusinessProfile?.default_space_key || "operations").trim().toLowerCase() || "operations",
     [selectedAdoptionBusinessProfile],
   );
+  const observabilitySpaceKey = useMemo(() => {
+    if (selectedSpaceKey) return selectedSpaceKey;
+    const visibleSpaces = spaceNodes
+      .map((item) => String(item.key || "").trim().toLowerCase())
+      .filter((item) => item && item !== "agents");
+    if (visibleSpaces.includes(effectiveBusinessSpaceKey)) {
+      return effectiveBusinessSpaceKey;
+    }
+    if (visibleSpaces.includes("operations")) {
+      return "operations";
+    }
+    return visibleSpaces[0] || effectiveBusinessSpaceKey || "operations";
+  }, [effectiveBusinessSpaceKey, selectedSpaceKey, spaceNodes]);
+  const synthesisGraphCards = useMemo(() => {
+    const tooling = adoptionSynthesisGraph?.tooling_summary || {};
+    const sources = adoptionSynthesisGraph?.data_sources_summary || {};
+    const agents = adoptionSynthesisGraph?.agent_capability_summary || {};
+    const playbooks = adoptionSynthesisGraph?.process_playbooks_summary || {};
+    const topOrigin = (counts?: Record<string, number>) => {
+      const entries = Object.entries(counts || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+      if (entries.length === 0) return "n/a";
+      return `${entries[0][0]} ${entries[0][1]}`;
+    };
+    const ratioColor = (
+      numerator: number,
+      denominator: number,
+      { warnBelow = 0.66, dangerBelow = 0.4 }: { warnBelow?: number; dangerBelow?: number } = {},
+    ) => {
+      if (denominator <= 0) return "gray";
+      const ratio = numerator / denominator;
+      if (ratio <= dangerBelow) return "red";
+      if (ratio < warnBelow) return "orange";
+      return "teal";
+    };
+    return [
+      {
+        key: "tooling",
+        title: "Tooling",
+        color: ratioColor(
+          Number(tooling.rows_with_process_or_source || 0),
+          Number(tooling.rows_total || 0),
+          { warnBelow: 0.8, dangerBelow: 0.55 },
+        ),
+        stat: `${Number(tooling.rows_with_process_or_source || 0)}/${Number(tooling.rows_total || 0)}`,
+        detail: "rows with process/source",
+        meta: [
+          `${Number(tooling.rows_missing_process_or_source || 0)} missing`,
+          `${Number(tooling.fallback_only_rows || 0)} fallback-only`,
+          `top origin ${topOrigin(tooling.field_origin_counts)}`,
+        ],
+      },
+      {
+        key: "sources",
+        title: "Sources",
+        color: ratioColor(
+          Number(sources.rows_with_capability_or_process || 0),
+          Number(sources.rows_total || 0),
+          { warnBelow: 0.75, dangerBelow: 0.45 },
+        ),
+        stat: `${Number(sources.rows_with_capability_or_process || 0)}/${Number(sources.rows_total || 0)}`,
+        detail: "rows with capability/process impact",
+        meta: [
+          `${Number(sources.explicit_binding_rows || 0)} explicit bindings`,
+          `${Number(sources.inferred_usage_rows || 0)} inferred`,
+          `top origin ${topOrigin(sources.field_origin_counts)}`,
+        ],
+      },
+      {
+        key: "agents",
+        title: "Agents",
+        color: ratioColor(Number(agents.contract_backed_rows || 0), Number(agents.rows_total || 0), {
+          warnBelow: 0.8,
+          dangerBelow: 0.5,
+        }),
+        stat: `${Number(agents.contract_backed_rows || 0)}/${Number(agents.rows_total || 0)}`,
+        detail: "contract-backed rows",
+        meta: [
+          `${Number(agents.rows_with_tools || 0)} with tools`,
+          `${Number(agents.rows_with_sources || 0)} with sources`,
+          `${Number(agents.rows_with_running_instances || 0)} active runtime`,
+        ],
+      },
+      {
+        key: "playbooks",
+        title: "Playbooks",
+        color: ratioColor(Number(playbooks.rows_with_tools || 0), Number(playbooks.rows_total || 0), {
+          warnBelow: 0.6,
+          dangerBelow: 0.35,
+        }),
+        stat: `${Number(playbooks.rows_with_tools || 0)}/${Number(playbooks.rows_total || 0)}`,
+        detail: "rows with tools",
+        meta: [
+          `${Number(playbooks.rows_with_owners || 0)} with owners`,
+          `${Number(playbooks.rows_with_artifacts || 0)} with artifacts`,
+          `${Number(playbooks.rows_with_human_loop || 0)} with human loop`,
+        ],
+      },
+    ];
+  }, [adoptionSynthesisGraph]);
+  const synthesisGraphConcerns = useMemo(() => {
+    const tooling = adoptionSynthesisGraph?.tooling_summary || {};
+    const sources = adoptionSynthesisGraph?.data_sources_summary || {};
+    const agents = adoptionSynthesisGraph?.agent_capability_summary || {};
+    const playbooks = adoptionSynthesisGraph?.process_playbooks_summary || {};
+    const items: string[] = [];
+    if (Number(tooling.rows_missing_process_or_source || 0) > 0) {
+      items.push(`${Number(tooling.rows_missing_process_or_source || 0)} tooling row(s) still miss process/source context.`);
+    }
+    if (Number(tooling.process_equals_capability_rows || 0) > 0) {
+      items.push(`${Number(tooling.process_equals_capability_rows || 0)} tooling row(s) still use capability-like process labels.`);
+    }
+    if (Number(sources.overlong_impact_rows || 0) > 0) {
+      items.push(`${Number(sources.overlong_impact_rows || 0)} source row(s) still carry overlong impact labels.`);
+    }
+    if (
+      Number(agents.rows_total || 0) > 0 &&
+      Number(agents.rows_with_sources || 0) < Number(agents.rows_total || 0)
+    ) {
+      items.push(
+        `${Number(agents.rows_total || 0) - Number(agents.rows_with_sources || 0)} agent row(s) still lack source coverage.`,
+      );
+    }
+    if (
+      Number(playbooks.rows_total || 0) > 0 &&
+      Number(playbooks.rows_with_tools || 0) < Math.max(1, Math.ceil(Number(playbooks.rows_total || 0) * 0.5))
+    ) {
+      items.push("Playbook tooling coverage is still thin for part of the catalog.");
+    }
+    return items.slice(0, 3);
+  }, [adoptionSynthesisGraph]);
 
   const scopedDrafts = useMemo(
     () =>
@@ -4493,6 +4682,31 @@ export default function App() {
     }
   }, [apiUrl, projectId]);
 
+  const loadAdoptionSynthesisGraph = useCallback(async () => {
+    const project = projectId.trim();
+    if (!project) {
+      setAdoptionSynthesisGraph(null);
+      return;
+    }
+    setLoadingAdoptionSynthesisGraph(true);
+    try {
+      const query = new URLSearchParams({
+        project_id: project,
+        space_key: observabilitySpaceKey,
+        limit: "120",
+      });
+      const payload = await apiFetch<AdoptionSynthesisGraphPayload>(
+        apiUrl,
+        `/v1/adoption/synthesis-graph/diagnostics?${query.toString()}`,
+      );
+      setAdoptionSynthesisGraph(payload);
+    } catch {
+      setAdoptionSynthesisGraph(null);
+    } finally {
+      setLoadingAdoptionSynthesisGraph(false);
+    }
+  }, [apiUrl, observabilitySpaceKey, projectId]);
+
   const applyPolicyQuickLoopPreset = useCallback(
     async (dryRun: boolean) => {
       const project = projectId.trim();
@@ -5315,6 +5529,7 @@ export default function App() {
       setStarterBootstrapPreview(null);
       setPolicyQuickLoop(null);
       setEnterpriseReadiness(null);
+      setAdoptionSynthesisGraph(null);
       return;
     }
     void loadLegacyImportProfiles();
@@ -5342,6 +5557,17 @@ export default function App() {
     loadPolicyQuickLoop,
     projectId,
   ]);
+
+  useEffect(() => {
+    if (!projectId.trim()) {
+      setAdoptionSynthesisGraph(null);
+      return;
+    }
+    if (coreWorkspaceRoute !== "operations") {
+      return;
+    }
+    void loadAdoptionSynthesisGraph();
+  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, projectId]);
 
   useEffect(() => {
     void loadSelfhostConsistency();
@@ -9644,6 +9870,97 @@ export default function App() {
                               ) : (
                                 <Text size="xs" c="dimmed">
                                   Enterprise readiness snapshot is unavailable for current project yet.
+                                </Text>
+                              )}
+                            </Stack>
+                          </Paper>
+                          <Paper withBorder p="xs" radius="md" id="operations-synthesis-observability-panel">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="wrap">
+                                <Stack gap={0}>
+                                  <Text size="sm" fw={700}>
+                                    Synthesis observability
+                                  </Text>
+                                  <Text size="xs" c="dimmed">
+                                    Typed relation graph for {observabilitySpaceKey} so we can see whether core pages are driven by explicit
+                                    contracts or fallback.
+                                  </Text>
+                                </Stack>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="cyan"
+                                  loading={loadingAdoptionSynthesisGraph}
+                                  onClick={() => void loadAdoptionSynthesisGraph()}
+                                >
+                                  Refresh graph
+                                </Button>
+                              </Group>
+                              {adoptionSynthesisGraph ? (
+                                <>
+                                  <Group gap={6} wrap="wrap">
+                                    <Badge size="xs" variant="light" color="gray">
+                                      nodes {Number(adoptionSynthesisGraph.summary?.nodes_total || 0)}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      edges {Number(adoptionSynthesisGraph.summary?.edges_total || 0)}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      tools {Number(adoptionSynthesisGraph.summary?.tool_rows_total || 0)}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      sources {Number(adoptionSynthesisGraph.summary?.source_rows_total || 0)}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      agents {Number(adoptionSynthesisGraph.summary?.agent_rows_total || 0)}
+                                    </Badge>
+                                    <Badge size="xs" variant="light" color="gray">
+                                      playbooks {Number(adoptionSynthesisGraph.summary?.process_rows_total || 0)}
+                                    </Badge>
+                                  </Group>
+                                  <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing={6}>
+                                    {synthesisGraphCards.map((card) => (
+                                      <Paper key={`synth-card-${card.key}`} withBorder p="xs" radius="md">
+                                        <Stack gap={4}>
+                                          <Group justify="space-between" align="center" wrap="nowrap">
+                                            <Text size="xs" fw={700}>
+                                              {card.title}
+                                            </Text>
+                                            <Badge size="xs" variant="light" color={card.color}>
+                                              {card.stat}
+                                            </Badge>
+                                          </Group>
+                                          <Text size="xs" c="dimmed">
+                                            {card.detail}
+                                          </Text>
+                                          <Text size="xs" c="dimmed">
+                                            {card.meta.join(" • ")}
+                                          </Text>
+                                        </Stack>
+                                      </Paper>
+                                    ))}
+                                  </SimpleGrid>
+                                  {synthesisGraphConcerns.length > 0 ? (
+                                    <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
+                                      <Stack gap={2}>
+                                        {synthesisGraphConcerns.map((item, index) => (
+                                          <Text key={`synth-concern-${index}`} size="xs">
+                                            {item}
+                                          </Text>
+                                        ))}
+                                      </Stack>
+                                    </Alert>
+                                  ) : (
+                                    <Text size="xs" c="dimmed">
+                                      Graph health looks stable: current rows are mostly contract-backed and the remaining gaps look like
+                                      polish, not blind fallback.
+                                    </Text>
+                                  )}
+                                </>
+                              ) : (
+                                <Text size="xs" c="dimmed">
+                                  Synthesis graph snapshot is unavailable yet. Run runtime-surface sync or refresh once core adoption
+                                  diagnostics are populated.
                                 </Text>
                               )}
                             </Stack>
