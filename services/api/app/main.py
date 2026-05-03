@@ -1590,6 +1590,13 @@ def _best_contract_matches(
             str(item[1].get(alias_fields[0]) or item[1].get("name") or item[1].get("tool") or "").lower(),
         )
     )
+    if ranked:
+        top_score = int(ranked[0][0] or 0)
+        second_score = int(ranked[1][0] or 0) if len(ranked) > 1 else 0
+        if top_score >= 90 and second_score <= top_score - 10:
+            return [ranked[0][1]]
+        if top_score >= 82 and second_score <= top_score - 18:
+            return [ranked[0][1]]
     return [contract for _, contract in ranked[:max_items]]
 
 
@@ -1761,6 +1768,17 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
         tool_index.items(),
         key=lambda item: (-len(item[1].get("agents") or []), str(item[1].get("tool") or "").lower()),
     )[:200]:
+        provenance = bucket["provenance"]
+        process_source_origin = "none"
+        if bucket["processes"] or bucket["sources"]:
+            if provenance["tool_contracts"]:
+                process_source_origin = "tool_contract"
+            elif provenance["source_bindings"]:
+                process_source_origin = "source_binding"
+            elif provenance["capability_contracts"]:
+                process_source_origin = "capability_contract"
+            elif provenance["fallback_used"]:
+                process_source_origin = "fallback"
         rows.append(
             {
                 "tool": str(bucket.get("tool") or ""),
@@ -1773,11 +1791,12 @@ def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> 
                 "guardrails": sorted(bucket["guardrails"])[:3],
                 "structured": bool(bucket.get("structured")),
                 "provenance": {
-                    "tool_contracts": sorted(bucket["provenance"]["tool_contracts"])[:4],
-                    "capability_contracts": sorted(bucket["provenance"]["capability_contracts"])[:4],
-                    "source_bindings": sorted(bucket["provenance"]["source_bindings"])[:4],
-                    "fallback_fields": sorted(bucket["provenance"]["fallback_fields"])[:4],
-                    "fallback_used": bool(bucket["provenance"]["fallback_used"]),
+                    "tool_contracts": sorted(provenance["tool_contracts"])[:4],
+                    "capability_contracts": sorted(provenance["capability_contracts"])[:4],
+                    "source_bindings": sorted(provenance["source_bindings"])[:4],
+                    "fallback_fields": sorted(provenance["fallback_fields"])[:4],
+                    "fallback_used": bool(provenance["fallback_used"]),
+                    "process_source_origin": process_source_origin,
                 },
             }
         )
@@ -3778,6 +3797,12 @@ def _build_agent_profile_from_runtime_surface(
         fallback_tools=[str(item.get("name") or "").strip() for item in tool_contracts if isinstance(item, dict)],
         limit=80,
     )
+    source_binding_contracts = _refine_source_binding_contracts(
+        source_binding_contracts,
+        capability_contracts=capability_contracts,
+        tool_contracts=tool_contracts,
+        scheduled_task_contracts=[task for task in surface.scheduled_tasks or [] if isinstance(task, dict)],
+    )
     tools = _normalize_agent_directory_items(
         [
             *[str(item.get("name") or "").strip() for item in tool_contracts if isinstance(item, dict)],
@@ -4791,9 +4816,9 @@ def _normalize_source_binding_contracts(
                 {
                     "source": text[:180],
                     "agent_id": str(agent_id or "").strip()[:180],
-                    "capabilities": list(fallback_capabilities or [])[:6],
-                    "processes": list(fallback_processes or [])[:6],
-                    "tools": list(fallback_tools or [])[:6],
+                    "capabilities": [],
+                    "processes": [],
+                    "tools": [],
                     "usage": "",
                     "owner": "",
                 }
@@ -4814,6 +4839,86 @@ def _normalize_source_binding_contracts(
         if len(deduped) >= max(1, int(limit)):
             break
     return deduped
+
+
+def _refine_source_binding_contracts(
+    contracts: list[dict[str, Any]] | None,
+    *,
+    capability_contracts: list[dict[str, Any]] | None,
+    tool_contracts: list[dict[str, Any]] | None,
+    scheduled_task_contracts: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    refined: list[dict[str, Any]] = []
+    for contract in contracts or []:
+        if not isinstance(contract, dict):
+            continue
+        source_name = str(contract.get("source") or "").strip()
+        if not source_name:
+            continue
+        normalized_source = _normalize_statement_text(source_name)
+        capabilities = [str(v).strip() for v in (contract.get("capabilities") or []) if str(v).strip()]
+        processes = [str(v).strip() for v in (contract.get("processes") or []) if str(v).strip()]
+        tools = [str(v).strip() for v in (contract.get("tools") or []) if str(v).strip()]
+        usage = str(contract.get("usage") or "").strip()
+        for capability_contract in capability_contracts or []:
+            if not isinstance(capability_contract, dict):
+                continue
+            capability_sources = {
+                _normalize_statement_text(str(value or ""))
+                for value in (capability_contract.get("sources") or [])
+                if str(value or "").strip()
+            }
+            if normalized_source not in capability_sources:
+                continue
+            capability_name = str(capability_contract.get("name") or "").strip()
+            if capability_name:
+                capabilities.append(capability_name)
+            processes.extend(str(v).strip() for v in (capability_contract.get("processes") or []) if str(v).strip())
+            tools.extend(str(v).strip() for v in (capability_contract.get("tools") or []) if str(v).strip())
+        for tool_contract in tool_contracts or []:
+            if not isinstance(tool_contract, dict):
+                continue
+            tool_sources = {
+                _normalize_statement_text(str(value or ""))
+                for value in (tool_contract.get("sources") or [])
+                if str(value or "").strip()
+            }
+            if normalized_source not in tool_sources:
+                continue
+            tool_name = str(tool_contract.get("tool") or tool_contract.get("name") or "").strip()
+            if tool_name:
+                tools.append(tool_name)
+            capabilities.extend(str(v).strip() for v in (tool_contract.get("capabilities") or []) if str(v).strip())
+            if not usage:
+                usage = str(tool_contract.get("purpose") or "").strip()
+        for task_contract in scheduled_task_contracts or []:
+            if not isinstance(task_contract, dict):
+                continue
+            task_sources = {
+                _normalize_statement_text(str(value or ""))
+                for value in (task_contract.get("source_hints") or [])
+                if str(value or "").strip()
+            }
+            if normalized_source not in task_sources:
+                continue
+            task_code = str(task_contract.get("task_code") or "").strip()
+            builtin_task = str(task_contract.get("builtin_task") or "").strip()
+            if task_code:
+                processes.append(task_code)
+            elif builtin_task:
+                processes.append(builtin_task)
+            if builtin_task:
+                tools.append(builtin_task)
+        refined.append(
+            {
+                **contract,
+                "capabilities": _normalize_agent_directory_items(capabilities, limit=6),
+                "processes": _normalize_agent_directory_items(processes, limit=6),
+                "tools": _normalize_agent_directory_items(tools, limit=6),
+                "usage": usage[:220],
+            }
+        )
+    return refined
 
 
 def _build_runtime_surface_capability_contracts(surface: AgentRuntimeSurfaceAgentIn) -> list[dict[str, Any]]:

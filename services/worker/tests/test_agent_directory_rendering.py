@@ -46,6 +46,7 @@ try:
         _evaluate_agent_capability_bootstrap_contract,
         _is_daily_summary_like_draft_row,
         _normalize_agent_directory_items,
+        _refine_source_binding_contracts,
         _normalize_agent_publish_policy,
         _render_agent_capability_matrix_markdown,
         _render_agent_daily_reports_page,
@@ -100,6 +101,7 @@ except Exception:  # pragma: no cover
     _evaluate_agent_capability_bootstrap_contract = None
     _is_daily_summary_like_draft_row = None
     _normalize_agent_directory_items = None
+    _refine_source_binding_contracts = None
     _normalize_agent_publish_policy = None
     _render_agent_capability_matrix_markdown = None
     _render_agent_daily_reports_page = None
@@ -151,6 +153,7 @@ except Exception:  # pragma: no cover
     or _draft_matches_bulk_filter is None
     or _evaluate_agent_capability_bootstrap_contract is None
     or _is_daily_summary_like_draft_row is None
+    or _refine_source_binding_contracts is None
     or _render_agent_capability_matrix_markdown is None
     or _normalize_agent_publish_policy is None
     or _render_agent_overview_markdown is None
@@ -2204,9 +2207,48 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("erp_routes_slice", erp_row["provenance"]["tool_contracts"])
         self.assertIn("driver_economics", econ_row["provenance"]["capability_contracts"])
         self.assertIn("driver_economy_daily_latest", econ_row["provenance"]["source_bindings"])
+        self.assertEqual(econ_row["provenance"]["process_source_origin"], "source_binding")
         summary = _summarize_tooling_map_rows(rows)
         self.assertEqual(summary["rows_total"], 2)
         self.assertGreaterEqual(summary["rows_with_process_or_source"], 2)
+
+    def test_refine_source_binding_contracts_uses_explicit_contract_context(self) -> None:
+        assert _refine_source_binding_contracts is not None
+
+        refined = _refine_source_binding_contracts(
+            [
+                {
+                    "source": "driver_economy_daily_latest",
+                    "agent_id": "logistics-assistant",
+                    "capabilities": [],
+                    "processes": [],
+                    "tools": [],
+                    "usage": "",
+                    "owner": "",
+                }
+            ],
+            capability_contracts=[
+                {
+                    "name": "driver_economics",
+                    "sources": ["driver_economy_daily_latest"],
+                    "tools": ["driver_economics_for_day"],
+                    "processes": ["standing_order.logistics.driver_economy_sheet"],
+                }
+            ],
+            tool_contracts=[
+                {
+                    "tool": "driver_economics_for_day",
+                    "purpose": "Считает экономику по водителям за день.",
+                    "sources": ["driver_economy_daily_latest"],
+                    "capabilities": ["driver_economics"],
+                }
+            ],
+            scheduled_task_contracts=[],
+        )
+        self.assertEqual(refined[0]["source"], "driver_economy_daily_latest")
+        self.assertIn("driver_economics", refined[0]["capabilities"])
+        self.assertIn("driver_economics_for_day", refined[0]["tools"])
+        self.assertIn("standing_order.logistics.driver_economy_sheet", refined[0]["processes"])
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
