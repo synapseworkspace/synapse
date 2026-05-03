@@ -2704,7 +2704,7 @@ def _build_process_playbook_diagnostics_rows(
     def _human_loop_guidance(category: str, escalation: str, *, confidence: float, exceptions: list[str]) -> str:
         normalized = str(category or "").strip().lower()
         if normalized in {"policy", "access"}:
-            return "Human approval required before publishing or applying this rule broadly."
+            return "Route broad publish or rollout through human review because this rule changes policy/access expectations."
         if confidence < 0.7:
             return "Human confirmation recommended because evidence confidence is still low."
         if exceptions:
@@ -41623,7 +41623,7 @@ def _derive_escalation_rule(text: str, confidence: float, category: str) -> str:
     if any(token in normalized for token in ("critical", "urgent", "incident", "outage")):
         return "Immediate escalation to on-call with incident severity."
     if "policy" in category or "compliance" in category:
-        return "Require human review before publish."
+        return "Escalate to human review before broad publish if the change alters policy/compliance behavior."
     return "Escalate when SLA risk is detected or customer impact is explicit."
 
 

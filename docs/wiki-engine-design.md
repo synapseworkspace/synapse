@@ -174,7 +174,7 @@ Per category, choose one mode:
 2. `assisted_auto`: auto-apply only when confidence high and no conflict.
 3. `auto`: fully automatic (for low-risk telemetry-like facts).
 
-Default for operations/policies should be `manual_only`.
+Default for low/medium-risk operational knowledge should be `assisted_auto`, with `manual_only` reserved for broad-impact policy, security, finance, legal, or compliance-sensitive changes.
 
 Project-level Gatekeeper thresholds are runtime-configurable through Synapse API:
 1. `min_sources_for_golden`

@@ -987,6 +987,7 @@ Checklist:
 
 ## Recent Updates
 
+- 2026-05-03: Cleaned up the remaining autonomy-vs-approval wording in compiler/docs defaults: shared-memory and wiki-engine guidance now describe human review as a risk-based escalation path for broad/high-impact changes, not as the routine path for ordinary operational updates.
 - 2026-05-03: Narrowed the product defaults behind `safe mode` so it no longer reads as “everything goes manual”: adoption safe mode now keeps the global publish default at `conditional`, only forces truly high-risk categories (`policy`, `security`, `compliance`, `finance`, `legal`) into `human_required`, and leaves `process` / `incident` / `fact` flows in risk-tiered conditional mode.
 - 2026-05-03: Corrected the shared-memory product framing toward autonomous-first behavior: the Operations `Shared memory freshness` panel now treats manual queue/retry/lifecycle actions as hidden recovery tools instead of a primary operating workflow, and the roadmap/docs now explicitly state `auto by default, human on exception` so operators are positioned as correctors/arbiters rather than routine approval gates.
 - 2026-05-03: Added a lease layer on top of queued shared-memory fanout: pending deliveries now expose short-lived per-delivery leases, queue processing only picks unleased/expired work, health surfaces show in-flight leased deliveries, and the Operations shared-memory panel now distinguishes “due queue” from “currently leased for processing.”
