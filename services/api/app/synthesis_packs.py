@@ -730,6 +730,124 @@ def _humanize_signal_label(value: str) -> str:
     return text[:1].upper() + text[1:] if text else ""
 
 
+def _company_block_fallback_title(block_type: str, target_page_slug: str | None, target_page_type: str | None) -> str:
+    slug_leaf = str(target_page_slug or "").strip().split("/")[-1]
+    if slug_leaf:
+        return _humanize_signal_label(slug_leaf.replace("-", " "))
+    label = str(target_page_type or block_type or "company knowledge").replace("_", " ").replace("-", " ")
+    return _humanize_signal_label(label)
+
+
+def _company_block_why_it_matters(block_type: str, target_page_type: str | None) -> str:
+    normalized = str(block_type or target_page_type or "").strip().lower()
+    if normalized in {"entity_overview", "entity"}:
+        return "Operators and agents need a shared picture of the main business objects before they can trust downstream SOPs and reports."
+    if normalized in {"process_sop_candidate", "process"}:
+        return "A repeatable operating cycle should read like a human SOP, not like scattered scheduled-task metadata."
+    if normalized in {"source_of_truth_rule", "source_of_truth"}:
+        return "When systems disagree, the company needs one explicit trust rule instead of silent guesswork."
+    if normalized in {"known_exception", "working_heuristic"}:
+        return "A mature org wiki should preserve the practical shortcuts and recurring pitfalls that operators actually use."
+    if normalized in {"contradiction_watch"}:
+        return "Conflicts should be made explicit so people and agents know what still needs resolution before broad reuse."
+    return "This candidate looks important enough to mature into durable company knowledge."
+
+
+def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
+    title = str(block.get("human_title") or "").strip() or _company_block_fallback_title(
+        str(block.get("block_type") or ""),
+        str(block.get("target_page_slug") or ""),
+        str(block.get("target_page_type") or ""),
+    )
+    human_summary = str(block.get("human_summary") or block.get("summary") or "").strip() or "Pending company-facing summary."
+    evidence_basis = str(block.get("evidence_basis") or "").strip() or "Evidence basis pending."
+    why_it_matters = str(block.get("why_it_matters") or "").strip() or _company_block_why_it_matters(
+        str(block.get("block_type") or ""),
+        str(block.get("target_page_type") or ""),
+    )
+    knowledge_state = str(block.get("knowledge_state") or "candidate").strip().lower() or "candidate"
+    confidence = str(block.get("confidence") or "unknown").strip().lower() or "unknown"
+    promotion_path = str(block.get("promotion_path") or "").strip() or "Promotion path pending explicit owner review."
+    contradiction_topic = str(block.get("contradiction_topic") or "").strip()
+    resolution_rule = str(block.get("resolution_rule") or "").strip()
+    canonical_target = str(block.get("target_page_slug") or "").strip()
+    lines = [
+        f"# {title}",
+        "",
+        human_summary,
+        "",
+        "## Why This Matters",
+        f"- {why_it_matters}",
+        "",
+        "## Current Knowledge State",
+        f"- State: {knowledge_state}",
+        f"- Confidence: {confidence}",
+        f"- Candidate ID: `{str(block.get('block_id') or '').strip()}`",
+    ]
+    if canonical_target:
+        lines.append(f"- Intended canon page: `{canonical_target}`")
+    lines.extend(
+        [
+            "",
+            "## Current Working Rule",
+            f"- {human_summary}",
+            "",
+            "## Evidence We Are Using",
+            f"- {evidence_basis}",
+        ]
+    )
+    if contradiction_topic:
+        lines.extend(["", "## Conflict To Resolve", f"- Topic: {contradiction_topic}"])
+    if resolution_rule:
+        lines.extend(["", "## Preferred Resolution", f"- {resolution_rule}"])
+    lines.extend(["", "## Before Promotion To Canon", f"- {promotion_path}", ""])
+    return "\n".join(lines)
+
+
+def _build_company_candidate_humanization(block: dict[str, Any]) -> dict[str, Any]:
+    block_type = str(block.get("block_type") or "").strip().lower()
+    target_page_type = str(block.get("target_page_type") or "").strip().lower() or None
+    target_page_slug = str(block.get("target_page_slug") or "").strip() or None
+    summary = str(block.get("summary") or "").strip()
+    human_title = _company_block_fallback_title(block_type, target_page_slug, target_page_type)
+    human_summary = summary
+    if block_type == "entity_overview":
+        human_title = "Core business entities in the logistics operation"
+        human_summary = summary.replace("Current logistics memory centers on", "Right now the operation appears to revolve around")
+    elif block_type == "process_sop_candidate":
+        human_title = "Daily logistics operating cycle"
+        human_summary = summary.replace("The current", "The current team rhythm suggests that the operation")
+    elif block_type == "source_of_truth_rule":
+        human_title = "Which systems to trust for live logistics state"
+        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:")
+    elif block_type == "known_exception":
+        human_title = "Recurring logistics pitfalls and exception patterns"
+        human_summary = summary.replace("Recurring operational exceptions likely include", "Operators are repeatedly running into")
+    elif block_type == "working_heuristic":
+        human_title = "Working heuristics the team keeps reusing"
+        human_summary = summary.replace("Company memory is repeatedly surfacing heuristics around", "The team keeps leaning on heuristics around")
+    elif block_type == "contradiction_watch":
+        human_title = "Source-of-truth conflicts that still need resolution"
+    human_summary = human_summary.strip().rstrip(".")
+    if human_summary:
+        human_summary = f"{human_summary}."
+    why_it_matters = _company_block_why_it_matters(block_type, target_page_type)
+    page_markdown = _build_company_candidate_page_markdown(
+        {
+            **block,
+            "human_title": human_title,
+            "human_summary": human_summary,
+            "why_it_matters": why_it_matters,
+        }
+    )
+    return {
+        "human_title": human_title,
+        "human_summary": human_summary,
+        "why_it_matters": why_it_matters,
+        "page_markdown": page_markdown,
+    }
+
+
 class GenericOpsSynthesisPack:
     key = "generic_ops"
 
@@ -1852,6 +1970,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             knowledge_state_counts[state] = int(knowledge_state_counts.get(state, 0)) + 1
             if not str(block.get("block_id") or "").strip():
                 block["block_id"] = f"{normalized_space}:{str(block.get('block_type') or 'candidate').strip().lower()}"
+            block.update(_build_company_candidate_humanization(block))
             candidate_canon_blocks.append(block)
 
         top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
@@ -1954,6 +2073,11 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 if contradiction_state == "contradicted"
                 else "Current company knowledge appears exposed to stale or weakly grounded source views that need refresh or validation."
             )
+            resolution_rule = (
+                f"Prefer {', '.join(canonical_sources[:2])} for live state; use {', '.join(derived_sources[:2])} as secondary/operator context until the mismatch is resolved."
+                if contradiction_state == "contradicted" and canonical_sources and derived_sources
+                else "Refresh or validate the weaker source before promoting it into canonical company knowledge."
+            )
             _append_canon_block(
                 {
                     "block_type": "contradiction_watch",
@@ -1964,12 +2088,9 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "confidence": "medium" if contradiction_state == "contradicted" else "low",
                     "summary": contradiction_summary,
                     "evidence_basis": "Exception patterns mention stale/conflicting data and source-trust signals show mixed evidence posture.",
+                    "contradiction_topic": "source_of_truth_conflict",
+                    "resolution_rule": resolution_rule,
                 }
-            )
-            resolution_rule = (
-                f"Prefer {', '.join(canonical_sources[:2])} for live state; use {', '.join(derived_sources[:2])} as secondary/operator context until the mismatch is resolved."
-                if contradiction_state == "contradicted" and canonical_sources and derived_sources
-                else "Refresh or validate the weaker source before promoting it into canonical company knowledge."
             )
             contradiction_summaries.append(
                 {

@@ -189,6 +189,11 @@ Definition of done:
 - company pages read naturally to operators and managers
 - evidence/debug language stays available, but no longer leaks into canonical page titles and summaries by default
 
+Current progress:
+
+- candidate canon blocks now emit humanized titles and summaries instead of only compiler-native labels
+- persisted candidates carry page-ready wiki draft markdown so promotion can write business-readable canon pages, not just technical placeholders
+
 ## Phase 5: Knowledge Quality Lifecycle
 
 Status: `planned`

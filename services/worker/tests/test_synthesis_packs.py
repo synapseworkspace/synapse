@@ -91,6 +91,17 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("logistics/" in str(item.get("target_page_slug") or "") for item in candidate_canon_blocks))
         self.assertTrue(any(str(item.get("target_page_type") or "") == "source_of_truth" for item in candidate_canon_blocks))
         self.assertTrue(any("promote" in str(item.get("promotion_path") or "").lower() or "keep" in str(item.get("promotion_path") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any(str(item.get("human_title") or "").strip() for item in candidate_canon_blocks))
+        self.assertTrue(any(str(item.get("human_summary") or "").strip() for item in candidate_canon_blocks))
+        self.assertTrue(any(str(item.get("page_markdown") or "").startswith("# ") for item in candidate_canon_blocks))
+        self.assertTrue(any("why this matters" in str(item.get("page_markdown") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(
+            any(
+                str(item.get("block_type") or "") == "contradiction_watch"
+                and str(item.get("resolution_rule") or "").strip()
+                for item in candidate_canon_blocks
+            )
+        )
         self.assertTrue(any(str(item.get("state") or "") == "reviewed" for item in knowledge_lifecycle_summary))
         self.assertTrue(any(str(item.get("state") or "") == "contradicted" for item in knowledge_lifecycle_summary))
         self.assertTrue(any(str(item.get("topic") or "") == "source_of_truth_conflict" for item in contradiction_summaries))

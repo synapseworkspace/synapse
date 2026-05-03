@@ -1502,6 +1502,10 @@ type CompanyKnowledgeCandidateRecord = {
   reviewed_at?: string | null;
   canonical_page_slug?: string | null;
   updated_at?: string | null;
+  human_title?: string | null;
+  human_summary?: string | null;
+  why_it_matters?: string | null;
+  page_markdown_preview?: string | null;
 };
 
 type CompanyKnowledgeCandidatesPayload = {
@@ -10950,11 +10954,12 @@ export default function App() {
                                               <Group justify="space-between" align="center" wrap="wrap">
                                                 <Stack gap={0}>
                                                   <Text size="xs" fw={700}>
-                                                    {candidate.block_type || "candidate"} {candidate.block_id ? `· ${candidate.block_id}` : ""}
+                                                    {candidate.human_title || candidate.block_type || "candidate"}
                                                   </Text>
                                                   <Text size="xs" c="dimmed">
                                                     {(candidate.target_page_type || "page pending")} →{" "}
                                                     {candidate.target_page_slug || "target slug pending"}
+                                                    {candidate.block_id ? ` · ${candidate.block_id}` : ""}
                                                   </Text>
                                                 </Stack>
                                                 <Group gap={6} wrap="wrap">
@@ -10980,7 +10985,12 @@ export default function App() {
                                                   </Badge>
                                                 </Group>
                                               </Group>
-                                              <Text size="xs">{candidate.summary || "Pending summary."}</Text>
+                                              <Text size="xs">{candidate.human_summary || candidate.summary || "Pending summary."}</Text>
+                                              {candidate.why_it_matters ? (
+                                                <Text size="xs" c="dimmed">
+                                                  Why it matters: {candidate.why_it_matters}
+                                                </Text>
+                                              ) : null}
                                               <Text size="xs" c="dimmed">
                                                 Evidence: {candidate.evidence_basis || "pending evidence basis"}
                                               </Text>
@@ -10992,6 +11002,12 @@ export default function App() {
                                               <Text size="xs" c="dimmed">
                                                 Promotion path: {candidate.promotion_path || "pending explicit owner review"}
                                               </Text>
+                                              {candidate.page_markdown_preview ? (
+                                                <Text size="xs" c="dimmed" style={{ whiteSpace: "pre-line" }}>
+                                                  Draft preview: {candidate.page_markdown_preview.slice(0, 220)}
+                                                  {candidate.page_markdown_preview.length > 220 ? "..." : ""}
+                                                </Text>
+                                              ) : null}
                                               <Group gap={6} wrap="wrap">
                                                 <Button
                                                   size="xs"

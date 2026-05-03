@@ -11942,19 +11942,24 @@ def _company_knowledge_candidate_title(*, target_page_slug: str | None, target_p
 
 
 def _build_company_knowledge_candidate_markdown(candidate: dict[str, Any]) -> str:
+    prebuilt_markdown = str(candidate.get("page_markdown") or "").strip()
+    if prebuilt_markdown:
+        return prebuilt_markdown
+    human_title = str(candidate.get("human_title") or "").strip()
+    human_summary = str(candidate.get("human_summary") or "").strip()
     title = _company_knowledge_candidate_title(
         target_page_slug=str(candidate.get("target_page_slug") or ""),
         target_page_type=str(candidate.get("target_page_type") or ""),
         block_type=str(candidate.get("block_type") or ""),
     )
     lines = [
-        f"# {title}",
+        f"# {human_title or title}",
         "",
         "## Summary",
         f"- Knowledge state: {str(candidate.get('knowledge_state') or 'candidate').strip().lower() or 'candidate'}",
         f"- Confidence: {str(candidate.get('confidence') or 'unknown').strip().lower() or 'unknown'}",
         f"- Block ID: `{str(candidate.get('block_id') or '').strip()}`",
-        f"- Candidate statement: {str(candidate.get('summary') or '').strip() or 'Pending summary.'}",
+        f"- Candidate statement: {human_summary or str(candidate.get('summary') or '').strip() or 'Pending summary.'}",
         "",
         "## Evidence Basis",
         f"- {str(candidate.get('evidence_basis') or '').strip() or 'Evidence basis pending.'}",
@@ -12182,7 +12187,8 @@ def _list_company_knowledge_candidates(
               reviewed_by,
               reviewed_at,
               canonical_page_slug,
-              updated_at
+              updated_at,
+              source_payload
             FROM company_knowledge_candidates
             WHERE {where_sql}
             ORDER BY updated_at DESC, id DESC
@@ -12204,6 +12210,7 @@ def _list_company_knowledge_candidates(
         state_counts = [{"state": str(row[0] or "candidate"), "count": int(row[1] or 0)} for row in (cur.fetchall() or [])]
     candidates = []
     for row in rows:
+        source_payload = row[17] if isinstance(row[17], dict) else {}
         candidates.append(
             {
                 "candidate_id": int(row[0]),
@@ -12223,6 +12230,10 @@ def _list_company_knowledge_candidates(
                 "reviewed_at": row[14].astimezone(UTC).isoformat() if isinstance(row[14], datetime) else None,
                 "canonical_page_slug": str(row[15] or "") or None,
                 "updated_at": row[16].astimezone(UTC).isoformat() if isinstance(row[16], datetime) else None,
+                "human_title": str(source_payload.get("human_title") or "").strip() or None,
+                "human_summary": str(source_payload.get("human_summary") or "").strip() or None,
+                "why_it_matters": str(source_payload.get("why_it_matters") or "").strip() or None,
+                "page_markdown_preview": str(source_payload.get("page_markdown") or "").strip()[:800] or None,
             }
         )
     return {
@@ -12303,19 +12314,28 @@ def _promote_company_knowledge_candidate(
         }
         source_payload = row[12] if isinstance(row[12], dict) else {}
         if isinstance(source_payload, dict):
-            candidate.update({"resolution_rule": source_payload.get("resolution_rule")})
+            candidate.update(
+                {
+                    "resolution_rule": source_payload.get("resolution_rule"),
+                    "human_title": source_payload.get("human_title"),
+                    "human_summary": source_payload.get("human_summary"),
+                    "why_it_matters": source_payload.get("why_it_matters"),
+                    "page_markdown": source_payload.get("page_markdown"),
+                }
+            )
         canonical_page_slug = None
         if promote_to_wiki and candidate.get("target_page_slug") and candidate.get("target_page_type"):
+            wiki_title = str(candidate.get("human_title") or "").strip() or _company_knowledge_candidate_title(
+                target_page_slug=str(candidate.get("target_page_slug") or ""),
+                target_page_type=str(candidate.get("target_page_type") or ""),
+                block_type=str(candidate.get("block_type") or ""),
+            )
             wiki_page_result = _upsert_wiki_page_system(
                 cur,
                 project_id=normalized_project,
                 actor=normalized_actor,
                 slug=str(candidate.get("target_page_slug") or ""),
-                title=_company_knowledge_candidate_title(
-                    target_page_slug=str(candidate.get("target_page_slug") or ""),
-                    target_page_type=str(candidate.get("target_page_type") or ""),
-                    block_type=str(candidate.get("block_type") or ""),
-                ),
+                title=wiki_title,
                 page_type=str(candidate.get("target_page_type") or "operations"),
                 entity_key=str(candidate.get("block_id") or ""),
                 markdown=_build_company_knowledge_candidate_markdown({**candidate, "knowledge_state": normalized_state}),
@@ -42186,14 +42206,14 @@ def _render_company_operating_context_markdown(
             [
                 "",
                 "## Canon Promotion Paths",
-                "| Block ID | Target Page Type | Target Page Slug | Recommended Promotion Path |",
+                "| Canon Title | Target Page Type | Target Page Slug | Recommended Promotion Path |",
                 "|---|---|---|---|",
             ]
         )
         for item in promotion_rows[:8]:
             lines.append(
                 "| "
-                + f"{str(item.get('block_id') or 'candidate').replace('|', '/')} | "
+                + f"{str(item.get('human_title') or item.get('block_id') or 'candidate').replace('|', '/')} | "
                 + f"{str(item.get('target_page_type') or '').replace('|', '/')} | "
                 + f"{str(item.get('target_page_slug') or '').replace('|', '/')} | "
                 + f"{str(item.get('promotion_path') or '').replace('|', '/')} |"
@@ -42203,18 +42223,17 @@ def _render_company_operating_context_markdown(
             [
                 "",
                 "## Candidate Canon Blocks",
-                "| Block ID | Block Type | State | Confidence | Summary | Evidence Basis |",
-                "|---|---|---|---|---|---|",
+                "| Canon Title | State | Confidence | Human Summary | Evidence Basis |",
+                "|---|---|---|---|---|",
             ]
         )
         for item in candidate_canon_blocks[:8]:
             lines.append(
                 "| "
-                + f"{str(item.get('block_id') or 'candidate').replace('|', '/')} | "
-                + f"{str(item.get('block_type') or 'candidate').replace('|', '/')} | "
+                + f"{str(item.get('human_title') or item.get('block_id') or 'candidate').replace('|', '/')} | "
                 + f"{str(item.get('knowledge_state') or 'candidate').replace('|', '/')} | "
                 + f"{str(item.get('confidence') or 'unknown').replace('|', '/')} | "
-                + f"{str(item.get('summary') or '').replace('|', '/')} | "
+                + f"{str(item.get('human_summary') or item.get('summary') or '').replace('|', '/')} | "
                 + f"{str(item.get('evidence_basis') or '').replace('|', '/')} |"
             )
     lines.extend(
