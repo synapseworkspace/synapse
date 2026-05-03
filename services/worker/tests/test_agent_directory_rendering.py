@@ -21,6 +21,7 @@ try:
         _build_tooling_quality_metrics,
         _build_data_source_relation_edges,
         _build_data_source_quality_metrics,
+        _build_synthesis_relation_graph_snapshot,
         _summarize_tooling_map_rows,
         _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
@@ -80,6 +81,7 @@ except Exception:  # pragma: no cover
     _build_tooling_quality_metrics = None
     _build_data_source_relation_edges = None
     _build_data_source_quality_metrics = None
+    _build_synthesis_relation_graph_snapshot = None
     _summarize_tooling_map_rows = None
     _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
@@ -134,6 +136,7 @@ except Exception:  # pragma: no cover
     or _build_tooling_quality_metrics is None
     or _build_data_source_relation_edges is None
     or _build_data_source_quality_metrics is None
+    or _build_synthesis_relation_graph_snapshot is None
     or _summarize_tooling_map_rows is None
     or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
@@ -2463,6 +2466,54 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertEqual(quality["bundle_backed_rows"], 1)
         self.assertIn("source_binding", quality["field_origin_counts"])
         self.assertIn("derived", quality["field_origin_counts"])
+
+    def test_synthesis_relation_graph_snapshot_combines_tool_and_source_edges(self) -> None:
+        assert _build_synthesis_relation_graph_snapshot is not None
+
+        graph = _build_synthesis_relation_graph_snapshot(
+            tool_rows=[
+                {
+                    "tool": "ticket_lookup",
+                    "capabilities": ["ticket triage"],
+                    "processes": ["incident review"],
+                    "sources": ["zendesk api"],
+                    "guardrails": ["approval required"],
+                    "provenance": {
+                        "tool_contracts": ["ticket_lookup"],
+                        "capability_contracts": ["ticket_triage"],
+                        "source_bindings": ["zendesk_api"],
+                        "fallback_fields": [],
+                        "fallback_used": False,
+                    },
+                }
+            ],
+            source_rows=[
+                {
+                    "source_ref": "zendesk_api",
+                    "used_by_agents": ["support-bot"],
+                    "capabilities": ["ticket triage"],
+                    "processes": ["incident review"],
+                    "tools": ["ticket_lookup"],
+                    "decisions": ["Escalation approved."],
+                    "impact": ["incident review"],
+                    "provenance": {
+                        "source_binding_contracts": ["zendesk_api"],
+                        "capability_contracts": ["ticket triage"],
+                        "bundle_keys": ["support.incident.review"],
+                        "usage_inferred": False,
+                    },
+                }
+            ],
+        )
+        summary = graph["summary"]
+        self.assertGreaterEqual(int(summary["nodes_total"]), 5)
+        self.assertGreaterEqual(int(summary["edges_total"]), 5)
+        self.assertIn("tool", summary["node_kind_counts"])
+        self.assertIn("source", summary["node_kind_counts"])
+        self.assertIn("source_binding", summary["edge_origin_counts"])
+        self.assertTrue(any(node["kind"] == "agent" and node["ref"] == "support-bot" for node in graph["nodes"]))
+        self.assertTrue(any(edge["from_kind"] == "tool" and edge["to_kind"] == "source" for edge in graph["edges"]))
+        self.assertTrue(any(edge["from_kind"] == "source" and edge["to_kind"] == "agent" for edge in graph["edges"]))
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None

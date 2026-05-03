@@ -1952,6 +1952,66 @@ def _build_data_source_quality_metrics(rows: list[dict[str, Any]] | None) -> dic
     }
 
 
+def _build_synthesis_relation_graph_snapshot(
+    *,
+    tool_rows: list[dict[str, Any]] | None,
+    source_rows: list[dict[str, Any]] | None,
+    limit: int = 1200,
+) -> dict[str, Any]:
+    tooling_edges = _build_tooling_relation_edges(tool_rows, limit=max(1, min(1200, int(limit))))
+    remaining = max(1, int(limit) - len(tooling_edges))
+    source_edges = _build_data_source_relation_edges(source_rows, limit=max(1, remaining))
+    edges = [*tooling_edges, *source_edges]
+    node_map: dict[str, dict[str, str]] = {}
+    edge_origin_counts: dict[str, int] = {}
+    edge_kind_counts: dict[str, int] = {}
+
+    def _add_node(kind: str, ref: str) -> None:
+        normalized_kind = str(kind or "").strip().lower()
+        normalized_ref = str(ref or "").strip()
+        if not normalized_kind or not normalized_ref:
+            return
+        marker = f"{normalized_kind}|{normalized_ref.lower()}"
+        node_map.setdefault(
+            marker,
+            {
+                "kind": normalized_kind,
+                "ref": normalized_ref,
+            },
+        )
+
+    for edge in edges:
+        from_kind = str(edge.get("from_kind") or "").strip().lower()
+        from_ref = str(edge.get("from_ref") or "").strip()
+        to_kind = str(edge.get("to_kind") or "").strip().lower()
+        to_ref = str(edge.get("to_ref") or "").strip()
+        origin = str(edge.get("origin") or "unknown").strip().lower()
+        if from_kind and from_ref:
+            _add_node(from_kind, from_ref)
+        if to_kind and to_ref:
+            _add_node(to_kind, to_ref)
+        edge_origin_counts[origin] = int(edge_origin_counts.get(origin) or 0) + 1
+        if to_kind:
+            edge_kind_counts[to_kind] = int(edge_kind_counts.get(to_kind) or 0) + 1
+    node_kind_counts: dict[str, int] = {}
+    for node in node_map.values():
+        node_kind = str(node.get("kind") or "").strip().lower()
+        node_kind_counts[node_kind] = int(node_kind_counts.get(node_kind) or 0) + 1
+    return {
+        "summary": {
+            "nodes_total": len(node_map),
+            "edges_total": len(edges),
+            "node_kind_counts": node_kind_counts,
+            "edge_kind_counts": edge_kind_counts,
+            "edge_origin_counts": edge_origin_counts,
+            "tool_rows_total": len([row for row in (tool_rows or []) if isinstance(row, dict)]),
+            "source_rows_total": len([row for row in (source_rows or []) if isinstance(row, dict)]),
+        },
+        "nodes": sorted(node_map.values(), key=lambda item: (str(item.get("kind") or ""), str(item.get("ref") or "").lower())),
+        "edges": edges,
+    }
+
+
 def _collect_bundle_source_tokens_for_diagnostics(bundle: dict[str, Any]) -> set[str]:
     metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
     tokens: set[str] = set()
@@ -34809,6 +34869,49 @@ def get_adoption_data_sources_diagnostics(
         "summary": _build_data_source_quality_metrics(rows),
         "edges": edges,
         "rows": diagnostics_rows,
+    }
+
+
+@app.get("/v1/adoption/synthesis-graph/diagnostics")
+def get_adoption_synthesis_graph_diagnostics(
+    project_id: str = Query(..., min_length=1),
+    space_key: str = Query("operations", min_length=1),
+    limit: int = Query(120, ge=20, le=400),
+) -> dict[str, Any]:
+    normalized_space_key = _normalize_space_key(space_key)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            matrix: list[dict[str, Any]] = []
+            if _agent_directory_table_exists_from_cursor(cur):
+                matrix = _build_agent_capability_matrix(cur, project_id=project_id, max_agents=max(20, min(200, limit * 2)))
+                if not matrix:
+                    matrix = _build_agent_directory_profile_fallback_matrix(
+                        cur,
+                        project_id=project_id,
+                        max_agents=max(20, min(200, limit * 2)),
+                    )
+            if not matrix:
+                matrix = _build_runtime_agent_capability_matrix(cur, project_id=project_id, max_agents=max(20, min(200, limit * 2)))
+            tool_rows = _build_tooling_map_rows_from_matrix(matrix)
+            source_rows = _build_data_source_diagnostics_rows(
+                cur,
+                project_id=project_id,
+                space_key=normalized_space_key,
+                max_sources=limit,
+            )
+    graph = _build_synthesis_relation_graph_snapshot(
+        tool_rows=tool_rows,
+        source_rows=source_rows,
+        limit=max(120, min(2400, limit * 12)),
+    )
+    return {
+        "project_id": project_id,
+        "space_key": normalized_space_key,
+        "summary": graph.get("summary") or {},
+        "nodes": graph.get("nodes") or [],
+        "edges": graph.get("edges") or [],
+        "tooling_summary": _summarize_tooling_map_rows(tool_rows),
+        "data_sources_summary": _build_data_source_quality_metrics(source_rows),
     }
 
 
