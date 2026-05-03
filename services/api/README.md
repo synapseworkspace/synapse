@@ -79,7 +79,7 @@ Environment:
 - `GET /v1/adoption/kpi?project_id=...&days=30` (adoption KPI cards and threshold alerts: first draft/publish latency, draft noise, revert rate)
 - `GET /v1/adoption/policy-calibration/quick-loop?project_id=...` (safe routing-policy recommendation from diagnostics + bottleneck analysis)
 - `POST /v1/adoption/policy-calibration/quick-loop/apply` (dry-run/apply quick preset with rollback snapshot safety)
-- `GET /v1/adoption/selfhost/consistency?web_build=...&ui_profile=core&route_path=/wiki` (self-host UI/API consistency gate)
+- `GET /v1/adoption/selfhost/consistency?web_build=...&ui_profile=core&route_path=/wiki&route_search=?wiki_page=agents%2Findex&ui_features=synthesis_observability_panel` (self-host UI/API consistency gate; route-aware for direct wiki, query-based wiki, and operations entrypoints)
 - `POST /v1/adoption/bootstrap-profile/apply` (one-click adoption profile for first wiki import; `dry_run=true` preview by default, applies gatekeeper soft-threshold profile + bootstrap recommendation bundle)
 - `POST /v1/adoption/project-reset` (project-scope reset with `dry_run=true` default, scoped deletes, and audit trail)
 - `GET /v1/adoption/source-ownership?project_id=...`

@@ -80,6 +80,15 @@ Reverse-proxy contract for base-path deployments:
 - SPA fallback (`/synapse/wiki`, `/synapse/operations`, nested review URLs) may resolve to `index.html`, but `build.json` and `/assets/*` must remain file-backed paths.
 - `index.html` / SPA fallback responses should be non-cacheable, while hashed `/assets/*` responses should remain long-cache immutable.
 
+Supported self-host workspace entry forms:
+- `/synapse/wiki`
+- `/synapse/wiki/<page-slug>`
+- `/synapse/wiki?wiki_page=<slug>&wiki_space=<space>`
+- `/synapse/?wiki_page=<slug>&wiki_space=<space>`
+- `/synapse/operations`
+
+These should all resolve against the same live web bundle and should not trigger route-context warnings when the page/query context is valid.
+
 ## 6. Core Loop Smoke Test
 
 From repository root:
