@@ -198,6 +198,55 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("qualification" in str(item).lower() or "handoff" in str(item).lower() for item in bullets))
         self.assertIn("stage", str(payload.get("sparse_hint") or "").lower())
 
+    def test_canonical_page_classes_include_company_knowledge_types(self) -> None:
+        pack = get_synthesis_pack("generic_ops")
+        classes = pack.canonical_page_classes()
+        page_types = {str(item.get("page_type") or "") for item in classes}
+        self.assertIn("entity", page_types)
+        self.assertIn("source_of_truth", page_types)
+        self.assertIn("glossary_term", page_types)
+        self.assertIn("known_exception", page_types)
+        self.assertIn("escalation_rule", page_types)
+
+    def test_logistics_company_knowledge_seed_pages_cover_expected_core_topics(self) -> None:
+        pack = get_synthesis_pack("logistics_ops")
+        pages = pack.build_company_knowledge_seed_pages(
+            "logistics_ops",
+            space_key="logistics",
+            normalize_space_key=lambda value: str(value or "").strip().lower(),
+            space_slug=lambda space, leaf: f"{space}/{leaf}",
+        )
+        slugs = {str(item.get("slug") or "") for item in pages}
+        page_types = {str(item.get("page_type") or "") for item in pages}
+        self.assertIn("logistics/how-the-logistics-operation-works", slugs)
+        self.assertIn("logistics/logistics-glossary", slugs)
+        self.assertIn("logistics/incidents-and-escalations", slugs)
+        self.assertIn("logistics/trust-rules-for-logistics-data", slugs)
+        self.assertIn("entity", page_types)
+        self.assertIn("source_of_truth", page_types)
+        self.assertIn("known_exception", page_types)
+        self.assertGreaterEqual(len(pages), 10)
+
+    def test_logistics_starter_pages_include_company_knowledge_foundation(self) -> None:
+        pack = get_synthesis_pack("logistics_ops")
+        pages = pack.build_first_run_starter_pages(
+            "logistics_ops",
+            space_key="logistics",
+            include_decisions_log=True,
+            normalize_space_key=lambda value: str(value or "").strip().lower(),
+            space_slug=lambda space, leaf: f"{space}/{leaf}",
+            build_decisions_log_seed_page=lambda space: {
+                "title": "Decisions Log",
+                "slug": f"{space}/decisions-log",
+                "page_type": "decision_log",
+                "markdown": "# Decisions Log\n",
+            },
+        )
+        slugs = {str(item.get("slug") or "") for item in pages}
+        self.assertIn("logistics/how-the-logistics-operation-works", slugs)
+        self.assertIn("logistics/trust-rules-for-logistics-data", slugs)
+        self.assertIn("logistics/known-pitfalls-and-working-heuristics", slugs)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # Synapse Roadmap (Living)
 
-Last updated: 2026-05-03
+Last updated: 2026-05-04
 Owner: Core team
 
 ## Правило актуальности
@@ -44,6 +44,41 @@ Owner: Core team
 17. Public Launch & Positioning (package publication, onboarding KPI, Cognitive State Layer messaging).
 18. Field adoption hardening (knowledge ingest lane, bootstrap profile, rejection diagnostics, project reset, self-host defaults).
 19. Knowledge Compiler v2 (evidence bundles, durable knowledge synthesis, reflection/debrief, page-type compilers).
+20. Company Knowledge Layer (business ontology, canonical page classes, memory-to-canon synthesis, humanized org wiki).
+
+## Company Knowledge Layer (May 2026)
+
+Status: `in_progress`
+
+Goal:
+- move beyond runtime/tooling wiki into company-facing knowledge pages;
+- introduce first-class page families for entities, processes, trust rules, glossary, and known exceptions;
+- build the foundation for `raw memory -> distilled knowledge -> canonical human wiki`.
+
+Phase 1 (foundation)
+1. `done` Canonical page-class catalog:
+   - `Entity`, `Process`, `Policy`, `Source of Truth`, `Glossary Term`, `Known Exception`, `Escalation Rule`.
+2. `done` Company-knowledge synthesis-pack foundation:
+   - `generic_company` and `logistics_company` seed-page contracts in `synthesis_packs`.
+3. `done` Starter integration for first business-facing packs:
+   - `logistics_ops` and `ai_employee_org` starter pages now include company-knowledge foundation pages.
+4. `done` Initial target-page set for logistics:
+   - operation overview, glossary, responsibility zones, readiness/docs, daily cycle, incidents, economics, systems, trust rules, pitfalls.
+
+Phase 2 (next)
+5. `planned` Business ontology extraction:
+   - entities, process metadata, trust metadata, ownership, and business state from memory/runtime/KB.
+6. `planned` Memory-to-canon compiler:
+   - repeated facts, repeated operator decisions, recurring exception patterns, contradiction resolution.
+7. `planned` Humanization layer:
+   - translate internal technical labels into company-readable summaries and titles.
+8. `planned` Knowledge quality lifecycle:
+   - candidate -> reviewed -> canonical -> stale -> contradicted -> superseded.
+
+Definition of done for this track:
+- starter business profiles can generate a real company-facing knowledge core, not only agent/runtime scaffolding;
+- company knowledge pages are organized by entity/process/trust model, not only by tools or scheduled tasks;
+- Synapse begins compiling stable heuristics and trust rules into canonical pages instead of exposing only raw runtime descriptions.
 
 ## Knowledge Compiler v2 (May 2026)
 

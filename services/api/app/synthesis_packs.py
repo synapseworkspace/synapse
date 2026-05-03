@@ -99,6 +99,17 @@ class SynthesisPack(Protocol):
 
     def resolve_business_profile(self, key: str | None) -> dict[str, Any] | None: ...
 
+    def canonical_page_classes(self) -> list[dict[str, Any]]: ...
+
+    def build_company_knowledge_seed_pages(
+        self,
+        profile: str,
+        *,
+        space_key: str | None,
+        normalize_space_key: NormalizeSpaceKeyFn,
+        space_slug: SpaceSlugFn,
+    ) -> list[dict[str, str]]: ...
+
 
 _RUNTIME_SURFACE_SPACE_STOPWORDS = {
     "action",
@@ -253,6 +264,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "bundle_promotion_space_key": "operations",
         "recommended_noise_preset": "enterprise_wiki_bootstrap",
         "focus": ["agent profile", "data map", "operational runbook", "decisions log"],
+        "company_knowledge_pack": "generic_company",
     },
     {
         "key": "logistics_operator",
@@ -265,6 +277,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "bundle_promotion_space_key": "logistics",
         "recommended_noise_preset": "enterprise_wiki_bootstrap",
         "focus": ["process playbooks", "data sources catalog", "incident runbooks", "scheduled task SOPs"],
+        "company_knowledge_pack": "logistics_company",
     },
     {
         "key": "support_center",
@@ -277,6 +290,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "bundle_promotion_space_key": "support",
         "recommended_noise_preset": "enterprise_wiki_bootstrap",
         "focus": ["ticket triage", "escalation rules", "customer communication", "decision log"],
+        "company_knowledge_pack": "support_company",
     },
     {
         "key": "sales_revenue_ops",
@@ -289,6 +303,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "bundle_promotion_space_key": "sales",
         "recommended_noise_preset": "enterprise_wiki_bootstrap",
         "focus": ["deal stage playbooks", "handoff contracts", "tooling map", "company operating context"],
+        "company_knowledge_pack": "sales_company",
     },
     {
         "key": "compliance_program",
@@ -301,6 +316,7 @@ _BUSINESS_PROFILES_CATALOG = [
         "bundle_promotion_space_key": "compliance",
         "recommended_noise_preset": "enterprise_wiki_bootstrap",
         "focus": ["control maps", "audit evidence", "policy pages", "decisions log"],
+        "company_knowledge_pack": "compliance_company",
     },
     {
         "key": "ai_employee_org",
@@ -313,8 +329,259 @@ _BUSINESS_PROFILES_CATALOG = [
         "bundle_promotion_space_key": "operations",
         "recommended_noise_preset": "enterprise_wiki_bootstrap",
         "focus": ["tool catalog", "scheduled tasks", "HITL rules", "integrations map", "agent directory"],
+        "company_knowledge_pack": "generic_company",
     },
 ]
+
+_CANONICAL_PAGE_CLASS_CATALOG = [
+    {
+        "page_type": "entity",
+        "label": "Entity",
+        "purpose": "Canonical page for a business entity, its states, identifiers, linked systems, and related processes.",
+        "sections": ["Definition", "Key Fields", "States", "Systems", "Related Processes", "Exceptions"],
+    },
+    {
+        "page_type": "process",
+        "label": "Process",
+        "purpose": "Human-readable SOP describing purpose, owner, trigger, inputs, outputs, exceptions, and escalation.",
+        "sections": ["Purpose", "Owner", "Trigger", "Inputs", "Outputs", "Exceptions", "Escalation"],
+    },
+    {
+        "page_type": "policy",
+        "label": "Policy",
+        "purpose": "Stable rule or approval boundary with authority, scope, and override guidance.",
+        "sections": ["Rule", "Scope", "Authority", "Exceptions", "Override Rules", "Review Cadence"],
+    },
+    {
+        "page_type": "source_of_truth",
+        "label": "Source of Truth",
+        "purpose": "Explains which system or table is authoritative for a question and how to trust freshness/derived data.",
+        "sections": ["Canonical Source", "Derived Signals", "Freshness", "Conflict Resolution", "Owners"],
+    },
+    {
+        "page_type": "glossary_term",
+        "label": "Glossary Term",
+        "purpose": "Company term with definition, aliases, and linked entities/processes.",
+        "sections": ["Definition", "Aliases", "Used In", "Common Confusions"],
+    },
+    {
+        "page_type": "known_exception",
+        "label": "Known Exception",
+        "purpose": "Documented non-ideal but recurring exception pattern, when it applies, and what to do.",
+        "sections": ["Exception Pattern", "Applies When", "Risk", "Mitigation", "Expiry/Review"],
+    },
+    {
+        "page_type": "escalation_rule",
+        "label": "Escalation Rule",
+        "purpose": "Defines when work stops being autonomous and who must be involved next.",
+        "sections": ["Trigger", "Owner", "Channel", "SLA", "Resolution Expectations"],
+    },
+]
+
+_COMPANY_KNOWLEDGE_PACKS: dict[str, list[dict[str, str]]] = {
+    "generic_company": [
+        {
+            "title": "How the Operation Works",
+            "slug_leaf": "how-the-operation-works",
+            "page_type": "process",
+            "markdown": (
+                "# How the Operation Works\n\n"
+                "## Purpose\n"
+                "- Describe the operating model in human language: who participates, what success looks like, and where the main workflow loops live.\n\n"
+                "## Core Roles\n"
+                "- Team leads, operators, agents, reviewers, and escalation owners.\n\n"
+                "## Core Loops\n"
+                "- Daily operating cadence, exception handling, reporting, and approvals.\n\n"
+                "## Failure Modes\n"
+                "- Common breakdown points and the first place to look when outcomes drift.\n"
+            ),
+        },
+        {
+            "title": "Company Glossary",
+            "slug_leaf": "company-glossary",
+            "page_type": "glossary_term",
+            "markdown": (
+                "# Company Glossary\n\n"
+                "## Canonical Terms\n"
+                "- Define the words people actually use, not just table names or tool labels.\n\n"
+                "## Aliases\n"
+                "- Common shorthand, internal synonyms, and terms that frequently get confused.\n"
+            ),
+        },
+        {
+            "title": "Roles and Responsibilities",
+            "slug_leaf": "roles-and-responsibilities",
+            "page_type": "entity",
+            "markdown": (
+                "# Roles and Responsibilities\n\n"
+                "## Human Roles\n"
+                "- What each operator, manager, and reviewer owns.\n\n"
+                "## Agent Roles\n"
+                "- What agents do autonomously, what they propose, and when they escalate.\n"
+            ),
+        },
+        {
+            "title": "Sources of Truth",
+            "slug_leaf": "sources-of-truth",
+            "page_type": "source_of_truth",
+            "markdown": (
+                "# Sources of Truth\n\n"
+                "## Canonical Systems\n"
+                "- Which system answers which business question.\n\n"
+                "## Trust Rules\n"
+                "- What to do when operational, derived, and canonical sources disagree.\n"
+            ),
+        },
+        {
+            "title": "Known Exceptions and Heuristics",
+            "slug_leaf": "known-exceptions-and-heuristics",
+            "page_type": "known_exception",
+            "markdown": (
+                "# Known Exceptions and Heuristics\n\n"
+                "## Common Exceptions\n"
+                "- Situations where the ideal process is not what experienced operators actually do.\n\n"
+                "## Heuristics\n"
+                "- Stable working rules that are learned from repeated practice.\n"
+            ),
+        },
+    ],
+    "logistics_company": [
+        {
+            "title": "How the Logistics Operation Works",
+            "slug_leaf": "how-the-logistics-operation-works",
+            "page_type": "process",
+            "markdown": (
+                "# How the Logistics Operation Works\n\n"
+                "## Purpose\n"
+                "- Explain the logistics operation in business language: roles, operating loops, critical workflows, and common failure points.\n\n"
+                "## Core Roles\n"
+                "- Dispatch, operators, drivers, managers, and AI agents.\n\n"
+                "## Success Criteria\n"
+                "- On-time execution, shift readiness, safe escalations, and accurate reporting.\n\n"
+                "## Common Failure Modes\n"
+                "- Readiness gaps, route drift, provider outages, stale ERP data, and unresolved incidents.\n"
+            ),
+        },
+        {
+            "title": "Logistics Glossary",
+            "slug_leaf": "logistics-glossary",
+            "page_type": "glossary_term",
+            "markdown": (
+                "# Logistics Glossary\n\n"
+                "## Canonical Terms\n"
+                "- Define shift, route, order, tech task, readiness, incident, and source of truth in company language.\n\n"
+                "## Common Confusions\n"
+                "- Record terms that often get mixed up across ERP, sheets, and operational conversations.\n"
+            ),
+        },
+        {
+            "title": "Roles and Responsibility Zones",
+            "slug_leaf": "roles-and-responsibility-zones",
+            "page_type": "entity",
+            "markdown": (
+                "# Roles and Responsibility Zones\n\n"
+                "## Human Operators\n"
+                "- What dispatch, operations leads, and reviewers own.\n\n"
+                "## Agent Responsibility\n"
+                "- What the logistics assistant can do autonomously, what it proposes, and when it must escalate.\n"
+            ),
+        },
+        {
+            "title": "Documents and Shift Readiness",
+            "slug_leaf": "documents-and-shift-readiness",
+            "page_type": "entity",
+            "markdown": (
+                "# Documents and Shift Readiness\n\n"
+                "## Required Documents\n"
+                "- Which documents matter before shift execution and why.\n\n"
+                "## Readiness States\n"
+                "- Ready, blocked, incomplete, and exception states.\n\n"
+                "## Source of Truth\n"
+                "- Which systems or projections should be trusted for document/readiness checks.\n"
+            ),
+        },
+        {
+            "title": "Daily Logistics Operating Cycle",
+            "slug_leaf": "daily-logistics-operating-cycle",
+            "page_type": "process",
+            "markdown": (
+                "# Daily Logistics Operating Cycle\n\n"
+                "## Morning Checks\n"
+                "- Readiness, provider state, route status, and critical incidents.\n\n"
+                "## Daytime Monitoring\n"
+                "- Fleet status, delivery failures, escalation handling, and exception review.\n\n"
+                "## Reporting Cadence\n"
+                "- Daily reports, economics slices, and end-of-day review outputs.\n"
+            ),
+        },
+        {
+            "title": "Incidents and Escalations",
+            "slug_leaf": "incidents-and-escalations",
+            "page_type": "escalation_rule",
+            "markdown": (
+                "# Incidents and Escalations\n\n"
+                "## What Counts as an Incident\n"
+                "- Define severity, business impact, and operational triggers.\n\n"
+                "## Escalation Rules\n"
+                "- Who is notified, through which channel, and with what SLA.\n\n"
+                "## Agent Boundaries\n"
+                "- Where the agent can act automatically and where a human must take over.\n"
+            ),
+        },
+        {
+            "title": "Driver Economics and Reporting",
+            "slug_leaf": "driver-economics-and-reporting",
+            "page_type": "entity",
+            "markdown": (
+                "# Driver Economics and Reporting\n\n"
+                "## What Is Measured\n"
+                "- Which economics slices matter for drivers and why they are reviewed.\n\n"
+                "## Consumers\n"
+                "- Who reads the report and what decisions it supports.\n\n"
+                "## Anomaly Patterns\n"
+                "- Which outliers and drifts deserve operational attention.\n"
+            ),
+        },
+        {
+            "title": "ERP and Operational Systems",
+            "slug_leaf": "erp-and-operational-systems",
+            "page_type": "source_of_truth",
+            "markdown": (
+                "# ERP and Operational Systems\n\n"
+                "## System Roles\n"
+                "- ERP, sheets, provider feeds, memory/KB, and internal projections.\n\n"
+                "## System of Record\n"
+                "- Which system is authoritative for routes, tasks, docs, and reporting.\n"
+            ),
+        },
+        {
+            "title": "Trust Rules for Logistics Data",
+            "slug_leaf": "trust-rules-for-logistics-data",
+            "page_type": "source_of_truth",
+            "markdown": (
+                "# Trust Rules for Logistics Data\n\n"
+                "## Priority Rules\n"
+                "- If systems disagree, record what should win for each business question.\n\n"
+                "## Freshness Windows\n"
+                "- When data is considered stale and when a refresh or escalation is required.\n\n"
+                "## Canonical vs Derived\n"
+                "- Distinguish source-of-truth values from operational projections and summaries.\n"
+            ),
+        },
+        {
+            "title": "Known Pitfalls and Working Heuristics",
+            "slug_leaf": "known-pitfalls-and-working-heuristics",
+            "page_type": "known_exception",
+            "markdown": (
+                "# Known Pitfalls and Working Heuristics\n\n"
+                "## Common Pitfalls\n"
+                "- Typical false signals, stale feeds, and process mismatches that experienced operators watch for.\n\n"
+                "## Stable Heuristics\n"
+                "- What usually works in real operations when the formal process is not enough.\n"
+            ),
+        },
+    ],
+}
 
 
 def _extract_runtime_surface_space_candidates(*values: Any, normalize_space_key: NormalizeSpaceKeyFn) -> list[str]:
@@ -701,6 +968,33 @@ class GenericOpsSynthesisPack:
     def wiki_space_template_catalog(self) -> list[dict[str, Any]]:
         return [dict(item) for item in _WIKI_SPACE_TEMPLATE_CATALOG]
 
+    def canonical_page_classes(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in _CANONICAL_PAGE_CLASS_CATALOG]
+
+    def build_company_knowledge_seed_pages(
+        self,
+        profile: str,
+        *,
+        space_key: str | None,
+        normalize_space_key: NormalizeSpaceKeyFn,
+        space_slug: SpaceSlugFn,
+    ) -> list[dict[str, str]]:
+        normalized_profile = str(profile or "").strip().lower() or "standard"
+        space = normalize_space_key(space_key or "") or self.default_space_for_starter_profile(normalized_profile)
+        pack_key = "generic_company"
+        if normalized_profile == "logistics_ops":
+            pack_key = "logistics_company"
+        pages = _COMPANY_KNOWLEDGE_PACKS.get(pack_key) or _COMPANY_KNOWLEDGE_PACKS["generic_company"]
+        return [
+            {
+                "title": str(item["title"]),
+                "slug": space_slug(space, str(item["slug_leaf"])),
+                "page_type": str(item["page_type"]),
+                "markdown": str(item["markdown"]),
+            }
+            for item in pages
+        ]
+
     def build_first_run_starter_pages(
         self,
         profile: str,
@@ -821,6 +1115,15 @@ class GenericOpsSynthesisPack:
                     ),
                 }
             )
+        if normalized_profile in {"logistics_ops", "ai_employee_org"}:
+            pages.extend(
+                self.build_company_knowledge_seed_pages(
+                    normalized_profile,
+                    space_key=space,
+                    normalize_space_key=normalize_space_key,
+                    space_slug=space_slug,
+                )
+            )
         if normalized_profile == "ai_employee_org":
             pages.extend(
                 [
@@ -898,7 +1201,15 @@ class GenericOpsSynthesisPack:
             )
         if include_decisions_log:
             pages.append(build_decisions_log_seed_page(space))
-        return pages
+        deduped: list[dict[str, str]] = []
+        seen_slugs: set[str] = set()
+        for item in pages:
+            slug = str(item.get("slug") or "").strip().lower()
+            if not slug or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            deduped.append(item)
+        return deduped
 
     def build_role_template_pages(
         self,
