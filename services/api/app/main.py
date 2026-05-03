@@ -1783,6 +1783,520 @@ def _build_tooling_quality_metrics(rows: list[dict[str, Any]] | None) -> dict[st
     }
 
 
+def _source_field_origin(
+    *,
+    field_name: str,
+    provenance: dict[str, Any],
+) -> str:
+    explicit_bindings = bool(provenance.get("source_binding_contracts"))
+    capability_contracts = bool(provenance.get("capability_contracts"))
+    usage_inferred = bool(provenance.get("usage_inferred"))
+    bundle_keys = bool(provenance.get("bundle_keys"))
+    if field_name in {"location", "owner", "freshness", "key_fields", "schema_sample"}:
+        return "source_config"
+    if field_name == "agents":
+        if explicit_bindings:
+            return "source_binding"
+        if usage_inferred:
+            return "derived"
+        return "unknown"
+    if field_name in {"capabilities", "processes", "tools", "actions", "scenarios"}:
+        if explicit_bindings:
+            return "source_binding"
+        if capability_contracts:
+            return "capability_contract"
+        if usage_inferred:
+            return "derived"
+        return "unknown"
+    if field_name == "decisions":
+        if bundle_keys:
+            return "bundle"
+        return "unknown"
+    if field_name == "impact":
+        if explicit_bindings:
+            return "source_binding"
+        if capability_contracts:
+            return "capability_contract"
+        if usage_inferred:
+            return "derived"
+        if bundle_keys:
+            return "bundle"
+        return "unknown"
+    return "unknown"
+
+
+def _source_field_confidence(*, origin: str) -> float:
+    mapping = {
+        "source_config": 0.97,
+        "source_binding": 0.93,
+        "capability_contract": 0.9,
+        "bundle": 0.88,
+        "derived": 0.72,
+        "unknown": 0.4,
+    }
+    return float(mapping.get(str(origin or "").strip().lower(), 0.4))
+
+
+def _build_source_synthesized_field_entries(
+    *,
+    values: list[str] | set[str],
+    field_name: str,
+    provenance: dict[str, Any],
+    max_items: int = 4,
+) -> list[dict[str, Any]]:
+    origin = _source_field_origin(field_name=field_name, provenance=provenance)
+    confidence = _source_field_confidence(origin=origin)
+    entries: list[dict[str, Any]] = []
+    for value in list(values)[:max_items]:
+        text = str(value).strip()
+        if not text:
+            continue
+        entries.append(
+            {
+                "value": text,
+                "origin": origin,
+                "confidence": confidence,
+            }
+        )
+    return entries
+
+
+def _build_data_source_relation_edges(rows: list[dict[str, Any]] | None, *, limit: int = 600) -> list[dict[str, Any]]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    edges: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        source_ref = str(row.get("source_ref") or "").strip()
+        if not source_ref:
+            continue
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        field_groups = {
+            "agent": row.get("used_by_agents") or [],
+            "capability": row.get("capabilities") or [],
+            "process": row.get("processes") or [],
+            "tool": row.get("tools") or [],
+            "decision": row.get("decisions") or [],
+        }
+        for target_kind, values in field_groups.items():
+            field_name = {
+                "agent": "agents",
+                "capability": "capabilities",
+                "process": "processes",
+                "tool": "tools",
+                "decision": "decisions",
+            }[target_kind]
+            origin = _source_field_origin(field_name=field_name, provenance=provenance)
+            confidence = _source_field_confidence(origin=origin)
+            for value in values[:4]:
+                target = str(value).strip()
+                if not target:
+                    continue
+                marker = f"{source_ref.lower()}|{target_kind}|{target.lower()}"
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                edges.append(
+                    {
+                        "from_kind": "source",
+                        "from_ref": source_ref,
+                        "to_kind": target_kind,
+                        "to_ref": target,
+                        "origin": origin,
+                        "confidence": confidence,
+                    }
+                )
+                if len(edges) >= max(1, int(limit)):
+                    return edges
+    return edges
+
+
+def _build_data_source_quality_metrics(rows: list[dict[str, Any]] | None) -> dict[str, Any]:
+    rows = [row for row in (rows or []) if isinstance(row, dict)]
+    rows_with_agents = 0
+    rows_with_capability_or_process = 0
+    inferred_usage_rows = 0
+    bundle_backed_rows = 0
+    explicit_binding_rows = 0
+    overlong_impact_rows = 0
+    origin_counts: dict[str, int] = {}
+    for row in rows:
+        used_by_agents = [str(v).strip() for v in (row.get("used_by_agents") or []) if str(v).strip()]
+        capabilities = [str(v).strip() for v in (row.get("capabilities") or []) if str(v).strip()]
+        processes = [str(v).strip() for v in (row.get("processes") or []) if str(v).strip()]
+        impact = [str(v).strip() for v in (row.get("impact") or []) if str(v).strip()]
+        if used_by_agents:
+            rows_with_agents += 1
+        if capabilities or processes:
+            rows_with_capability_or_process += 1
+        provenance = row.get("provenance") if isinstance(row.get("provenance"), dict) else {}
+        if provenance.get("usage_inferred"):
+            inferred_usage_rows += 1
+        if provenance.get("bundle_keys"):
+            bundle_backed_rows += 1
+        if provenance.get("source_binding_contracts"):
+            explicit_binding_rows += 1
+        if any(len(value) > 48 for value in impact):
+            overlong_impact_rows += 1
+        for field_name in ("agents", "capabilities", "processes", "tools", "decisions", "impact"):
+            origin = _source_field_origin(field_name=field_name, provenance=provenance)
+            origin_counts[origin] = int(origin_counts.get(origin) or 0) + 1
+    return {
+        "rows_total": len(rows),
+        "rows_with_agents": rows_with_agents,
+        "rows_with_capability_or_process": rows_with_capability_or_process,
+        "inferred_usage_rows": inferred_usage_rows,
+        "bundle_backed_rows": bundle_backed_rows,
+        "explicit_binding_rows": explicit_binding_rows,
+        "overlong_impact_rows": overlong_impact_rows,
+        "field_origin_counts": origin_counts,
+    }
+
+
+def _collect_bundle_source_tokens_for_diagnostics(bundle: dict[str, Any]) -> set[str]:
+    metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
+    tokens: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                _add(item)
+            return
+        normalized = _normalize_statement_text(str(value or ""))
+        if normalized:
+            tokens.add(normalized)
+
+    _add(bundle.get("entity_key"))
+    _add(bundle.get("bundle_key"))
+    _add(metadata.get("source_system"))
+    _add(metadata.get("source"))
+    _add(metadata.get("source_ref"))
+    _add(metadata.get("source_name"))
+    _add(metadata.get("source_id"))
+    _add(metadata.get("claim_entity_key"))
+    _add(metadata.get("source_systems"))
+    _add(metadata.get("source_refs"))
+    _add(metadata.get("sources"))
+    return tokens
+
+
+def _source_stale_risk_label_for_diagnostics(
+    freshness_label: str,
+    *,
+    bundle_ready: int,
+    used_by_count: int,
+) -> str:
+    normalized = str(freshness_label or "").strip().lower()
+    if "never synced" in normalized or "failed" in normalized:
+        return "critical - source has no trustworthy recent sync"
+    if "stale" in normalized and used_by_count >= 1:
+        return "high - stale source can mislead active agent workflows"
+    if "today" in normalized or "hours" in normalized:
+        return "low - source freshness is within expected operating window"
+    if bundle_ready >= 2 and used_by_count >= 2:
+        return "medium - durable knowledge depends on this source; verify freshness before policy promotion"
+    return "medium - monitor freshness and confirm owner for durable wiki synthesis"
+
+
+def _build_data_source_diagnostics_rows(
+    cur: Any,
+    *,
+    project_id: str,
+    space_key: str,
+    max_sources: int,
+) -> list[dict[str, Any]]:
+    if not _legacy_import_sources_table_exists_from_cursor(cur):
+        return []
+    synthesis_pack = _synthesis_pack_for_space_key(space_key)
+    cur.execute(
+        """
+        SELECT
+          source_type,
+          source_ref,
+          config,
+          updated_by,
+          last_success_at,
+          last_run_at
+        FROM legacy_import_sources
+        WHERE project_id = %s
+          AND enabled = TRUE
+        ORDER BY updated_at DESC
+        LIMIT %s
+        """,
+        (project_id, max(1, min(150, int(max_sources)))),
+    )
+    source_rows = cur.fetchall() or []
+    usage_map = _collect_agent_source_usage(cur, project_id=project_id)
+    runtime_matrix: list[dict[str, Any]] = []
+    if _agent_directory_table_exists_from_cursor(cur):
+        runtime_matrix = _build_agent_capability_matrix(
+            cur,
+            project_id=project_id,
+            max_agents=max(10, min(200, int(max_sources) * 6)),
+        ) or []
+        if not runtime_matrix:
+            runtime_matrix = _build_agent_directory_profile_fallback_matrix(
+                cur,
+                project_id=project_id,
+                max_agents=max(10, min(200, int(max_sources) * 6)),
+            ) or []
+    if not runtime_matrix:
+        runtime_matrix = _build_runtime_agent_capability_matrix(
+            cur,
+            project_id=project_id,
+            max_agents=max(10, min(200, int(max_sources) * 6)),
+        ) or []
+    source_bundles = _load_evidence_bundles_for_bootstrap(
+        cur,
+        project_id=project_id,
+        bundle_types=["data_source", "decision", "process"],
+        statuses=["ready", "candidate"],
+        limit=max(18, min(240, int(max_sources) * 6)),
+    )
+    bundles_by_token: dict[str, list[dict[str, Any]]] = {}
+    for bundle in source_bundles:
+        for token in _collect_bundle_source_tokens_for_diagnostics(bundle):
+            bundles_by_token.setdefault(token, []).append(bundle)
+
+    rows: list[dict[str, Any]] = []
+    for row in source_rows:
+        source_type = _normalize_source_system(row[0], default="unknown")
+        source_ref = str(row[1] or "").strip() or "source"
+        config = row[2] if isinstance(row[2], dict) else {}
+        updated_by = str(row[3] or "").strip() or "unknown"
+        last_success_at = row[4] if isinstance(row[4], datetime) else None
+        last_run_at = row[5] if isinstance(row[5], datetime) else None
+        location = _extract_source_location(source_type, source_ref, config)
+        owner = _extract_source_owner(config, updated_by)
+        freshness = _format_freshness_label(last_success_at, last_run_at)
+        key_fields = _extract_source_key_fields(source_type, config)
+        schema_sample = _extract_source_schema_sample(source_type, config)
+
+        usage_tokens = {
+            source_ref.lower(),
+            source_type.lower(),
+            str(config.get("sql_profile") or "").strip().lower(),
+            str(config.get("sql_profile_resolved_table") or "").strip().lower(),
+            str(config.get("sql_profile_table") or "").strip().lower(),
+            str(config.get("sql_table") or "").strip().lower(),
+            str(config.get("sql_dsn_env") or "").strip().lower(),
+            str(config.get("source_system") or "").strip().lower(),
+        }
+        used_by: set[str] = set()
+        scenario_hints: set[str] = set()
+        capability_hints: set[str] = set()
+        process_hints: set[str] = set()
+        action_hints: set[str] = set()
+        tool_hints: set[str] = set()
+        explicit_binding_contracts: list[dict[str, Any]] = []
+        matched_capability_contract_names: set[str] = set()
+        normalized_usage_tokens = {
+            _normalize_statement_text(token)
+            for token in usage_tokens
+            if str(token or "").strip()
+        }
+        normalized_usage_tokens = {token for token in normalized_usage_tokens if token}
+        for token in usage_tokens:
+            if not token:
+                continue
+            usage_bucket = usage_map.get(token) if isinstance(usage_map.get(token), dict) else {}
+            used_by.update(set(usage_bucket.get("agents") or set()))
+            scenario_hints.update(set(usage_bucket.get("scenarios") or set()))
+            capability_hints.update(set(usage_bucket.get("capabilities") or set()))
+            process_hints.update(set(usage_bucket.get("processes") or set()))
+            action_hints.update(set(usage_bucket.get("actions") or set()))
+            tool_hints.update(set(usage_bucket.get("tools") or set()))
+        for item in runtime_matrix:
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(item.get("agent_id") or "").strip()
+            if not agent_id:
+                continue
+            binding_contracts = [contract for contract in (item.get("source_binding_contracts") or []) if isinstance(contract, dict)]
+            matched_binding = False
+            for contract in binding_contracts:
+                normalized_source = _normalize_statement_text(str(contract.get("source") or ""))
+                if not normalized_source or normalized_source not in normalized_usage_tokens:
+                    continue
+                matched_binding = True
+                explicit_binding_contracts.append(contract)
+                used_by.add(agent_id)
+                capability_hints.update({_normalize_operating_label(v, kind="capability") for v in (contract.get("capabilities") or []) if str(v).strip()})
+                process_hints.update({_normalize_operating_label(v, kind="process") for v in (contract.get("processes") or []) if str(v).strip()})
+                tool_hints.update({_normalize_operating_label(v, kind="tool") for v in (contract.get("tools") or []) if str(v).strip()})
+            if matched_binding:
+                scenario_hints.update({str(v).strip() for v in (item.get("scenario_examples") or []) if str(v).strip()})
+                action_hints.update({str(v).strip() for v in (item.get("allowed_actions") or []) if str(v).strip()})
+            for contract in [entry for entry in (item.get("capability_contracts") or []) if isinstance(entry, dict)]:
+                source_tokens = {
+                    _normalize_statement_text(str(v or ""))
+                    for v in (contract.get("sources") or [])
+                    if str(v or "").strip()
+                }
+                if not source_tokens.intersection(normalized_usage_tokens):
+                    continue
+                used_by.add(agent_id)
+                capability_name = str(contract.get("name") or "").strip()
+                if capability_name:
+                    matched_capability_contract_names.add(capability_name)
+                    capability_hints.add(_normalize_operating_label(capability_name, kind="capability"))
+                process_hints.update({_normalize_operating_label(v, kind="process") for v in (contract.get("processes") or []) if str(v).strip()})
+                tool_hints.update({_normalize_operating_label(v, kind="tool") for v in (contract.get("tools") or []) if str(v).strip()})
+                scenario_hints.update({str(v).strip() for v in (contract.get("scenarios") or []) if str(v).strip()})
+        usage_inferred = False
+        if not used_by:
+            inferred_usage = synthesis_pack.infer_source_usage_from_matrix(
+                matrix_rows=runtime_matrix,
+                source_ref=source_ref,
+                source_type=source_type,
+                config=config,
+                normalize_statement_text=_normalize_statement_text,
+            )
+            if inferred_usage["agents"]:
+                usage_inferred = True
+                used_by.update(inferred_usage["agents"])
+                scenario_hints.update(inferred_usage["scenarios"])
+                capability_hints.update({_normalize_operating_label(v, kind="capability") for v in inferred_usage["capabilities"] if str(v).strip()})
+                process_hints.update({_normalize_operating_label(v, kind="process") for v in inferred_usage["processes"] if str(v).strip()})
+                action_hints.update(inferred_usage["actions"])
+                tool_hints.update({_normalize_operating_label(v, kind="tool") for v in inferred_usage["tools"] if str(v).strip()})
+                explicit_binding_contracts = [item for item in (inferred_usage.get("contracts") or []) if isinstance(item, dict)]
+        bundle_matches: list[dict[str, Any]] = []
+        seen_bundle_ids: set[str] = set()
+        for token in usage_tokens:
+            normalized_token = _normalize_statement_text(token)
+            if not normalized_token:
+                continue
+            for bundle in bundles_by_token.get(normalized_token, []):
+                bundle_id = str(bundle.get("id") or bundle.get("bundle_key") or "")
+                if bundle_id and bundle_id in seen_bundle_ids:
+                    continue
+                if bundle_id:
+                    seen_bundle_ids.add(bundle_id)
+                bundle_matches.append(bundle)
+        bundle_ready = sum(1 for bundle in bundle_matches if str(bundle.get("bundle_status") or "") == "ready")
+        bundle_candidate = sum(1 for bundle in bundle_matches if str(bundle.get("bundle_status") or "") == "candidate")
+        bundle_insights: list[str] = []
+        bundle_process_hints: list[str] = []
+        bundle_decision_hints: list[str] = []
+        bundle_process_seen: set[str] = set()
+        for bundle in bundle_matches[:4]:
+            metadata = bundle.get("metadata") if isinstance(bundle.get("metadata"), dict) else {}
+            for sample_entry in bundle.get("sample_claims") or []:
+                if not isinstance(sample_entry, dict):
+                    continue
+                claim_text = str(sample_entry.get("claim_text") or "").strip()
+                if claim_text:
+                    bundle_insights.append(claim_text[:180])
+                    if str(sample_entry.get("category") or "").strip().lower() == "decision":
+                        bundle_decision_hints.append(claim_text[:180])
+                    break
+            for candidate in (
+                metadata.get("process_name"),
+                metadata.get("process"),
+                metadata.get("processes"),
+                metadata.get("capability"),
+                metadata.get("capabilities"),
+            ):
+                values = candidate if isinstance(candidate, list) else [candidate]
+                for value in values:
+                    text = str(value or "").strip()
+                    marker = text.lower()
+                    if not text or marker in bundle_process_seen:
+                        continue
+                    bundle_process_seen.add(marker)
+                    bundle_process_hints.append(text[:120])
+                    if len(bundle_process_hints) >= 3:
+                        break
+                if len(bundle_process_hints) >= 3:
+                    break
+        impact_values = sorted(process_hints)[:2] or sorted(capability_hints)[:2] or sorted(action_hints)[:2] or bundle_process_hints[:2]
+        stale_risk = _source_stale_risk_label_for_diagnostics(
+            freshness,
+            bundle_ready=bundle_ready,
+            used_by_count=len(used_by),
+        )
+        provenance = {
+            "source_binding_contracts": sorted(
+                {
+                    str(contract.get("source") or "").strip()
+                    for contract in explicit_binding_contracts
+                    if str(contract.get("source") or "").strip()
+                }
+            )[:6],
+            "capability_contracts": sorted({_normalize_operating_label(name, kind="capability") for name in matched_capability_contract_names if str(name).strip()})[:6],
+            "bundle_keys": sorted({str(bundle.get("bundle_key") or "").strip() for bundle in bundle_matches if str(bundle.get("bundle_key") or "").strip()})[:6],
+            "usage_tokens": sorted({token for token in normalized_usage_tokens if token})[:8],
+            "usage_inferred": usage_inferred,
+        }
+        rows.append(
+            {
+                "source_ref": source_ref,
+                "source_type": source_type,
+                "location": location,
+                "owner": owner,
+                "freshness": freshness,
+                "key_fields": key_fields[:8],
+                "schema_sample": schema_sample[:8],
+                "used_by_agents": sorted(used_by)[:6],
+                "scenarios": sorted(scenario_hints)[:4],
+                "capabilities": sorted(capability_hints)[:4],
+                "processes": sorted(process_hints)[:4],
+                "actions": sorted(action_hints)[:4],
+                "tools": sorted(tool_hints)[:6],
+                "decisions": bundle_decision_hints[:3],
+                "impact": impact_values[:3],
+                "bundle_status": {
+                    "ready": bundle_ready,
+                    "candidate": bundle_candidate,
+                },
+                "stale_risk": stale_risk,
+                "ownership_posture": (
+                    "single owner confirmed" if owner not in {"unknown", "n/a"} else "owner missing - add accountable maintainer"
+                ),
+                "human_review_boundary": (
+                    "Require human review before publishing policy/process pages driven by this source."
+                    if "critical" in stale_risk or "high" in stale_risk or bundle_candidate > 0
+                    else "Autonomous synthesis is acceptable until bundle confidence drops or freshness degrades."
+                ),
+                "bundle_insights": bundle_insights[:3],
+                "synthesized_fields": {
+                    "agents": _build_source_synthesized_field_entries(
+                        values=sorted(used_by)[:6],
+                        field_name="agents",
+                        provenance=provenance,
+                    ),
+                    "capabilities": _build_source_synthesized_field_entries(
+                        values=sorted(capability_hints)[:4],
+                        field_name="capabilities",
+                        provenance=provenance,
+                    ),
+                    "processes": _build_source_synthesized_field_entries(
+                        values=sorted(process_hints)[:4],
+                        field_name="processes",
+                        provenance=provenance,
+                    ),
+                    "tools": _build_source_synthesized_field_entries(
+                        values=sorted(tool_hints)[:6],
+                        field_name="tools",
+                        provenance=provenance,
+                    ),
+                    "decisions": _build_source_synthesized_field_entries(
+                        values=bundle_decision_hints[:3],
+                        field_name="decisions",
+                        provenance=provenance,
+                    ),
+                    "impact": _build_source_synthesized_field_entries(
+                        values=impact_values[:3],
+                        field_name="impact",
+                        provenance=provenance,
+                    ),
+                },
+                "provenance": provenance,
+            }
+        )
+    return rows
+
+
 def _build_tooling_map_rows_from_matrix(matrix: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     tool_index: dict[str, dict[str, Any]] = {}
     for item in matrix or []:
@@ -34245,6 +34759,54 @@ def get_adoption_tooling_map_diagnostics(
         "project_id": project_id,
         "space_key": _normalize_space_key(space_key),
         "summary": _summarize_tooling_map_rows(rows),
+        "edges": edges,
+        "rows": diagnostics_rows,
+    }
+
+
+@app.get("/v1/adoption/data-sources/diagnostics")
+def get_adoption_data_sources_diagnostics(
+    project_id: str = Query(..., min_length=1),
+    space_key: str = Query("operations", min_length=1),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            rows = _build_data_source_diagnostics_rows(
+                cur,
+                project_id=project_id,
+                space_key=space_key,
+                max_sources=limit,
+            )
+    edges = _build_data_source_relation_edges(rows, limit=max(60, min(800, limit * 8)))
+    diagnostics_rows = []
+    for row in rows[:limit]:
+        diagnostics_rows.append(
+            {
+                "source_ref": row.get("source_ref"),
+                "source_type": row.get("source_type"),
+                "location": row.get("location"),
+                "owner": row.get("owner"),
+                "freshness": row.get("freshness"),
+                "used_by_agents": row.get("used_by_agents"),
+                "capabilities": row.get("capabilities"),
+                "processes": row.get("processes"),
+                "actions": row.get("actions"),
+                "tools": row.get("tools"),
+                "decisions": row.get("decisions"),
+                "impact": row.get("impact"),
+                "bundle_status": row.get("bundle_status"),
+                "stale_risk": row.get("stale_risk"),
+                "ownership_posture": row.get("ownership_posture"),
+                "human_review_boundary": row.get("human_review_boundary"),
+                "synthesized_fields": row.get("synthesized_fields"),
+                "provenance": row.get("provenance"),
+            }
+        )
+    return {
+        "project_id": project_id,
+        "space_key": _normalize_space_key(space_key),
+        "summary": _build_data_source_quality_metrics(rows),
         "edges": edges,
         "rows": diagnostics_rows,
     }

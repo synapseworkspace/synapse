@@ -19,6 +19,8 @@ try:
         _build_tooling_map_rows_from_matrix,
         _build_tooling_relation_edges,
         _build_tooling_quality_metrics,
+        _build_data_source_relation_edges,
+        _build_data_source_quality_metrics,
         _summarize_tooling_map_rows,
         _build_process_playbooks_bootstrap_page,
         _build_agent_wiki_bootstrap_quality_report,
@@ -76,6 +78,8 @@ except Exception:  # pragma: no cover
     _build_tooling_map_rows_from_matrix = None
     _build_tooling_relation_edges = None
     _build_tooling_quality_metrics = None
+    _build_data_source_relation_edges = None
+    _build_data_source_quality_metrics = None
     _summarize_tooling_map_rows = None
     _build_process_playbooks_bootstrap_page = None
     _build_agent_wiki_bootstrap_quality_report = None
@@ -128,6 +132,8 @@ except Exception:  # pragma: no cover
     or _build_tooling_map_rows_from_matrix is None
     or _build_tooling_relation_edges is None
     or _build_tooling_quality_metrics is None
+    or _build_data_source_relation_edges is None
+    or _build_data_source_quality_metrics is None
     or _summarize_tooling_map_rows is None
     or _build_process_playbooks_bootstrap_page is None
     or _build_agent_wiki_bootstrap_quality_report is None
@@ -2409,6 +2415,54 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         row = rows[0]
         self.assertIn("deal qualification", row["capabilities"])
         self.assertIn("salesforce api", row["sources"])
+
+    def test_data_source_diagnostics_edges_and_quality_metrics(self) -> None:
+        assert _build_data_source_relation_edges is not None
+        assert _build_data_source_quality_metrics is not None
+
+        rows = [
+            {
+                "source_ref": "zendesk_api",
+                "used_by_agents": ["support-bot"],
+                "capabilities": ["ticket triage"],
+                "processes": ["incident review"],
+                "tools": ["ticket_lookup"],
+                "decisions": ["Escalation approved for customer incident."],
+                "impact": ["incident review"],
+                "provenance": {
+                    "source_binding_contracts": ["zendesk_api"],
+                    "capability_contracts": ["ticket triage"],
+                    "bundle_keys": ["support.incident.review"],
+                    "usage_inferred": False,
+                },
+            },
+            {
+                "source_ref": "salesforce_api",
+                "used_by_agents": ["sales-bot"],
+                "capabilities": ["deal qualification"],
+                "processes": ["pipeline review"],
+                "tools": ["crm_account_lookup"],
+                "decisions": [],
+                "impact": ["pipeline review"],
+                "provenance": {
+                    "source_binding_contracts": [],
+                    "capability_contracts": ["deal qualification"],
+                    "bundle_keys": [],
+                    "usage_inferred": True,
+                },
+            },
+        ]
+        edges = _build_data_source_relation_edges(rows)
+        self.assertTrue(any(edge["from_ref"] == "zendesk_api" and edge["to_kind"] == "agent" and edge["to_ref"] == "support-bot" for edge in edges))
+        self.assertTrue(any(edge["from_ref"] == "salesforce_api" and edge["to_kind"] == "process" and edge["to_ref"] == "pipeline review" for edge in edges))
+        quality = _build_data_source_quality_metrics(rows)
+        self.assertEqual(quality["rows_total"], 2)
+        self.assertEqual(quality["rows_with_agents"], 2)
+        self.assertEqual(quality["rows_with_capability_or_process"], 2)
+        self.assertEqual(quality["inferred_usage_rows"], 1)
+        self.assertEqual(quality["bundle_backed_rows"], 1)
+        self.assertIn("source_binding", quality["field_origin_counts"])
+        self.assertIn("derived", quality["field_origin_counts"])
 
     def test_draft_bulk_filter_can_require_ready_bundle_support(self) -> None:
         assert _draft_matches_bulk_filter is not None
