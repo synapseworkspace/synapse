@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import csv
 import base64
 from datetime import UTC, date, datetime, timedelta
@@ -1275,6 +1276,21 @@ class SharedMemoryFanoutDueRetryProcessRequest(BaseModel):
     dry_run: bool = True
     limit: int = Field(default=20, ge=1, le=100)
     space_key: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class SharedMemoryFanoutAckRequest(BaseModel):
+    project_id: str
+    runtime_id: str = Field(min_length=1, max_length=256)
+    delivery_id: int | None = Field(default=None, ge=1)
+    delivery_correlation_id: str | None = Field(default=None, min_length=1, max_length=256)
+    hook_id: int | None = Field(default=None, ge=1)
+    space_key: str | None = Field(default=None, min_length=1, max_length=256)
+    dispatch_mode: str = Field(default="invalidation", pattern="^(invalidation|impact|publish_preview)$")
+    ack_status: str = Field(default="accepted", pattern="^(accepted|refreshed|ignored|failed)$")
+    invalidation_token: str | None = Field(default=None, min_length=1, max_length=512)
+    context_token: str | None = Field(default=None, min_length=1, max_length=512)
+    applied_change_at: datetime | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class AgentDirectoryRegisterRequest(BaseModel):
@@ -4757,6 +4773,14 @@ def _shared_memory_fanout_deliveries_table_exists(conn) -> bool:
     return bool(_SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS)
 
 
+def _shared_memory_runtime_acks_table_exists(conn) -> bool:
+    global _SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS
+    if _SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS is None:
+        with conn.cursor() as cur:
+            _SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS = _wiki_feature_table_exists(cur, "public.shared_memory_runtime_acks")
+    return bool(_SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS)
+
+
 def _render_agent_folder_markdown(
     *,
     profile: dict[str, Any],
@@ -8000,6 +8024,7 @@ _AGENT_DAILY_WORKLOGS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_ENTRIES_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_HOOKS_TABLE_EXISTS: bool | None = None
 _SHARED_MEMORY_FANOUT_DELIVERIES_TABLE_EXISTS: bool | None = None
+_SHARED_MEMORY_RUNTIME_ACKS_TABLE_EXISTS: bool | None = None
 _PUBLIC_TABLE_EXISTS_CACHE: dict[str, bool] = {}
 _CLAIMS_HAS_EVIDENCE_COLUMN_CACHE: bool | None = None
 _SOURCE_OWNERSHIP_DOMAINS = {"runtime_memory", "ops_kb_static", "synapse_wiki"}
@@ -12243,6 +12268,249 @@ def _list_shared_memory_fanout_deliveries(
     }
 
 
+def _resolve_shared_memory_delivery_link(
+    conn,
+    *,
+    project_id: str,
+    delivery_id: int | None,
+    delivery_correlation_id: str | None,
+    hook_id: int | None,
+) -> tuple[int | None, int | None, str | None, str | None]:
+    normalized_project = str(project_id or "").strip()
+    normalized_correlation = str(delivery_correlation_id or "").strip() or None
+    resolved_delivery_id = int(delivery_id) if delivery_id is not None else None
+    resolved_hook_id = int(hook_id) if hook_id is not None else None
+    resolved_space_key: str | None = None
+    resolved_dispatch_mode: str | None = None
+    if not normalized_project or not _shared_memory_fanout_deliveries_table_exists(conn):
+        return resolved_delivery_id, resolved_hook_id, resolved_space_key, resolved_dispatch_mode
+    with conn.cursor() as cur:
+        if resolved_delivery_id is not None:
+            cur.execute(
+                """
+                SELECT hook_id, space_key, dispatch_mode
+                FROM shared_memory_fanout_deliveries
+                WHERE id = %s
+                  AND project_id = %s
+                LIMIT 1
+                """,
+                (resolved_delivery_id, normalized_project),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                resolved_hook_id = int(row[0]) if row[0] is not None else resolved_hook_id
+                resolved_space_key = str(row[1] or "").strip() or None
+                resolved_dispatch_mode = str(row[2] or "").strip().lower() or None
+                return resolved_delivery_id, resolved_hook_id, resolved_space_key, resolved_dispatch_mode
+        if normalized_correlation:
+            cur.execute(
+                """
+                SELECT id, hook_id, space_key, dispatch_mode
+                FROM shared_memory_fanout_deliveries
+                WHERE project_id = %s
+                  AND COALESCE(request_payload #>> '{fanout_delivery,correlation_id}', '') = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (normalized_project, normalized_correlation),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                resolved_delivery_id = int(row[0])
+                resolved_hook_id = int(row[1]) if row[1] is not None else resolved_hook_id
+                resolved_space_key = str(row[2] or "").strip() or None
+                resolved_dispatch_mode = str(row[3] or "").strip().lower() or None
+    return resolved_delivery_id, resolved_hook_id, resolved_space_key, resolved_dispatch_mode
+
+
+def _record_shared_memory_runtime_ack(
+    conn,
+    *,
+    project_id: str,
+    runtime_id: str,
+    delivery_id: int | None,
+    delivery_correlation_id: str | None,
+    hook_id: int | None,
+    space_key: str | None,
+    dispatch_mode: str,
+    ack_status: str,
+    invalidation_token: str | None,
+    context_token: str | None,
+    applied_change_at: datetime | None,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_runtime = str(runtime_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="") or None
+    normalized_dispatch_mode = str(dispatch_mode or "invalidation").strip().lower() or "invalidation"
+    normalized_ack_status = str(ack_status or "accepted").strip().lower() or "accepted"
+    normalized_correlation = str(delivery_correlation_id or "").strip() or None
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not normalized_runtime:
+        raise HTTPException(status_code=422, detail={"code": "runtime_id_required"})
+    if not _shared_memory_runtime_acks_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "shared_memory_runtime_acks_unavailable"})
+    resolved_delivery_id, resolved_hook_id, resolved_delivery_space, resolved_dispatch_mode = _resolve_shared_memory_delivery_link(
+        conn,
+        project_id=normalized_project,
+        delivery_id=delivery_id,
+        delivery_correlation_id=normalized_correlation,
+        hook_id=hook_id,
+    )
+    final_space = normalized_space or resolved_delivery_space
+    final_dispatch_mode = resolved_dispatch_mode or normalized_dispatch_mode
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO shared_memory_runtime_acks (
+              project_id,
+              hook_id,
+              delivery_id,
+              delivery_correlation_id,
+              runtime_id,
+              space_key,
+              dispatch_mode,
+              ack_status,
+              invalidation_token,
+              context_token,
+              applied_change_at,
+              metadata,
+              created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            RETURNING id, created_at
+            """,
+            (
+                normalized_project,
+                resolved_hook_id,
+                resolved_delivery_id,
+                normalized_correlation,
+                normalized_runtime,
+                final_space,
+                final_dispatch_mode,
+                normalized_ack_status,
+                str(invalidation_token or "").strip() or None,
+                str(context_token or "").strip() or None,
+                applied_change_at,
+                Jsonb(metadata if isinstance(metadata, dict) else {}),
+            ),
+        )
+        row = cur.fetchone()
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "ack_id": int(row[0]),
+        "runtime_id": normalized_runtime,
+        "delivery_id": resolved_delivery_id,
+        "delivery_correlation_id": normalized_correlation,
+        "hook_id": resolved_hook_id,
+        "space_key": final_space,
+        "dispatch_mode": final_dispatch_mode,
+        "ack_status": normalized_ack_status,
+        "created_at": row[1].astimezone(UTC).isoformat() if isinstance(row[1], datetime) else datetime.now(UTC).isoformat(),
+    }
+
+
+def _list_shared_memory_runtime_acks(
+    conn,
+    *,
+    project_id: str,
+    space_key: str | None = None,
+    hook_id: int | None = None,
+    runtime_id: str | None = None,
+    ack_status: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_space = _normalize_space_key(space_key or "", default="")
+    normalized_runtime = str(runtime_id or "").strip() or None
+    normalized_ack_status = str(ack_status or "").strip().lower() or None
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    if not _shared_memory_runtime_acks_table_exists(conn):
+        return {
+            "project_id": normalized_project,
+            "space_key": normalized_space or None,
+            "acks": [],
+            "summary": {"acks_total": 0, "refreshed_total": 0, "supported": False},
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+    with conn.cursor() as cur:
+        sql = """
+            SELECT
+              a.id,
+              a.hook_id,
+              h.name,
+              a.delivery_id,
+              a.delivery_correlation_id,
+              a.runtime_id,
+              a.space_key,
+              a.dispatch_mode,
+              a.ack_status,
+              a.invalidation_token,
+              a.context_token,
+              a.applied_change_at,
+              a.metadata,
+              a.created_at
+            FROM shared_memory_runtime_acks a
+            LEFT JOIN shared_memory_fanout_hooks h ON h.id = a.hook_id
+            WHERE a.project_id = %s
+        """
+        params: list[Any] = [normalized_project]
+        if normalized_space:
+            sql += " AND (a.space_key IS NULL OR lower(a.space_key) = %s)"
+            params.append(normalized_space)
+        if hook_id is not None:
+            sql += " AND a.hook_id = %s"
+            params.append(int(hook_id))
+        if normalized_runtime:
+            sql += " AND a.runtime_id = %s"
+            params.append(normalized_runtime)
+        if normalized_ack_status:
+            sql += " AND a.ack_status = %s"
+            params.append(normalized_ack_status)
+        sql += " ORDER BY a.created_at DESC, a.id DESC LIMIT %s"
+        params.append(max(1, min(200, int(limit))))
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall() or []
+    acks: list[dict[str, Any]] = []
+    refreshed_total = 0
+    for row in rows:
+        ack_status_value = str(row[8] or "").strip().lower() or "accepted"
+        if ack_status_value == "refreshed":
+            refreshed_total += 1
+        acks.append(
+            {
+                "id": int(row[0]),
+                "hook_id": int(row[1]) if row[1] is not None else None,
+                "hook_name": str(row[2] or "").strip() or None,
+                "delivery_id": int(row[3]) if row[3] is not None else None,
+                "delivery_correlation_id": str(row[4] or "").strip() or None,
+                "runtime_id": str(row[5] or "").strip(),
+                "space_key": str(row[6] or "").strip() or None,
+                "dispatch_mode": str(row[7] or "").strip().lower() or "invalidation",
+                "ack_status": ack_status_value,
+                "invalidation_token": str(row[9] or "").strip() or None,
+                "context_token": str(row[10] or "").strip() or None,
+                "applied_change_at": row[11].astimezone(UTC).isoformat() if isinstance(row[11], datetime) else None,
+                "metadata": row[12] if isinstance(row[12], dict) else {},
+                "created_at": row[13].astimezone(UTC).isoformat() if isinstance(row[13], datetime) else None,
+            }
+        )
+    return {
+        "project_id": normalized_project,
+        "space_key": normalized_space or None,
+        "acks": acks,
+        "summary": {
+            "acks_total": len(acks),
+            "refreshed_total": refreshed_total,
+            "supported": True,
+        },
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
 def _retry_shared_memory_fanout_delivery(
     conn,
     *,
@@ -12542,7 +12810,7 @@ def _dispatch_shared_memory_fanout(
     normalized_space = _normalize_space_key(space_key or "", default="")
     if not normalized_project:
         raise HTTPException(status_code=422, detail={"code": "project_id_required"})
-    payload = _build_shared_memory_fanout_dispatch_payload(
+    base_payload = _build_shared_memory_fanout_dispatch_payload(
         conn,
         project_id=normalized_project,
         agent_id=agent_id,
@@ -12584,6 +12852,18 @@ def _dispatch_shared_memory_fanout(
             "dry_run": bool(dry_run),
             "status": "planned" if dry_run else "pending",
         }
+        delivery_correlation_id = uuid4().hex
+        request_payload = copy.deepcopy(base_payload)
+        request_payload["fanout_delivery"] = {
+            "correlation_id": delivery_correlation_id,
+            "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
+            "hook_id": int(hook.get("id") or 0) or None,
+            "hook_name": str(hook.get("name") or "").strip() or None,
+            "project_id": normalized_project,
+            "space_key": normalized_space or None,
+            "ack_endpoint": "/v1/agents/shared-memory/fanout-acks",
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
         request_headers = {
             "Content-Type": "application/json",
             "X-Synapse-Project-Id": normalized_project,
@@ -12593,7 +12873,7 @@ def _dispatch_shared_memory_fanout(
         request_headers.update(_normalize_shared_memory_hook_headers(hook.get("headers")))
         status, http_status, error_message, response_payload = _execute_shared_memory_fanout_delivery(
             endpoint_url=endpoint_url,
-            request_payload=payload,
+            request_payload=request_payload,
             request_headers=request_headers,
             timeout_seconds=max(1.0, min(60.0, float(hook.get("timeout_seconds") or 5))),
             dry_run=bool(dry_run),
@@ -12621,7 +12901,7 @@ def _dispatch_shared_memory_fanout(
             dry_run=bool(dry_run),
             space_key=normalized_space or None,
             requested_by=updated_by,
-            request_payload=payload,
+            request_payload=request_payload,
             response_payload=response_payload,
             http_status=http_status,
             error_message=error_message,
@@ -12631,6 +12911,7 @@ def _dispatch_shared_memory_fanout(
         )
         if delivery_log_id is not None:
             delivery["delivery_id"] = delivery_log_id
+        delivery["delivery_correlation_id"] = delivery_correlation_id
         delivery["attempt_no"] = 1
         delivery["max_attempts"] = retry_max_attempts
         delivery["next_retry_at"] = next_retry_at.isoformat() if isinstance(next_retry_at, datetime) else None
@@ -12642,7 +12923,7 @@ def _dispatch_shared_memory_fanout(
         "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
         "dry_run": bool(dry_run),
         "generated_at": datetime.now(UTC).isoformat(),
-        "payload": payload,
+        "payload": base_payload,
         "summary": {
             "hooks_scanned": len(hooks),
             "deliveries_planned": len(deliveries),
@@ -13830,10 +14111,16 @@ def _build_shared_memory_health_metrics(
     hooks_summary = hooks_summary if isinstance(hooks_summary, dict) else {}
     fanout_failed_recent = 0
     fanout_retries_due = 0
+    fanout_delivered_recent = 0
+    fanout_acks_recent = 0
+    fanout_refreshed_recent = 0
+    fanout_unacked_recent = 0
+    fanout_ack_lag_minutes: float | None = None
     if _shared_memory_fanout_deliveries_table_exists(conn):
         with conn.cursor() as cur:
             sql = """
                 SELECT
+                  COUNT(*) FILTER (WHERE status = 'delivered' AND created_at >= NOW() - INTERVAL '24 hours')::bigint,
                   COUNT(*) FILTER (WHERE status = 'failed' AND created_at >= NOW() - INTERVAL '24 hours')::bigint,
                   COUNT(*) FILTER (
                     WHERE status = 'failed'
@@ -13849,9 +14136,58 @@ def _build_shared_memory_health_metrics(
                 sql += " AND (space_key IS NULL OR lower(space_key) = %s)"
                 params.append(_normalize_space_key(space_key or "", default=""))
             cur.execute(sql, tuple(params))
-            failed_row = cur.fetchone() or (0, 0)
-        fanout_failed_recent = int(failed_row[0] or 0)
-        fanout_retries_due = int(failed_row[1] or 0)
+            failed_row = cur.fetchone() or (0, 0, 0)
+        fanout_delivered_recent = int(failed_row[0] or 0)
+        fanout_failed_recent = int(failed_row[1] or 0)
+        fanout_retries_due = int(failed_row[2] or 0)
+    if _shared_memory_runtime_acks_table_exists(conn):
+        with conn.cursor() as cur:
+            sql = """
+                WITH recent_acks AS (
+                  SELECT
+                    a.delivery_id,
+                    a.ack_status,
+                    a.created_at,
+                    d.created_at AS delivery_created_at
+                  FROM shared_memory_runtime_acks a
+                  LEFT JOIN shared_memory_fanout_deliveries d ON d.id = a.delivery_id
+                  WHERE a.project_id = %s
+                    AND a.created_at >= NOW() - INTERVAL '24 hours'
+                )
+                SELECT
+                  COUNT(*)::bigint,
+                  COUNT(*) FILTER (WHERE ack_status = 'refreshed')::bigint,
+                  COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (created_at - delivery_created_at)) / 60.0)::numeric, 2), NULL)
+                FROM recent_acks
+            """
+            params = [normalized_project]
+            if _normalize_space_key(space_key or "", default=""):
+                sql = """
+                    WITH recent_acks AS (
+                      SELECT
+                        a.delivery_id,
+                        a.ack_status,
+                        a.created_at,
+                        d.created_at AS delivery_created_at
+                      FROM shared_memory_runtime_acks a
+                      LEFT JOIN shared_memory_fanout_deliveries d ON d.id = a.delivery_id
+                      WHERE a.project_id = %s
+                        AND a.created_at >= NOW() - INTERVAL '24 hours'
+                        AND (a.space_key IS NULL OR lower(a.space_key) = %s)
+                    )
+                    SELECT
+                      COUNT(*)::bigint,
+                      COUNT(*) FILTER (WHERE ack_status = 'refreshed')::bigint,
+                      COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (created_at - delivery_created_at)) / 60.0)::numeric, 2), NULL)
+                    FROM recent_acks
+                """
+                params.append(_normalize_space_key(space_key or "", default=""))
+            cur.execute(sql, tuple(params))
+            ack_row = cur.fetchone() or (0, 0, None)
+        fanout_acks_recent = int(ack_row[0] or 0)
+        fanout_refreshed_recent = int(ack_row[1] or 0)
+        fanout_ack_lag_minutes = float(ack_row[2]) if ack_row[2] is not None else None
+    fanout_unacked_recent = max(0, fanout_delivered_recent - fanout_acks_recent)
     return {
         "project_id": normalized_project,
         "space_key": _normalize_space_key(space_key or "", default="") or None,
@@ -13873,8 +14209,13 @@ def _build_shared_memory_health_metrics(
             "knowledge_snapshots_total": int(invalidation.get("knowledge_snapshots_total") or 0),
             "fanout_hooks_total": int(hooks_summary.get("hooks_total") or 0),
             "fanout_hooks_enabled": int(hooks_summary.get("enabled_hooks") or 0),
+            "fanout_delivered_recent": fanout_delivered_recent,
             "fanout_failed_recent": fanout_failed_recent,
             "fanout_retries_due": fanout_retries_due,
+            "fanout_acks_recent": fanout_acks_recent,
+            "fanout_refreshed_recent": fanout_refreshed_recent,
+            "fanout_unacked_recent": fanout_unacked_recent,
+            "fanout_ack_lag_minutes": fanout_ack_lag_minutes,
         },
     }
 
@@ -29586,6 +29927,53 @@ def list_agent_shared_memory_fanout_deliveries(
             space_key=space_key,
             hook_id=hook_id,
             status=status,
+            limit=limit,
+        )
+
+
+@app.post("/v1/agents/shared-memory/fanout-acks", response_model=None)
+def record_agent_shared_memory_fanout_ack(payload: SharedMemoryFanoutAckRequest) -> dict[str, Any]:
+    normalized_project = str(payload.project_id or "").strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _record_shared_memory_runtime_ack(
+            conn,
+            project_id=normalized_project,
+            runtime_id=payload.runtime_id,
+            delivery_id=payload.delivery_id,
+            delivery_correlation_id=payload.delivery_correlation_id,
+            hook_id=payload.hook_id,
+            space_key=payload.space_key,
+            dispatch_mode=payload.dispatch_mode,
+            ack_status=payload.ack_status,
+            invalidation_token=payload.invalidation_token,
+            context_token=payload.context_token,
+            applied_change_at=payload.applied_change_at,
+            metadata=payload.metadata,
+        )
+
+
+@app.get("/v1/agents/shared-memory/fanout-acks")
+def list_agent_shared_memory_fanout_acks(
+    project_id: str,
+    space_key: str | None = Query(default=None),
+    hook_id: int | None = Query(default=None, ge=1),
+    runtime_id: str | None = Query(default=None),
+    ack_status: str | None = Query(default=None, pattern="^(accepted|refreshed|ignored|failed)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    normalized_project = project_id.strip()
+    if not normalized_project:
+        raise HTTPException(status_code=422, detail={"code": "project_id_required"})
+    with get_conn() as conn:
+        return _list_shared_memory_runtime_acks(
+            conn,
+            project_id=normalized_project,
+            space_key=space_key,
+            hook_id=hook_id,
+            runtime_id=runtime_id,
+            ack_status=ack_status,
             limit=limit,
         )
 

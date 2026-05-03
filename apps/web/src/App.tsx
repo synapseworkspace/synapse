@@ -1398,8 +1398,13 @@ type SharedMemoryHealthPayload = {
     materialized_entries_visible?: number;
     fanout_hooks_total?: number;
     fanout_hooks_enabled?: number;
+    fanout_delivered_recent?: number;
     fanout_failed_recent?: number;
     fanout_retries_due?: number;
+    fanout_acks_recent?: number;
+    fanout_refreshed_recent?: number;
+    fanout_unacked_recent?: number;
+    fanout_ack_lag_minutes?: number | null;
     state_snapshot_slug?: string | null;
     state_snapshot_updated_at?: string | null;
     latest_change_at?: string | null;
@@ -3333,6 +3338,12 @@ export default function App() {
     }
     if (Number(metrics.fanout_retries_due || 0) > 0) {
       items.push(`${Number(metrics.fanout_retries_due || 0)} shared-memory fanout retr${Number(metrics.fanout_retries_due || 0) === 1 ? "y is" : "ies are"} due for retry now.`);
+    }
+    if (Number(metrics.fanout_hooks_enabled || 0) > 0 && Number(metrics.fanout_delivered_recent || 0) > 0 && Number(metrics.fanout_acks_recent || 0) === 0) {
+      items.push("Runtime hooks are receiving shared-memory deliveries, but no runtime acknowledgements were observed in the last 24h.");
+    }
+    if (Number(metrics.fanout_unacked_recent || 0) > 0) {
+      items.push(`${Number(metrics.fanout_unacked_recent || 0)} recent shared-memory deliver${Number(metrics.fanout_unacked_recent || 0) === 1 ? "y remains" : "ies remain"} unacknowledged by runtimes.`);
     }
     return items.slice(0, 3);
   }, [sharedMemoryHealth, sharedMemoryImpact]);
@@ -10565,6 +10576,10 @@ export default function App() {
                                             <Text size="xs" c="dimmed">
                                               Hooks enabled: {Number(sharedMemoryHealth?.metrics?.fanout_hooks_enabled || 0)} /{" "}
                                               {Number(sharedMemoryHealth?.metrics?.fanout_hooks_total || 0)}
+                                            </Text>
+                                            <Text size="xs" c="dimmed">
+                                              Runtime acks: {Number(sharedMemoryHealth?.metrics?.fanout_acks_recent || 0)} recent •{" "}
+                                              {Number(sharedMemoryHealth?.metrics?.fanout_unacked_recent || 0)} unacked
                                             </Text>
                                             <Text size="xs" c="dimmed">
                                               Top roles:{" "}

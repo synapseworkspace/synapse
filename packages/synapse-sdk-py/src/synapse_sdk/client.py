@@ -1812,6 +1812,65 @@ class SynapseClient:
             idempotency_key=str(uuid4()),
         )
 
+    def ack_agent_shared_memory_fanout(
+        self,
+        *,
+        runtime_id: str,
+        ack_status: str = "accepted",
+        delivery_id: int | None = None,
+        delivery_correlation_id: str | None = None,
+        hook_id: int | None = None,
+        space_key: str | None = None,
+        dispatch_mode: str = "invalidation",
+        invalidation_token: str | None = None,
+        context_token: str | None = None,
+        applied_change_at: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "runtime_id": str(runtime_id).strip(),
+            "delivery_id": int(delivery_id) if delivery_id is not None else None,
+            "delivery_correlation_id": str(delivery_correlation_id).strip() if delivery_correlation_id is not None and str(delivery_correlation_id).strip() else None,
+            "hook_id": int(hook_id) if hook_id is not None else None,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "dispatch_mode": str(dispatch_mode or "invalidation").strip().lower() or "invalidation",
+            "ack_status": str(ack_status or "accepted").strip().lower() or "accepted",
+            "invalidation_token": str(invalidation_token).strip() if invalidation_token is not None and str(invalidation_token).strip() else None,
+            "context_token": str(context_token).strip() if context_token is not None and str(context_token).strip() else None,
+            "applied_change_at": str(applied_change_at).strip() if applied_change_at is not None and str(applied_change_at).strip() else None,
+            "metadata": metadata if isinstance(metadata, dict) else {},
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-acks",
+            method="POST",
+            payload=payload,
+            idempotency_key=str(uuid4()),
+        )
+
+    def list_agent_shared_memory_fanout_acks(
+        self,
+        *,
+        space_key: str | None = None,
+        hook_id: int | None = None,
+        runtime_id: str | None = None,
+        ack_status: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "project_id": self._config.project_id,
+            "space_key": str(space_key).strip() if space_key is not None and str(space_key).strip() else None,
+            "hook_id": int(hook_id) if hook_id is not None else None,
+            "runtime_id": str(runtime_id).strip() if runtime_id is not None and str(runtime_id).strip() else None,
+            "ack_status": str(ack_status).strip().lower() if ack_status is not None and str(ack_status).strip() else None,
+            "limit": max(1, min(200, int(limit))),
+        }
+        return self._request_json(
+            "/v1/agents/shared-memory/fanout-acks",
+            method="GET",
+            params=params,
+        )
+
     def get_bootstrap_migration_recommendation(self) -> dict[str, Any]:
         return self._request_json(
             "/v1/wiki/drafts/bootstrap-approve/recommendation",

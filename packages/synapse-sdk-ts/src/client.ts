@@ -1696,6 +1696,60 @@ export class SynapseClient {
     });
   }
 
+  async ackAgentSharedMemoryFanout(options: {
+    runtimeId: string;
+    ackStatus?: "accepted" | "refreshed" | "ignored" | "failed" | string;
+    deliveryId?: number;
+    deliveryCorrelationId?: string;
+    hookId?: number;
+    spaceKey?: string;
+    dispatchMode?: "invalidation" | "impact" | "publish_preview" | string;
+    invalidationToken?: string;
+    contextToken?: string;
+    appliedChangeAt?: string;
+    metadata?: Record<string, unknown>;
+    idempotencyKey?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-acks", {
+      method: "POST",
+      payload: {
+        project_id: this.projectId,
+        runtime_id: String(options.runtimeId || "").trim(),
+        delivery_id: options.deliveryId == null ? undefined : normalizeInt(options.deliveryId, 1, Number.MAX_SAFE_INTEGER),
+        delivery_correlation_id: asOptionalString(options.deliveryCorrelationId) ?? undefined,
+        hook_id: options.hookId == null ? undefined : normalizeInt(options.hookId, 1, Number.MAX_SAFE_INTEGER),
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        dispatch_mode: String(options.dispatchMode ?? "invalidation").trim().toLowerCase() || "invalidation",
+        ack_status: String(options.ackStatus ?? "accepted").trim().toLowerCase() || "accepted",
+        invalidation_token: asOptionalString(options.invalidationToken) ?? undefined,
+        context_token: asOptionalString(options.contextToken) ?? undefined,
+        applied_change_at: asOptionalString(options.appliedChangeAt) ?? undefined,
+        metadata: options.metadata ?? {}
+      },
+      idempotencyKey: options.idempotencyKey ?? makeUuid()
+    });
+  }
+
+  async listAgentSharedMemoryFanoutAcks(options: {
+    spaceKey?: string;
+    hookId?: number;
+    runtimeId?: string;
+    ackStatus?: "accepted" | "refreshed" | "ignored" | "failed" | string;
+    limit?: number;
+  } = {}): Promise<Record<string, unknown>> {
+    return this.requestJson<Record<string, unknown>>("/v1/agents/shared-memory/fanout-acks", {
+      method: "GET",
+      params: {
+        project_id: this.projectId,
+        space_key: asOptionalString(options.spaceKey) ?? undefined,
+        hook_id: options.hookId == null ? undefined : normalizeInt(options.hookId, 1, Number.MAX_SAFE_INTEGER),
+        runtime_id: asOptionalString(options.runtimeId) ?? undefined,
+        ack_status: asOptionalString(options.ackStatus)?.toLowerCase() ?? undefined,
+        limit: normalizeInt(options.limit ?? 50, 1, 200)
+      }
+    });
+  }
+
   async getAdoptionPipelineVisibility(options: {
     days?: number;
     sourceSystems?: string[];

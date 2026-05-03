@@ -154,9 +154,10 @@ Implemented:
 16. optional `shared_memory_fanout_hooks` now let operators configure push-style invalidation / impact / publish-preview delivery to external runtimes, with dry-run dispatch before going live
 17. fanout deliveries now persist audit history plus retry support, so failed runtime pushes can be inspected and re-dispatched without reconstructing payloads by hand
 18. hook-level retry policy (`max attempts` + `backoff`) and due-retry processing now let shared-memory fanout move from ad-hoc retries toward a real delivery loop
+19. runtime fanout payloads now carry per-delivery correlation IDs, and runtimes can report `accepted/refreshed/ignored/failed` acknowledgements back through `POST /v1/agents/shared-memory/fanout-acks`, so health can distinguish “sent” from “actually applied”
 
 Current limitation:
-- private/team memory now has materialized entry backing plus hook retry/backoff, but still lacks richer write-back lifecycle semantics and stronger delivery guarantees such as queued execution and runtime ack freshness
+- private/team memory now has materialized entry backing, fanout retry/backoff, and runtime ack freshness, but still lacks richer write-back lifecycle semantics and stronger queued delivery guarantees beyond inline processing
 
 These endpoints are intentionally conservative:
 

@@ -899,6 +899,56 @@ class LegacyImportClientMethodsTests(unittest.TestCase):
         self.assertEqual(payload.get("limit"), 14)
         self.assertEqual(payload.get("space_key"), "logistics")
 
+    def test_ack_agent_shared_memory_fanout_posts_expected_payload(self) -> None:
+        self.client.ack_agent_shared_memory_fanout(
+            runtime_id="dispatcher-runtime",
+            ack_status="refreshed",
+            delivery_id=24,
+            delivery_correlation_id="corr-123",
+            hook_id=5,
+            space_key="logistics",
+            dispatch_mode="impact",
+            invalidation_token="inv-001",
+            context_token="ctx-002",
+            applied_change_at="2026-05-03T18:10:00Z",
+            metadata={"snapshot": "wiki/state"},
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-acks")
+        self.assertEqual(call["method"], "POST")
+        payload = call["payload"]
+        self.assertEqual(payload.get("project_id"), "omega_demo")
+        self.assertEqual(payload.get("runtime_id"), "dispatcher-runtime")
+        self.assertEqual(payload.get("ack_status"), "refreshed")
+        self.assertEqual(payload.get("delivery_id"), 24)
+        self.assertEqual(payload.get("delivery_correlation_id"), "corr-123")
+        self.assertEqual(payload.get("hook_id"), 5)
+        self.assertEqual(payload.get("space_key"), "logistics")
+        self.assertEqual(payload.get("dispatch_mode"), "impact")
+        self.assertEqual(payload.get("invalidation_token"), "inv-001")
+        self.assertEqual(payload.get("context_token"), "ctx-002")
+        self.assertEqual(payload.get("applied_change_at"), "2026-05-03T18:10:00Z")
+        self.assertEqual(payload.get("metadata"), {"snapshot": "wiki/state"})
+
+    def test_list_agent_shared_memory_fanout_acks_scopes_project(self) -> None:
+        self.client.list_agent_shared_memory_fanout_acks(
+            space_key="logistics",
+            hook_id=5,
+            runtime_id="dispatcher-runtime",
+            ack_status="refreshed",
+            limit=9,
+        )
+        call = self.client.calls[-1]
+        self.assertEqual(call["path"], "/v1/agents/shared-memory/fanout-acks")
+        self.assertEqual(call["method"], "GET")
+        params = call["params"]
+        self.assertEqual(params.get("project_id"), "omega_demo")
+        self.assertEqual(params.get("space_key"), "logistics")
+        self.assertEqual(params.get("hook_id"), 5)
+        self.assertEqual(params.get("runtime_id"), "dispatcher-runtime")
+        self.assertEqual(params.get("ack_status"), "refreshed")
+        self.assertEqual(params.get("limit"), 9)
+
     def test_enable_adoption_safe_mode_posts_expected_payload(self) -> None:
         self.client.enable_adoption_safe_mode(
             updated_by="ops_admin",
