@@ -56,18 +56,28 @@ class SynthesisPackTests(unittest.TestCase):
                 {
                     "standing_orders": ["daily report", "incident monitor"],
                     "scheduled_tasks": ["driver economy sheet", "daily report"],
+                    "responsibilities": ["driver economics", "route monitoring", "shift readiness"],
+                    "source_bindings": ["erp_routes_slice", "google_sheets_ingest"],
                 }
             ],
-            source_counts=[("postgres_sql", 2)],
-            claims_rollup=[("documents_orders", 3), ("incident_monitor", 2)],
+            source_counts=[("postgres_sql", 2), ("google_sheets", 1)],
+            claims_rollup=[("documents_orders", 3), ("incident_monitor", 2), ("erp_routes_slice", 1)],
             normalize_statement_text=_normalize,
         )
         principles = payload.get("principles") or []
         workflow_signals = payload.get("workflow_signals") or []
         snapshot_notes = payload.get("snapshot_notes") or []
+        entity_signals = payload.get("entity_signals") or []
+        process_signals = payload.get("process_signals") or []
+        trust_signals = payload.get("trust_signals") or []
+        exception_signals = payload.get("exception_signals") or []
         self.assertTrue(any("dispatch" in item.lower() or "incident" in item.lower() for item in principles))
         self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in workflow_signals))
         self.assertTrue(any("connected source streams" in item.lower() for item in snapshot_notes))
+        self.assertTrue(any("driver" in str(item.get("label") or "").lower() for item in entity_signals))
+        self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in process_signals))
+        self.assertTrue(any("canonical operational record" in str(item.get("trust_note") or "").lower() for item in trust_signals))
+        self.assertTrue(any("incident" in str(item.get("label") or "").lower() or "delivery" in str(item.get("label") or "").lower() for item in exception_signals))
 
     def test_logistics_pack_does_not_leak_driver_economy_into_daily_report(self) -> None:
         pack = get_synthesis_pack("logistics_ops")

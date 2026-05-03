@@ -41457,6 +41457,10 @@ def _build_company_operating_context_bootstrap_page(
     )
     snapshot_notes = [str(v).strip() for v in (context_extensions.get("snapshot_notes") or []) if str(v).strip()]
     workflow_signals = [item for item in (context_extensions.get("workflow_signals") or []) if isinstance(item, dict)]
+    entity_signals = [item for item in (context_extensions.get("entity_signals") or []) if isinstance(item, dict)]
+    process_signals = [item for item in (context_extensions.get("process_signals") or []) if isinstance(item, dict)]
+    trust_signals = [item for item in (context_extensions.get("trust_signals") or []) if isinstance(item, dict)]
+    exception_signals = [item for item in (context_extensions.get("exception_signals") or []) if isinstance(item, dict)]
     principles = [str(v).strip() for v in (context_extensions.get("principles") or []) if str(v).strip()]
 
     lines = [
@@ -41515,6 +41519,54 @@ def _build_company_operating_context_bootstrap_page(
         )
         for item in workflow_signals[:8]:
             lines.append(f"| {str(item.get('label') or 'workflow').replace('|', '/')} | {int(item.get('count') or 0)} |")
+    if entity_signals:
+        lines.extend(
+            [
+                "",
+                "## Business Entity Signals",
+                "| Entity | Signals |",
+                "|---|---:|",
+            ]
+        )
+        for item in entity_signals[:8]:
+            lines.append(f"| {str(item.get('label') or 'entity').replace('|', '/')} | {int(item.get('count') or 0)} |")
+    if process_signals:
+        lines.extend(
+            [
+                "",
+                "## Process Candidate Signals",
+                "| Process | Signals | Why It Matters |",
+                "|---|---:|---|",
+            ]
+        )
+        for item in process_signals[:8]:
+            lines.append(
+                f"| {str(item.get('label') or 'process').replace('|', '/')} | {int(item.get('count') or 0)} | {str(item.get('why') or '').replace('|', '/')} |"
+            )
+    if trust_signals:
+        lines.extend(
+            [
+                "",
+                "## Source Trust Signals",
+                "| Source Class | Signals | Trust Note |",
+                "|---|---:|---|",
+            ]
+        )
+        for item in trust_signals[:8]:
+            lines.append(
+                f"| {str(item.get('label') or 'source').replace('|', '/')} | {int(item.get('count') or 0)} | {str(item.get('trust_note') or '').replace('|', '/')} |"
+            )
+    if exception_signals:
+        lines.extend(
+            [
+                "",
+                "## Exception Candidate Signals",
+                "| Exception Pattern | Signals |",
+                "|---|---:|",
+            ]
+        )
+        for item in exception_signals[:8]:
+            lines.append(f"| {str(item.get('label') or 'exception').replace('|', '/')} | {int(item.get('count') or 0)} |")
     lines.extend(
         [
             "",

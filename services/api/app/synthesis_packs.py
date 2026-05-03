@@ -709,6 +709,26 @@ def _build_generic_task_semantics(
     }
 
 
+def _safe_items(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, set):
+        return list(value)
+    if isinstance(value, dict):
+        return [value]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _humanize_signal_label(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").replace("_", " ")).strip()
+    return text[:1].upper() + text[1:] if text else ""
+
+
 class GenericOpsSynthesisPack:
     key = "generic_ops"
 
@@ -925,6 +945,10 @@ class GenericOpsSynthesisPack:
         return {
             "snapshot_notes": [],
             "workflow_signals": [],
+            "entity_signals": [],
+            "process_signals": [],
+            "trust_signals": [],
+            "exception_signals": [],
             "principles": [
                 "Durable policy/process knowledge should be published to wiki; event payload streams stay in operational lane.",
                 "Escalation is mandatory when SLA/compliance/customer-impact risks are detected.",
@@ -1707,6 +1731,42 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
         workflow_counts: dict[str, int] = {}
+        entity_buckets = {
+            "Driver": ("driver",),
+            "Route": ("route", "routing"),
+            "Shift": ("shift", "readiness"),
+            "Order / Task": ("order", "task", "assignment", "snapshot"),
+            "Document": ("document", "docs"),
+            "Incident": ("incident", "failure", "escalat", "access"),
+            "Fleet Provider": ("fleet", "provider", "delimobil"),
+            "ERP Object": ("erp",),
+            "Economics Report": ("econom", "report"),
+        }
+        entity_counts: dict[str, int] = {key: 0 for key in entity_buckets}
+        exception_counts: dict[str, int] = {
+            "Readiness gap": 0,
+            "Delivery failure": 0,
+            "Access / route dead-end": 0,
+            "Stale or conflicting source data": 0,
+        }
+
+        def _bump_entity_signals(value: Any, weight: int = 1) -> None:
+            text = normalize_statement_text(str(value or ""))
+            if not text:
+                return
+            for label, keywords in entity_buckets.items():
+                if any(keyword in text for keyword in keywords):
+                    entity_counts[label] = int(entity_counts.get(label, 0)) + int(weight)
+
+            if "readiness" in text or ("shift" in text and "ready" in text):
+                exception_counts["Readiness gap"] = int(exception_counts["Readiness gap"]) + int(weight)
+            if "failure" in text or "incident" in text:
+                exception_counts["Delivery failure"] = int(exception_counts["Delivery failure"]) + int(weight)
+            if "access" in text or ("route" in text and "dead" in text):
+                exception_counts["Access / route dead-end"] = int(exception_counts["Access / route dead-end"]) + int(weight)
+            if "stale" in text or "conflict" in text or "derived" in text:
+                exception_counts["Stale or conflicting source data"] = int(exception_counts["Stale or conflicting source data"]) + int(weight)
+
         for item in matrix_rows or []:
             if not isinstance(item, dict):
                 continue
@@ -1719,12 +1779,58 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 if not normalized or not label:
                     continue
                 workflow_counts[label] = int(workflow_counts.get(label, 0)) + 1
+                _bump_entity_signals(label, weight=2)
+            for value in [
+                *(item.get("responsibilities") or []),
+                *(item.get("scenario_examples") or []),
+                *(item.get("source_bindings") or []),
+                *(item.get("data_sources") or []),
+            ]:
+                _bump_entity_signals(value)
         workflow_signals = [
             {"label": name, "count": total}
             for name, total in sorted(workflow_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:6]
         ]
+        for category, total in claims_rollup or []:
+            _bump_entity_signals(category, weight=max(1, int(total or 0)))
+
+        entity_signals = [
+            {"label": label, "count": total}
+            for label, total in sorted(entity_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+            if int(total) > 0
+        ][:8]
+        process_signals = [
+            {
+                "label": str(item.get("label") or ""),
+                "count": int(item.get("count") or 0),
+                "why": "Recurring workflow observed in scheduled tasks or standing orders.",
+            }
+            for item in workflow_signals[:6]
+        ]
+
         source_total = sum(int(total or 0) for _, total in (source_counts or []))
         domain_total = sum(int(total or 0) for _, total in (claims_rollup or []))
+        trust_signals: list[dict[str, Any]] = []
+        for source_type, total in source_counts or []:
+            normalized_source = normalize_statement_text(str(source_type or ""))
+            label = _humanize_signal_label(str(source_type or "unknown"))
+            trust_note = "Operational source stream."
+            if "postgres" in normalized_source or "erp" in normalized_source:
+                trust_note = "Likely canonical operational record; prefer for routes, tasks, and current state."
+            elif "sheet" in normalized_source:
+                trust_note = "Often a derived or operator-maintained view; validate against canonical systems when conflicts appear."
+            elif "memory" in normalized_source or "kb" in normalized_source:
+                trust_note = "Knowledge or summary layer; useful for context, but should not silently override live operational state."
+            elif "api" in normalized_source or "provider" in normalized_source:
+                trust_note = "Provider or service feed; treat freshness and outage handling explicitly."
+            trust_signals.append({"label": label, "count": int(total or 0), "trust_note": trust_note})
+        trust_signals = sorted(trust_signals, key=lambda item: (-int(item.get("count") or 0), str(item.get("label") or "").lower()))[:6]
+
+        exception_signals = [
+            {"label": label, "count": total}
+            for label, total in sorted(exception_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+            if int(total) > 0
+        ][:6]
         snapshot_notes = [
             f"Recurring workflows observed: {len(workflow_signals)}.",
             f"Connected source streams contributing to logistics knowledge: {source_total}.",
@@ -1733,6 +1839,10 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         return {
             "snapshot_notes": snapshot_notes,
             "workflow_signals": workflow_signals,
+            "entity_signals": entity_signals,
+            "process_signals": process_signals,
+            "trust_signals": trust_signals,
+            "exception_signals": exception_signals,
             "principles": [
                 "Recurring dispatch, incident, and reporting workflows should be captured as reusable SOPs instead of staying trapped inside runtime chatter.",
                 "Source freshness and authority matter: logistics actions should prefer the latest operational source of truth before acting.",
