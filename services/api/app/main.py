@@ -2496,6 +2496,158 @@ def _render_agent_changelog_markdown(*, profile: dict[str, Any], actor: str) -> 
     )
 
 
+def _build_task_contract_semantics(task_contract: dict[str, Any]) -> dict[str, Any]:
+    task_code = str(task_contract.get("task_code") or task_contract.get("name") or "").strip()
+    builtin_task = str(task_contract.get("builtin_task") or "").strip()
+    program = str(task_contract.get("standing_order_program") or "").strip()
+    schedule_kind = str(task_contract.get("schedule_kind") or "").strip()
+    cron_expr = str(task_contract.get("cron_expr") or "").strip()
+    interval_seconds = str(task_contract.get("interval_seconds") or "").strip()
+    schedule_text = cron_expr or (f"every {interval_seconds}s" if interval_seconds else schedule_kind or "scheduled")
+    authority = _normalize_agent_directory_items(task_contract.get("standing_order_authority") or [], limit=6)
+    approval_mode = str(task_contract.get("standing_order_approval_mode") or "").strip()
+    escalation = task_contract.get("standing_order_escalation") if isinstance(task_contract.get("standing_order_escalation"), dict) else {}
+    escalation_mode = str(escalation.get("mode") or "").strip()
+    source_hints = _runtime_surface_extract_items(
+        task_contract.get("source_hints") if isinstance(task_contract.get("source_hints"), list) else [],
+        fields=("source", "name", "binding", "id", "table"),
+        limit=8,
+    )
+    tokens = _normalize_statement_text(" ".join([task_code, builtin_task, program]))
+
+    title = builtin_task or task_code or "scheduled_task"
+    purpose = "Execute a recurring operational workflow and keep the result traceable for wiki/debrief reuse."
+    trigger = f"Scheduled execution for `{task_code or builtin_task or 'task'}` on `{schedule_text}`."
+    inputs = list(source_hints)
+    steps = [
+        f"Wait for schedule trigger ({schedule_text}).",
+        f"Run `{builtin_task or task_code or 'task'}` inside the approved standing-order scope.",
+        "Validate the resulting state against current policy/process expectations.",
+        "Record outcome, exceptions, and follow-up evidence back into the wiki/debrief loop.",
+    ]
+    outputs = f"Recurring workflow `{builtin_task or task_code or 'task'}` completed and traceable."
+    verification = [
+        "Confirm the run completed without leaving approved authority or policy scope.",
+        "Check that downstream artifacts were updated and reflect the latest durable state.",
+    ]
+    artifacts = list(source_hints)
+
+    if "incident" in tokens and "monitor" in tokens:
+        purpose = "Continuously watch for logistics incidents and escalate emerging risk before it affects SLA or customer operations."
+        trigger = f"Recurring incident monitor runs on `{schedule_text}` and checks active logistics risk signals."
+        inputs = list(dict.fromkeys([*source_hints, "incident feed", "logistics world model"]))[:6]
+        steps = [
+            "Load the latest incident-like signals and open operational alerts.",
+            "Check whether any active incident crosses escalation or recurrence thresholds.",
+            "Notify the responsible authority and write back the incident state if escalation is required.",
+            "Capture resolution status or unresolved blockers for the next monitor cycle.",
+        ]
+        outputs = "Updated incident status with explicit escalation notes and next action owner."
+        verification = [
+            "Verify whether an incident was opened, updated, or intentionally left unchanged.",
+            "Confirm escalation routing matches the configured authority and escalation mode.",
+        ]
+    elif "driver" in tokens and "economy" in tokens:
+        purpose = "Refresh the driver economy reporting workflow so operations can review cost/performance drift on a stable schedule."
+        trigger = f"Recurring economy reporting task runs on `{schedule_text}` and prepares the latest driver economy view."
+        inputs = list(dict.fromkeys([*source_hints, "driver economy metrics", "shift performance context"]))[:6]
+        steps = [
+            "Collect the latest driver economy metrics and supporting shift context.",
+            "Recalculate or refresh the target report/sheet for the scheduled reporting window.",
+            "Highlight anomalies or changes that may require operational review before downstream use.",
+            "Publish or save the refreshed report and note any exceptions for follow-up.",
+        ]
+        outputs = "Updated driver economy report/sheet ready for operations or finance review."
+        verification = [
+            "Confirm the reporting window and source freshness match the expected daily/shift cycle.",
+            "Verify that anomalies and missing inputs are explicitly called out in the output.",
+        ]
+    elif "document" in tokens and ("shift" in tokens or "readiness" in tokens):
+        purpose = "Check document readiness before a driver shift or dispatch window starts."
+        trigger = f"Readiness control runs on `{schedule_text}` before operational handoff points."
+        inputs = list(dict.fromkeys([*source_hints, "driver documents", "shift roster", "readiness checklist"]))[:6]
+        steps = [
+            "Load the latest driver/shift document set and readiness checklist.",
+            "Detect missing, expired, or inconsistent documents before shift execution.",
+            "Escalate unresolved readiness blockers to the configured authority.",
+            "Record the final readiness state and any missing artifacts.",
+        ]
+        outputs = "Document readiness state updated with explicit blockers and escalation notes."
+        verification = [
+            "Confirm every required document is either present or escalated.",
+            "Verify the final readiness note is written back for the next operator/agent.",
+        ]
+    elif ("cargo" in tokens and "sync" in tokens) or ("erp" in tokens and "sync" in tokens):
+        purpose = "Synchronize cargo or ERP-facing notes so downstream logistics decisions rely on current operational data."
+        trigger = f"Recurring sync job runs on `{schedule_text}` to refresh ERP/cargo-facing state."
+        inputs = list(dict.fromkeys([*source_hints, "ERP notes", "cargo state", "dispatch context"]))[:6]
+        steps = [
+            "Read the latest cargo/ERP-facing inputs and current dispatch state.",
+            "Apply the synchronization/update routine for notes, status, or derived fields.",
+            "Detect mismatches or write failures before declaring the sync complete.",
+            "Record synchronization outcome and unresolved deltas for follow-up.",
+        ]
+        outputs = "ERP/cargo notes synchronized and any mismatches explicitly recorded."
+        verification = [
+            "Confirm the target system reflects the newly synchronized state.",
+            "Check that any failed or partial updates were escalated instead of silently ignored.",
+        ]
+    elif "daily" in tokens and "report" in tokens:
+        purpose = "Produce a recurring daily operating digest from the latest durable and operational signals."
+        trigger = f"Daily reporting task runs on `{schedule_text}` to assemble the latest operational summary."
+        inputs = list(dict.fromkeys([*source_hints, "daily activity metrics", "open blockers", "escalation summary"]))[:6]
+        steps = [
+            "Collect the latest daily metrics, blockers, escalations, and durable changes.",
+            "Assemble the report in the expected operational format or destination system.",
+            "Highlight exceptions, missed thresholds, or open risks that require human attention.",
+            "Publish the daily report and link follow-up actions where needed.",
+        ]
+        outputs = "Published daily report with current blockers, escalations, and activity summary."
+        verification = [
+            "Confirm the report covers the intended reporting window and audience.",
+            "Verify important blockers/escalations were surfaced, not hidden in generic summary text.",
+        ]
+    elif "comment" in tokens and ("signal" in tokens or "learning" in tokens):
+        purpose = "Distill recurring operational comments into reusable signals that can improve future playbooks or knowledge pages."
+        trigger = f"Comment-signal learning task runs on `{schedule_text}` to review fresh operational feedback."
+        inputs = list(dict.fromkeys([*source_hints, "recent comments", "operator notes", "existing knowledge patterns"]))[:6]
+        steps = [
+            "Review fresh operational comments and extract recurring or durable patterns.",
+            "Separate actionable signals from one-off noise or transactional chatter.",
+            "Link high-signal findings to affected processes, data sources, or decisions.",
+            "Write back the synthesized findings for wiki/debrief promotion.",
+        ]
+        outputs = "Structured learning signals ready for knowledge promotion or human review."
+        verification = [
+            "Check that extracted signals are durable and reusable rather than raw chatter.",
+            "Confirm promoted learnings are linked to the affected workflow or decision area.",
+        ]
+
+    if authority:
+        verification.append(f"Authority check: {', '.join(authority[:3])}.")
+    if approval_mode and approval_mode.lower() not in {"", "none"}:
+        verification.append(f"Approval boundary: `{approval_mode}`.")
+    if program:
+        artifacts = list(dict.fromkeys([*artifacts, program]))[:6]
+    if not artifacts:
+        artifacts = ["runtime task context", "bound sources"]
+
+    return {
+        "title": title,
+        "purpose": purpose,
+        "trigger": trigger,
+        "inputs": inputs,
+        "steps": steps,
+        "outputs": outputs,
+        "verification": verification[:4],
+        "artifacts": artifacts[:6],
+        "authority": authority,
+        "approval_mode": approval_mode,
+        "escalation_mode": escalation_mode,
+        "schedule_text": schedule_text,
+    }
+
+
 def _upsert_wiki_page_system(
     cur: Any,
     *,
@@ -3397,22 +3549,17 @@ def _render_agent_scheduled_task_runbook_markdown(
     display_name = str(profile.get("display_name") or profile.get("agent_id") or "Agent").strip()
     task_code = str(task_contract.get("task_code") or task_contract.get("name") or "scheduled_task").strip() or "scheduled_task"
     builtin_task = str(task_contract.get("builtin_task") or "").strip()
-    schedule_kind = str(task_contract.get("schedule_kind") or "").strip()
-    cron_expr = str(task_contract.get("cron_expr") or "").strip()
-    interval_seconds = str(task_contract.get("interval_seconds") or "").strip()
     timezone_value = str(task_contract.get("timezone") or "").strip()
-    approval_mode = str(task_contract.get("standing_order_approval_mode") or "").strip()
     program = str(task_contract.get("standing_order_program") or "").strip()
-    authority = _normalize_agent_directory_items(task_contract.get("standing_order_authority") or [], limit=6)
-    escalation = task_contract.get("standing_order_escalation") if isinstance(task_contract.get("standing_order_escalation"), dict) else {}
-    escalation_mode = str(escalation.get("mode") or "").strip()
-    source_hints = _runtime_surface_extract_items(
-        task_contract.get("source_hints") if isinstance(task_contract.get("source_hints"), list) else [],
-        fields=("source", "name", "binding", "id", "table"),
-        limit=8,
-    )
-    schedule_text = cron_expr or (f"every {interval_seconds}s" if interval_seconds else schedule_kind or "scheduled")
-    title = builtin_task or task_code
+    semantics = _build_task_contract_semantics(task_contract)
+    title = str(semantics.get("title") or builtin_task or task_code).strip() or task_code
+    authority = [str(v).strip() for v in (semantics.get("authority") or []) if str(v).strip()]
+    approval_mode = str(semantics.get("approval_mode") or "").strip()
+    escalation_mode = str(semantics.get("escalation_mode") or "").strip()
+    schedule_text = str(semantics.get("schedule_text") or "scheduled").strip() or "scheduled"
+    source_hints = [str(v).strip() for v in (semantics.get("inputs") or []) if str(v).strip()]
+    verification = [str(v).strip() for v in (semantics.get("verification") or []) if str(v).strip()]
+    artifacts = [str(v).strip() for v in (semantics.get("artifacts") or []) if str(v).strip()]
     lines = [
         f"# {display_name} SOP: {title}",
         "",
@@ -3426,19 +3573,23 @@ def _render_agent_scheduled_task_runbook_markdown(
         *( [f"- Authority: {', '.join(authority)}"] if authority else [] ),
         *( [f"- Escalation mode: `{escalation_mode}`"] if escalation_mode else [] ),
         "",
+        "## Purpose",
+        f"- {str(semantics.get('purpose') or 'Execute a recurring operational workflow.').strip()}",
+        "",
         "## SOP",
-        f"- Trigger: scheduled execution for `{task_code}`",
+        f"- Trigger: {str(semantics.get('trigger') or f'scheduled execution for `{task_code}`').strip()}",
         f"- Inputs: {'; '.join(source_hints) if source_hints else 'runtime task context + bound sources'}",
         "- Steps:",
-        f"  - Wait for schedule trigger ({schedule_text}).",
-        f"  - Execute `{builtin_task or task_code}`.",
-        "  - Validate output against current policy/process expectations.",
-        "  - Record outcome and exceptions back into the wiki/debrief loop.",
+        *[f"  - {step}" for step in (semantics.get("steps") or [])],
         "- Exceptions:",
         *([f"  - Respect authority boundary: {', '.join(authority)}." ] if authority else ["  - Escalate if the workflow leaves approved scope."]),
         *([f"  - Approval mode requires: {approval_mode}." ] if approval_mode and approval_mode.lower() not in {"", "none"} else []),
         "- Outputs:",
-        f"  - Recurring workflow `{builtin_task or task_code}` completed and traceable.",
+        f"  - {str(semantics.get('outputs') or f'Recurring workflow `{builtin_task or task_code}` completed and traceable.').strip()}",
+        "- Verification:",
+        *[f"  - {item}" for item in verification],
+        "- Systems / Artifacts:",
+        *[f"  - {item}" for item in artifacts],
         "- Escalation:",
         f"  - {escalation_mode or 'Escalate to reviewer when output is risky, uncertain, or policy-changing.'}",
         "",
@@ -34635,7 +34786,8 @@ def _build_process_playbooks_bootstrap_page(
             escalation_metadata = task.get("standing_order_escalation") if isinstance(task.get("standing_order_escalation"), dict) else {}
             escalation_mode = str(escalation_metadata.get("mode") or "").strip()
             program = str(task.get("standing_order_program") or "").strip()
-            trigger = (
+            task_semantics = _build_task_contract_semantics(task)
+            trigger = str(task_semantics.get("trigger") or "").strip() or (
                 f"Scheduled task `{task_code or builtin_task}` runs on cron `{cron_expr}`"
                 if cron_expr
                 else (
@@ -34645,16 +34797,15 @@ def _build_process_playbooks_bootstrap_page(
                 )
             )
             action = builtin_task or task_code
-            purpose_parts = [part for part in [program, builtin_task, task_code] if part]
-            purpose = "Document the concrete operational SOP declared in the control-plane schedule/standing-order contract."
-            if purpose_parts:
-                purpose = f"Execute and verify `{purpose_parts[0]}` as a concrete recurring operational workflow."
-            inputs = _extract_list_values(source_inputs[:4], builtin_task, task_code, limit=5)
-            steps = [
-                f"Wait for schedule trigger: {cron_expr or (f'every {interval_seconds}s' if interval_seconds else schedule_kind)}.",
-                f"Run builtin workflow: {action}.",
-                "Write back outcome and exceptions to the wiki/debrief loop.",
-            ]
+            purpose = str(task_semantics.get("purpose") or "").strip() or "Document the concrete operational SOP declared in the control-plane schedule/standing-order contract."
+            inputs = _extract_list_values(task_semantics.get("inputs") or [], source_inputs[:4], builtin_task, task_code, limit=6)
+            steps = [str(item).strip() for item in (task_semantics.get("steps") or []) if str(item).strip()]
+            if not steps:
+                steps = [
+                    f"Wait for schedule trigger: {cron_expr or (f'every {interval_seconds}s' if interval_seconds else schedule_kind)}.",
+                    f"Run builtin workflow: {action}.",
+                    "Write back outcome and exceptions to the wiki/debrief loop.",
+                ]
             if authority:
                 steps.append(f"Respect standing-order authority: {', '.join(authority[:3])}.")
             exceptions = []
@@ -34662,8 +34813,8 @@ def _build_process_playbooks_bootstrap_page(
                 exceptions.append(f"Approval mode: {approval_mode}.")
             if approval_rules:
                 exceptions.extend([f"Guardrail: {rule}" for rule in approval_rules[:2]])
-            if timezone_value:
-                steps[0] = f"Wait for schedule trigger in timezone `{timezone_value}`: {cron_expr or (f'every {interval_seconds}s' if interval_seconds else schedule_kind)}."
+            if timezone_value and steps:
+                steps[0] = f"{steps[0]} Timezone: `{timezone_value}`."
             escalation = escalation_rules[0] if escalation_rules else "Escalate to reviewer when scheduled workflow produces a risky or uncertain output."
             if escalation_mode:
                 escalation = f"{escalation} Control-plane escalation mode: `{escalation_mode}`."
@@ -34678,9 +34829,10 @@ def _build_process_playbooks_bootstrap_page(
                     "inputs": inputs,
                     "steps": steps,
                     "exceptions": exceptions,
-                    "output": f"Scheduled workflow `{action}` completed and recorded.",
+                    "output": str(task_semantics.get("outputs") or f"Scheduled workflow `{action}` completed and recorded."),
                     "escalation": escalation,
-                    "verification": _verification_steps(
+                    "verification": [str(v).strip() for v in (task_semantics.get("verification") or []) if str(v).strip()]
+                    or _verification_steps(
                         f"Scheduled workflow `{action}` completed and recorded.",
                         escalation,
                         confidence=max(0.8, float(item.get('confidence') or 0.0)),
@@ -34691,7 +34843,7 @@ def _build_process_playbooks_bootstrap_page(
                         else "Human review recommended when the recurring workflow output changes policy/process state."
                     ),
                     "tools": _extract_list_values(tools_used[:5], builtin_task, limit=6),
-                    "artifacts": _extract_list_values(source_inputs[:3], task_code, builtin_task, limit=5),
+                    "artifacts": _extract_list_values(task_semantics.get("artifacts") or [], source_inputs[:3], task_code, builtin_task, limit=6),
                     "decision_refs": _extract_list_values(program, *authority[:2], limit=4),
                     "evidence": _extract_list_values(task_code, builtin_task, cron_expr, interval_seconds, program, limit=6),
                 }

@@ -48,6 +48,7 @@ try:
         _render_agent_handoff_markdown,
         _render_agent_overview_markdown,
         _render_agent_runbooks_markdown,
+        _render_agent_scheduled_task_runbook_markdown,
         _render_agent_scorecards_markdown,
         _runtime_agent_filter_sql,
         _runtime_agent_id_sql_expr,
@@ -96,6 +97,7 @@ except Exception:  # pragma: no cover
     _render_agent_handoff_markdown = None
     _render_agent_overview_markdown = None
     _render_agent_runbooks_markdown = None
+    _render_agent_scheduled_task_runbook_markdown = None
     _render_agent_scorecards_markdown = None
     _runtime_agent_filter_sql = None
     _runtime_agent_id_sql_expr = None
@@ -143,6 +145,7 @@ except Exception:  # pragma: no cover
     or _render_agent_daily_reports_page is None
     or _render_agent_handoff_markdown is None
     or _render_agent_scorecards_markdown is None
+    or _render_agent_scheduled_task_runbook_markdown is None
     or _build_runtime_agent_capability_matrix is None
     or _collect_agent_source_usage is None
     or _runtime_agent_filter_sql is None
@@ -1451,6 +1454,27 @@ class AgentDirectoryRenderingTests(unittest.TestCase):
         self.assertIn("Escalate if report affects payroll review.", markdown)
         self.assertIn("Source: driver_economy_daily_latest", markdown)
         self.assertIn("/wiki/agents/logistics-assistant/runbooks/standing-order-logistics-driver-economy-sheet", markdown)
+
+    def test_scheduled_task_runbook_markdown_uses_concrete_driver_economy_language(self) -> None:
+        markdown = _render_agent_scheduled_task_runbook_markdown(
+            profile={
+                "agent_id": "logistics-assistant",
+                "display_name": "Logistics Assistant",
+            },
+            task_contract={
+                "task_code": "standing_order.logistics.driver_economy_sheet",
+                "builtin_task": "driver_economy_report_to_sheet",
+                "cron_expr": "0 12 * * *",
+                "timezone": "Europe/Moscow",
+                "standing_order_program": "logistics-default-ops-v1",
+                "standing_order_approval_mode": "none",
+                "source_hints": ["driver_economy_daily_latest", "driver_shift_daily_latest"],
+            },
+        )
+        self.assertIn("driver economy reporting workflow", markdown.lower())
+        self.assertIn("Collect the latest driver economy metrics", markdown)
+        self.assertIn("Updated driver economy report/sheet ready for operations or finance review.", markdown)
+        self.assertNotIn("runtime task context + bound sources", markdown)
 
     def test_data_sources_catalog_pages_include_capability_and_process_impact(self) -> None:
         assert _api_main is not None
