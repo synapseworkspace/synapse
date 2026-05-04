@@ -196,6 +196,10 @@ Current progress:
 - promoted candidates now land as managed sections inside target canon pages, so repeated promotions enrich canonical pages instead of replacing them wholesale
 - contradiction candidates now support explicit review decisions and preferred-source notes, making conflict resolution part of persistent company memory instead of one-off operator comments
 - review actions now leave an audit trail, and process/SOP candidates render with more editorial business framing (owner / trigger / inputs / outputs / failure modes / escalation) instead of mostly scheduler-native phrasing
+- Operations now exposes full review-history drilldown for company knowledge candidates instead of only aggregate review counts
+- contradiction candidates now support explicit queueing / assignment (`queued`, `assigned`, `resolved`) so follow-up work can be owned instead of sitting as passive conflict state
+- support, sales, and compliance packs now ship domain-specific company seed pages plus first company-context compiler output, not only logistics
+- process/SOP candidates now render a stronger `Typical Rhythm` narrative and clean scheduler-heavy labels into business-readable operating steps
 
 ## Phase 5: Knowledge Quality Lifecycle
 

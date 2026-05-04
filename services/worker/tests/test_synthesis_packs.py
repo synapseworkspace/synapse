@@ -77,10 +77,20 @@ class SynthesisPackTests(unittest.TestCase):
         knowledge_lifecycle_summary = payload.get("knowledge_lifecycle_summary") or []
         contradiction_summaries = payload.get("contradiction_summaries") or []
         self.assertTrue(any("dispatch" in item.lower() or "incident" in item.lower() for item in principles))
-        self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in workflow_signals))
+        self.assertTrue(
+            any(
+                "daily" in str(item.get("label") or "").lower() and "report" in str(item.get("label") or "").lower()
+                for item in workflow_signals
+            )
+        )
         self.assertTrue(any("connected source streams" in item.lower() for item in snapshot_notes))
         self.assertTrue(any("driver" in str(item.get("label") or "").lower() for item in entity_signals))
-        self.assertTrue(any("daily report" in str(item.get("label") or "").lower() for item in process_signals))
+        self.assertTrue(
+            any(
+                "daily" in str(item.get("label") or "").lower() and "report" in str(item.get("label") or "").lower()
+                for item in process_signals
+            )
+        )
         self.assertTrue(any("canonical operational record" in str(item.get("trust_note") or "").lower() for item in trust_signals))
         self.assertTrue(any("incident" in str(item.get("label") or "").lower() or "delivery" in str(item.get("label") or "").lower() for item in exception_signals))
         self.assertTrue(any(str(item.get("knowledge_state") or "") == "reviewed" for item in candidate_canon_blocks))
@@ -190,6 +200,32 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertIn("support", str(refined["purpose"]).lower())
         self.assertTrue(any("customer" in str(step).lower() or "queue" in str(step).lower() for step in refined["steps"]))
 
+    def test_support_pack_builds_company_context_extensions(self) -> None:
+        pack = get_synthesis_pack("support_ops")
+        payload = pack.build_company_context_extensions(
+            space_key="support",
+            matrix_rows=[
+                {
+                    "standing_orders": ["ticket escalation review", "daily support report"],
+                    "scheduled_tasks": ["queue triage", "customer update follow-through"],
+                    "responsibilities": ["queue ownership", "customer communication", "incident escalation"],
+                    "source_bindings": ["ticket_system_snapshot", "incident_feed"],
+                    "scenario_examples": ["stale derived queue snapshot conflict"],
+                    "escalation_rules": ["manager escalation", "specialist handoff"],
+                }
+            ],
+            source_counts=[("postgres_sql", 2), ("google_sheets", 1), ("incident_api", 1)],
+            claims_rollup=[("ticket_escalation", 3), ("queue_triage", 2), ("customer_update", 1)],
+            normalize_statement_text=_normalize,
+        )
+        candidate_canon_blocks = payload.get("candidate_canon_blocks") or []
+        process_blocks = [item for item in candidate_canon_blocks if str(item.get("block_type") or "") == "process_sop_candidate"]
+        self.assertTrue(any("support" in str(item.get("human_title") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("support/" in str(item.get("target_page_slug") or "") for item in candidate_canon_blocks))
+        self.assertTrue(any("queue" in str(item.get("summary") or "").lower() or "customer" in str(item.get("summary") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("typical rhythm" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("standing order." not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+
     def test_sales_pack_deepens_handoff_playbook(self) -> None:
         pack = get_synthesis_pack("sales_ops")
         playbook = {
@@ -208,6 +244,31 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertIn("revenue", str(refined["purpose"]).lower())
         self.assertTrue(any("handoff" in str(step).lower() or "stage" in str(step).lower() for step in refined["steps"]))
 
+    def test_sales_pack_builds_company_context_extensions(self) -> None:
+        pack = get_synthesis_pack("sales_ops")
+        payload = pack.build_company_context_extensions(
+            space_key="sales",
+            matrix_rows=[
+                {
+                    "standing_orders": ["deal handoff review", "daily pipeline report"],
+                    "scheduled_tasks": ["qualification checks", "stage progression review"],
+                    "responsibilities": ["pipeline ownership", "handoff readiness", "forecast review"],
+                    "source_bindings": ["crm_pipeline_snapshot", "handoff_sheet"],
+                    "scenario_examples": ["stale derived pipeline state conflict"],
+                }
+            ],
+            source_counts=[("crm_postgres", 2), ("google_sheets", 1)],
+            claims_rollup=[("deal_handoff", 3), ("stage_progression", 2), ("qualification", 1)],
+            normalize_statement_text=_normalize,
+        )
+        candidate_canon_blocks = payload.get("candidate_canon_blocks") or []
+        process_blocks = [item for item in candidate_canon_blocks if str(item.get("block_type") or "") == "process_sop_candidate"]
+        self.assertTrue(any("revenue" in str(item.get("human_title") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("sales/" in str(item.get("target_page_slug") or "") for item in candidate_canon_blocks))
+        self.assertTrue(any("handoff" in str(item.get("summary") or "").lower() or "pipeline" in str(item.get("summary") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("who owns this cycle" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("standing order." not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+
     def test_compliance_pack_deepens_control_playbook(self) -> None:
         pack = get_synthesis_pack("compliance_ops")
         playbook = {
@@ -225,6 +286,32 @@ class SynthesisPackTests(unittest.TestCase):
         )
         self.assertIn("compliance", str(refined["purpose"]).lower())
         self.assertTrue(any("evidence" in str(step).lower() or "approval" in str(step).lower() for step in refined["steps"]))
+
+    def test_compliance_pack_builds_company_context_extensions(self) -> None:
+        pack = get_synthesis_pack("compliance_ops")
+        payload = pack.build_company_context_extensions(
+            space_key="compliance",
+            matrix_rows=[
+                {
+                    "standing_orders": ["control evidence review", "daily compliance report"],
+                    "scheduled_tasks": ["policy review", "audit readiness review"],
+                    "responsibilities": ["control ownership", "evidence freshness", "approval routing"],
+                    "source_bindings": ["policy_store", "evidence_snapshot"],
+                    "scenario_examples": ["stale derived evidence conflict"],
+                    "approval_rules": ["approver sign-off required"],
+                }
+            ],
+            source_counts=[("postgres_sql", 2), ("google_sheets", 1)],
+            claims_rollup=[("control_evidence", 3), ("policy_review", 2), ("approval_gap", 1)],
+            normalize_statement_text=_normalize,
+        )
+        candidate_canon_blocks = payload.get("candidate_canon_blocks") or []
+        process_blocks = [item for item in candidate_canon_blocks if str(item.get("block_type") or "") == "process_sop_candidate"]
+        self.assertTrue(any("compliance" in str(item.get("human_title") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("compliance/" in str(item.get("target_page_slug") or "") for item in candidate_canon_blocks))
+        self.assertTrue(any("evidence" in str(item.get("summary") or "").lower() or "control" in str(item.get("summary") or "").lower() for item in candidate_canon_blocks))
+        self.assertTrue(any("common failure modes" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("standing order." not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
 
     def test_support_pack_tooling_extensions_are_domain_specific(self) -> None:
         pack = get_synthesis_pack("support_ops")
@@ -268,6 +355,45 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertIn("source_of_truth", page_types)
         self.assertIn("known_exception", page_types)
         self.assertGreaterEqual(len(pages), 10)
+
+    def test_support_company_knowledge_seed_pages_cover_expected_core_topics(self) -> None:
+        pack = get_synthesis_pack("support_ops")
+        pages = pack.build_company_knowledge_seed_pages(
+            "support_ops",
+            space_key="support",
+            normalize_space_key=lambda value: str(value or "").strip().lower(),
+            space_slug=lambda space, leaf: f"{space}/{leaf}",
+        )
+        slugs = {str(item.get("slug") or "") for item in pages}
+        self.assertIn("support/how-the-support-operation-works", slugs)
+        self.assertIn("support/systems-and-sources-of-truth-for-support", slugs)
+        self.assertGreaterEqual(len(pages), 6)
+
+    def test_sales_company_knowledge_seed_pages_cover_expected_core_topics(self) -> None:
+        pack = get_synthesis_pack("sales_ops")
+        pages = pack.build_company_knowledge_seed_pages(
+            "sales_ops",
+            space_key="sales",
+            normalize_space_key=lambda value: str(value or "").strip().lower(),
+            space_slug=lambda space, leaf: f"{space}/{leaf}",
+        )
+        slugs = {str(item.get("slug") or "") for item in pages}
+        self.assertIn("sales/how-revenue-operations-works", slugs)
+        self.assertIn("sales/crm-and-revenue-source-of-truth", slugs)
+        self.assertGreaterEqual(len(pages), 6)
+
+    def test_compliance_company_knowledge_seed_pages_cover_expected_core_topics(self) -> None:
+        pack = get_synthesis_pack("compliance_ops")
+        pages = pack.build_company_knowledge_seed_pages(
+            "compliance_ops",
+            space_key="compliance",
+            normalize_space_key=lambda value: str(value or "").strip().lower(),
+            space_slug=lambda space, leaf: f"{space}/{leaf}",
+        )
+        slugs = {str(item.get("slug") or "") for item in pages}
+        self.assertIn("compliance/how-the-compliance-program-operates", slugs)
+        self.assertIn("compliance/evidence-and-source-of-truth", slugs)
+        self.assertGreaterEqual(len(pages), 6)
 
     def test_logistics_starter_pages_include_company_knowledge_foundation(self) -> None:
         pack = get_synthesis_pack("logistics_ops")

@@ -77,13 +77,18 @@ Phase 2 (signal extraction)
    - canonical target pages now accept managed candidate sections, so promoted company knowledge can accumulate without whole-page overwrite.
    - contradiction candidates now support explicit review decisions (`prefer_canonical`, `needs_follow_up`, etc.) that persist into candidate state and promoted canon text.
    - candidate review actions now leave audit history, and candidate lists expose review-count / latest-review signals.
+   - contradiction candidates now also support queueing/assignment (`queued`, `assigned`, `resolved`) plus due-date/priority metadata so unresolved source conflicts can be owned as explicit work.
 7. `in_progress` Humanization layer:
    - translate internal technical labels into company-readable summaries and titles.
    - current slice now emits humanized candidate titles/summaries plus page-ready wiki drafts for company-knowledge promotion.
    - process/SOP candidates now render with owner / trigger / inputs / outputs / failure modes / escalation framing instead of mostly scheduler-shaped metadata.
+   - current slice now also emits `Typical Rhythm` SOP prose and strips more scheduler/runtime noise from process labels before they become canon candidates.
 8. `in_progress` Knowledge quality lifecycle:
    - candidate -> reviewed -> canonical -> stale -> contradicted -> superseded.
    - current slice adds first lifecycle heuristics for company canon candidates.
+
+9. `in_progress` Domain packs beyond logistics:
+   - support, sales, and compliance profiles now have first-class company-knowledge seed packs and compiler-backed company-context candidates instead of only runtime/tooling specialization.
 
 Definition of done for this track:
 - starter business profiles can generate a real company-facing knowledge core, not only agent/runtime scaffolding;

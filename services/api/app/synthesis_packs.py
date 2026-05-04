@@ -582,6 +582,240 @@ _COMPANY_KNOWLEDGE_PACKS: dict[str, list[dict[str, str]]] = {
             ),
         },
     ],
+    "support_company": [
+        {
+            "title": "How the Support Operation Works",
+            "slug_leaf": "how-the-support-operation-works",
+            "page_type": "process",
+            "markdown": (
+                "# How the Support Operation Works\n\n"
+                "## Purpose\n"
+                "- Explain the support operation in business language: queue ownership, escalation paths, customer communication, and success criteria.\n\n"
+                "## Core Roles\n"
+                "- Frontline support, specialists, incident managers, reviewers, and AI agents.\n\n"
+                "## Core Loops\n"
+                "- Queue triage, escalation handling, customer updates, and recurring support reporting.\n\n"
+                "## Failure Modes\n"
+                "- Hidden ownership, SLA drift, weak customer context, and unresolved escalations.\n"
+            ),
+        },
+        {
+            "title": "Support Glossary",
+            "slug_leaf": "support-glossary",
+            "page_type": "glossary_term",
+            "markdown": (
+                "# Support Glossary\n\n"
+                "## Canonical Terms\n"
+                "- Define queue, escalation, incident, SLA risk, resolution note, and customer-impact in company language.\n\n"
+                "## Common Confusions\n"
+                "- Record terms that frequently drift between ticket systems, internal notes, and operator chat.\n"
+            ),
+        },
+        {
+            "title": "Queue Ownership and Escalation",
+            "slug_leaf": "queue-ownership-and-escalation",
+            "page_type": "escalation_rule",
+            "markdown": (
+                "# Queue Ownership and Escalation\n\n"
+                "## Queue Ownership\n"
+                "- Which team owns which queue and what signals move work between them.\n\n"
+                "## Escalation Rules\n"
+                "- When frontline support can resolve, when specialists take over, and when a manager must intervene.\n"
+            ),
+        },
+        {
+            "title": "Customer Incidents and Communication",
+            "slug_leaf": "customer-incidents-and-communication",
+            "page_type": "process",
+            "markdown": (
+                "# Customer Incidents and Communication\n\n"
+                "## Incident Rhythm\n"
+                "- How support identifies a customer-impacting incident, updates customers, and closes the loop.\n\n"
+                "## Communication Rules\n"
+                "- What should always be recorded before handoff or escalation.\n"
+            ),
+        },
+        {
+            "title": "Systems and Sources of Truth for Support",
+            "slug_leaf": "systems-and-sources-of-truth-for-support",
+            "page_type": "source_of_truth",
+            "markdown": (
+                "# Systems and Sources of Truth for Support\n\n"
+                "## System Roles\n"
+                "- Which ticketing, incident, CRM, and knowledge systems answer which support questions.\n\n"
+                "## Trust Rules\n"
+                "- Which source wins when ticket state, incident state, or customer notes disagree.\n"
+            ),
+        },
+        {
+            "title": "Known Support Pitfalls and Heuristics",
+            "slug_leaf": "known-support-pitfalls-and-heuristics",
+            "page_type": "known_exception",
+            "markdown": (
+                "# Known Support Pitfalls and Heuristics\n\n"
+                "## Common Pitfalls\n"
+                "- Typical routing mistakes, stale incident context, and customer-update gaps.\n\n"
+                "## Working Heuristics\n"
+                "- Practical rules experienced support operators keep reusing under pressure.\n"
+            ),
+        },
+    ],
+    "sales_company": [
+        {
+            "title": "How Revenue Operations Works",
+            "slug_leaf": "how-revenue-operations-works",
+            "page_type": "process",
+            "markdown": (
+                "# How Revenue Operations Works\n\n"
+                "## Purpose\n"
+                "- Explain the revenue operation in business language: qualification, stage management, ownership transfer, and reporting.\n\n"
+                "## Core Roles\n"
+                "- AEs, SDRs, rev-ops, success, reviewers, and AI agents.\n\n"
+                "## Core Loops\n"
+                "- Qualification checks, stage progression, handoff readiness, and pipeline reporting.\n\n"
+                "## Failure Modes\n"
+                "- Hidden blockers, weak handoff context, stage drift, and unowned deals.\n"
+            ),
+        },
+        {
+            "title": "Revenue Glossary",
+            "slug_leaf": "revenue-glossary",
+            "page_type": "glossary_term",
+            "markdown": (
+                "# Revenue Glossary\n\n"
+                "## Canonical Terms\n"
+                "- Define qualification, stage, handoff, opportunity health, and revenue-risk in company language.\n\n"
+                "## Common Confusions\n"
+                "- Record pipeline terms that drift across CRM, sheets, and operator notes.\n"
+            ),
+        },
+        {
+            "title": "Roles and Handoff Ownership",
+            "slug_leaf": "roles-and-handoff-ownership",
+            "page_type": "entity",
+            "markdown": (
+                "# Roles and Handoff Ownership\n\n"
+                "## Revenue Roles\n"
+                "- Which team owns qualification, stage progression, handoff preparation, and downstream follow-through.\n\n"
+                "## Agent Boundaries\n"
+                "- What revenue agents can update autonomously and where human approval or override starts.\n"
+            ),
+        },
+        {
+            "title": "Qualification and Stage Progression",
+            "slug_leaf": "qualification-and-stage-progression",
+            "page_type": "process",
+            "markdown": (
+                "# Qualification and Stage Progression\n\n"
+                "## Entry Criteria\n"
+                "- What must be true before a deal can move forward.\n\n"
+                "## Handoff Readiness\n"
+                "- Which context, owner, and blocker fields must be explicit before downstream teams inherit the work.\n"
+            ),
+        },
+        {
+            "title": "CRM and Revenue Source of Truth",
+            "slug_leaf": "crm-and-revenue-source-of-truth",
+            "page_type": "source_of_truth",
+            "markdown": (
+                "# CRM and Revenue Source of Truth\n\n"
+                "## System Roles\n"
+                "- Which CRM, warehouse, sheet, and handoff systems answer which revenue questions.\n\n"
+                "## Trust Rules\n"
+                "- What wins when pipeline state, owner notes, and downstream handoff views disagree.\n"
+            ),
+        },
+        {
+            "title": "Revenue Exceptions and Handoff Heuristics",
+            "slug_leaf": "revenue-exceptions-and-handoff-heuristics",
+            "page_type": "known_exception",
+            "markdown": (
+                "# Revenue Exceptions and Handoff Heuristics\n\n"
+                "## Common Exceptions\n"
+                "- Typical qualification gaps, stage mismatches, and handoff failures that need explicit handling.\n\n"
+                "## Working Heuristics\n"
+                "- Stable operator rules for protecting downstream teams from weak deal context.\n"
+            ),
+        },
+    ],
+    "compliance_company": [
+        {
+            "title": "How the Compliance Program Operates",
+            "slug_leaf": "how-the-compliance-program-operates",
+            "page_type": "process",
+            "markdown": (
+                "# How the Compliance Program Operates\n\n"
+                "## Purpose\n"
+                "- Explain the compliance program in business language: control ownership, evidence collection, review cadence, and escalation.\n\n"
+                "## Core Roles\n"
+                "- Control owners, reviewers, approvers, auditors, and AI agents.\n\n"
+                "## Core Loops\n"
+                "- Evidence collection, control review, policy follow-up, and audit preparation.\n\n"
+                "## Failure Modes\n"
+                "- Missing evidence, unclear ownership, policy drift, and unresolved approval gaps.\n"
+            ),
+        },
+        {
+            "title": "Compliance Glossary",
+            "slug_leaf": "compliance-glossary",
+            "page_type": "glossary_term",
+            "markdown": (
+                "# Compliance Glossary\n\n"
+                "## Canonical Terms\n"
+                "- Define control, evidence, exception, review obligation, and approval boundary in company language.\n\n"
+                "## Common Confusions\n"
+                "- Record terms that drift between policy docs, evidence systems, and operator notes.\n"
+            ),
+        },
+        {
+            "title": "Control Ownership and Review Cadence",
+            "slug_leaf": "control-ownership-and-review-cadence",
+            "page_type": "entity",
+            "markdown": (
+                "# Control Ownership and Review Cadence\n\n"
+                "## Ownership\n"
+                "- Which teams own control execution, evidence freshness, and review obligations.\n\n"
+                "## Review Rhythm\n"
+                "- Which controls are checked daily, periodically, or only during incident/audit windows.\n"
+            ),
+        },
+        {
+            "title": "Evidence and Source of Truth",
+            "slug_leaf": "evidence-and-source-of-truth",
+            "page_type": "source_of_truth",
+            "markdown": (
+                "# Evidence and Source of Truth\n\n"
+                "## Canonical Evidence\n"
+                "- Which system is authoritative for each control or policy question.\n\n"
+                "## Trust Rules\n"
+                "- What to do when evidence snapshots, policy notes, and operator-maintained views disagree.\n"
+            ),
+        },
+        {
+            "title": "Escalations and Approval Boundaries",
+            "slug_leaf": "escalations-and-approval-boundaries",
+            "page_type": "escalation_rule",
+            "markdown": (
+                "# Escalations and Approval Boundaries\n\n"
+                "## Approval Triggers\n"
+                "- Which control or policy states require a reviewer, approver, or audit owner.\n\n"
+                "## Escalation Rules\n"
+                "- When missing evidence or policy drift must stop autonomous progress.\n"
+            ),
+        },
+        {
+            "title": "Known Control Exceptions and Audit Heuristics",
+            "slug_leaf": "known-control-exceptions-and-audit-heuristics",
+            "page_type": "known_exception",
+            "markdown": (
+                "# Known Control Exceptions and Audit Heuristics\n\n"
+                "## Common Exceptions\n"
+                "- Typical evidence gaps, stale review states, and policy mismatches that operators keep encountering.\n\n"
+                "## Working Heuristics\n"
+                "- Stable rules teams use to keep the review loop clean before audit pressure appears.\n"
+            ),
+        },
+    ],
 }
 
 
@@ -730,6 +964,98 @@ def _humanize_signal_label(value: str) -> str:
     return text[:1].upper() + text[1:] if text else ""
 
 
+def _company_domain_key(value: Any) -> str:
+    normalized = re.sub(r"[^a-z0-9_/-]+", "-", str(value or "").strip().lower()).strip("-")
+    if not normalized:
+        return "generic"
+    token = normalized.split("/")[0]
+    if token in {"logistics", "support", "sales", "compliance"}:
+        return token
+    return "generic"
+
+
+def _humanize_company_process_label(
+    value: Any,
+    *,
+    normalize_statement_text: NormalizeStatementTextFn,
+    domain_key: str,
+) -> str:
+    raw_text = str(value or "").strip()
+    normalized = normalize_statement_text(raw_text)
+    if not normalized:
+        return ""
+    lowered = f" {normalized} "
+    label_map: list[tuple[tuple[str, ...], str]] = [
+        (("documents", "shift", "readiness"), "shift readiness checks"),
+        (("incident", "monitor"), "incident monitoring"),
+        (("daily", "report"), "daily operating report"),
+        (("erp", "sync"), "ERP state refresh"),
+        (("fleet", "sync"), "fleet availability refresh"),
+        (("comment", "signal"), "operator comment learning"),
+        (("ticket", "escalat"), "ticket escalation review"),
+        (("queue", "triage"), "queue triage"),
+        (("customer", "update"), "customer update follow-through"),
+        (("deal", "handoff"), "deal handoff review"),
+        (("qualification",), "qualification checks"),
+        (("stage", "progress"), "stage progression review"),
+        (("control", "evidence"), "control evidence review"),
+        (("policy", "review"), "policy review"),
+        (("audit", "readiness"), "audit readiness review"),
+    ]
+    for keywords, label in label_map:
+        if all(keyword in lowered for keyword in keywords):
+            if domain_key == "support" and label == "daily operating report":
+                return "daily support digest"
+            if domain_key == "sales" and label == "daily operating report":
+                return "daily pipeline digest"
+            if domain_key == "compliance" and label == "daily operating report":
+                return "daily control digest"
+            return label
+    cleaned = raw_text
+    cleaned = cleaned.replace(".", " ").replace("/", " ").replace("_", " ").replace("-", " ")
+    cleaned = re.sub(r"\b(queryspec|virtual|builtin|cron|scheduled|workflow|task|program|v2)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bstanding\s+order\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned or normalized.replace("  ", " ")
+    return cleaned.lower()
+
+
+def _build_company_cycle_outline(processes: list[str], *, domain_key: str) -> list[str]:
+    cleaned = [str(item).strip().rstrip(".") for item in processes if str(item).strip()]
+    if not cleaned:
+        if domain_key == "support":
+            return [
+                "Start by checking queue pressure, incoming incidents, and any SLA-risk work.",
+                "Work through routing, customer communication, and specialist escalation in that order.",
+                "Close the loop with an explicit owner, customer-visible next step, and follow-up checkpoint.",
+            ]
+        if domain_key == "sales":
+            return [
+                "Start by checking deal stage movement, qualification gaps, and pending handoffs.",
+                "Work through ownership transitions and missing context before advancing revenue workflow state.",
+                "Close the loop with a clear next stage, owner, and downstream handoff expectation.",
+            ]
+        if domain_key == "compliance":
+            return [
+                "Start by checking current control posture, evidence freshness, and pending review obligations.",
+                "Work through evidence validation, policy checks, and approval gaps before closure.",
+                "Close the loop with the current control state, missing evidence, and next review date.",
+            ]
+        return [
+            "Start by checking the current operating context and any new exceptions.",
+            "Work through the core operating checks before changing state or escalating.",
+            "Close the loop with explicit outputs, follow-up actions, and handoff notes.",
+        ]
+    outline = [f"Start by checking {cleaned[0]}."]
+    if len(cleaned) >= 2:
+        outline.append(f"Then confirm {cleaned[1]} before the workflow advances.")
+    if len(cleaned) >= 3:
+        outline.append(f"Close the loop with {cleaned[2]} and a clear handoff or reporting update.")
+    else:
+        outline.append("Close the loop with an explicit handoff, reporting update, or escalation note.")
+    return outline
+
+
 def _company_block_fallback_title(block_type: str, target_page_slug: str | None, target_page_type: str | None) -> str:
     slug_leaf = str(target_page_slug or "").strip().split("/")[-1]
     if slug_leaf:
@@ -794,6 +1120,7 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
         outputs_hint = [str(item).strip() for item in (block.get("outputs_hint") or []) if str(item).strip()]
         failure_modes_hint = [str(item).strip() for item in (block.get("failure_modes_hint") or []) if str(item).strip()]
         escalation_hint = str(block.get("escalation_hint") or "Escalate when the cycle leaves approved operating scope.").strip()
+        cycle_outline = [str(item).strip() for item in (block.get("cycle_outline") or []) if str(item).strip()]
         lines.extend(
             [
                 "",
@@ -805,6 +1132,9 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
                 "",
                 "## Trigger",
                 f"- {trigger_hint}",
+                "",
+                "## Typical Rhythm",
+                *[f"- {item}" for item in (cycle_outline or ["Start with the current operating context.", "Work through the recurring checks and decisions.", "Close the loop with explicit outputs and a handoff note."])],
                 "",
                 "## Inputs To Check",
                 *[f"- {item}" for item in (inputs_hint or ["current operational systems", "latest team context"])],
@@ -847,25 +1177,72 @@ def _build_company_candidate_humanization(block: dict[str, Any]) -> dict[str, An
     target_page_type = str(block.get("target_page_type") or "").strip().lower() or None
     target_page_slug = str(block.get("target_page_slug") or "").strip() or None
     summary = str(block.get("summary") or "").strip()
+    domain_key = _company_domain_key(block.get("domain_label") or target_page_slug or block.get("block_id"))
+    domain_titles = {
+        "logistics": {
+            "entity_overview": "Core business entities in the logistics operation",
+            "process_sop_candidate": "Daily logistics operating cycle",
+            "source_of_truth_rule": "Which systems to trust for live logistics state",
+            "known_exception": "Recurring logistics pitfalls and exception patterns",
+            "working_heuristic": "Working heuristics the team keeps reusing",
+            "contradiction_watch": "Source-of-truth conflicts that still need resolution",
+        },
+        "support": {
+            "entity_overview": "Core business entities in the support operation",
+            "process_sop_candidate": "Daily support operating cycle",
+            "source_of_truth_rule": "Which systems to trust for live support state",
+            "known_exception": "Recurring support pitfalls and exception patterns",
+            "working_heuristic": "Support heuristics the team keeps reusing",
+            "contradiction_watch": "Support source conflicts that still need resolution",
+        },
+        "sales": {
+            "entity_overview": "Core business entities in the revenue operation",
+            "process_sop_candidate": "Daily revenue operating cycle",
+            "source_of_truth_rule": "Which systems to trust for live revenue state",
+            "known_exception": "Recurring revenue pitfalls and exception patterns",
+            "working_heuristic": "Revenue heuristics the team keeps reusing",
+            "contradiction_watch": "Revenue source conflicts that still need resolution",
+        },
+        "compliance": {
+            "entity_overview": "Core business entities in the compliance program",
+            "process_sop_candidate": "Daily compliance operating cycle",
+            "source_of_truth_rule": "Which systems to trust for compliance evidence state",
+            "known_exception": "Recurring compliance pitfalls and exception patterns",
+            "working_heuristic": "Compliance heuristics the team keeps reusing",
+            "contradiction_watch": "Compliance source conflicts that still need resolution",
+        },
+    }
+    title_map = domain_titles.get(domain_key, {})
     human_title = _company_block_fallback_title(block_type, target_page_slug, target_page_type)
     human_summary = summary
+    if block_type in title_map:
+        human_title = title_map[block_type]
     if block_type == "entity_overview":
-        human_title = "Core business entities in the logistics operation"
-        human_summary = summary.replace("Current logistics memory centers on", "Right now the operation appears to revolve around")
+        entity_focus = [str(item).strip() for item in (block.get("entity_focus") or []) if str(item).strip()]
+        if entity_focus:
+            human_summary = f"The operation currently appears to revolve around {', '.join(entity_focus[:3])}, and those entities should anchor the rest of the company wiki."
+        else:
+            human_summary = summary.replace("Current", "Right now the operation appears to center on")
     elif block_type == "process_sop_candidate":
-        human_title = "Daily logistics operating cycle"
-        human_summary = summary.replace("The current", "The current team rhythm suggests that the operation")
+        cadence_label = str(block.get("cadence_label") or "operating cycle").strip()
+        process_focus = [str(item).strip() for item in (block.get("process_focus") or []) if str(item).strip()]
+        if process_focus:
+            human_summary = (
+                f"This {cadence_label} appears to run through {', '.join(process_focus[:3])}, with explicit checks, handoffs, and escalation points."
+            )
+        else:
+            human_summary = summary.replace("The current", "The current team rhythm suggests that the operation")
     elif block_type == "source_of_truth_rule":
-        human_title = "Which systems to trust for live logistics state"
-        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:")
+        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:").replace("Current company knowledge suggests", "Current evidence suggests")
     elif block_type == "known_exception":
-        human_title = "Recurring logistics pitfalls and exception patterns"
         human_summary = summary.replace("Recurring operational exceptions likely include", "Operators are repeatedly running into")
     elif block_type == "working_heuristic":
-        human_title = "Working heuristics the team keeps reusing"
         human_summary = summary.replace("Company memory is repeatedly surfacing heuristics around", "The team keeps leaning on heuristics around")
     elif block_type == "contradiction_watch":
-        human_title = "Source-of-truth conflicts that still need resolution"
+        human_summary = summary.replace("Current company knowledge shows", "Current evidence shows").replace(
+            "Current company knowledge appears exposed to",
+            "Current evidence still appears exposed to",
+        )
     human_summary = human_summary.strip().rstrip(".")
     if human_summary:
         human_summary = f"{human_summary}."
@@ -1169,6 +1546,12 @@ class GenericOpsSynthesisPack:
         pack_key = "generic_company"
         if normalized_profile == "logistics_ops":
             pack_key = "logistics_company"
+        elif normalized_profile == "support_ops":
+            pack_key = "support_company"
+        elif normalized_profile == "sales_ops":
+            pack_key = "sales_company"
+        elif normalized_profile == "compliance_ops":
+            pack_key = "compliance_company"
         pages = _COMPANY_KNOWLEDGE_PACKS.get(pack_key) or _COMPANY_KNOWLEDGE_PACKS["generic_company"]
         return [
             {
@@ -1569,6 +1952,288 @@ class GenericOpsSynthesisPack:
         return None
 
 
+def _build_domain_company_context_extensions(
+    *,
+    space_key: str | None,
+    matrix_rows: list[dict[str, Any]] | None,
+    source_counts: list[tuple[str, int]] | None,
+    claims_rollup: list[tuple[str, int]] | None,
+    normalize_statement_text: NormalizeStatementTextFn,
+    domain_key: str,
+    operation_label: str,
+    entity_buckets: dict[str, tuple[str, ...]],
+    exception_buckets: dict[str, tuple[str, ...]],
+    process_slug_leaf: str,
+    overview_slug_leaf: str,
+    trust_slug_leaf: str,
+    heuristics_slug_leaf: str,
+    owner_hint: str,
+    outputs_hint: list[str],
+    escalation_hint: str,
+    principles: list[str],
+) -> dict[str, Any]:
+    normalized_space = re.sub(r"[^a-z0-9_/-]+", "-", str(space_key or "").strip().lower()).strip("-") or domain_key
+    workflow_counts: dict[str, int] = {}
+    entity_counts: dict[str, int] = {key: 0 for key in entity_buckets}
+    exception_counts: dict[str, int] = {key: 0 for key in exception_buckets}
+
+    def _target_slug(leaf: str) -> str:
+        normalized_leaf = re.sub(r"[^a-z0-9_/-]+", "-", str(leaf or "").strip().lower()).strip("-") or "company-knowledge"
+        return f"{normalized_space}/{normalized_leaf}"
+
+    def _bump_signals(value: Any, *, weight: int = 1) -> None:
+        text = normalize_statement_text(str(value or ""))
+        if not text:
+            return
+        for label, keywords in entity_buckets.items():
+            if any(keyword in text for keyword in keywords):
+                entity_counts[label] = int(entity_counts.get(label, 0)) + int(weight)
+        for label, keywords in exception_buckets.items():
+            if any(keyword in text for keyword in keywords):
+                exception_counts[label] = int(exception_counts.get(label, 0)) + int(weight)
+
+    for item in matrix_rows or []:
+        if not isinstance(item, dict):
+            continue
+        for value in [*(item.get("standing_orders") or []), *(item.get("scheduled_tasks") or [])]:
+            label = _humanize_company_process_label(
+                value,
+                normalize_statement_text=normalize_statement_text,
+                domain_key=domain_key,
+            )
+            if not label:
+                continue
+            workflow_counts[label] = int(workflow_counts.get(label, 0)) + 1
+            _bump_signals(label, weight=2)
+        for value in [
+            *(item.get("responsibilities") or []),
+            *(item.get("scenario_examples") or []),
+            *(item.get("source_bindings") or []),
+            *(item.get("data_sources") or []),
+            *(item.get("approval_rules") or []),
+            *(item.get("escalation_rules") or []),
+        ]:
+            _bump_signals(value)
+    for category, total in claims_rollup or []:
+        _bump_signals(category, weight=max(1, int(total or 0)))
+
+    workflow_signals = [
+        {"label": name, "count": total}
+        for name, total in sorted(workflow_counts.items(), key=lambda item: (-item[1], item[0].lower()))[:6]
+    ]
+    entity_signals = [
+        {"label": label, "count": total}
+        for label, total in sorted(entity_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+        if int(total) > 0
+    ][:8]
+    process_signals = [
+        {
+            "label": str(item.get("label") or ""),
+            "count": int(item.get("count") or 0),
+            "why": "Recurring workflow observed in scheduled tasks, standing orders, or operating routines.",
+        }
+        for item in workflow_signals[:6]
+    ]
+    trust_signals: list[dict[str, Any]] = []
+    for source_type, total in source_counts or []:
+        normalized_source = normalize_statement_text(str(source_type or ""))
+        label = _humanize_signal_label(str(source_type or "unknown"))
+        trust_note = "Operational source stream."
+        if "postgres" in normalized_source or "crm" in normalized_source or "erp" in normalized_source or "ticket" in normalized_source:
+            trust_note = "Likely canonical operational record; prefer when live ownership or workflow state matters."
+        elif "sheet" in normalized_source:
+            trust_note = "Often a derived or operator-maintained view; validate against canonical systems when conflicts appear."
+        elif "memory" in normalized_source or "kb" in normalized_source:
+            trust_note = "Knowledge or summary layer; useful for context, but should not silently override live state."
+        elif "api" in normalized_source or "provider" in normalized_source or "incident" in normalized_source:
+            trust_note = "Provider or service feed; make freshness and outage handling explicit."
+        trust_signals.append({"label": label, "count": int(total or 0), "trust_note": trust_note})
+    trust_signals = sorted(trust_signals, key=lambda item: (-int(item.get("count") or 0), str(item.get("label") or "").lower()))[:6]
+    exception_signals = [
+        {"label": label, "count": total}
+        for label, total in sorted(exception_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+        if int(total) > 0
+    ][:6]
+
+    candidate_canon_blocks: list[dict[str, Any]] = []
+    knowledge_state_counts: dict[str, int] = {}
+    contradiction_summaries: list[dict[str, Any]] = []
+
+    def _append_canon_block(block: dict[str, Any]) -> None:
+        state = str(block.get("knowledge_state") or "candidate").strip().lower() or "candidate"
+        block["knowledge_state"] = state
+        knowledge_state_counts[state] = int(knowledge_state_counts.get(state, 0)) + 1
+        if not str(block.get("block_id") or "").strip():
+            block["block_id"] = f"{normalized_space}:{str(block.get('block_type') or 'candidate').strip().lower()}"
+        block.setdefault("domain_label", domain_key)
+        block.setdefault("operation_label", operation_label)
+        block.update(_build_company_candidate_humanization(block))
+        candidate_canon_blocks.append(block)
+
+    top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
+    top_processes = [str(item.get("label") or "").strip() for item in process_signals[:3] if str(item.get("label") or "").strip()]
+    top_exceptions = [str(item.get("label") or "").strip() for item in exception_signals[:3] if str(item.get("label") or "").strip()]
+
+    if top_entities:
+        strongest_entity_count = max(int(item.get("count") or 0) for item in entity_signals[:3]) if entity_signals else 0
+        _append_canon_block(
+            {
+                "block_type": "entity_overview",
+                "target_page_type": "entity",
+                "target_page_slug": _target_slug(overview_slug_leaf),
+                "promotion_path": f"Promote into the {operation_label.lower()} overview after owner review confirms the entity framing.",
+                "knowledge_state": "reviewed" if strongest_entity_count >= 3 else "candidate",
+                "confidence": "medium",
+                "summary": f"Current {domain_key} memory centers on {', '.join(top_entities)} as the main business entities.",
+                "evidence_basis": "Repeated mentions across workflows, responsibilities, and claim rollups.",
+                "entity_focus": top_entities,
+            }
+        )
+    if top_processes:
+        cadence_label = "daily operating cycle" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operating cycle"
+        strongest_process_count = max(int(item.get("count") or 0) for item in process_signals[:3]) if process_signals else 0
+        process_inputs = [str(item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("label") or "").strip()]
+        if not process_inputs:
+            process_inputs = ["current operating systems", "latest operator context"]
+        _append_canon_block(
+            {
+                "block_type": "process_sop_candidate",
+                "target_page_type": "process",
+                "target_page_slug": _target_slug(process_slug_leaf),
+                "promotion_path": "Promote into the main SOP page once owner, trigger, outputs, and escalation steps read clearly to operators.",
+                "knowledge_state": "reviewed" if strongest_process_count >= 2 else "candidate",
+                "confidence": "medium",
+                "summary": f"The current {cadence_label} appears to revolve around {', '.join(top_processes)}.",
+                "evidence_basis": "Observed in standing orders, scheduled tasks, and recurring operational routines.",
+                "owner_hint": owner_hint,
+                "trigger_hint": f"Start of the {cadence_label} and any handoff or incident that changes {operation_label.lower()} state.",
+                "inputs_hint": process_inputs,
+                "outputs_hint": outputs_hint,
+                "failure_modes_hint": top_exceptions or ["stale source context", "missing handoff evidence"],
+                "escalation_hint": escalation_hint,
+                "process_focus": top_processes,
+                "cadence_label": cadence_label,
+                "cycle_outline": _build_company_cycle_outline(top_processes, domain_key=domain_key),
+            }
+        )
+    canonical_sources = [str(item.get("label") or "").strip() for item in trust_signals if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))]
+    derived_sources = [str(item.get("label") or "").strip() for item in trust_signals if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))]
+    if canonical_sources or derived_sources:
+        summary_parts: list[str] = []
+        if canonical_sources:
+            summary_parts.append(f"prefer {', '.join(canonical_sources[:2])} when live ownership or workflow state matters")
+        if derived_sources:
+            summary_parts.append(f"treat {', '.join(derived_sources[:2])} as secondary or operator-maintained context during conflicts")
+        source_state = "reviewed" if canonical_sources else "stale"
+        _append_canon_block(
+            {
+                "block_type": "source_of_truth_rule",
+                "target_page_type": "source_of_truth",
+                "target_page_slug": _target_slug(trust_slug_leaf),
+                "promotion_path": "Promote into trust rules after source precedence and freshness language are reviewed by operators.",
+                "knowledge_state": source_state,
+                "confidence": "medium",
+                "summary": f"Trust rule candidate: {'; '.join(summary_parts)}.",
+                "evidence_basis": "Inferred from connected source classes and source-trust heuristics.",
+            }
+        )
+    if top_exceptions:
+        strongest_exception_count = max(int(item.get("count") or 0) for item in exception_signals[:3]) if exception_signals else 0
+        _append_canon_block(
+            {
+                "block_type": "known_exception",
+                "target_page_type": "known_exception",
+                "target_page_slug": _target_slug(heuristics_slug_leaf),
+                "promotion_path": "Promote into the pitfalls page after confirming that the exception pattern recurs in live operations.",
+                "knowledge_state": "reviewed" if strongest_exception_count >= 2 else "candidate",
+                "confidence": "low",
+                "summary": f"Recurring operational exceptions likely include {', '.join(top_exceptions)}.",
+                "evidence_basis": "Pattern counts derived from workflow, responsibility, and claim language.",
+            }
+        )
+    if claims_rollup:
+        top_claims = [str(category or "").strip().replace("_", " ") for category, _ in claims_rollup[:3] if str(category or "").strip()]
+        if top_claims:
+            strongest_claim_count = max(int(total or 0) for _, total in claims_rollup[:3]) if claims_rollup else 0
+            _append_canon_block(
+                {
+                    "block_type": "working_heuristic",
+                    "target_page_type": "known_exception",
+                    "target_page_slug": _target_slug(heuristics_slug_leaf),
+                    "promotion_path": "Promote into the heuristics page once the pattern is stable enough to guide future operators.",
+                    "knowledge_state": "reviewed" if strongest_claim_count >= 3 else "candidate",
+                    "confidence": "low",
+                    "summary": f"Company memory is repeatedly surfacing heuristics around {', '.join(top_claims)}.",
+                    "evidence_basis": "Repeated claim categories observed in current knowledge rollups.",
+                }
+            )
+    stale_conflict_total = sum(
+        int(item.get("count") or 0)
+        for item in exception_signals
+        if "stale" in normalize_statement_text(str(item.get("label") or "")) or "conflict" in normalize_statement_text(str(item.get("label") or ""))
+    )
+    if stale_conflict_total > 0:
+        contradiction_state = "contradicted" if canonical_sources and derived_sources else "stale"
+        contradiction_summary = (
+            "Current company knowledge shows source disagreement between canonical records and derived/operator-maintained views."
+            if contradiction_state == "contradicted"
+            else "Current company knowledge still appears exposed to stale or weakly grounded source views that need refresh or validation."
+        )
+        resolution_rule = (
+            f"Prefer {', '.join(canonical_sources[:2])} for live state; use {', '.join(derived_sources[:2])} as secondary context until the mismatch is resolved."
+            if contradiction_state == "contradicted" and canonical_sources and derived_sources
+            else "Refresh or validate the weaker source before promoting it into canonical company knowledge."
+        )
+        _append_canon_block(
+            {
+                "block_type": "contradiction_watch",
+                "target_page_type": "source_of_truth",
+                "target_page_slug": _target_slug(trust_slug_leaf),
+                "promotion_path": "Keep in reviewed trust rules until the conflict is resolved or documented as an explicit override rule.",
+                "knowledge_state": contradiction_state,
+                "confidence": "medium" if contradiction_state == "contradicted" else "low",
+                "summary": contradiction_summary,
+                "evidence_basis": "Exception patterns mention stale/conflicting data and source-trust signals show mixed evidence posture.",
+                "contradiction_topic": "source_of_truth_conflict",
+                "resolution_rule": resolution_rule,
+            }
+        )
+        contradiction_summaries.append(
+            {
+                "topic": "source_of_truth_conflict",
+                "knowledge_state": contradiction_state,
+                "summary": contradiction_summary,
+                "resolution_rule": resolution_rule,
+                "evidence_basis": "Built from source trust signals plus stale/conflict exception patterns.",
+            }
+        )
+
+    knowledge_lifecycle_summary = [
+        {"state": state, "count": total}
+        for state, total in sorted(
+            knowledge_state_counts.items(),
+            key=lambda item: (-int(item[1]), ["candidate", "reviewed", "canonical", "stale", "contradicted", "superseded"].index(item[0]) if item[0] in ["candidate", "reviewed", "canonical", "stale", "contradicted", "superseded"] else 99),
+        )
+    ]
+    snapshot_notes = [
+        f"Recurring workflows observed: {len(workflow_signals)}.",
+        f"Connected source streams contributing to {domain_key} knowledge: {sum(int(total or 0) for _, total in (source_counts or []))}.",
+        f"Operational domain signals currently tracked: {sum(int(total or 0) for _, total in (claims_rollup or []))}.",
+    ]
+    return {
+        "snapshot_notes": snapshot_notes,
+        "workflow_signals": workflow_signals,
+        "entity_signals": entity_signals,
+        "process_signals": process_signals,
+        "trust_signals": trust_signals,
+        "exception_signals": exception_signals,
+        "candidate_canon_blocks": candidate_canon_blocks,
+        "knowledge_lifecycle_summary": knowledge_lifecycle_summary,
+        "contradiction_summaries": contradiction_summaries,
+        "principles": principles,
+    }
+
+
 class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
     key = "logistics_ops"
 
@@ -1938,7 +2603,11 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 if not text:
                     continue
                 normalized = normalize_statement_text(text)
-                label = re.sub(r"\s+", " ", text.replace("_", " ")).strip()
+                label = _humanize_company_process_label(
+                    text,
+                    normalize_statement_text=normalize_statement_text,
+                    domain_key="logistics",
+                )
                 if not normalized or not label:
                     continue
                 workflow_counts[label] = int(workflow_counts.get(label, 0)) + 1
@@ -2029,6 +2698,8 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "confidence": "medium",
                     "summary": f"Current logistics memory centers on {', '.join(top_entities)} as the main business entities.",
                     "evidence_basis": "Repeated mentions across scheduled workflows, responsibilities, and claim rollups.",
+                    "domain_label": "logistics",
+                    "entity_focus": top_entities,
                 }
             )
 
@@ -2057,6 +2728,10 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "outputs_hint": process_outputs,
                     "failure_modes_hint": process_failure_modes,
                     "escalation_hint": "Escalate to the human operations lead whenever readiness is incomplete, source trust breaks down, or incidents affect customer/service commitments.",
+                    "domain_label": "logistics",
+                    "process_focus": top_processes,
+                    "cadence_label": cadence,
+                    "cycle_outline": _build_company_cycle_outline(top_processes, domain_key="logistics"),
                 }
             )
 
@@ -2084,6 +2759,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                         "confidence": "medium",
                         "summary": f"Trust rule candidate: {'; '.join(summary_parts)}.",
                         "evidence_basis": "Inferred from connected source classes and source-trust heuristics.",
+                        "domain_label": "logistics",
                     }
                 )
 
@@ -2100,6 +2776,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "confidence": "low",
                     "summary": f"Recurring operational exceptions likely include {', '.join(top_exceptions)}.",
                     "evidence_basis": "Pattern counts derived from workflow, responsibility, and claim language.",
+                    "domain_label": "logistics",
                 }
             )
 
@@ -2117,6 +2794,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                         "confidence": "low",
                         "summary": f"Company memory is repeatedly surfacing heuristics around {', '.join(top_claims)}.",
                         "evidence_basis": "Repeated claim categories observed in current knowledge rollups.",
+                        "domain_label": "logistics",
                     }
                 )
         stale_conflict_total = int(exception_counts.get("Stale or conflicting source data") or 0)
@@ -2144,6 +2822,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "evidence_basis": "Exception patterns mention stale/conflicting data and source-trust signals show mixed evidence posture.",
                     "contradiction_topic": "source_of_truth_conflict",
                     "resolution_rule": resolution_rule,
+                    "domain_label": "logistics",
                 }
             )
             contradiction_summaries.append(
@@ -2281,26 +2960,41 @@ class SupportOpsSynthesisPack(GenericOpsSynthesisPack):
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del space_key, normalize_statement_text
-        queue_signals = 0
-        escalation_signals = 0
-        for item in matrix_rows or []:
-            if not isinstance(item, dict):
-                continue
-            queue_signals += len([str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()])
-            escalation_signals += len([str(v).strip() for v in (item.get("escalation_rules") or []) if str(v).strip()])
-        return {
-            "snapshot_notes": [
-                f"Queue-oriented recurring workflows observed: {queue_signals}.",
-                f"Explicit escalation boundaries observed: {escalation_signals}.",
-            ],
-            "workflow_signals": [],
-            "principles": [
+        return _build_domain_company_context_extensions(
+            space_key=space_key,
+            matrix_rows=matrix_rows,
+            source_counts=source_counts,
+            claims_rollup=claims_rollup,
+            normalize_statement_text=normalize_statement_text,
+            domain_key="support",
+            operation_label="support operation",
+            entity_buckets={
+                "Customer Case": ("ticket", "case", "customer"),
+                "Queue": ("queue", "routing", "triage"),
+                "Incident": ("incident", "sev", "outage"),
+                "Escalation": ("escalat", "handoff"),
+                "SLA": ("sla", "breach"),
+                "Knowledge Article": ("kb", "knowledge", "macro"),
+            },
+            exception_buckets={
+                "Queue ownership drift": ("queue", "owner"),
+                "Customer update gap": ("customer", "update"),
+                "Escalation delay": ("escalat", "delay"),
+                "Stale or conflicting source data": ("stale", "conflict", "derived"),
+            },
+            process_slug_leaf="daily-support-operating-cycle",
+            overview_slug_leaf="how-the-support-operation-works",
+            trust_slug_leaf="systems-and-sources-of-truth-for-support",
+            heuristics_slug_leaf="known-support-pitfalls-and-heuristics",
+            owner_hint="support operations / queue owner",
+            outputs_hint=["queue state updated", "customer next step recorded", "escalations routed cleanly"],
+            escalation_hint="Escalate to the incident manager or support lead whenever SLA risk, customer-impact uncertainty, or unclear ownership appears.",
+            principles=[
                 "Customer-facing escalations should stay explicit, time-bounded, and tied to queue ownership.",
                 "Support workflows should prefer reusable routing rules over one-off operator memory.",
                 "Resolution notes should be written so the next human or agent can resume without hidden context.",
             ],
-        }
+        )
 
     def build_capability_profile_extensions(
         self,
@@ -2429,26 +3123,41 @@ class SalesOpsSynthesisPack(GenericOpsSynthesisPack):
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del space_key, source_counts, claims_rollup, normalize_statement_text
-        handoff_signals = 0
-        qualification_signals = 0
-        for item in matrix_rows or []:
-            if not isinstance(item, dict):
-                continue
-            handoff_signals += len([str(v).strip() for v in (item.get("standing_orders") or []) if "handoff" in str(v).lower()])
-            qualification_signals += len([str(v).strip() for v in (item.get("responsibilities") or []) if str(v).strip()])
-        return {
-            "snapshot_notes": [
-                f"Revenue handoff workflows observed: {handoff_signals}.",
-                f"Qualification/capability signals observed: {qualification_signals}.",
-            ],
-            "workflow_signals": [],
-            "principles": [
+        return _build_domain_company_context_extensions(
+            space_key=space_key,
+            matrix_rows=matrix_rows,
+            source_counts=source_counts,
+            claims_rollup=claims_rollup,
+            normalize_statement_text=normalize_statement_text,
+            domain_key="sales",
+            operation_label="revenue operation",
+            entity_buckets={
+                "Deal": ("deal", "opportunity", "pipeline"),
+                "Stage": ("stage", "qualification"),
+                "Handoff": ("handoff", "transfer"),
+                "Account Owner": ("owner", "account executive", "sdr"),
+                "Forecast / Report": ("forecast", "report", "revenue"),
+                "Customer Context": ("customer", "context", "notes"),
+            },
+            exception_buckets={
+                "Qualification gap": ("qualification", "missing"),
+                "Handoff risk": ("handoff", "risk", "blocker"),
+                "Stage drift": ("stage", "drift"),
+                "Stale or conflicting source data": ("stale", "conflict", "derived"),
+            },
+            process_slug_leaf="daily-revenue-operating-cycle",
+            overview_slug_leaf="how-revenue-operations-works",
+            trust_slug_leaf="crm-and-revenue-source-of-truth",
+            heuristics_slug_leaf="revenue-exceptions-and-handoff-heuristics",
+            owner_hint="revenue operations / pipeline owner",
+            outputs_hint=["pipeline state updated", "handoff package prepared", "risk follow-ups assigned"],
+            escalation_hint="Escalate to the revenue-ops lead whenever qualification is incomplete, ownership is unclear, or downstream teams would inherit weak context.",
+            principles=[
                 "Qualification and stage changes should be explicit enough that downstream teams inherit clean context.",
                 "Revenue handoffs should capture commitments, blockers, and owner transitions without hidden operator knowledge.",
                 "Pipeline summaries should surface risk and missing context before they become customer-facing failures.",
             ],
-        }
+        )
 
     def build_capability_profile_extensions(
         self,
@@ -2564,26 +3273,41 @@ class ComplianceOpsSynthesisPack(GenericOpsSynthesisPack):
         claims_rollup: list[tuple[str, int]] | None,
         normalize_statement_text: NormalizeStatementTextFn,
     ) -> dict[str, Any]:
-        del space_key, source_counts, claims_rollup, normalize_statement_text
-        control_signals = 0
-        review_signals = 0
-        for item in matrix_rows or []:
-            if not isinstance(item, dict):
-                continue
-            control_signals += len([str(v).strip() for v in (item.get("standing_orders") or []) if str(v).strip()])
-            review_signals += len([str(v).strip() for v in (item.get("approval_rules") or []) if str(v).strip()])
-        return {
-            "snapshot_notes": [
-                f"Control-oriented recurring workflows observed: {control_signals}.",
-                f"Explicit approval/review boundaries observed: {review_signals}.",
-            ],
-            "workflow_signals": [],
-            "principles": [
+        return _build_domain_company_context_extensions(
+            space_key=space_key,
+            matrix_rows=matrix_rows,
+            source_counts=source_counts,
+            claims_rollup=claims_rollup,
+            normalize_statement_text=normalize_statement_text,
+            domain_key="compliance",
+            operation_label="compliance program",
+            entity_buckets={
+                "Control": ("control", "policy"),
+                "Evidence": ("evidence", "artifact"),
+                "Review Obligation": ("review", "cadence"),
+                "Approval Boundary": ("approval", "approver"),
+                "Exception": ("exception", "override"),
+                "Audit Item": ("audit", "finding"),
+            },
+            exception_buckets={
+                "Missing evidence": ("missing", "evidence"),
+                "Approval gap": ("approval", "gap"),
+                "Policy drift": ("policy", "drift"),
+                "Stale or conflicting source data": ("stale", "conflict", "derived"),
+            },
+            process_slug_leaf="daily-compliance-operating-cycle",
+            overview_slug_leaf="how-the-compliance-program-operates",
+            trust_slug_leaf="evidence-and-source-of-truth",
+            heuristics_slug_leaf="known-control-exceptions-and-audit-heuristics",
+            owner_hint="control owner / compliance reviewer",
+            outputs_hint=["control posture updated", "evidence gaps flagged", "next review obligation recorded"],
+            escalation_hint="Escalate to the compliance lead or approver whenever evidence is missing, policy drift appears, or an approval boundary blocks autonomous closure.",
+            principles=[
                 "Control evidence and policy execution should remain attributable, reviewable, and easy to audit.",
                 "Compliance workflows should escalate missing approvals or evidence rather than silently marking success.",
                 "Shared operating context should make review cadence and control ownership explicit for the next operator or auditor.",
             ],
-        }
+        )
 
     def build_capability_profile_extensions(
         self,

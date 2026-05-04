@@ -1336,6 +1336,17 @@ class CompanyKnowledgeCandidatePromoteRequest(BaseModel):
     wiki_status: str = Field(default="reviewed", pattern="^(draft|reviewed|published)$")
 
 
+class CompanyKnowledgeCandidateAssignRequest(BaseModel):
+    project_id: str
+    updated_by: str = Field(min_length=1, max_length=256)
+    assigned_to: str | None = Field(default=None, max_length=256)
+    assigned_team: str | None = Field(default=None, max_length=128)
+    assignment_status: str = Field(default="assigned", pattern="^(unassigned|queued|assigned|resolved)$")
+    assignment_priority: str = Field(default="medium", pattern="^(low|medium|high)$")
+    due_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
 class AgentDirectoryRegisterRequest(BaseModel):
     project_id: str
     agent_id: str = Field(min_length=1, max_length=256)
@@ -12349,6 +12360,7 @@ def _list_company_knowledge_candidates(
     space_key: str | None = None,
     knowledge_state: str | None = None,
     target_page_type: str | None = None,
+    assignment_status: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     normalized_project = str(project_id or "").strip()
@@ -12375,6 +12387,9 @@ def _list_company_knowledge_candidates(
     if str(target_page_type or "").strip():
         filters.append("target_page_type = %s")
         params.append(str(target_page_type).strip().lower())
+    if str(assignment_status or "").strip():
+        filters.append("assignment_status = %s")
+        params.append(str(assignment_status).strip().lower())
     where_sql = " AND ".join(filters)
     with conn.cursor() as cur:
         reviews_join_sql = ""
@@ -12409,10 +12424,18 @@ def _list_company_knowledge_candidates(
               c.canonical_page_slug,
               c.updated_at,
               c.source_payload,
+              c.assignment_status,
+              c.assignment_priority,
+              c.assigned_to,
+              c.assigned_team,
+              c.assigned_by,
+              c.assigned_at,
+              c.due_at,
+              c.assignment_note,
               {reviews_select_sql}
             FROM company_knowledge_candidates c
             {reviews_join_sql}
-            WHERE {where_sql.replace("project_id", "c.project_id").replace("space_key", "c.space_key").replace("knowledge_state", "c.knowledge_state").replace("target_page_type", "c.target_page_type")}
+            WHERE {where_sql.replace("project_id", "c.project_id").replace("space_key", "c.space_key").replace("knowledge_state", "c.knowledge_state").replace("target_page_type", "c.target_page_type").replace("assignment_status", "c.assignment_status")}
             ORDER BY c.updated_at DESC, c.id DESC
             LIMIT %s
             """,
@@ -12452,15 +12475,30 @@ def _list_company_knowledge_candidates(
                 "reviewed_at": row[14].astimezone(UTC).isoformat() if isinstance(row[14], datetime) else None,
                 "canonical_page_slug": str(row[15] or "") or None,
                 "updated_at": row[16].astimezone(UTC).isoformat() if isinstance(row[16], datetime) else None,
+                "assignment_status": str(row[18] or "") or None,
+                "assignment_priority": str(row[19] or "") or None,
+                "assigned_to": str(row[20] or "") or None,
+                "assigned_team": str(row[21] or "") or None,
+                "assigned_by": str(row[22] or "") or None,
+                "assigned_at": row[23].astimezone(UTC).isoformat() if isinstance(row[23], datetime) else None,
+                "due_at": row[24].astimezone(UTC).isoformat() if isinstance(row[24], datetime) else None,
+                "assignment_note": str(row[25] or "") or None,
                 "human_title": str(source_payload.get("human_title") or "").strip() or None,
                 "human_summary": str(source_payload.get("human_summary") or "").strip() or None,
                 "why_it_matters": str(source_payload.get("why_it_matters") or "").strip() or None,
                 "page_markdown_preview": str(source_payload.get("page_markdown") or "").strip()[:800] or None,
                 "manual_review": source_payload.get("manual_review") if isinstance(source_payload.get("manual_review"), dict) else None,
-                "review_count": int(row[18] or 0),
-                "latest_review_at": row[19].astimezone(UTC).isoformat() if isinstance(row[19], datetime) else None,
+                "review_count": int(row[26] or 0),
+                "latest_review_at": row[27].astimezone(UTC).isoformat() if isinstance(row[27], datetime) else None,
             }
         )
+    assignment_counts: dict[str, int] = {}
+    contradiction_queue_total = 0
+    for item in candidates:
+        normalized_assignment = str(item.get("assignment_status") or "unassigned").strip().lower() or "unassigned"
+        assignment_counts[normalized_assignment] = int(assignment_counts.get(normalized_assignment, 0)) + 1
+        if str(item.get("contradiction_topic") or "").strip():
+            contradiction_queue_total += 1
     return {
         "project_id": normalized_project,
         "space_key": normalized_space,
@@ -12468,6 +12506,8 @@ def _list_company_knowledge_candidates(
         "summary": {
             "candidates_total": len(candidates),
             "state_counts": state_counts,
+            "assignment_counts": [{"status": key, "count": value} for key, value in sorted(assignment_counts.items())],
+            "contradiction_queue_total": contradiction_queue_total,
             "supported": True,
         },
         "generated_at": datetime.now(UTC).isoformat(),
@@ -12544,6 +12584,142 @@ def _list_company_knowledge_candidate_reviews(
         "reviews": reviews,
         "summary": {"reviews_total": len(reviews), "supported": True},
         "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _assign_company_knowledge_candidate(
+    conn,
+    *,
+    candidate_id: int,
+    project_id: str,
+    updated_by: str,
+    assigned_to: str | None,
+    assigned_team: str | None,
+    assignment_status: str,
+    assignment_priority: str,
+    due_at: datetime | None,
+    note: str | None,
+) -> dict[str, Any]:
+    normalized_project = str(project_id or "").strip()
+    normalized_actor = str(updated_by or "").strip()
+    normalized_assigned_to = str(assigned_to or "").strip() or None
+    normalized_assigned_team = str(assigned_team or "").strip() or None
+    normalized_status = str(assignment_status or "assigned").strip().lower() or "assigned"
+    normalized_priority = str(assignment_priority or "medium").strip().lower() or "medium"
+    normalized_note = str(note or "").strip() or None
+    if not normalized_project or not normalized_actor:
+        raise HTTPException(status_code=422, detail={"code": "project_id_and_updated_by_required"})
+    if not _company_knowledge_candidates_table_exists(conn):
+        raise HTTPException(status_code=503, detail={"code": "company_knowledge_candidates_unavailable"})
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, source_payload, assignment_status, assigned_to, assigned_team, assignment_priority
+            FROM company_knowledge_candidates
+            WHERE id = %s
+              AND project_id = %s
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (int(candidate_id), normalized_project),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail={"code": "company_knowledge_candidate_not_found", "candidate_id": int(candidate_id)})
+        source_payload = row[1] if isinstance(row[1], dict) else {}
+        assignment_payload = {
+            "status": normalized_status,
+            "priority": normalized_priority,
+            "assigned_to": normalized_assigned_to,
+            "assigned_team": normalized_assigned_team,
+            "assigned_by": normalized_actor,
+            "assigned_at": datetime.now(UTC).isoformat(),
+            "due_at": due_at.astimezone(UTC).isoformat() if isinstance(due_at, datetime) else None,
+            "note": normalized_note,
+        }
+        next_source_payload = {
+            **source_payload,
+            "assignment": assignment_payload,
+        }
+        cur.execute(
+            """
+            UPDATE company_knowledge_candidates
+            SET assignment_status = %s,
+                assignment_priority = %s,
+                assigned_to = %s,
+                assigned_team = %s,
+                assigned_by = %s,
+                assigned_at = NOW(),
+                due_at = %s,
+                assignment_note = %s,
+                source_payload = %s,
+                updated_by = %s,
+                updated_at = NOW()
+            WHERE id = %s
+              AND project_id = %s
+            RETURNING assignment_status, assignment_priority, assigned_to, assigned_team, assigned_by, assigned_at, due_at, assignment_note, updated_at
+            """,
+            (
+                normalized_status,
+                normalized_priority,
+                normalized_assigned_to,
+                normalized_assigned_team,
+                normalized_actor,
+                due_at,
+                normalized_note,
+                Jsonb(next_source_payload),
+                normalized_actor,
+                int(candidate_id),
+                normalized_project,
+            ),
+        )
+        updated_row = cur.fetchone()
+        if _company_knowledge_candidate_reviews_table_exists(conn):
+            cur.execute(
+                """
+                INSERT INTO company_knowledge_candidate_reviews (
+                  candidate_id,
+                  project_id,
+                  action_kind,
+                  knowledge_state_before,
+                  knowledge_state_after,
+                  note,
+                  reviewed_by,
+                  metadata
+                )
+                VALUES (%s, %s, 'assignment_update', NULL, NULL, %s, %s, %s)
+                """,
+                (
+                    int(candidate_id),
+                    normalized_project,
+                    normalized_note,
+                    normalized_actor,
+                    Jsonb(
+                        {
+                            "assignment_status": normalized_status,
+                            "assignment_priority": normalized_priority,
+                            "assigned_to": normalized_assigned_to,
+                            "assigned_team": normalized_assigned_team,
+                            "due_at": due_at.astimezone(UTC).isoformat() if isinstance(due_at, datetime) else None,
+                        }
+                    ),
+                ),
+            )
+    return {
+        "status": "ok",
+        "project_id": normalized_project,
+        "candidate": {
+            "candidate_id": int(candidate_id),
+            "assignment_status": str(updated_row[0] or normalized_status),
+            "assignment_priority": str(updated_row[1] or normalized_priority),
+            "assigned_to": str(updated_row[2] or "") or None,
+            "assigned_team": str(updated_row[3] or "") or None,
+            "assigned_by": str(updated_row[4] or "") or None,
+            "assigned_at": updated_row[5].astimezone(UTC).isoformat() if isinstance(updated_row[5], datetime) else None,
+            "due_at": updated_row[6].astimezone(UTC).isoformat() if isinstance(updated_row[6], datetime) else None,
+            "assignment_note": str(updated_row[7] or "") or None,
+            "updated_at": updated_row[8].astimezone(UTC).isoformat() if isinstance(updated_row[8], datetime) else None,
+        },
     }
 
 
@@ -41312,6 +41488,7 @@ def list_company_knowledge_candidates(
     space_key: str | None = Query(default=None),
     knowledge_state: str | None = Query(default=None),
     target_page_type: str | None = Query(default=None),
+    assignment_status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     with get_conn() as conn:
@@ -41321,6 +41498,7 @@ def list_company_knowledge_candidates(
             space_key=space_key,
             knowledge_state=knowledge_state,
             target_page_type=target_page_type,
+            assignment_status=assignment_status,
             limit=limit,
         )
 
@@ -41337,6 +41515,23 @@ def list_company_knowledge_candidate_reviews(
             project_id=project_id,
             candidate_id=candidate_id,
             limit=limit,
+        )
+
+
+@app.post("/v1/adoption/company-knowledge/candidates/{candidate_id}/assign", response_model=None)
+def assign_company_knowledge_candidate(candidate_id: int, payload: CompanyKnowledgeCandidateAssignRequest):
+    with get_conn() as conn:
+        return _assign_company_knowledge_candidate(
+            conn,
+            candidate_id=candidate_id,
+            project_id=payload.project_id,
+            updated_by=payload.updated_by,
+            assigned_to=payload.assigned_to,
+            assigned_team=payload.assigned_team,
+            assignment_status=payload.assignment_status,
+            assignment_priority=payload.assignment_priority,
+            due_at=payload.due_at,
+            note=payload.note,
         )
 
 

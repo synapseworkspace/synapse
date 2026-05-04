@@ -1508,6 +1508,14 @@ type CompanyKnowledgeCandidateRecord = {
   page_markdown_preview?: string | null;
   review_count?: number;
   latest_review_at?: string | null;
+  assignment_status?: string | null;
+  assignment_priority?: string | null;
+  assigned_to?: string | null;
+  assigned_team?: string | null;
+  assigned_by?: string | null;
+  assigned_at?: string | null;
+  due_at?: string | null;
+  assignment_note?: string | null;
   manual_review?: {
     decision?: string | null;
     preferred_source_label?: string | null;
@@ -1515,6 +1523,22 @@ type CompanyKnowledgeCandidateRecord = {
     updated_by?: string | null;
     updated_at?: string | null;
   } | null;
+};
+
+type CompanyKnowledgeCandidateReviewRecord = {
+  review_id?: number;
+  action_kind?: string | null;
+  knowledge_state_before?: string | null;
+  knowledge_state_after?: string | null;
+  note?: string | null;
+  contradiction_decision?: string | null;
+  preferred_source_label?: string | null;
+  resolution_note?: string | null;
+  promote_to_wiki?: boolean;
+  wiki_page_slug?: string | null;
+  reviewed_by?: string | null;
+  created_at?: string | null;
+  metadata?: Record<string, unknown>;
 };
 
 type CompanyKnowledgeCandidatesPayload = {
@@ -1527,8 +1551,21 @@ type CompanyKnowledgeCandidatesPayload = {
     synced_blocks?: number;
     state_counts?: Array<{ state?: string; count?: number }>;
     lifecycle_states?: Array<{ state?: string; count?: number }>;
+    assignment_counts?: Array<{ status?: string; count?: number }>;
+    contradiction_queue_total?: number;
   };
   candidates?: CompanyKnowledgeCandidateRecord[];
+  generated_at?: string | null;
+};
+
+type CompanyKnowledgeCandidateReviewsPayload = {
+  project_id?: string;
+  candidate_id?: number;
+  summary?: {
+    reviews_total?: number;
+    supported?: boolean;
+  };
+  reviews?: CompanyKnowledgeCandidateReviewRecord[];
   generated_at?: string | null;
 };
 
@@ -2626,6 +2663,11 @@ export default function App() {
   const [loadingCompanyKnowledgeCandidates, setLoadingCompanyKnowledgeCandidates] = useState(false);
   const [syncingCompanyKnowledgeCandidates, setSyncingCompanyKnowledgeCandidates] = useState(false);
   const [runningCompanyKnowledgeActionKey, setRunningCompanyKnowledgeActionKey] = useState<string | null>(null);
+  const [companyKnowledgeReviewsByCandidate, setCompanyKnowledgeReviewsByCandidate] = useState<
+    Record<number, CompanyKnowledgeCandidateReviewRecord[]>
+  >({});
+  const [expandedCompanyKnowledgeReviewHistory, setExpandedCompanyKnowledgeReviewHistory] = useState<Record<number, boolean>>({});
+  const [loadingCompanyKnowledgeReviewHistoryFor, setLoadingCompanyKnowledgeReviewHistoryFor] = useState<Record<number, boolean>>({});
   const [sharedMemoryImpact, setSharedMemoryImpact] = useState<SharedMemoryImpactPayload | null>(null);
   const [loadingSharedMemoryImpact, setLoadingSharedMemoryImpact] = useState(false);
   const [sharedMemoryHealth, setSharedMemoryHealth] = useState<SharedMemoryHealthPayload | null>(null);
@@ -3360,15 +3402,22 @@ export default function App() {
   const companyKnowledgeSummaryCards = useMemo(() => {
     const summary = companyKnowledgeCandidates?.summary || {};
     const lifecycleCounts = Array.isArray(summary.lifecycle_states) ? summary.lifecycle_states : Array.isArray(summary.state_counts) ? summary.state_counts : [];
+    const assignmentCounts = Array.isArray(summary.assignment_counts) ? summary.assignment_counts : [];
     const stateCount = (state: string) =>
       Number(
         lifecycleCounts.find((item) => String(item.state || "").trim().toLowerCase() === state)?.count || 0,
+      );
+    const assignmentCount = (status: string) =>
+      Number(
+        assignmentCounts.find((item) => String(item.status || "").trim().toLowerCase() === status)?.count || 0,
       );
     const total = Number(summary.candidates_total || companyKnowledgeCandidates?.candidates?.length || 0);
     const reviewed = stateCount("reviewed");
     const canonical = stateCount("canonical");
     const contradicted = stateCount("contradicted");
     const stale = stateCount("stale");
+    const assigned = assignmentCount("assigned");
+    const queued = assignmentCount("queued");
     return [
       {
         key: "total",
@@ -3398,14 +3447,26 @@ export default function App() {
         stat: `${contradicted}/${stale}`,
         detail: "contradicted vs stale candidates",
       },
+      {
+        key: "queue",
+        title: "Queue / assigned",
+        color: queued > 0 ? "orange" : assigned > 0 ? "cyan" : "gray",
+        stat: `${queued}/${assigned}`,
+        detail: "queued vs assigned follow-ups",
+      },
     ];
   }, [companyKnowledgeCandidates]);
   const companyKnowledgeConcerns = useMemo(() => {
     const summary = companyKnowledgeCandidates?.summary || {};
     const lifecycleCounts = Array.isArray(summary.lifecycle_states) ? summary.lifecycle_states : Array.isArray(summary.state_counts) ? summary.state_counts : [];
+    const assignmentCounts = Array.isArray(summary.assignment_counts) ? summary.assignment_counts : [];
     const stateCount = (state: string) =>
       Number(
         lifecycleCounts.find((item) => String(item.state || "").trim().toLowerCase() === state)?.count || 0,
+      );
+    const assignmentCount = (status: string) =>
+      Number(
+        assignmentCounts.find((item) => String(item.status || "").trim().toLowerCase() === status)?.count || 0,
       );
     const items: string[] = [];
     const contradicted = stateCount("contradicted");
@@ -3413,8 +3474,13 @@ export default function App() {
     const candidate = stateCount("candidate");
     const reviewed = stateCount("reviewed");
     const canonical = stateCount("canonical");
+    const queued = assignmentCount("queued");
+    const unassigned = assignmentCount("unassigned");
     if (contradicted > 0) {
       items.push(`${contradicted} company knowledge candidate(s) are contradicted and need an explicit source-of-truth decision.`);
+    }
+    if (queued > 0 || (contradicted > 0 && unassigned > 0)) {
+      items.push(`${queued || unassigned} contradiction candidate(s) still need an owner or follow-up queue assignment.`);
     }
     if (stale > 0) {
       items.push(`${stale} persisted candidate(s) went stale because the latest compiler sync no longer supports them strongly.`);
@@ -5129,6 +5195,37 @@ export default function App() {
     }
   }, [apiUrl, companyKnowledgeSpaceKey, projectId]);
 
+  const loadCompanyKnowledgeCandidateReviews = useCallback(
+    async (candidateId: number) => {
+      const project = projectId.trim();
+      if (!project || !candidateId) return;
+      setLoadingCompanyKnowledgeReviewHistoryFor((prev) => ({ ...prev, [candidateId]: true }));
+      try {
+        const query = new URLSearchParams({
+          project_id: project,
+          limit: "20",
+        });
+        const payload = await apiFetch<CompanyKnowledgeCandidateReviewsPayload>(
+          apiUrl,
+          `/v1/adoption/company-knowledge/candidates/${candidateId}/reviews?${query.toString()}`,
+        );
+        setCompanyKnowledgeReviewsByCandidate((prev) => ({
+          ...prev,
+          [candidateId]: Array.isArray(payload.reviews) ? payload.reviews : [],
+        }));
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Review history unavailable",
+          message: String(error),
+        });
+      } finally {
+        setLoadingCompanyKnowledgeReviewHistoryFor((prev) => ({ ...prev, [candidateId]: false }));
+      }
+    },
+    [apiUrl, projectId],
+  );
+
   const syncCompanyKnowledgeCandidates = useCallback(async () => {
     const project = projectId.trim();
     const actor = reviewer.trim() || "ops_manager";
@@ -5226,7 +5323,10 @@ export default function App() {
             payload.candidate?.knowledge_state ||
             "Company knowledge candidate updated.",
         });
-        await loadCompanyKnowledgeCandidates();
+        await Promise.all([
+          loadCompanyKnowledgeCandidates(),
+          expandedCompanyKnowledgeReviewHistory[candidateId] ? loadCompanyKnowledgeCandidateReviews(candidateId) : Promise.resolve(),
+        ]);
       } catch (error) {
         notifications.show({
           color: "red",
@@ -5237,7 +5337,92 @@ export default function App() {
         setRunningCompanyKnowledgeActionKey(null);
       }
     },
-    [apiUrl, loadCompanyKnowledgeCandidates, projectId, reviewer],
+    [apiUrl, expandedCompanyKnowledgeReviewHistory, loadCompanyKnowledgeCandidateReviews, loadCompanyKnowledgeCandidates, projectId, reviewer],
+  );
+
+  const assignCompanyKnowledgeCandidate = useCallback(
+    async (
+      candidate: CompanyKnowledgeCandidateRecord,
+      {
+        assignmentStatus,
+        assignmentPriority,
+        assignedTo,
+        assignedTeam,
+        note,
+        dueAt,
+      }: {
+        assignmentStatus: "unassigned" | "queued" | "assigned" | "resolved";
+        assignmentPriority: "low" | "medium" | "high";
+        assignedTo?: string;
+        assignedTeam?: string;
+        note?: string;
+        dueAt?: string;
+      },
+    ) => {
+      const project = projectId.trim();
+      const actor = reviewer.trim() || "ops_manager";
+      const candidateId = Number(candidate.candidate_id || 0);
+      if (!project || !candidateId) {
+        notifications.show({
+          color: "red",
+          title: "Assignment unavailable",
+          message: "Project ID or candidate id is missing.",
+        });
+        return;
+      }
+      const actionKey = `${candidateId}:assignment:${assignmentStatus}:${assignmentPriority}`;
+      setRunningCompanyKnowledgeActionKey(actionKey);
+      try {
+        await apiFetch(apiUrl, `/v1/adoption/company-knowledge/candidates/${candidateId}/assign`, {
+          method: "POST",
+          idempotencyKey: randomKey(),
+          body: {
+            project_id: project,
+            updated_by: actor,
+            assigned_to: assignedTo,
+            assigned_team: assignedTeam,
+            assignment_status: assignmentStatus,
+            assignment_priority: assignmentPriority,
+            due_at: dueAt,
+            note:
+              note ||
+              (assignmentStatus === "queued"
+                ? `Queued for contradiction follow-up by ${actor}.`
+                : `Assigned from Operations UI by ${actor}.`),
+          },
+        });
+        notifications.show({
+          color: "teal",
+          title: "Contradiction queue updated",
+          message:
+            assignmentStatus === "queued"
+              ? "Candidate moved into contradiction follow-up queue."
+              : assignmentStatus === "resolved"
+                ? "Candidate follow-up marked resolved."
+                : `Candidate assigned to ${assignedTo || assignedTeam || actor}.`,
+        });
+        await Promise.all([
+          loadCompanyKnowledgeCandidates(),
+          expandedCompanyKnowledgeReviewHistory[candidateId] ? loadCompanyKnowledgeCandidateReviews(candidateId) : Promise.resolve(),
+        ]);
+      } catch (error) {
+        notifications.show({
+          color: "red",
+          title: "Contradiction assignment failed",
+          message: String(error),
+        });
+      } finally {
+        setRunningCompanyKnowledgeActionKey(null);
+      }
+    },
+    [
+      apiUrl,
+      expandedCompanyKnowledgeReviewHistory,
+      loadCompanyKnowledgeCandidateReviews,
+      loadCompanyKnowledgeCandidates,
+      projectId,
+      reviewer,
+    ],
   );
 
   const loadSharedMemoryImpact = useCallback(async () => {
@@ -10971,6 +11156,10 @@ export default function App() {
                                         const candidateId = Number(candidate.candidate_id || 0);
                                         const reviewActionKey = `${candidateId}:reviewed:state`;
                                         const promoteActionKey = `${candidateId}:canonical:wiki`;
+                                        const assignActionKey = `${candidateId}:assignment:assigned:high`;
+                                        const queueActionKey = `${candidateId}:assignment:queued:high`;
+                                        const reviewHistoryVisible = Boolean(expandedCompanyKnowledgeReviewHistory[candidateId]);
+                                        const reviewHistory = companyKnowledgeReviewsByCandidate[candidateId] || [];
                                         return (
                                           <Paper
                                             key={`company-knowledge-candidate-${candidateId || candidate.block_id || "candidate"}`}
@@ -11035,6 +11224,14 @@ export default function App() {
                                                     : ""}
                                                 </Text>
                                               ) : null}
+                                              {candidate.assignment_status ? (
+                                                <Text size="xs" c="dimmed">
+                                                  Follow-up queue: {candidate.assignment_status}
+                                                  {candidate.assignment_priority ? ` · priority ${candidate.assignment_priority}` : ""}
+                                                  {candidate.assigned_to ? ` · owner ${candidate.assigned_to}` : candidate.assigned_team ? ` · team ${candidate.assigned_team}` : ""}
+                                                  {candidate.due_at ? ` · due ${formatUiDateTime(candidate.due_at)}` : ""}
+                                                </Text>
+                                              ) : null}
                                               {candidate.review_count ? (
                                                 <Text size="xs" c="dimmed">
                                                   Review history: {candidate.review_count} decision(s)
@@ -11074,6 +11271,23 @@ export default function App() {
                                                 </Button>
                                                 <Button
                                                   size="xs"
+                                                  variant="subtle"
+                                                  color="gray"
+                                                  loading={Boolean(loadingCompanyKnowledgeReviewHistoryFor[candidateId])}
+                                                  onClick={() => {
+                                                    setExpandedCompanyKnowledgeReviewHistory((prev) => ({
+                                                      ...prev,
+                                                      [candidateId]: !prev[candidateId],
+                                                    }));
+                                                    if (!reviewHistoryVisible) {
+                                                      void loadCompanyKnowledgeCandidateReviews(candidateId);
+                                                    }
+                                                  }}
+                                                >
+                                                  {reviewHistoryVisible ? "Hide review history" : "Show review history"}
+                                                </Button>
+                                                <Button
+                                                  size="xs"
                                                   variant="light"
                                                   color="grape"
                                                   loading={runningCompanyKnowledgeActionKey === promoteActionKey}
@@ -11090,6 +11304,47 @@ export default function App() {
                                                 </Button>
                                                 {candidate.contradiction_topic ? (
                                                   <>
+                                                    <Button
+                                                      size="xs"
+                                                      variant="subtle"
+                                                      color="blue"
+                                                      loading={runningCompanyKnowledgeActionKey === assignActionKey}
+                                                      disabled={Boolean(
+                                                        runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== assignActionKey,
+                                                      )}
+                                                      onClick={() =>
+                                                        void assignCompanyKnowledgeCandidate(candidate, {
+                                                          assignmentStatus: "assigned",
+                                                          assignmentPriority: "high",
+                                                          assignedTo: reviewer.trim() || "ops_manager",
+                                                          assignedTeam: companyKnowledgeSpaceKey,
+                                                          dueAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+                                                          note: `Assigned for contradiction review by ${reviewer.trim() || "ops_manager"}.`,
+                                                        })
+                                                      }
+                                                    >
+                                                      Assign to reviewer
+                                                    </Button>
+                                                    <Button
+                                                      size="xs"
+                                                      variant="subtle"
+                                                      color="yellow"
+                                                      loading={runningCompanyKnowledgeActionKey === queueActionKey}
+                                                      disabled={Boolean(
+                                                        runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== queueActionKey,
+                                                      )}
+                                                      onClick={() =>
+                                                        void assignCompanyKnowledgeCandidate(candidate, {
+                                                          assignmentStatus: "queued",
+                                                          assignmentPriority: "high",
+                                                          assignedTeam: companyKnowledgeSpaceKey,
+                                                          dueAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+                                                          note: "Queued for contradiction follow-up and source ruling.",
+                                                        })
+                                                      }
+                                                    >
+                                                      Queue follow-up
+                                                    </Button>
                                                     <Button
                                                       size="xs"
                                                       variant="subtle"
@@ -11146,6 +11401,70 @@ export default function App() {
                                                   </>
                                                 ) : null}
                                               </Group>
+                                              {reviewHistoryVisible ? (
+                                                <Paper withBorder p="xs" radius="md" bg="var(--mantine-color-gray-0)">
+                                                  <Stack gap={4}>
+                                                    <Text size="xs" fw={700}>
+                                                      Full review history
+                                                    </Text>
+                                                    {reviewHistory.length > 0 ? (
+                                                      reviewHistory.map((review, reviewIndex) => (
+                                                        <Paper
+                                                          key={`company-knowledge-review-${candidateId}-${review.review_id || review.created_at || reviewIndex}`}
+                                                          withBorder
+                                                          p="xs"
+                                                          radius="md"
+                                                        >
+                                                          <Stack gap={2}>
+                                                            <Group justify="space-between" align="center" wrap="wrap">
+                                                              <Text size="xs" fw={700}>
+                                                                {review.action_kind || "review"}
+                                                                {review.knowledge_state_after
+                                                                  ? ` → ${review.knowledge_state_after}`
+                                                                  : ""}
+                                                              </Text>
+                                                              <Text size="xs" c="dimmed">
+                                                                {review.created_at ? formatUiDateTime(review.created_at) : "timestamp pending"}
+                                                              </Text>
+                                                            </Group>
+                                                            <Text size="xs" c="dimmed">
+                                                              {review.reviewed_by || "reviewer pending"}
+                                                              {review.wiki_page_slug ? ` · wiki ${review.wiki_page_slug}` : ""}
+                                                            </Text>
+                                                            {review.note ? (
+                                                              <Text size="xs">{review.note}</Text>
+                                                            ) : null}
+                                                            {review.contradiction_decision || review.preferred_source_label || review.resolution_note ? (
+                                                              <Text size="xs" c="dimmed">
+                                                                {[review.contradiction_decision, review.preferred_source_label, review.resolution_note]
+                                                                  .filter(Boolean)
+                                                                  .join(" · ")}
+                                                              </Text>
+                                                            ) : null}
+                                                            {review.metadata && Object.keys(review.metadata).length > 0 ? (
+                                                              <Text size="xs" c="dimmed">
+                                                                Metadata: {Object.entries(review.metadata)
+                                                                  .map(([key, value]) =>
+                                                                    `${key}=${
+                                                                      typeof value === "object" && value !== null
+                                                                        ? JSON.stringify(value)
+                                                                        : String(value ?? "")
+                                                                    }`,
+                                                                  )
+                                                                  .join(" · ")}
+                                                              </Text>
+                                                            ) : null}
+                                                          </Stack>
+                                                        </Paper>
+                                                      ))
+                                                    ) : (
+                                                      <Text size="xs" c="dimmed">
+                                                        No persisted review events yet for this candidate.
+                                                      </Text>
+                                                    )}
+                                                  </Stack>
+                                                </Paper>
+                                              ) : null}
                                             </Stack>
                                           </Paper>
                                         );
