@@ -10243,8 +10243,9 @@ export default function App() {
                           const candidateId = Number(candidate.candidate_id || 0);
                           const reviewActionKey = `${candidateId}:reviewed:state`;
                           const promoteActionKey = `${candidateId}:canonical:wiki`;
-                          const assignActionKey = `${candidateId}:assignment:assigned:high`;
                           const queueActionKey = `${candidateId}:assignment:queued:high`;
+                          const isContradiction = Boolean(candidate.contradiction_topic);
+                          const primaryActionLabel = isContradiction ? "Prefer canonical" : "Mark reviewed";
                           return (
                             <Paper
                               key={`company-knowledge-attention-${candidateId || candidate.block_id || "candidate"}`}
@@ -10290,38 +10291,33 @@ export default function App() {
                                 <Text size="xs" c="dimmed">
                                   {candidate.why_it_matters || candidate.evidence_basis || "Review this candidate to turn it into durable company knowledge."}
                                 </Text>
+                                <Text size="xs" c="dimmed">
+                                  Recommended next step:{" "}
+                                  {isContradiction
+                                    ? "resolve the source-of-truth conflict before promotion"
+                                    : candidate.knowledge_state === "reviewed"
+                                      ? "promote the reviewed draft into canon when the wording looks right"
+                                      : "review the draft so it can move toward canon"}
+                                  .
+                                </Text>
                                 <Group gap={6} wrap="wrap">
                                   <Button
                                     size="xs"
-                                    variant="subtle"
-                                    color="teal"
-                                    loading={runningCompanyKnowledgeActionKey === reviewActionKey}
-                                    disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== reviewActionKey)}
-                                    onClick={() =>
-                                      void promoteCompanyKnowledgeCandidate(candidate, {
-                                        knowledgeState: "reviewed",
-                                        promoteToWiki: false,
-                                        wikiStatus: "reviewed",
-                                      })
+                                    variant={isContradiction ? "subtle" : "light"}
+                                    color={isContradiction ? "orange" : "teal"}
+                                    loading={
+                                      isContradiction
+                                        ? runningCompanyKnowledgeActionKey === `${candidateId}:reviewed:state:prefer_canonical`
+                                        : runningCompanyKnowledgeActionKey === reviewActionKey
                                     }
-                                  >
-                                    Mark reviewed
-                                  </Button>
-                                  {candidate.contradiction_topic ? (
-                                    <>
-                                      <Button
-                                        size="xs"
-                                        variant="subtle"
-                                        color="orange"
-                                        loading={
-                                          runningCompanyKnowledgeActionKey === `${candidateId}:reviewed:state:prefer_canonical`
-                                        }
-                                        disabled={Boolean(
-                                          runningCompanyKnowledgeActionKey &&
-                                            runningCompanyKnowledgeActionKey !== `${candidateId}:reviewed:state:prefer_canonical`,
-                                        )}
-                                        onClick={() =>
-                                          void promoteCompanyKnowledgeCandidate(candidate, {
+                                    disabled={Boolean(
+                                      runningCompanyKnowledgeActionKey &&
+                                        runningCompanyKnowledgeActionKey !==
+                                          (isContradiction ? `${candidateId}:reviewed:state:prefer_canonical` : reviewActionKey),
+                                    )}
+                                    onClick={() =>
+                                      isContradiction
+                                        ? void promoteCompanyKnowledgeCandidate(candidate, {
                                             knowledgeState: "reviewed",
                                             promoteToWiki: false,
                                             wikiStatus: "reviewed",
@@ -10330,13 +10326,20 @@ export default function App() {
                                             resolutionNote:
                                               "Working resolution: prefer the canonical operational source for live state until the mismatch is retired.",
                                           })
-                                        }
-                                      >
-                                        Prefer canonical
-                                      </Button>
+                                        : void promoteCompanyKnowledgeCandidate(candidate, {
+                                            knowledgeState: "reviewed",
+                                            promoteToWiki: false,
+                                            wikiStatus: "reviewed",
+                                          })
+                                    }
+                                  >
+                                    {primaryActionLabel}
+                                  </Button>
+                                  {isContradiction ? (
+                                    <>
                                       <Button
                                         size="xs"
-                                        variant="subtle"
+                                        variant="light"
                                         color="yellow"
                                         loading={runningCompanyKnowledgeActionKey === queueActionKey}
                                         disabled={Boolean(
@@ -10354,45 +10357,87 @@ export default function App() {
                                       >
                                         Queue follow-up
                                       </Button>
+                                      <Menu shadow="md" width={220} position="bottom-end">
+                                        <Menu.Target>
+                                          <Button size="xs" variant="subtle" color="gray">
+                                            More
+                                          </Button>
+                                        </Menu.Target>
+                                        <Menu.Dropdown>
+                                          <Menu.Item
+                                            onClick={() =>
+                                              void assignCompanyKnowledgeCandidate(candidate, {
+                                                assignmentStatus: "assigned",
+                                                assignmentPriority: "high",
+                                                assignedTo: reviewer.trim() || "ops_manager",
+                                                assignedTeam: companyKnowledgeSpaceKey,
+                                                dueAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+                                                note: `Assigned for contradiction review by ${reviewer.trim() || "ops_manager"}.`,
+                                              })
+                                            }
+                                          >
+                                            Assign to reviewer
+                                          </Menu.Item>
+                                          <Menu.Item
+                                            onClick={() =>
+                                              void promoteCompanyKnowledgeCandidate(candidate, {
+                                                knowledgeState: "contradicted",
+                                                promoteToWiki: false,
+                                                wikiStatus: "reviewed",
+                                                contradictionDecision: "needs_follow_up",
+                                                resolutionNote:
+                                                  "Conflict still needs more evidence before this rule should be promoted into canon.",
+                                              })
+                                            }
+                                          >
+                                            Keep open for follow-up
+                                          </Menu.Item>
+                                        </Menu.Dropdown>
+                                      </Menu>
                                     </>
-                                  ) : null}
-                                  <Button
-                                    size="xs"
-                                    variant="light"
-                                    color="grape"
-                                    loading={runningCompanyKnowledgeActionKey === promoteActionKey}
-                                    disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== promoteActionKey)}
-                                    onClick={() =>
-                                      void promoteCompanyKnowledgeCandidate(candidate, {
-                                        knowledgeState: "canonical",
-                                        promoteToWiki: true,
-                                        wikiStatus: "reviewed",
-                                      })
-                                    }
-                                  >
-                                    Promote to wiki
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    variant="subtle"
-                                    color="blue"
-                                    loading={runningCompanyKnowledgeActionKey === assignActionKey}
-                                    disabled={Boolean(
-                                      runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== assignActionKey,
-                                    )}
-                                    onClick={() =>
-                                      void assignCompanyKnowledgeCandidate(candidate, {
-                                        assignmentStatus: "assigned",
-                                        assignmentPriority: "high",
-                                        assignedTo: reviewer.trim() || "ops_manager",
-                                        assignedTeam: companyKnowledgeSpaceKey,
-                                        dueAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
-                                        note: `Assigned for contradiction review by ${reviewer.trim() || "ops_manager"}.`,
-                                      })
-                                    }
-                                  >
-                                    Assign
-                                  </Button>
+                                  ) : (
+                                    <>
+                                      <Button
+                                        size="xs"
+                                        variant="subtle"
+                                        color="grape"
+                                        loading={runningCompanyKnowledgeActionKey === promoteActionKey}
+                                        disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== promoteActionKey)}
+                                        onClick={() =>
+                                          void promoteCompanyKnowledgeCandidate(candidate, {
+                                            knowledgeState: "canonical",
+                                            promoteToWiki: true,
+                                            wikiStatus: "reviewed",
+                                          })
+                                        }
+                                      >
+                                        Promote to wiki
+                                      </Button>
+                                      <Menu shadow="md" width={220} position="bottom-end">
+                                        <Menu.Target>
+                                          <Button size="xs" variant="subtle" color="gray">
+                                            More
+                                          </Button>
+                                        </Menu.Target>
+                                        <Menu.Dropdown>
+                                          <Menu.Item
+                                            onClick={() =>
+                                              void assignCompanyKnowledgeCandidate(candidate, {
+                                                assignmentStatus: "assigned",
+                                                assignmentPriority: "high",
+                                                assignedTo: reviewer.trim() || "ops_manager",
+                                                assignedTeam: companyKnowledgeSpaceKey,
+                                                dueAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+                                                note: `Assigned for review by ${reviewer.trim() || "ops_manager"}.`,
+                                              })
+                                            }
+                                          >
+                                            Assign reviewer
+                                          </Menu.Item>
+                                        </Menu.Dropdown>
+                                      </Menu>
+                                    </>
+                                  )}
                                 </Group>
                               </Stack>
                             </Paper>
