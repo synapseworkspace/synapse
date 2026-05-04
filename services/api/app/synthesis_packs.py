@@ -1076,7 +1076,7 @@ def _humanize_company_process_label(
         (("incident", "monitor"), "incident monitoring"),
         (("daily", "report"), "daily operating report"),
         (("digest", "flush"), "reporting handoff"),
-        (("erp", "sync"), "ERP status check"),
+        (("erp", "sync"), "ERP update check"),
         (("fleet", "sync"), "fleet availability refresh"),
         (("comment", "signal", "learning"), "operator comment learning"),
         (("driver", "economy"), "driver economics review"),
@@ -1463,7 +1463,7 @@ def _build_company_candidate_humanization(block: dict[str, Any]) -> dict[str, An
         else:
             human_summary = summary.replace("The current", "This operating rhythm keeps")
     elif block_type == "source_of_truth_rule":
-        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:").replace("Current company knowledge suggests", "Use this as the working rule:")
+        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:").replace("Current company knowledge suggests", "Use this working rule:")
     elif block_type == "known_exception":
         human_summary = summary.replace("Recurring operational exceptions likely include", "Operators are repeatedly running into")
     elif block_type == "working_heuristic":
