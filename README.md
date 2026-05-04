@@ -18,6 +18,25 @@
   <img src="assets/synapse-hero.svg" alt="Synapse core loop: Observe, Synthesize, Curate, Execute" width="980" />
 </p>
 
+## Product Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/wiki-workspace-hw-ai-agents.png" alt="Synapse wiki-first workspace" width="980" />
+</p>
+
+<p align="center"><em>Wiki-first workspace: durable operating knowledge, page context, lifecycle, and review flow in one surface.</em></p>
+
+<p align="center">
+  <img src="assets/screenshots/live-company-knowledge-candidates-hw-ai-agents.png" alt="Company knowledge candidates in Synapse Operations" width="49%" />
+  <img src="assets/screenshots/live-company-canon-trust-rules-hw-ai-agents.png" alt="Canonical trust rule page in Synapse wiki" width="49%" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/live-synthesis-observability-hw-ai-agents.png" alt="Synthesis observability panel in Synapse Operations" width="70%" />
+</p>
+
+<p align="center"><em>From runtime signals, to company-knowledge candidates, to human-readable canon, with observability on the synthesis path.</em></p>
+
 ## The Problem: "Goldfish AI" In Operations
 
 Most production agent stacks still have three failure modes:
