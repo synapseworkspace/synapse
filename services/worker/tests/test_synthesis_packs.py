@@ -132,6 +132,10 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(all("1800s" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(all("moscow" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(all("digest flush" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("postgres sql" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(any("live operational records" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("daily operating report, daily operating report handoff" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("## editorial next step" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(
             any(
                 str(item.get("block_type") or "") == "contradiction_watch"

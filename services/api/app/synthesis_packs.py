@@ -974,6 +974,36 @@ def _company_domain_key(value: Any) -> str:
     return "generic"
 
 
+def _humanize_company_source_label(value: Any, *, domain_key: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+    if not normalized:
+        return ""
+    mapping = [
+        (("postgres", "sql"), "live operational records"),
+        (("crm", "postgres"), "live CRM records"),
+        (("erp",), "ERP system records"),
+        (("google", "sheets"), "operator-maintained sheets"),
+        (("incident", "api"), "incident service feed"),
+        (("memory",), "knowledge memory"),
+        (("kb",), "knowledge base"),
+        (("policy", "store"), "policy record"),
+        (("evidence", "snapshot"), "evidence snapshot"),
+        (("provider",), "provider state feed"),
+    ]
+    for keywords, label in mapping:
+        if all(keyword in normalized for keyword in keywords):
+            return label
+    if domain_key == "logistics" and "postgres" in normalized:
+        return "live dispatch records"
+    if domain_key == "support" and "postgres" in normalized:
+        return "live support records"
+    if domain_key == "sales" and "postgres" in normalized:
+        return "live revenue records"
+    if domain_key == "compliance" and "postgres" in normalized:
+        return "live compliance records"
+    return _humanize_signal_label(normalized)
+
+
 def _humanize_company_process_label(
     value: Any,
     *,
@@ -1045,7 +1075,7 @@ def _humanize_company_process_label(
         (("documents", "shift", "readiness"), "shift readiness checks"),
         (("incident", "monitor"), "incident monitoring"),
         (("daily", "report"), "daily operating report"),
-        (("digest", "flush"), "daily operating report handoff"),
+        (("digest", "flush"), "reporting handoff"),
         (("erp", "sync"), "ERP state refresh"),
         (("fleet", "sync"), "fleet availability refresh"),
         (("comment", "signal", "learning"), "operator comment learning"),
@@ -1111,11 +1141,11 @@ def _build_company_cycle_outline(processes: list[str], *, domain_key: str) -> li
             "Work through the core operating checks before changing state or escalating.",
             "Close the loop with explicit outputs, follow-up actions, and handoff notes.",
         ]
-    outline = [f"Start by checking {cleaned[0]}."]
+    outline = [f"Open the cycle by checking {cleaned[0]}."]
     if len(cleaned) >= 2:
-        outline.append(f"Then confirm {cleaned[1]} before the workflow advances.")
+        outline.append(f"Then work through {cleaned[1]} before the team advances the day.")
     if len(cleaned) >= 3:
-        outline.append(f"Close the loop with {cleaned[2]} and a clear handoff or reporting update.")
+        outline.append(f"Close the loop with {cleaned[2]} and make the next handoff or reporting update explicit.")
     else:
         outline.append("Close the loop with an explicit handoff, reporting update, or escalation note.")
     return outline
@@ -1137,6 +1167,45 @@ def _prioritize_company_processes(processes: list[str], *, normalize_statement_t
             score += 5
         scored.append((score, label))
     return [label for _, label in sorted(scored, key=lambda item: (item[0], item[1].lower()))]
+
+
+def _dedupe_company_process_focus(processes: list[str], *, normalize_statement_text: NormalizeStatementTextFn) -> list[str]:
+    chosen: list[str] = []
+    seen: list[str] = []
+    for raw in processes:
+        label = str(raw).strip()
+        if not label:
+            continue
+        normalized = normalize_statement_text(label)
+        duplicate = False
+        for existing in seen:
+            if normalized == existing or normalized in existing or existing in normalized:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        chosen.append(label)
+        seen.append(normalized)
+    return chosen
+
+
+def _build_company_process_goal(processes: list[str], *, domain_key: str) -> str:
+    cleaned = [str(item).strip() for item in processes if str(item).strip()]
+    if not cleaned:
+        if domain_key == "logistics":
+            return "Keep dispatch, readiness, and reporting aligned so the team can move through the day without hidden blockers."
+        if domain_key == "support":
+            return "Keep queue ownership, customer communication, and escalation posture aligned across the support day."
+        if domain_key == "sales":
+            return "Keep qualification, stage movement, and handoff readiness aligned across the revenue day."
+        if domain_key == "compliance":
+            return "Keep evidence posture, review obligations, and escalation boundaries aligned across the compliance cycle."
+        return "Keep the operating cycle aligned so the team can work through routine checks and exceptions without ambiguity."
+    if len(cleaned) == 1:
+        return f"Keep {cleaned[0]} current and explicit so the team can work the cycle without hidden ambiguity."
+    if len(cleaned) == 2:
+        return f"Keep {cleaned[0]} and {cleaned[1]} aligned so operators can move through the cycle with clear handoffs."
+    return f"Keep {cleaned[0]}, {cleaned[1]}, and {cleaned[2]} aligned so operators can work the cycle with clear handoffs and escalation points."
 
 
 def _collect_company_process_candidates(
@@ -1231,6 +1300,7 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
     if canonical_target:
         lines.append(f"- Intended canon page: `{canonical_target}`")
     if block_type == "process_sop_candidate":
+        goal_hint = str(block.get("goal_hint") or "").strip() or human_summary
         owner_hint = str(block.get("owner_hint") or "operations team").strip()
         trigger_hint = str(block.get("trigger_hint") or "start of the operating cycle").strip()
         inputs_hint = [str(item).strip() for item in (block.get("inputs_hint") or []) if str(item).strip()]
@@ -1242,7 +1312,7 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
             [
                 "",
                 "## Goal",
-                f"- {human_summary}",
+                f"- {goal_hint}",
                 "",
                 "## Who Owns This Cycle",
                 f"- {owner_hint}",
@@ -1273,7 +1343,7 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
         lines.extend(
             [
                 "",
-                "## Current Working Rule",
+                "## Draft Canon Position",
                 f"- {human_summary}",
                 "",
                 "## Evidence We Are Using",
@@ -1285,7 +1355,7 @@ def _build_company_candidate_page_markdown(block: dict[str, Any]) -> str:
     if resolution_rule:
         heading = "## Canonical Ruling" if block_type in {"contradiction_watch", "source_of_truth_rule"} else "## Preferred Resolution"
         lines.extend(["", heading, f"- {resolution_rule}"])
-    lines.extend(["", "## Before Promotion To Canon", f"- {promotion_path}", ""])
+    lines.extend(["", "## Editorial Next Step", f"- {promotion_path}", ""])
     return "\n".join(lines)
 
 
@@ -1345,7 +1415,7 @@ def _build_company_candidate_humanization(block: dict[str, Any]) -> dict[str, An
         process_focus = [str(item).strip() for item in (block.get("process_focus") or []) if str(item).strip()]
         if process_focus:
             human_summary = (
-                f"This {cadence_label} appears to run through {', '.join(process_focus[:3])}, with explicit checks, handoffs, and escalation points."
+                f"Current evidence suggests this {cadence_label} centers on {', '.join(process_focus[:3])}, with clear checks, handoffs, and escalation points."
             )
         else:
             human_summary = summary.replace("The current", "The current team rhythm suggests that the operation")
@@ -2161,7 +2231,14 @@ def _build_domain_company_context_extensions(
             trust_note = "Knowledge or summary layer; useful for context, but should not silently override live state."
         elif "api" in normalized_source or "provider" in normalized_source or "incident" in normalized_source:
             trust_note = "Provider or service feed; make freshness and outage handling explicit."
-        trust_signals.append({"label": label, "count": int(total or 0), "trust_note": trust_note})
+        trust_signals.append(
+            {
+                "label": label,
+                "source_label": _humanize_company_source_label(source_type, domain_key=domain_key) or label,
+                "count": int(total or 0),
+                "trust_note": trust_note,
+            }
+        )
     trust_signals = sorted(trust_signals, key=lambda item: (-int(item.get("count") or 0), str(item.get("label") or "").lower()))[:6]
     exception_signals = [
         {"label": label, "count": total}
@@ -2185,8 +2262,11 @@ def _build_domain_company_context_extensions(
         candidate_canon_blocks.append(block)
 
     top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
-    top_processes = _prioritize_company_processes(
+    top_processes = _dedupe_company_process_focus(
+        _prioritize_company_processes(
         [str(item.get("label") or "").strip() for item in process_signals[:6] if str(item.get("label") or "").strip()],
+        normalize_statement_text=normalize_statement_text,
+        ),
         normalize_statement_text=normalize_statement_text,
     )[:3]
     top_exceptions = [str(item.get("label") or "").strip() for item in exception_signals[:3] if str(item.get("label") or "").strip()]
@@ -2207,9 +2287,14 @@ def _build_domain_company_context_extensions(
             }
         )
     if top_processes:
-        cadence_label = "daily operating cycle" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operating cycle"
+        has_daily_signal = any(
+            "daily" in normalize_statement_text(str(item.get("label") or ""))
+            or "reporting handoff" in normalize_statement_text(str(item.get("label") or ""))
+            for item in process_signals[:6]
+        )
+        cadence_label = "daily operating cycle" if has_daily_signal else "recurring operating cycle"
         strongest_process_count = max(int(item.get("count") or 0) for item in process_signals[:3]) if process_signals else 0
-        process_inputs = [str(item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("label") or "").strip()]
+        process_inputs = [str(item.get("source_label") or item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("source_label") or item.get("label") or "").strip()]
         if not process_inputs:
             process_inputs = ["current operating systems", "latest operator context"]
         _append_canon_block(
@@ -2228,6 +2313,7 @@ def _build_domain_company_context_extensions(
                 "outputs_hint": outputs_hint,
                 "failure_modes_hint": top_exceptions or ["stale source context", "missing handoff evidence"],
                 "escalation_hint": escalation_hint,
+                "goal_hint": _build_company_process_goal(top_processes, domain_key=domain_key),
                 "process_focus": top_processes,
                 "cadence_label": cadence_label,
                 "cycle_outline": _build_company_cycle_outline(top_processes, domain_key=domain_key),
@@ -2765,7 +2851,14 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 trust_note = "Knowledge or summary layer; useful for context, but should not silently override live operational state."
             elif "api" in normalized_source or "provider" in normalized_source:
                 trust_note = "Provider or service feed; treat freshness and outage handling explicitly."
-            trust_signals.append({"label": label, "count": int(total or 0), "trust_note": trust_note})
+            trust_signals.append(
+                {
+                    "label": label,
+                    "source_label": _humanize_company_source_label(source_type, domain_key="logistics") or label,
+                    "count": int(total or 0),
+                    "trust_note": trust_note,
+                }
+            )
         trust_signals = sorted(trust_signals, key=lambda item: (-int(item.get("count") or 0), str(item.get("label") or "").lower()))[:6]
 
         exception_signals = [
@@ -2813,14 +2906,22 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 }
             )
 
-        top_processes = _prioritize_company_processes(
+        top_processes = _dedupe_company_process_focus(
+            _prioritize_company_processes(
             [str(item.get("label") or "").strip() for item in process_signals[:6] if str(item.get("label") or "").strip()],
+            normalize_statement_text=normalize_statement_text,
+            ),
             normalize_statement_text=normalize_statement_text,
         )[:3]
         if top_processes:
-            cadence = "daily operating cadence" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operational workflow"
+            has_daily_signal = any(
+                "daily" in normalize_statement_text(str(item.get("label") or ""))
+                or "reporting handoff" in normalize_statement_text(str(item.get("label") or ""))
+                for item in process_signals[:6]
+            )
+            cadence = "daily operating cadence" if has_daily_signal else "recurring operational workflow"
             strongest_process_count = max(int(item.get("count") or 0) for item in process_signals[:3]) if process_signals else 0
-            process_inputs = [str(item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("label") or "").strip()]
+            process_inputs = [str(item.get("source_label") or item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("source_label") or item.get("label") or "").strip()]
             if not process_inputs:
                 process_inputs = ["current operational systems", "latest operator context"]
             process_outputs = ["shift readiness confirmed", "exceptions escalated", "daily reporting updated"]
@@ -2841,6 +2942,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                     "outputs_hint": process_outputs,
                     "failure_modes_hint": process_failure_modes,
                     "escalation_hint": "Escalate to the human operations lead whenever readiness is incomplete, source trust breaks down, or incidents affect customer/service commitments.",
+                    "goal_hint": _build_company_process_goal(top_processes, domain_key="logistics"),
                     "domain_label": "logistics",
                     "process_focus": top_processes,
                     "cadence_label": cadence,
