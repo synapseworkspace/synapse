@@ -3507,6 +3507,32 @@ export default function App() {
     }
     return items.slice(0, 3);
   }, [companyKnowledgeCandidates]);
+  const companyKnowledgeAttentionCandidates = useMemo(() => {
+    const candidates = Array.isArray(companyKnowledgeCandidates?.candidates) ? [...companyKnowledgeCandidates.candidates] : [];
+    const priorityScore = (candidate: CompanyKnowledgeCandidateRecord) => {
+      let score = 0;
+      const state = String(candidate.knowledge_state || "").trim().toLowerCase();
+      const assignment = String(candidate.assignment_status || "").trim().toLowerCase();
+      if (state === "contradicted") score += 100;
+      else if (state === "stale") score += 70;
+      else if (state === "candidate") score += 40;
+      else if (state === "reviewed") score += 20;
+      if (assignment === "queued") score += 30;
+      else if (assignment === "assigned") score += 20;
+      if (candidate.contradiction_topic) score += 20;
+      if (candidate.manual_review?.decision === "needs_follow_up") score += 10;
+      return score;
+    };
+    return candidates
+      .sort((a, b) => {
+        const scoreDiff = priorityScore(b) - priorityScore(a);
+        if (scoreDiff !== 0) return scoreDiff;
+        const updatedA = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const updatedB = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return updatedB - updatedA;
+      })
+      .slice(0, 3);
+  }, [companyKnowledgeCandidates]);
   const sharedMemorySummaryCards = useMemo(() => {
     const impactSummary = sharedMemoryImpact?.summary || {};
     const healthMetrics = sharedMemoryHealth?.metrics || {};
@@ -3666,6 +3692,53 @@ export default function App() {
     }
     return next;
   }, [coreExpertControls, effectiveUiMode, reviewQueuePreset, reviewSlaHours, scopedDrafts]);
+  const draftInboxSummaryCards = useMemo(() => {
+    const summary = companyKnowledgeCandidates?.summary || {};
+    const lifecycleCounts = Array.isArray(summary.lifecycle_states) ? summary.lifecycle_states : Array.isArray(summary.state_counts) ? summary.state_counts : [];
+    const assignmentCounts = Array.isArray(summary.assignment_counts) ? summary.assignment_counts : [];
+    const stateCount = (state: string) =>
+      Number(
+        lifecycleCounts.find((item) => String(item.state || "").trim().toLowerCase() === state)?.count || 0,
+      );
+    const assignmentCount = (status: string) =>
+      Number(
+        assignmentCounts.find((item) => String(item.status || "").trim().toLowerCase() === status)?.count || 0,
+      );
+    const pendingDrafts = visibleDrafts.filter((item) => isOpenReviewDraft(item)).length;
+    const conflictDrafts = visibleDrafts.filter((item) => item.status === "blocked_conflict" || item.has_open_conflict).length;
+    const staleCandidates = stateCount("stale");
+    const queuedFollowups = assignmentCount("queued");
+    return [
+      {
+        key: "pending",
+        title: "Pending drafts",
+        color: pendingDrafts > 0 ? "cyan" : "gray",
+        stat: `${pendingDrafts}`,
+        detail: "drafts waiting for human review",
+      },
+      {
+        key: "conflicts",
+        title: "Conflicts",
+        color: conflictDrafts > 0 ? "orange" : "teal",
+        stat: `${conflictDrafts}`,
+        detail: "drafts or candidates with contradiction pressure",
+      },
+      {
+        key: "stale",
+        title: "Stale",
+        color: staleCandidates > 0 ? "yellow" : "teal",
+        stat: `${staleCandidates}`,
+        detail: "candidate knowledge blocks losing support",
+      },
+      {
+        key: "queue",
+        title: "Follow-up queue",
+        color: queuedFollowups > 0 ? "orange" : "gray",
+        stat: `${queuedFollowups}`,
+        detail: "queued company-knowledge follow-ups",
+      },
+    ];
+  }, [companyKnowledgeCandidates, visibleDrafts]);
 
   const selectedIndex = useMemo(
     () => (selectedDraftId ? visibleDrafts.findIndex((item) => item.id === selectedDraftId) : -1),
@@ -6684,13 +6757,23 @@ export default function App() {
       setSharedMemoryPublishPreview(null);
       return;
     }
-    if (coreWorkspaceRoute !== "operations") {
+    if (coreWorkspaceRoute === "operations") {
+      void loadAdoptionSynthesisGraph();
+      void loadCompanyKnowledgeCandidates();
+      void refreshSharedMemoryDiagnostics();
       return;
     }
-    void loadAdoptionSynthesisGraph();
-    void loadCompanyKnowledgeCandidates();
-    void refreshSharedMemoryDiagnostics();
-  }, [coreWorkspaceRoute, loadAdoptionSynthesisGraph, loadCompanyKnowledgeCandidates, projectId, refreshSharedMemoryDiagnostics]);
+    if (coreWorkspaceTab === "drafts") {
+      void loadCompanyKnowledgeCandidates();
+    }
+  }, [
+    coreWorkspaceRoute,
+    coreWorkspaceTab,
+    loadAdoptionSynthesisGraph,
+    loadCompanyKnowledgeCandidates,
+    projectId,
+    refreshSharedMemoryDiagnostics,
+  ]);
 
   useEffect(() => {
     void loadSelfhostConsistency();
@@ -10112,7 +10195,219 @@ export default function App() {
                   setCoreWorkspaceRoute("operations");
                   setCoreWorkspaceTab("drafts");
                 }}
-                migrationPanel={
+                summaryContent={
+                  <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">
+                    {draftInboxSummaryCards.map((card) => (
+                      <Paper key={`draft-inbox-summary-${card.key}`} withBorder p="sm" radius="md">
+                        <Stack gap={4}>
+                          <Group justify="space-between" align="center" wrap="nowrap">
+                            <Text size="xs" fw={700}>
+                              {card.title}
+                            </Text>
+                            <Badge size="xs" variant="light" color={card.color}>
+                              {card.stat}
+                            </Badge>
+                          </Group>
+                          <Text size="xs" c="dimmed">
+                            {card.detail}
+                          </Text>
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </SimpleGrid>
+                }
+                attentionContent={
+                  <Stack gap="sm">
+                    {companyKnowledgeConcerns.length > 0 ? (
+                      <Alert variant="light" color="orange" icon={<IconAlertTriangle size={16} />}>
+                        <Stack gap={2}>
+                          <Text size="xs" fw={700}>
+                            Why this matters
+                          </Text>
+                          {companyKnowledgeConcerns.map((item, index) => (
+                            <Text key={`draft-attention-concern-${index}`} size="xs">
+                              {item}
+                            </Text>
+                          ))}
+                        </Stack>
+                      </Alert>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        Review flow looks healthy: most routine processing should stay in the background until a contradiction, stale candidate, or
+                        queue item surfaces here.
+                      </Text>
+                    )}
+                    {companyKnowledgeAttentionCandidates.length > 0 ? (
+                      <Stack gap={6}>
+                        {companyKnowledgeAttentionCandidates.map((candidate) => {
+                          const candidateId = Number(candidate.candidate_id || 0);
+                          const reviewActionKey = `${candidateId}:reviewed:state`;
+                          const promoteActionKey = `${candidateId}:canonical:wiki`;
+                          const assignActionKey = `${candidateId}:assignment:assigned:high`;
+                          const queueActionKey = `${candidateId}:assignment:queued:high`;
+                          return (
+                            <Paper
+                              key={`company-knowledge-attention-${candidateId || candidate.block_id || "candidate"}`}
+                              withBorder
+                              p="sm"
+                              radius="md"
+                            >
+                              <Stack gap={4}>
+                                <Group justify="space-between" align="flex-start" wrap="wrap">
+                                  <Stack gap={0} style={{ flex: 1 }}>
+                                    <Text size="sm" fw={700}>
+                                      {candidate.human_title || candidate.block_type || "candidate"}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                      {candidate.human_summary || candidate.summary || "Pending summary."}
+                                    </Text>
+                                  </Stack>
+                                  <Group gap={6} wrap="wrap">
+                                    <Badge
+                                      size="xs"
+                                      variant="light"
+                                      color={
+                                        candidate.knowledge_state === "contradicted"
+                                          ? "orange"
+                                          : candidate.knowledge_state === "stale"
+                                            ? "yellow"
+                                            : candidate.knowledge_state === "reviewed"
+                                              ? "teal"
+                                              : candidate.knowledge_state === "canonical"
+                                                ? "grape"
+                                                : "gray"
+                                      }
+                                    >
+                                      {candidate.knowledge_state || "candidate"}
+                                    </Badge>
+                                    {candidate.assignment_status ? (
+                                      <Badge size="xs" variant="light" color="blue">
+                                        {candidate.assignment_status}
+                                      </Badge>
+                                    ) : null}
+                                  </Group>
+                                </Group>
+                                <Text size="xs" c="dimmed">
+                                  {candidate.why_it_matters || candidate.evidence_basis || "Review this candidate to turn it into durable company knowledge."}
+                                </Text>
+                                <Group gap={6} wrap="wrap">
+                                  <Button
+                                    size="xs"
+                                    variant="subtle"
+                                    color="teal"
+                                    loading={runningCompanyKnowledgeActionKey === reviewActionKey}
+                                    disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== reviewActionKey)}
+                                    onClick={() =>
+                                      void promoteCompanyKnowledgeCandidate(candidate, {
+                                        knowledgeState: "reviewed",
+                                        promoteToWiki: false,
+                                        wikiStatus: "reviewed",
+                                      })
+                                    }
+                                  >
+                                    Mark reviewed
+                                  </Button>
+                                  {candidate.contradiction_topic ? (
+                                    <>
+                                      <Button
+                                        size="xs"
+                                        variant="subtle"
+                                        color="orange"
+                                        loading={
+                                          runningCompanyKnowledgeActionKey === `${candidateId}:reviewed:state:prefer_canonical`
+                                        }
+                                        disabled={Boolean(
+                                          runningCompanyKnowledgeActionKey &&
+                                            runningCompanyKnowledgeActionKey !== `${candidateId}:reviewed:state:prefer_canonical`,
+                                        )}
+                                        onClick={() =>
+                                          void promoteCompanyKnowledgeCandidate(candidate, {
+                                            knowledgeState: "reviewed",
+                                            promoteToWiki: false,
+                                            wikiStatus: "reviewed",
+                                            contradictionDecision: "prefer_canonical",
+                                            preferredSourceLabel: "canonical operational source",
+                                            resolutionNote:
+                                              "Working resolution: prefer the canonical operational source for live state until the mismatch is retired.",
+                                          })
+                                        }
+                                      >
+                                        Prefer canonical
+                                      </Button>
+                                      <Button
+                                        size="xs"
+                                        variant="subtle"
+                                        color="yellow"
+                                        loading={runningCompanyKnowledgeActionKey === queueActionKey}
+                                        disabled={Boolean(
+                                          runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== queueActionKey,
+                                        )}
+                                        onClick={() =>
+                                          void assignCompanyKnowledgeCandidate(candidate, {
+                                            assignmentStatus: "queued",
+                                            assignmentPriority: "high",
+                                            assignedTeam: companyKnowledgeSpaceKey,
+                                            dueAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+                                            note: "Queued for contradiction follow-up and source ruling.",
+                                          })
+                                        }
+                                      >
+                                        Queue follow-up
+                                      </Button>
+                                    </>
+                                  ) : null}
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    color="grape"
+                                    loading={runningCompanyKnowledgeActionKey === promoteActionKey}
+                                    disabled={Boolean(runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== promoteActionKey)}
+                                    onClick={() =>
+                                      void promoteCompanyKnowledgeCandidate(candidate, {
+                                        knowledgeState: "canonical",
+                                        promoteToWiki: true,
+                                        wikiStatus: "reviewed",
+                                      })
+                                    }
+                                  >
+                                    Promote to wiki
+                                  </Button>
+                                  <Button
+                                    size="xs"
+                                    variant="subtle"
+                                    color="blue"
+                                    loading={runningCompanyKnowledgeActionKey === assignActionKey}
+                                    disabled={Boolean(
+                                      runningCompanyKnowledgeActionKey && runningCompanyKnowledgeActionKey !== assignActionKey,
+                                    )}
+                                    onClick={() =>
+                                      void assignCompanyKnowledgeCandidate(candidate, {
+                                        assignmentStatus: "assigned",
+                                        assignmentPriority: "high",
+                                        assignedTo: reviewer.trim() || "ops_manager",
+                                        assignedTeam: companyKnowledgeSpaceKey,
+                                        dueAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+                                        note: `Assigned for contradiction review by ${reviewer.trim() || "ops_manager"}.`,
+                                      })
+                                    }
+                                  >
+                                    Assign
+                                  </Button>
+                                </Group>
+                              </Stack>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        No company-knowledge follow-ups are asking for attention right now. Sync candidates if you expect fresh business-facing
+                        knowledge to appear here.
+                      </Text>
+                    )}
+                  </Stack>
+                }
+                advancedContent={
                   isOperationsRoute ? (
                     <Stack gap="sm">
                       <Paper withBorder p="sm" radius="md" data-testid="operations-worklog-policy">
@@ -11995,6 +12290,8 @@ export default function App() {
                     </Stack>
                   ) : null
                 }
+                showAdvancedContent={showAdvancedDraftOps}
+                onToggleAdvancedContent={() => setShowAdvancedDraftOps((current) => !current)}
                 draftListContent={
                   visibleDrafts.length === 0 ? (
                     <Paper withBorder p="md" radius="md">
@@ -12009,12 +12306,15 @@ export default function App() {
                           <Stack gap={8}>
                             <Group justify="space-between" align="center" wrap="wrap">
                               <Text size="sm" fw={700}>
-                                Queue summary
+                                Review queue
                               </Text>
                               <Badge size="xs" variant="light" color="cyan">
                                 {draftQueueSummary.drafts_total} drafts
                               </Badge>
                             </Group>
+                            <Text size="xs" c="dimmed">
+                              Ranked by what most likely needs a human decision now: urgency, confidence, and durable evidence support.
+                            </Text>
                             <Group gap={6} wrap="wrap">
                               {Object.entries(draftQueueSummary.recommendations || {}).map(([key, count]) => (
                                 <Badge key={`rec-${key}`} size="xs" variant="light" color={recommendationColor(key)}>
@@ -12042,16 +12342,6 @@ export default function App() {
                                 </Button>
                               ))}
                             </Group>
-                            <Group gap={6} wrap="wrap">
-                              {Object.entries(draftQueueSummary.bundle_statuses || {}).map(([key, count]) => (
-                                <Badge key={`bundle-status-${key}`} size="xs" variant="light" color={key === "ready" ? "teal" : key === "candidate" ? "blue" : "gray"}>
-                                  {key.replace(/_/g, " ")} {count}
-                                </Badge>
-                              ))}
-                            </Group>
-                            <Text size="xs" c="dimmed">
-                              Ready bundle support total: {draftQueueSummary.ready_bundle_support_total}. Queue is ranked by durable bundle maturity before raw draft recency.
-                            </Text>
                             {safeBulkApproveSkippedCount > 0 ? (
                               <Text size="xs" c="dimmed">
                                 Safe bulk approve would skip {safeBulkApproveSkippedCount} weaker draft{safeBulkApproveSkippedCount === 1 ? "" : "s"} in the current scope.
@@ -12186,6 +12476,106 @@ export default function App() {
                           <Text size="xs" c="dimmed">
                             {draftDetail.draft.rationale}
                           </Text>
+                          <Paper withBorder p="sm" radius="md">
+                            <Stack gap={6}>
+                              <Text size="sm" fw={700}>
+                                Suggested action
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                {draftDetail.recommended_action
+                                  ? humanizeRecommendation(draftDetail.recommended_action)
+                                  : "Review the draft, then decide whether to approve, correct, or defer."}
+                              </Text>
+                              <Group gap={6} wrap="wrap">
+                                <Button
+                                  size="xs"
+                                  color="teal"
+                                  loading={runningAction}
+                                  disabled={!canModerate}
+                                  onClick={() => void approveDraft()}
+                                >
+                                  Approve
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  color="orange"
+                                  loading={runningAction}
+                                  disabled={!canModerate}
+                                  onClick={() => void rejectDraft()}
+                                >
+                                  Reject
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="subtle"
+                                  color="gray"
+                                  onClick={() => selectNextDraft()}
+                                >
+                                  Defer
+                                </Button>
+                                {draftDetail.draft.status === "blocked_conflict" || draftDetail.draft.decision === "conflict" ? (
+                                  <>
+                                    <Button
+                                      size="xs"
+                                      variant="subtle"
+                                      color="teal"
+                                      loading={runningAction}
+                                      disabled={!canModerate}
+                                      onClick={() => void approveDraft("quick_force")}
+                                    >
+                                      Force approve
+                                    </Button>
+                                    <Button
+                                      size="xs"
+                                      variant="subtle"
+                                      color="orange"
+                                      loading={runningAction}
+                                      disabled={!canModerate}
+                                      onClick={() => void rejectDraft("quick_dismiss")}
+                                    >
+                                      Dismiss conflict
+                                    </Button>
+                                  </>
+                                ) : null}
+                                <Button
+                                  size="xs"
+                                  variant="subtle"
+                                  color="gray"
+                                  disabled={!draftDetail.draft.page.slug}
+                                  onClick={() => {
+                                    if (!draftDetail.draft.page.slug) return;
+                                    setSelectedSpaceKey(pageGroupKey(draftDetail.draft.page.slug));
+                                    setSelectedPageSlug(draftDetail.draft.page.slug);
+                                    setCoreWorkspaceTab("wiki");
+                                  }}
+                                >
+                                  Open target page
+                                </Button>
+                              </Group>
+                            </Stack>
+                          </Paper>
+                          <Paper withBorder p="sm" radius="md">
+                            <Stack gap={6}>
+                              <Text size="sm" fw={700}>
+                                What changed
+                              </Text>
+                              <Text size="xs">
+                                {draftDetail.draft.claim.claim_text || "No claim text recorded for this draft yet."}
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                Evidence on demand: {Array.isArray(draftDetail.draft.evidence) ? draftDetail.draft.evidence.length : 0} linked evidence item(s)
+                                {draftDetail.draft.page.page_type ? ` · target ${draftDetail.draft.page.page_type}` : ""}
+                                {draftDetail.draft.claim.category ? ` · claim ${draftDetail.draft.claim.category}` : ""}.
+                              </Text>
+                              {draftDetail.draft.markdown_patch ? (
+                                <Text size="xs" c="dimmed" style={{ whiteSpace: "pre-line" }}>
+                                  Candidate draft: {draftDetail.draft.markdown_patch.slice(0, 240)}
+                                  {draftDetail.draft.markdown_patch.length > 240 ? "..." : ""}
+                                </Text>
+                              ) : null}
+                            </Stack>
+                          </Paper>
                           {draftDetail.bundle_priority || draftDetail.bundle ? (
                             <Paper withBorder p="sm" radius="md">
                               <Stack gap={6}>
