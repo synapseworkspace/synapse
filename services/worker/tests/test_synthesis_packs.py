@@ -109,6 +109,9 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(any("who owns this cycle" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(any("common failure modes" in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(all("standing order." not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("cron " not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("tz=" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("approval=" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(
             any(
                 str(item.get("block_type") or "") == "contradiction_watch"

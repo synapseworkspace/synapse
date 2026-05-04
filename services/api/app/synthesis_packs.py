@@ -991,7 +991,7 @@ def _humanize_company_process_label(
         (("daily", "report"), "daily operating report"),
         (("erp", "sync"), "ERP state refresh"),
         (("fleet", "sync"), "fleet availability refresh"),
-        (("comment", "signal"), "operator comment learning"),
+        (("comment", "signal", "learning"), "operator comment learning"),
         (("ticket", "escalat"), "ticket escalation review"),
         (("queue", "triage"), "queue triage"),
         (("customer", "update"), "customer update follow-through"),
@@ -1013,8 +1013,13 @@ def _humanize_company_process_label(
             return label
     cleaned = raw_text
     cleaned = cleaned.replace(".", " ").replace("/", " ").replace("_", " ").replace("-", " ")
-    cleaned = re.sub(r"\b(queryspec|virtual|builtin|cron|scheduled|workflow|task|program|v2)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\btz\s*=\s*[A-Za-z0-9_/:+-]+\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bapproval\s*=\s*[A-Za-z0-9_/:+-]+\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(owner|team|reviewer|status)\s*=\s*[A-Za-z0-9_/:+-]+\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bcron\b\s+[0-9*/, -]+", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(queryspec|virtual|builtin|cron|scheduled|workflow|task|program|v2|every|signal|sync)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bstanding\s+order\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\blogistics\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = cleaned or normalized.replace("  ", " ")
     return cleaned.lower()
@@ -1054,6 +1059,24 @@ def _build_company_cycle_outline(processes: list[str], *, domain_key: str) -> li
     else:
         outline.append("Close the loop with an explicit handoff, reporting update, or escalation note.")
     return outline
+
+
+def _prioritize_company_processes(processes: list[str], *, normalize_statement_text: NormalizeStatementTextFn) -> list[str]:
+    scored: list[tuple[int, str]] = []
+    for raw in processes:
+        label = str(raw).strip()
+        if not label:
+            continue
+        normalized = normalize_statement_text(label)
+        score = 10
+        if any(token in normalized for token in ("readiness", "route", "queue", "deal", "control", "ticket", "incident", "qualification", "evidence")):
+            score -= 6
+        if any(token in normalized for token in ("daily report", "digest", "reporting")):
+            score -= 2
+        if any(token in normalized for token in ("comment learning", "learning", "backfill")):
+            score += 5
+        scored.append((score, label))
+    return [label for _, label in sorted(scored, key=lambda item: (item[0], item[1].lower()))]
 
 
 def _company_block_fallback_title(block_type: str, target_page_slug: str | None, target_page_type: str | None) -> str:
@@ -2071,7 +2094,10 @@ def _build_domain_company_context_extensions(
         candidate_canon_blocks.append(block)
 
     top_entities = [str(item.get("label") or "").strip() for item in entity_signals[:3] if str(item.get("label") or "").strip()]
-    top_processes = [str(item.get("label") or "").strip() for item in process_signals[:3] if str(item.get("label") or "").strip()]
+    top_processes = _prioritize_company_processes(
+        [str(item.get("label") or "").strip() for item in process_signals[:6] if str(item.get("label") or "").strip()],
+        normalize_statement_text=normalize_statement_text,
+    )[:3]
     top_exceptions = [str(item.get("label") or "").strip() for item in exception_signals[:3] if str(item.get("label") or "").strip()]
 
     if top_entities:
@@ -2703,7 +2729,10 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
                 }
             )
 
-        top_processes = [str(item.get("label") or "").strip() for item in process_signals[:3] if str(item.get("label") or "").strip()]
+        top_processes = _prioritize_company_processes(
+            [str(item.get("label") or "").strip() for item in process_signals[:6] if str(item.get("label") or "").strip()],
+            normalize_statement_text=normalize_statement_text,
+        )[:3]
         if top_processes:
             cadence = "daily operating cadence" if any("daily" in normalize_statement_text(item) for item in top_processes) else "recurring operational workflow"
             strongest_process_count = max(int(item.get("count") or 0) for item in process_signals[:3]) if process_signals else 0

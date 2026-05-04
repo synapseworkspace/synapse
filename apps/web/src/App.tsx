@@ -3277,11 +3277,28 @@ export default function App() {
     return visibleSpaces[0] || effectiveBusinessSpaceKey || "operations";
   }, [effectiveBusinessSpaceKey, selectedSpaceKey, spaceNodes]);
   const companyKnowledgeSpaceKey = useMemo(() => {
+    const visibleSpaces = spaceNodes
+      .map((item) => String(item.key || "").trim().toLowerCase())
+      .filter((item) => item && item !== "agents");
+    const businessVisibleSpaces = visibleSpaces.filter((item) => item !== "operations");
     if (coreWorkspaceRoute === "operations") {
-      return effectiveBusinessSpaceKey || "operations";
+      if (selectedSpaceKey && selectedSpaceKey !== "agents" && selectedSpaceKey !== "operations") {
+        return selectedSpaceKey;
+      }
+      if (
+        effectiveBusinessSpaceKey &&
+        effectiveBusinessSpaceKey !== "operations" &&
+        visibleSpaces.includes(effectiveBusinessSpaceKey)
+      ) {
+        return effectiveBusinessSpaceKey;
+      }
+      if (businessVisibleSpaces.length > 0) {
+        return businessVisibleSpaces[0];
+      }
+      return observabilitySpaceKey || effectiveBusinessSpaceKey || "operations";
     }
     return observabilitySpaceKey;
-  }, [coreWorkspaceRoute, effectiveBusinessSpaceKey, observabilitySpaceKey]);
+  }, [coreWorkspaceRoute, effectiveBusinessSpaceKey, observabilitySpaceKey, selectedSpaceKey, spaceNodes]);
   const synthesisGraphCards = useMemo(() => {
     const tooling = adoptionSynthesisGraph?.tooling_summary || {};
     const sources = adoptionSynthesisGraph?.data_sources_summary || {};
