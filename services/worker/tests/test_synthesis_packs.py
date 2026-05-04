@@ -56,7 +56,23 @@ class SynthesisPackTests(unittest.TestCase):
             matrix_rows=[
                 {
                     "standing_orders": ["daily report", "incident monitor"],
-                    "scheduled_tasks": ["driver economy sheet", "daily report"],
+                    "scheduled_tasks": [
+                        "digest flush | every 1800s | tz=Europe/Moscow | authority=logist, director | escalation=notify",
+                        "driver economy sheet",
+                        "daily report",
+                    ],
+                    "scheduled_task_contracts": [
+                        {
+                            "task_code": "standing_order.logistics.documents.shift.readiness",
+                            "builtin_task": "documents_shift_readiness",
+                            "standing_order_program": "logistics_shift_readiness",
+                            "interval_seconds": 1800,
+                            "schedule_kind": "interval",
+                            "timezone": "Europe/Moscow",
+                            "standing_order_authority": ["logist", "director"],
+                            "standing_order_escalation": {"mode": "notify"},
+                        }
+                    ],
                     "responsibilities": ["driver economics", "route monitoring", "shift readiness"],
                     "source_bindings": ["erp_routes_slice", "google_sheets_ingest"],
                     "scenario_examples": ["stale derived route snapshot conflict"],
@@ -112,6 +128,10 @@ class SynthesisPackTests(unittest.TestCase):
         self.assertTrue(all("cron " not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(all("tz=" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(all("approval=" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("authority=" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("1800s" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("moscow" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
+        self.assertTrue(all("digest flush" not in str(item.get("page_markdown") or "").lower() for item in process_blocks))
         self.assertTrue(
             any(
                 str(item.get("block_type") or "") == "contradiction_watch"

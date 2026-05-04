@@ -980,6 +980,62 @@ def _humanize_company_process_label(
     normalize_statement_text: NormalizeStatementTextFn,
     domain_key: str,
 ) -> str:
+    if isinstance(value, dict):
+        candidates: list[tuple[int, str]] = []
+        for field in (
+            "purpose",
+            "title",
+            "name",
+            "task_code",
+            "builtin_task",
+            "task_name",
+            "program",
+            "standing_order_program",
+            "description",
+            "id",
+        ):
+            candidate = str(value.get(field) or "").strip()
+            if candidate:
+                humanized = _humanize_company_process_label(
+                    candidate,
+                    normalize_statement_text=normalize_statement_text,
+                    domain_key=domain_key,
+                )
+                if not humanized:
+                    continue
+                normalized_humanized = normalize_statement_text(humanized)
+                score = 10
+                if field in {"purpose", "title", "description"}:
+                    score -= 6
+                elif field in {"task_code", "builtin_task", "task_name", "name"}:
+                    score -= 2
+                elif field in {"standing_order_program", "program"}:
+                    score += 3
+                if any(
+                    token in normalized_humanized
+                    for token in (
+                        "readiness",
+                        "report",
+                        "incident",
+                        "driver economy",
+                        "queue",
+                        "handoff",
+                        "qualification",
+                        "evidence",
+                        "policy",
+                        "audit",
+                        "control",
+                        "daily",
+                    )
+                ):
+                    score -= 4
+                if any(token in normalized_humanized for token in ("digest flush", "backfill", "heartbeat", "polling")):
+                    score += 5
+                if len(humanized.split()) <= 1:
+                    score += 1
+                candidates.append((score, humanized))
+        if candidates:
+            return sorted(candidates, key=lambda item: (item[0], len(item[1]), item[1].lower()))[0][1]
     raw_text = str(value or "").strip()
     normalized = normalize_statement_text(raw_text)
     if not normalized:
@@ -989,9 +1045,11 @@ def _humanize_company_process_label(
         (("documents", "shift", "readiness"), "shift readiness checks"),
         (("incident", "monitor"), "incident monitoring"),
         (("daily", "report"), "daily operating report"),
+        (("digest", "flush"), "daily operating report handoff"),
         (("erp", "sync"), "ERP state refresh"),
         (("fleet", "sync"), "fleet availability refresh"),
         (("comment", "signal", "learning"), "operator comment learning"),
+        (("driver", "economy"), "driver economics review"),
         (("ticket", "escalat"), "ticket escalation review"),
         (("queue", "triage"), "queue triage"),
         (("customer", "update"), "customer update follow-through"),
@@ -1012,14 +1070,16 @@ def _humanize_company_process_label(
                 return "daily control digest"
             return label
     cleaned = raw_text
-    cleaned = cleaned.replace(".", " ").replace("/", " ").replace("_", " ").replace("-", " ")
-    cleaned = re.sub(r"\btz\s*=\s*[A-Za-z0-9_/:+-]+\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\bapproval\s*=\s*[A-Za-z0-9_/:+-]+\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\b(owner|team|reviewer|status)\s*=\s*[A-Za-z0-9_/:+-]+\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:tz|approval|authority|escalation|owner|team|reviewer|status)\s*=\s*[^|]+", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bcron\b\s+[0-9*/, -]+", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bevery\s+\d+[smhd]?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b\d+[smhd]?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace(".", " ").replace("/", " ").replace("_", " ").replace("-", " ")
     cleaned = re.sub(r"\b(queryspec|virtual|builtin|cron|scheduled|workflow|task|program|v2|every|signal|sync)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bstanding\s+order\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\blogistics\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:utc|gmt|europe|moscow)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace("|", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = cleaned or normalized.replace("  ", " ")
     return cleaned.lower()
@@ -1077,6 +1137,40 @@ def _prioritize_company_processes(processes: list[str], *, normalize_statement_t
             score += 5
         scored.append((score, label))
     return [label for _, label in sorted(scored, key=lambda item: (item[0], item[1].lower()))]
+
+
+def _collect_company_process_candidates(
+    item: dict[str, Any],
+    *,
+    normalize_statement_text: NormalizeStatementTextFn,
+    domain_key: str,
+) -> list[str]:
+    labels: list[str] = []
+    for value in (item.get("standing_orders") or []):
+        label = _humanize_company_process_label(
+            value,
+            normalize_statement_text=normalize_statement_text,
+            domain_key=domain_key,
+        )
+        if label:
+            labels.append(label)
+    for value in (item.get("scheduled_task_contracts") or []):
+        label = _humanize_company_process_label(
+            value,
+            normalize_statement_text=normalize_statement_text,
+            domain_key=domain_key,
+        )
+        if label:
+            labels.append(label)
+    for value in (item.get("scheduled_tasks") or []):
+        label = _humanize_company_process_label(
+            value,
+            normalize_statement_text=normalize_statement_text,
+            domain_key=domain_key,
+        )
+        if label:
+            labels.append(label)
+    return list(dict.fromkeys([str(item).strip() for item in labels if str(item).strip()]))[:12]
 
 
 def _company_block_fallback_title(block_type: str, target_page_slug: str | None, target_page_type: str | None) -> str:
@@ -2018,14 +2112,11 @@ def _build_domain_company_context_extensions(
     for item in matrix_rows or []:
         if not isinstance(item, dict):
             continue
-        for value in [*(item.get("standing_orders") or []), *(item.get("scheduled_tasks") or [])]:
-            label = _humanize_company_process_label(
-                value,
-                normalize_statement_text=normalize_statement_text,
-                domain_key=domain_key,
-            )
-            if not label:
-                continue
+        for label in _collect_company_process_candidates(
+            item,
+            normalize_statement_text=normalize_statement_text,
+            domain_key=domain_key,
+        ):
             workflow_counts[label] = int(workflow_counts.get(label, 0)) + 1
             _bump_signals(label, weight=2)
         for value in [
@@ -2624,18 +2715,11 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         for item in matrix_rows or []:
             if not isinstance(item, dict):
                 continue
-            for value in [*(item.get("standing_orders") or []), *(item.get("scheduled_tasks") or [])]:
-                text = str(value or "").strip()
-                if not text:
-                    continue
-                normalized = normalize_statement_text(text)
-                label = _humanize_company_process_label(
-                    text,
-                    normalize_statement_text=normalize_statement_text,
-                    domain_key="logistics",
-                )
-                if not normalized or not label:
-                    continue
+            for label in _collect_company_process_candidates(
+                item,
+                normalize_statement_text=normalize_statement_text,
+                domain_key="logistics",
+            ):
                 workflow_counts[label] = int(workflow_counts.get(label, 0)) + 1
                 _bump_entity_signals(label, weight=2)
             for value in [
