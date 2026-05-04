@@ -1076,7 +1076,7 @@ def _humanize_company_process_label(
         (("incident", "monitor"), "incident monitoring"),
         (("daily", "report"), "daily operating report"),
         (("digest", "flush"), "reporting handoff"),
-        (("erp", "sync"), "ERP state refresh"),
+        (("erp", "sync"), "ERP status check"),
         (("fleet", "sync"), "fleet availability refresh"),
         (("comment", "signal", "learning"), "operator comment learning"),
         (("driver", "economy"), "driver economics review"),
@@ -1206,6 +1206,49 @@ def _build_company_process_goal(processes: list[str], *, domain_key: str) -> str
     if len(cleaned) == 2:
         return f"Keep {cleaned[0]} and {cleaned[1]} aligned so operators can move through the cycle with clear handoffs."
     return f"Keep {cleaned[0]}, {cleaned[1]}, and {cleaned[2]} aligned so operators can work the cycle with clear handoffs and escalation points."
+
+
+def _build_company_process_outputs(processes: list[str], *, domain_key: str) -> list[str]:
+    normalized = [str(item).strip().lower() for item in processes if str(item).strip()]
+    outputs: list[str] = []
+    if any("incident" in item for item in normalized):
+        outputs.append("Open incidents are triaged and the next owner is explicit.")
+    if any("readiness" in item for item in normalized):
+        outputs.append("Shift readiness is confirmed or blocked items are clearly flagged.")
+    if any("report" in item or "handoff" in item or "digest" in item for item in normalized):
+        outputs.append("The daily handoff or reporting update is published with current blockers.")
+    if any("queue" in item for item in normalized):
+        outputs.append("Queue ownership and next customer-facing step are explicit.")
+    if any("deal" in item or "qualification" in item or "stage" in item for item in normalized):
+        outputs.append("Deal stage, owner, and missing handoff context are explicit.")
+    if any("control" in item or "evidence" in item or "policy" in item or "audit" in item for item in normalized):
+        outputs.append("Control posture and missing evidence are recorded for follow-up.")
+    if not outputs:
+        if domain_key == "logistics":
+            outputs = [
+                "The team has a clear view of readiness, incidents, and the next reporting handoff.",
+                "Any blocker that can stop the day is visible to the next owner.",
+            ]
+        elif domain_key == "support":
+            outputs = [
+                "Queue state and next customer-facing actions are clear.",
+                "Escalations and blockers are visible to the next owner.",
+            ]
+        elif domain_key == "sales":
+            outputs = [
+                "Pipeline state and next handoff are clear.",
+                "Revenue-risk blockers are visible to the next owner.",
+            ]
+        elif domain_key == "compliance":
+            outputs = [
+                "Control posture and next review obligations are clear.",
+                "Missing evidence and approval gaps are visible to the next owner.",
+            ]
+        else:
+            outputs = [
+                "The next owner can see the current state, blockers, and follow-up actions.",
+            ]
+    return outputs[:4]
 
 
 def _collect_company_process_candidates(
@@ -1415,20 +1458,20 @@ def _build_company_candidate_humanization(block: dict[str, Any]) -> dict[str, An
         process_focus = [str(item).strip() for item in (block.get("process_focus") or []) if str(item).strip()]
         if process_focus:
             human_summary = (
-                f"Current evidence suggests this {cadence_label} centers on {', '.join(process_focus[:3])}, with clear checks, handoffs, and escalation points."
+                f"This {cadence_label} keeps {', '.join(process_focus[:3])} aligned so the team can work with clear checks, handoffs, and escalation points."
             )
         else:
-            human_summary = summary.replace("The current", "The current team rhythm suggests that the operation")
+            human_summary = summary.replace("The current", "This operating rhythm keeps")
     elif block_type == "source_of_truth_rule":
-        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:").replace("Current company knowledge suggests", "Current evidence suggests")
+        human_summary = summary.replace("Trust rule candidate:", "Working trust rule:").replace("Current company knowledge suggests", "Use this as the working rule:")
     elif block_type == "known_exception":
         human_summary = summary.replace("Recurring operational exceptions likely include", "Operators are repeatedly running into")
     elif block_type == "working_heuristic":
         human_summary = summary.replace("Company memory is repeatedly surfacing heuristics around", "The team keeps leaning on heuristics around")
     elif block_type == "contradiction_watch":
-        human_summary = summary.replace("Current company knowledge shows", "Current evidence shows").replace(
+        human_summary = summary.replace("Current company knowledge shows", "The current operating picture shows").replace(
             "Current company knowledge appears exposed to",
-            "Current evidence still appears exposed to",
+            "The current operating picture is still exposed to",
         )
     human_summary = human_summary.strip().rstrip(".")
     if human_summary:
@@ -2310,7 +2353,7 @@ def _build_domain_company_context_extensions(
                 "owner_hint": owner_hint,
                 "trigger_hint": f"Start of the {cadence_label} and any handoff or incident that changes {operation_label.lower()} state.",
                 "inputs_hint": process_inputs,
-                "outputs_hint": outputs_hint,
+                "outputs_hint": _build_company_process_outputs(top_processes, domain_key=domain_key) or outputs_hint,
                 "failure_modes_hint": top_exceptions or ["stale source context", "missing handoff evidence"],
                 "escalation_hint": escalation_hint,
                 "goal_hint": _build_company_process_goal(top_processes, domain_key=domain_key),
@@ -2319,8 +2362,16 @@ def _build_domain_company_context_extensions(
                 "cycle_outline": _build_company_cycle_outline(top_processes, domain_key=domain_key),
             }
         )
-    canonical_sources = [str(item.get("label") or "").strip() for item in trust_signals if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))]
-    derived_sources = [str(item.get("label") or "").strip() for item in trust_signals if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))]
+    canonical_sources = [
+        str(item.get("source_label") or item.get("label") or "").strip()
+        for item in trust_signals
+        if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))
+    ]
+    derived_sources = [
+        str(item.get("source_label") or item.get("label") or "").strip()
+        for item in trust_signals
+        if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))
+    ]
     if canonical_sources or derived_sources:
         summary_parts: list[str] = []
         if canonical_sources:
@@ -2924,7 +2975,7 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
             process_inputs = [str(item.get("source_label") or item.get("label") or "").strip() for item in trust_signals[:2] if str(item.get("source_label") or item.get("label") or "").strip()]
             if not process_inputs:
                 process_inputs = ["current operational systems", "latest operator context"]
-            process_outputs = ["shift readiness confirmed", "exceptions escalated", "daily reporting updated"]
+            process_outputs = _build_company_process_outputs(top_processes, domain_key="logistics")
             process_failure_modes = top_exceptions[:3] if top_exceptions else ["source mismatch", "missing readiness evidence"]
             _append_canon_block(
                 {
@@ -2953,8 +3004,16 @@ class LogisticsOpsSynthesisPack(GenericOpsSynthesisPack):
         canonical_sources: list[str] = []
         derived_sources: list[str] = []
         if trust_signals:
-            canonical_sources = [str(item.get("label") or "").strip() for item in trust_signals if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))]
-            derived_sources = [str(item.get("label") or "").strip() for item in trust_signals if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))]
+            canonical_sources = [
+                str(item.get("source_label") or item.get("label") or "").strip()
+                for item in trust_signals
+                if "canonical operational record" in normalize_statement_text(str(item.get("trust_note") or ""))
+            ]
+            derived_sources = [
+                str(item.get("source_label") or item.get("label") or "").strip()
+                for item in trust_signals
+                if "derived" in normalize_statement_text(str(item.get("trust_note") or ""))
+            ]
             if canonical_sources or derived_sources:
                 summary_parts: list[str] = []
                 if canonical_sources:
