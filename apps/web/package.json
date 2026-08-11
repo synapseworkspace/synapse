@@ -15,7 +15,7 @@
     "@mantine/core": "^8.0.0",
     "@mantine/hooks": "^8.0.0",
     "@mantine/notifications": "^8.0.0",
-    "@mantine/tiptap": "^8.3.18",
+    "@mantine/tiptap": "^9.0.1",
     "@tabler/icons-react": "^3.30.0",
     "@tiptap/extension-link": "^2.27.2",
     "@tiptap/extension-table": "^2.27.2",
